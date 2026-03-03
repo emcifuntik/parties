@@ -33,6 +33,17 @@ void LobbyModel::setup(Rml::Context* context)
     }
     ctor.RegisterArray<Rml::Vector<ChannelInfo>>();
 
+    if (auto s = ctor.RegisterStruct<SavedServer>()) {
+        s.RegisterMember("idx",          &SavedServer::idx);
+        s.RegisterMember("display_name", &SavedServer::display_name);
+        s.RegisterMember("initials",     &SavedServer::initials);
+        s.RegisterMember("host",         &SavedServer::host);
+        s.RegisterMember("port",         &SavedServer::port);
+        s.RegisterMember("username",     &SavedServer::username);
+        s.RegisterMember("is_active",    &SavedServer::is_active);
+    }
+    ctor.RegisterArray<Rml::Vector<SavedServer>>();
+
     // Login state
     ctor.Bind("login_host",     &login_host);
     ctor.Bind("login_port",     &login_port);
@@ -53,6 +64,9 @@ void LobbyModel::setup(Rml::Context* context)
     ctor.Bind("is_deafened",          &is_deafened);
     ctor.Bind("show_settings",        &show_settings);
     ctor.Bind("denoise_enabled",      &denoise_enabled);
+
+    // Sidebar
+    ctor.Bind("saved_servers", &saved_servers);
 
     // Event callbacks
     ctor.BindEventCallback("do_connect",
@@ -96,6 +110,22 @@ void LobbyModel::setup(Rml::Context* context)
             if (on_toggle_denoise) on_toggle_denoise();
         });
 
+    ctor.BindEventCallback("do_disconnect",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            if (on_disconnect) on_disconnect();
+        });
+
+    ctor.BindEventCallback("select_server",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList& args) {
+            if (!args.empty() && on_select_server)
+                on_select_server(args[0].Get<int>());
+        });
+
+    ctor.BindEventCallback("add_server",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            if (on_add_server) on_add_server();
+        });
+
     handle_ = ctor.GetModelHandle();
 }
 
@@ -119,6 +149,7 @@ void LobbyModel::mark_dirty()
     handle_.DirtyVariable("is_deafened");
     handle_.DirtyVariable("show_settings");
     handle_.DirtyVariable("denoise_enabled");
+    handle_.DirtyVariable("saved_servers");
 }
 
 } // namespace parties::client

@@ -31,6 +31,10 @@ public:
     /// Update the viewport dimensions (call when the drawable size changes).
     void SetViewport(int width, int height);
 
+    /// Set the Y pixel offset into the framebuffer where the Metal viewport begins.
+    /// Used on iPhone to push all rendering (including the debugger) below the Dynamic Island.
+    void SetViewportTopOffset(int top);
+
     /// Call after context->Render() to commit all encoded draw commands.
     void EndFrame();
 

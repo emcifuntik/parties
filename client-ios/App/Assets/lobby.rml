@@ -7,81 +7,116 @@
 
     <!-- ── Login screen ──────────────────────────────────────────────────── -->
     <div class="screen screen-login" data-if="show_login">
-        <div class="login-card">
-            <div class="login-title">Parties</div>
 
-            <div class="login-status" data-if="login_status != ''">{{ login_status }}</div>
+        <!-- Server sidebar (always visible) -->
+        <div class="server-sidebar">
+            <div data-for="srv : saved_servers">
+                <div class="server-circle"
+                     data-class-active="srv.is_active"
+                     data-event-click="select_server(srv.idx)">{{ srv.initials }}</div>
+            </div>
+            <div class="server-circle server-add" data-event-click="add_server">+</div>
+        </div>
 
-            <div class="field-label">Server Host</div>
-            <input type="text" data-value="login_host" />
+        <!-- Login card -->
+        <div class="login-area">
+            <div class="login-card">
+                <div class="login-title">Parties</div>
 
-            <div class="field-label">Port</div>
-            <input type="text" data-value="login_port" />
+                <div class="login-status" data-if="login_status != ''">{{ login_status }}</div>
 
-            <div class="field-label">Username</div>
-            <input type="text" data-value="login_username" />
+                <div class="field-label">Server Host</div>
+                <input type="text" data-value="login_host" />
 
-            <div class="field-label">Password</div>
-            <input type="password" data-value="login_password" />
+                <div class="field-label">Port</div>
+                <input type="text" data-value="login_port" />
 
-            <div class="error-text" data-if="login_error != ''">{{ login_error }}</div>
+                <div class="field-label">Username</div>
+                <input type="text" data-value="login_username" />
 
-            <div class="btn" data-event-click="do_connect">Sign In</div>
-            <div class="btn btn-outline" data-event-click="do_register">Register</div>
+                <div class="field-label">Password</div>
+                <input type="password" data-value="login_password" />
+
+                <div class="error-text" data-if="login_error != ''">{{ login_error }}</div>
+
+                <div class="btn" data-event-click="do_connect">Sign In</div>
+                <div class="btn btn-outline" data-event-click="do_register">Register</div>
+            </div>
         </div>
     </div>
 
     <!-- ── Main app ───────────────────────────────────────────────────────── -->
     <div class="screen screen-main" data-if="is_connected">
 
-        <!-- Header -->
-        <div class="app-header">
-            <span class="app-header-title">{{ server_name }}</span>
-            <span class="app-header-btn" data-event-click="toggle_settings">Settings</span>
+        <!-- Server sidebar -->
+        <div class="server-sidebar">
+            <div data-for="srv : saved_servers">
+                <div class="server-circle"
+                     data-class-active="srv.is_active"
+                     data-event-click="select_server(srv.idx)">{{ srv.initials }}</div>
+            </div>
+            <div class="server-circle server-add" data-event-click="add_server">+</div>
         </div>
 
-        <!-- Channel list (scrollable) -->
-        <div id="channels" class="channel-list">
-            <div class="channel-category">Voice Channels</div>
-            <div data-for="ch : channels">
-                <div class="channel-row"
-                     data-class-active="ch.id == current_channel"
-                     data-event-click="join_channel(ch.id)">
-                    <span class="channel-hash">#</span>
-                    <span class="channel-name">{{ ch.name }}</span>
-                    <span class="channel-badge">{{ ch.user_count }}</span>
-                </div>
-                <div data-for="user : ch.users" class="user-row">
-                    <span class="user-dot">&#x25CF;</span>
-                    <span class="user-name-label">{{ user.name }}</span>
+        <!-- Main content area (right of sidebar) -->
+        <div class="main-content">
+
+            <!-- Header -->
+            <div class="app-header">
+                <span class="app-header-title">{{ server_name }}</span>
+                <span class="app-header-btn" data-event-click="toggle_settings">&#x2699;</span>
+            </div>
+
+            <!-- Channel list (scrollable) -->
+            <div id="channels" class="channel-list">
+                <div class="channel-category">Voice Channels</div>
+                <div data-for="ch : channels">
+                    <div class="channel-row"
+                         data-class-active="ch.id == current_channel"
+                         data-event-click="join_channel(ch.id)">
+                        <span class="channel-hash">#</span>
+                        <span class="channel-name">{{ ch.name }}</span>
+                        <span class="channel-badge">{{ ch.user_count }}</span>
+                    </div>
+                    <div data-for="user : ch.users" class="user-row">
+                        <span class="user-dot">&#x25CF;</span>
+                        <span class="user-name-label">{{ user.name }}</span>
+                    </div>
                 </div>
             </div>
-        </div>
 
-        <!-- Voice controls (visible when in a channel) -->
-        <div class="voice-bar" data-if="current_channel > 0">
-            <span class="voice-channel-label"># {{ current_channel_name }}</span>
-            <div class="voice-controls">
-                <div class="voice-btn" data-class-active="is_muted"
-                     data-event-click="toggle_mute">
-                    <span data-if="is_muted">Muted</span>
-                    <span data-if="is_muted == false">Mic On</span>
+            <!-- Voice controls (visible when in a channel) -->
+            <div class="voice-bar" data-if="current_channel > 0">
+                <span class="voice-channel-label"># {{ current_channel_name }}</span>
+                <div class="voice-controls">
+                    <div class="voice-btn" data-class-active="is_muted"
+                         data-event-click="toggle_mute">
+                        <img class="voice-icon" data-if="is_muted"
+                             src="icon-unmute.svg" />
+                        <img class="voice-icon" data-if="is_muted == false"
+                             src="icon-mute.svg" />
+                    </div>
+                    <div class="voice-btn" data-class-active="is_deafened"
+                         data-event-click="toggle_deafen">
+                        <img class="voice-icon" data-if="is_deafened"
+                             src="icon-undeafen.svg" />
+                        <img class="voice-icon" data-if="is_deafened == false"
+                             src="icon-deafen.svg" />
+                    </div>
+                    <div class="voice-btn voice-btn-leave"
+                         data-event-click="leave_channel">
+                        <img class="voice-icon" src="icon-leave.svg" />
+                    </div>
                 </div>
-                <div class="voice-btn" data-class-active="is_deafened"
-                     data-event-click="toggle_deafen">
-                    <span data-if="is_deafened">Deafened</span>
-                    <span data-if="is_deafened == false">Hearing</span>
-                </div>
-                <div class="voice-btn voice-btn-leave"
-                     data-event-click="leave_channel">Leave</div>
             </div>
-        </div>
 
-        <!-- User bar -->
-        <div class="user-bar">
-            <span class="user-bar-name">{{ username }}</span>
-        </div>
+            <!-- User bar -->
+            <div class="user-bar">
+                <span class="user-bar-name">{{ username }}</span>
+                <div class="user-bar-disconnect" data-event-click="do_disconnect">&#x23FB;</div>
+            </div>
 
+        </div>
     </div>
 
     <!-- ── Settings overlay (absolute, over everything) ─────────────────── -->
@@ -107,6 +142,10 @@
                  data-event-click="leave_channel"
                  data-if="current_channel > 0">
                 <span class="setting-label-danger">Leave Voice Channel</span>
+            </div>
+            <div class="setting-row setting-row-danger"
+                 data-event-click="do_disconnect">
+                <span class="setting-label-danger">Disconnect from Server</span>
             </div>
         </div>
     </div>

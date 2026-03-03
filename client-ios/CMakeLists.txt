@@ -60,10 +60,14 @@ endif()
 set(BUILD_SHARED_LIBS      OFF CACHE BOOL "" FORCE)
 set(RMLUI_SAMPLES          OFF CACHE BOOL "" FORCE)
 set(RMLUI_FONT_ENGINE      "freetype" CACHE STRING "" FORCE)
+# Enable verbose RmlUi logging (font loading, CSS parsing, layout errors → NSLog).
+# Must be set before add_subdirectory so RmlUi's own translation units see it.
+add_compile_definitions(RMLUI_DEBUG)
 add_subdirectory(${RMLUI_DIR} rmlui_build EXCLUDE_FROM_ALL)
 
 # ── Other third-party deps via vcpkg ─────────────────────────────────────────
 find_package(rnnoise CONFIG REQUIRED)
+find_package(lunasvg CONFIG REQUIRED)
 find_path(MINIAUDIO_INCLUDE_DIRS "miniaudio.h")
 
 # ── Sources ───────────────────────────────────────────────────────────────────
@@ -100,6 +104,13 @@ set(APP_RESOURCES
     App/Assets/lobby.rml
     App/Assets/style.rcss
     App/Assets/LatoLatin-Regular.ttf
+    App/Assets/NotoSans-Regular.ttf
+    App/Assets/NotoSans-Bold.ttf
+    App/Assets/icon-mute.svg
+    App/Assets/icon-unmute.svg
+    App/Assets/icon-deafen.svg
+    App/Assets/icon-undeafen.svg
+    App/Assets/icon-leave.svg
 )
 
 add_executable(PartiesIOS MACOSX_BUNDLE
@@ -132,7 +143,9 @@ target_include_directories(PartiesIOS PRIVATE
 target_link_libraries(PartiesIOS PRIVATE
     parties_common
     rnnoise::rnnoise
+    lunasvg::lunasvg
     RmlUi::Core
+    RmlUi::Debugger
     "-framework Metal"
     "-framework MetalKit"
     "-framework UIKit"
@@ -143,6 +156,7 @@ target_link_libraries(PartiesIOS PRIVATE
     "-framework AVFoundation"
     "-framework AudioToolbox"
     "-framework CoreAudio"
+    "-framework Security"
 )
 
 set_target_properties(PartiesIOS PROPERTIES

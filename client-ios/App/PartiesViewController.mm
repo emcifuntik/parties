@@ -1,6 +1,7 @@
 #import "PartiesViewController.h"
 #import <QuartzCore/CABase.h>   // CACurrentMediaTime()
 #import <AVFoundation/AVFoundation.h>
+#import <Security/Security.h>
 
 // RmlUi Metal backend
 #import "../Backends/RmlUi_Backend_iOS_Metal.h"
@@ -10,6 +11,9 @@
 #include <RmlUi/Core/Context.h>
 #include <RmlUi/Core/ElementDocument.h>
 #include <RmlUi/Core/Input.h>
+#ifdef RMLUI_DEBUG
+#include <RmlUi/Debugger.h>
+#endif
 
 // Parties protocol
 #include <parties/protocol.h>
@@ -22,6 +26,7 @@
 #include <client/net_client.h>
 #include <client/audio_engine.h>
 #include <client/voice_mixer.h>
+#include <client/sound_player.h>
 
 // iOS UI data model
 #include "app_model.h"
@@ -29,6 +34,52 @@
 using namespace parties;
 using namespace parties::client;
 using namespace parties::protocol;
+
+// ── Keychain helpers ──────────────────────────────────────────────────────────
+
+static NSString* keychainKey(NSString* host, NSString* port, NSString* username) {
+    return [NSString stringWithFormat:@"parties_%@_%@_%@", host, port, username];
+}
+
+static void keychainSavePassword(NSString* host, NSString* port,
+                                  NSString* username, NSString* password)
+{
+    NSString* key      = keychainKey(host, port, username);
+    NSData*   passData = [password dataUsingEncoding:NSUTF8StringEncoding];
+
+    NSDictionary* query = @{
+        (__bridge id)kSecClass:       (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecAttrAccount: key,
+    };
+    NSDictionary* attrs = @{
+        (__bridge id)kSecClass:       (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecAttrAccount: key,
+        (__bridge id)kSecValueData:   passData,
+    };
+    OSStatus status = SecItemUpdate((__bridge CFDictionaryRef)query,
+                                    (__bridge CFDictionaryRef)attrs);
+    if (status == errSecItemNotFound)
+        SecItemAdd((__bridge CFDictionaryRef)attrs, nil);
+}
+
+static NSString* keychainLoadPassword(NSString* host, NSString* port,
+                                       NSString* username)
+{
+    NSString* key = keychainKey(host, port, username);
+    NSDictionary* query = @{
+        (__bridge id)kSecClass:            (__bridge id)kSecClassGenericPassword,
+        (__bridge id)kSecAttrAccount:      key,
+        (__bridge id)kSecReturnData:       @YES,
+        (__bridge id)kSecMatchLimit:       (__bridge id)kSecMatchLimitOne,
+    };
+    CFDataRef result = nil;
+    if (SecItemCopyMatching((__bridge CFDictionaryRef)query,
+                            (CFTypeRef*)&result) == errSecSuccess && result) {
+        NSData* data = (__bridge_transfer NSData*)result;
+        return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    }
+    return @"";
+}
 
 // ── Keyboard host (same as rmlui-iphone) ──────────────────────────────────────
 
@@ -87,6 +138,7 @@ using namespace parties::protocol;
     NetClient*              _net_client;
     AudioEngine*            _audio_engine;
     VoiceMixer*             _voice_mixer;
+    SoundPlayer*            _sound_player;
 
     // App state
     UserId                  _my_user_id;
@@ -98,6 +150,13 @@ using namespace parties::protocol;
 
     // Keepalive timer (30s interval)
     NSTimer*                _keepalive_timer;
+
+    // Safe area padding applied to RmlUi document body
+    UIEdgeInsets            _safe_insets;
+
+    // Safe area top in physical pixels — used to offset the Metal viewport so the
+    // RmlUi debugger (and all content) renders below the Dynamic Island / status bar.
+    int                     _viewport_top_px;
 }
 @end
 
@@ -158,32 +217,118 @@ using namespace parties::protocol;
         addObserver:self selector:@selector(keyboardWillHide:)
         name:UIKeyboardWillHideNotification object:nil];
 
-    // Font.
-    NSString* font_path = [[NSBundle mainBundle] pathForResource:@"LatoLatin-Regular"
-                                                           ofType:@"ttf"];
-    if (font_path)
-        Rml::LoadFontFace(font_path.UTF8String);
-    else
-        NSLog(@"[Parties] LatoLatin-Regular.ttf not found in bundle.");
+    // Primary fonts — NotoSans for Cyrillic + full unicode coverage.
+    for (NSString* name in @[@"NotoSans-Regular", @"NotoSans-Bold"]) {
+        NSString* path = [[NSBundle mainBundle] pathForResource:name ofType:@"ttf"];
+        if (path) {
+            bool ok = Rml::LoadFontFace(path.UTF8String);
+            NSLog(@"[Parties] %@ primary font '%@.ttf'",
+                  ok ? @"Loaded" : @"FAILED to load", name);
+        } else {
+            NSLog(@"[Parties] Primary font not in bundle: %@.ttf (will use fallback)", name);
+        }
+    }
+
+    // LatoLatin as global fallback_face — RmlUi uses this whenever no loaded
+    // family matches the requested font-family, guaranteeing text is always visible.
+    NSString* fallbackPath = [[NSBundle mainBundle]
+                              pathForResource:@"LatoLatin-Regular" ofType:@"ttf"];
+    if (fallbackPath) {
+        bool ok = Rml::LoadFontFace(fallbackPath.UTF8String, /*fallback_face=*/true);
+        NSLog(@"[Parties] %@ fallback font 'LatoLatin-Regular.ttf'",
+              ok ? @"Loaded" : @"FAILED to load");
+    } else {
+        NSLog(@"[Parties] ERROR: fallback font LatoLatin-Regular.ttf not found in bundle!");
+    }
 
     // Parties networking + audio.
-    _net_client  = new NetClient();
-    _voice_mixer = new VoiceMixer();
+    _net_client   = new NetClient();
+    _voice_mixer  = new VoiceMixer();
+    _sound_player = new SoundPlayer();
     _audio_engine = new AudioEngine();
     _audio_engine->set_mixer(_voice_mixer);
+    _audio_engine->set_sound_player(_sound_player);
     _audio_engine->on_encoded_frame = [self](const uint8_t* data, size_t len) {
         [self sendVoiceFrame:data length:len];
     };
     _audio_engine->init();
 
-    // Data model + document.
+    // Data model must be set up BEFORE loading the document so that
+    // data-if / data-for bindings evaluate correctly on first render.
     _model = new LobbyModel();
+    [self loadSavedServers];
+    [self bindModelEvents];
+    _model->setup(_context);
+    _model->mark_dirty();   // apply initial state (show_login=true, etc.)
+
     [self loadDocument];
 
-    _model->setup(_context);
-    [self bindModelEvents];
-
     _channels_el = _document ? _document->GetElementById("channels") : nullptr;
+
+#ifdef RMLUI_DEBUG
+    // Visual debugger — toggle with a 4-finger tap anywhere on screen.
+    Rml::Debugger::Initialise(_context);
+    Rml::Debugger::SetVisible(false); // hidden by default; 4-finger tap to toggle
+    UITapGestureRecognizer* dbgTap =
+        [[UITapGestureRecognizer alloc] initWithTarget:self
+                                                action:@selector(toggleDebugger)];
+    dbgTap.numberOfTouchesRequired = 4;
+    [_view addGestureRecognizer:dbgTap];
+    NSLog(@"[Parties] RmlUi debugger ready — 4-finger tap to show/hide.");
+#endif
+
+    // Safe area insets will be applied once the view lays out.
+}
+
+- (void)viewSafeAreaInsetsDidChange
+{
+    [super viewSafeAreaInsetsDidChange];
+    _safe_insets = self.view.safeAreaInsets;
+
+    // Compute the safe-area top in physical pixels and shift the entire Metal
+    // viewport down by that amount.  This ensures the RmlUi debugger panel and
+    // all other context content begin below the Dynamic Island / status bar.
+    _viewport_top_px = (int)(_safe_insets.top * _dp_ratio);
+    Backend::SetViewportTopOffset(_viewport_top_px);
+
+    // Shrink the context height so it exactly fills the area below the safe-area top.
+    CGSize native = UIScreen.mainScreen.nativeBounds.size;
+    int phys_w = (int)native.width;
+    int phys_h = (int)native.height - _viewport_top_px;
+    Backend::SetViewport(phys_w, phys_h);
+    if (_context)
+        _context->SetDimensions(Rml::Vector2i(phys_w, phys_h));
+
+    [self applySafeAreaToDocument];
+}
+
+- (void)applySafeAreaToDocument
+{
+    if (!_document) return;
+
+    // RmlUi v6 has no GetBody(). Find <body> by iterating document children.
+    Rml::Element* body = nullptr;
+    for (int i = 0; i < _document->GetNumChildren(); i++) {
+        Rml::Element* child = _document->GetChild(i);
+        if (child && child->GetTagName() == "body") {
+            body = child;
+            break;
+        }
+    }
+    if (!body) return;
+
+    auto toDp = [](CGFloat pt) -> Rml::String {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.0fdp", (double)pt);
+        return buf;
+    };
+
+    // padding-top is 0: the Metal viewport already starts below the safe area top,
+    // so context y=0 is the first pixel below the Dynamic Island.
+    body->SetProperty("padding-top",    "0dp");
+    body->SetProperty("padding-bottom", toDp(_safe_insets.bottom));
+    body->SetProperty("padding-left",   toDp(_safe_insets.left));
+    body->SetProperty("padding-right",  toDp(_safe_insets.right));
 }
 
 - (void)loadDocument
@@ -191,10 +336,94 @@ using namespace parties::protocol;
     NSString* path = [[NSBundle mainBundle] pathForResource:@"lobby" ofType:@"rml"];
     if (path) {
         _document = _context->LoadDocument(path.UTF8String);
-        if (_document) _document->Show();
+        if (_document) {
+            _document->Show();
+            [self applySafeAreaToDocument];
+        }
     } else {
         NSLog(@"[Parties] lobby.rml not found in bundle.");
     }
+}
+
+// ── Saved servers (NSUserDefaults + Keychain) ─────────────────────────────────
+
+- (void)loadSavedServers
+{
+    NSUserDefaults* ud = [NSUserDefaults standardUserDefaults];
+    NSArray* list = [ud arrayForKey:@"parties_saved_servers"];
+    if (!list) return;
+
+    _model->saved_servers.clear();
+    int idx = 0;
+    for (NSDictionary* d in list) {
+        SavedServer s;
+        s.idx      = idx++;
+        s.host     = [(NSString*)d[@"host"]     UTF8String] ?: "";
+        s.port     = [(NSString*)d[@"port"]     UTF8String] ?: "7800";
+        s.username = [(NSString*)d[@"username"] UTF8String] ?: "";
+        s.display_name = [NSString stringWithFormat:@"%@:%@",
+                          d[@"host"], d[@"port"]].UTF8String;
+        // Initials: first 2 chars of host, uppercased
+        NSString* host = d[@"host"] ?: @"?";
+        s.initials = [[host substringToIndex:MIN(2UL, host.length)] uppercaseString].UTF8String;
+        s.is_active = false;
+        _model->saved_servers.push_back(s);
+    }
+}
+
+- (void)persistSavedServers
+{
+    NSMutableArray* list = [NSMutableArray array];
+    for (const auto& s : _model->saved_servers) {
+        [list addObject:@{
+            @"host":     [NSString stringWithUTF8String:s.host.c_str()],
+            @"port":     [NSString stringWithUTF8String:s.port.c_str()],
+            @"username": [NSString stringWithUTF8String:s.username.c_str()],
+        }];
+    }
+    [[NSUserDefaults standardUserDefaults] setObject:list forKey:@"parties_saved_servers"];
+}
+
+// Returns the index of an existing saved server matching host+port, or -1.
+- (int)indexOfSavedServerHost:(NSString*)host port:(NSString*)port
+{
+    int i = 0;
+    for (const auto& s : _model->saved_servers) {
+        if (s.host == host.UTF8String && s.port == port.UTF8String) return i;
+        i++;
+    }
+    return -1;
+}
+
+// Called after a successful login to upsert the server into the saved list.
+- (void)upsertCurrentServerWithHost:(NSString*)host port:(NSString*)port
+                           username:(NSString*)username password:(NSString*)password
+{
+    int existing = [self indexOfSavedServerHost:host port:port];
+
+    SavedServer s;
+    s.host         = host.UTF8String;
+    s.port         = port.UTF8String;
+    s.username     = username.UTF8String;
+    s.display_name = [NSString stringWithFormat:@"%@:%@", host, port].UTF8String;
+    NSString* initStr = [[host substringToIndex:MIN(2UL, host.length)] uppercaseString];
+    s.initials     = initStr.UTF8String;
+
+    if (existing >= 0) {
+        s.idx = existing;
+        _model->saved_servers[(size_t)existing] = s;
+    } else {
+        s.idx = (int)_model->saved_servers.size();
+        _model->saved_servers.push_back(s);
+    }
+
+    // Mark active
+    for (auto& sv : _model->saved_servers)
+        sv.is_active = (sv.host == s.host && sv.port == s.port);
+
+    keychainSavePassword(host, port, username, password);
+    [self persistSavedServers];
+    _model->mark_dirty();
 }
 
 // ── RmlUi data model event bindings ──────────────────────────────────────────
@@ -209,11 +438,13 @@ using namespace parties::protocol;
         w.write_u32(ch_id);
         _net_client->send_message(ControlMessageType::CHANNEL_JOIN,
                                   w.data().data(), w.size());
+        _sound_player->play(SoundPlayer::Effect::JoinChannel);
     };
 
     _model->on_leave_channel = [self]() {
         if (!_net_client->is_connected()) return;
         _net_client->send_message(ControlMessageType::CHANNEL_LEAVE, nullptr, 0);
+        _sound_player->play(SoundPlayer::Effect::LeaveChannel);
         _voice_mixer->clear();
         _current_channel = 0;
         _model->current_channel = 0;
@@ -225,6 +456,7 @@ using namespace parties::protocol;
         bool muted = !_audio_engine->is_muted();
         _audio_engine->set_muted(muted);
         _model->is_muted = muted;
+        _sound_player->play(muted ? SoundPlayer::Effect::Mute : SoundPlayer::Effect::Unmute);
         _model->mark_dirty();
     };
 
@@ -232,6 +464,7 @@ using namespace parties::protocol;
         bool deafened = !_audio_engine->is_deafened();
         _audio_engine->set_deafened(deafened);
         _model->is_deafened = deafened;
+        _sound_player->play(deafened ? SoundPlayer::Effect::Deafen : SoundPlayer::Effect::Undeafen);
         _model->mark_dirty();
     };
 
@@ -248,6 +481,46 @@ using namespace parties::protocol;
     };
 
     _model->on_register = [self]() { [self doRegister]; };
+
+    _model->on_disconnect = [self]() { [self doDisconnect]; };
+
+    _model->on_select_server = [self](int idx) {
+        if (idx < 0 || idx >= (int)_model->saved_servers.size()) return;
+        const auto& s = _model->saved_servers[(size_t)idx];
+
+        // Pre-fill login form
+        _model->login_host     = s.host;
+        _model->login_port     = s.port;
+        _model->login_username = s.username;
+
+        NSString* host = [NSString stringWithUTF8String:s.host.c_str()];
+        NSString* port = [NSString stringWithUTF8String:s.port.c_str()];
+        NSString* user = [NSString stringWithUTF8String:s.username.c_str()];
+        NSString* pass = keychainLoadPassword(host, port, user);
+        _model->login_password = pass.UTF8String;
+
+        // If already connected, disconnect first
+        if (_net_client->is_connected())
+            [self doDisconnect];
+
+        // Switch to login screen showing pre-filled fields
+        _model->show_login   = true;
+        _model->is_connected = false;
+        _model->mark_dirty();
+    };
+
+    _model->on_add_server = [self]() {
+        // Clear form for a new server entry
+        _model->login_host.clear();
+        _model->login_port     = "7800";
+        _model->login_username.clear();
+        _model->login_password.clear();
+        _model->login_status.clear();
+        _model->login_error.clear();
+        _model->show_login   = true;
+        _model->is_connected = false;
+        _model->mark_dirty();
+    };
 }
 
 // ── Connection ────────────────────────────────────────────────────────────────
@@ -330,6 +603,15 @@ using namespace parties::protocol;
     });
 }
 
+- (void)doDisconnect
+{
+    // Clear callback first to prevent onDisconnected being called twice
+    // if disconnect() also triggers the on_disconnected callback.
+    _net_client->on_disconnected = nullptr;
+    _net_client->disconnect();
+    [self onDisconnected];
+}
+
 - (void)onDisconnected
 {
     [_keepalive_timer invalidate];
@@ -337,6 +619,11 @@ using namespace parties::protocol;
     _audio_engine->stop();
     _voice_mixer->clear();
     _current_channel = 0;
+
+    // Clear active flag on all servers
+    for (auto& s : _model->saved_servers)
+        s.is_active = false;
+
     _model->is_connected = false;
     _model->show_login   = true;
     _model->login_status = "Disconnected.";
@@ -360,10 +647,11 @@ using namespace parties::protocol;
 
     case ControlMessageType::AUTH_RESPONSE: {
         _my_user_id = r.read_u32();
-        EnetToken enet_token;
-        r.read_bytes(enet_token.data(), 32);
+        // Server sends session_token first, then enet_token.
         SessionToken session_token;
         r.read_bytes(session_token.data(), 32);
+        EnetToken enet_token;
+        r.read_bytes(enet_token.data(), 32);
         uint8_t role_byte = r.read_u8();
         std::string server_name = r.read_string();
 
@@ -382,6 +670,15 @@ using namespace parties::protocol;
         _model->show_login     = false;
         _model->server_name    = server_name;
         _model->username       = _model->login_username;
+
+        // Save server and credentials on successful login
+        NSString* host_ns = [NSString stringWithUTF8String:_model->login_host.c_str()];
+        NSString* port_ns = [NSString stringWithUTF8String:_model->login_port.c_str()];
+        NSString* user_ns = [NSString stringWithUTF8String:_model->login_username.c_str()];
+        NSString* pass_ns = [NSString stringWithUTF8String:_model->login_password.c_str()];
+        [self upsertCurrentServerWithHost:host_ns port:port_ns
+                                 username:user_ns password:pass_ns];
+
         _model->login_password.clear();
         _model->mark_dirty();
 
@@ -455,6 +752,9 @@ using namespace parties::protocol;
                 break;
             }
         }
+        // Play sound when another user joins the channel we're in.
+        if (uid != _my_user_id && ch_id == _current_channel)
+            _sound_player->play(SoundPlayer::Effect::UserJoined);
         _model->mark_dirty();
         break;
     }
@@ -470,6 +770,9 @@ using namespace parties::protocol;
                 break;
             }
         }
+        // Play sound when another user leaves the channel we're in.
+        if (uid != _my_user_id && ch_id == _current_channel)
+            _sound_player->play(SoundPlayer::Effect::UserLeft);
         _voice_mixer->remove_user(uid);
         _model->mark_dirty();
         break;
@@ -527,9 +830,13 @@ using namespace parties::protocol;
         size_t         ct_len     = len - 33;
         if (ct_len == 0) return;
 
+        // AAD = sender_id (4 bytes) — must match what the sender used.
+        uint8_t aad[4];
+        memcpy(aad, &sender_id, 4);
+
         std::vector<uint8_t> plaintext(ct_len);
         bool ok = voice_decrypt(_current_channel_key.data(), nonce,
-                                nullptr, 0,
+                                aad, 4,
                                 ciphertext, ct_len, tag,
                                 plaintext.data());
         if (ok)
@@ -542,24 +849,29 @@ using namespace parties::protocol;
     if (!_net_client->is_connected() || _current_channel == 0 || _audio_engine->is_muted())
         return;
 
-    // Build: [0x01][my_user_id(4)][nonce(12)][tag(16)][ciphertext]
+    // Nonce: [user_id(4)][counter(8)]  — user_id embedded so server can identify sender.
+    // AAD:   user_id (4 bytes), must match what the receiver uses.
+    // Wire:  [type(1)][nonce(12)][tag(16)][ciphertext]
     static uint64_t nonce_counter = 0;
     uint8_t nonce[12] = {};
-    memcpy(nonce, &nonce_counter, sizeof(nonce_counter));
+    memcpy(nonce,     &_my_user_id,   4);
+    memcpy(nonce + 4, &nonce_counter, 8);
     nonce_counter++;
+
+    uint8_t aad[4];
+    memcpy(aad, &_my_user_id, 4);
 
     std::vector<uint8_t> ciphertext(len);
     uint8_t tag[16];
-    if (!voice_encrypt(_current_channel_key.data(), nonce, nullptr, 0,
+    if (!voice_encrypt(_current_channel_key.data(), nonce, aad, 4,
                        opus_data, len, ciphertext.data(), tag))
         return;
 
-    std::vector<uint8_t> packet(1 + 4 + 12 + 16 + len);
+    std::vector<uint8_t> packet(1 + 12 + 16 + len);
     packet[0] = VOICE_PACKET_TYPE;
-    memcpy(packet.data() + 1,  &_my_user_id, 4);
-    memcpy(packet.data() + 5,  nonce, 12);
-    memcpy(packet.data() + 17, tag, 16);
-    memcpy(packet.data() + 33, ciphertext.data(), len);
+    memcpy(packet.data() + 1,  nonce, 12);
+    memcpy(packet.data() + 13, tag, 16);
+    memcpy(packet.data() + 29, ciphertext.data(), len);
     _net_client->send_data(packet.data(), packet.size(), /*reliable=*/false);
 }
 
@@ -621,17 +933,29 @@ using namespace parties::protocol;
         Rml::RemoveContext(_context->GetName());
         _context = nullptr;
     }
+#ifdef RMLUI_DEBUG
+    Rml::Debugger::Shutdown();
+#endif
     Rml::Shutdown();
     Backend::Shutdown();
 }
+
+#ifdef RMLUI_DEBUG
+- (void)toggleDebugger
+{
+    Rml::Debugger::SetVisible(!Rml::Debugger::IsVisible());
+}
+#endif
 
 // ── MTKViewDelegate ───────────────────────────────────────────────────────────
 
 - (void)mtkView:(MTKView*)view drawableSizeWillChange:(CGSize)size
 {
-    Backend::SetViewport((int)size.width, (int)size.height);
+    int w = (int)size.width;
+    int h = (int)size.height - _viewport_top_px;
+    Backend::SetViewport(w, h);
     if (_context)
-        _context->SetDimensions(Rml::Vector2i((int)size.width, (int)size.height));
+        _context->SetDimensions(Rml::Vector2i(w, h));
 }
 
 - (void)drawInMTKView:(MTKView*)view
@@ -674,7 +998,7 @@ using namespace parties::protocol;
     {
         id<MTLTexture> colorTex = pass.colorAttachments[0].texture;
         if (colorTex)
-            Backend::SetViewport((int)colorTex.width, (int)colorTex.height);
+            Backend::SetViewport((int)colorTex.width, (int)colorTex.height - _viewport_top_px);
     }
 
     Backend::BeginFrame(cmd, pass);
@@ -690,7 +1014,10 @@ using namespace parties::protocol;
 
 - (Rml::Vector2f)physFromPt:(CGPoint)p
 {
-    return { (float)(p.x * _dp_ratio), (float)(p.y * _dp_ratio) };
+    // Subtract the viewport top offset so context y=0 aligns with the pixel
+    // just below the Dynamic Island, matching the Metal viewport origin.
+    return { (float)(p.x * _dp_ratio),
+             (float)(p.y * _dp_ratio) - (float)_viewport_top_px };
 }
 
 - (void)touchesBegan:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)event

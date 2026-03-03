@@ -39,6 +39,10 @@ Rml::RenderInterface* GetRenderInterface();
 /// Call when the drawable size changes (e.g. rotation or window resize).
 void SetViewport(int width, int height);
 
+/// Push the entire render area down by 'top' physical pixels (Dynamic Island / status bar).
+/// Must be called before each frame for the offset to take effect.
+void SetViewportTopOffset(int top);
+
 /// End the render pass (call after context->Render()).
 void EndFrame();
 

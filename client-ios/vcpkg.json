@@ -5,6 +5,7 @@
     "argon2",
     "enet",
     "freetype",
+    "lunasvg",
     "miniaudio",
     "opus",
     "rnnoise",

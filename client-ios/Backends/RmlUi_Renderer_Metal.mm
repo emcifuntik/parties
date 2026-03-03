@@ -8,6 +8,8 @@
 #include <RmlUi/Core/DecorationTypes.h>
 #include <RmlUi/Core/Math.h>
 
+#include <lunasvg/lunasvg.h>
+
 // ---- Embedded Metal shader source -----------------------------------------------
 // Compiled at runtime via newLibraryWithSource: — avoids Xcode build phase issues.
 static NSString* const kRmlUiShaderSource = @R"MSL(
@@ -175,6 +177,7 @@ struct RenderInterface_Metal::Data {
 
     int viewport_width  = 0;
     int viewport_height = 0;
+    int viewport_top    = 0;  // Y offset into framebuffer (safe area / Dynamic Island)
 
     bool scissor_enabled = false;
     MTLScissorRect scissor_rect = {0, 0, 1, 1};
@@ -370,8 +373,15 @@ void RenderInterface_Metal::SetViewport(int width, int height)
     if (!m_data) return;
     m_data->viewport_width  = width;
     m_data->viewport_height = height;
-    // Reset scissor to full viewport
-    m_data->scissor_rect = {0, 0, (NSUInteger)width, (NSUInteger)height};
+    // Reset scissor to full viewport (in framebuffer coords, offset by viewport_top)
+    m_data->scissor_rect = {0, (NSUInteger)m_data->viewport_top,
+                            (NSUInteger)width, (NSUInteger)height};
+}
+
+void RenderInterface_Metal::SetViewportTopOffset(int top)
+{
+    if (!m_data) return;
+    m_data->viewport_top = top;
 }
 
 void RenderInterface_Metal::BeginFrame(id<MTLCommandBuffer> command_buffer,
@@ -381,15 +391,16 @@ void RenderInterface_Metal::BeginFrame(id<MTLCommandBuffer> command_buffer,
     m_data->current_command_buffer = command_buffer;
     m_data->current_encoder = [command_buffer renderCommandEncoderWithDescriptor:pass_descriptor];
 
-    // Apply full-viewport viewport
-    MTLViewport vp = {0, 0,
+    // Apply viewport — Y origin is offset by viewport_top to push below the Dynamic Island.
+    MTLViewport vp = {0, (double)m_data->viewport_top,
                       (double)m_data->viewport_width, (double)m_data->viewport_height,
                       0.0, 1.0};
     [m_data->current_encoder setViewport:vp];
 
-    // Disable scissor initially
+    // Disable scissor initially — full area the viewport occupies in the framebuffer.
     m_data->scissor_enabled = false;
-    MTLScissorRect full = {0, 0, (NSUInteger)m_data->viewport_width, (NSUInteger)m_data->viewport_height};
+    MTLScissorRect full = {0, (NSUInteger)m_data->viewport_top,
+                           (NSUInteger)m_data->viewport_width, (NSUInteger)m_data->viewport_height};
     [m_data->current_encoder setScissorRect:full];
 
     m_data->has_transform = false;
@@ -500,6 +511,49 @@ Rml::TextureHandle RenderInterface_Metal::LoadTexture(Rml::Vector2i& texture_dim
 {
     if (!m_data) return 0;
 
+    // ── SVG: rasterize with lunasvg ─────────────────────────────────────────
+    if (source.size() > 4 && source.substr(source.size() - 4) == ".svg") {
+        // Resolve full path: RmlUi usually provides an absolute path already.
+        std::string full = source;
+        if (![[NSFileManager defaultManager] fileExistsAtPath:
+              [NSString stringWithUTF8String:full.c_str()]]) {
+            NSString* name = [[NSString stringWithUTF8String:source.c_str()] lastPathComponent];
+            NSString* bp   = [[NSBundle mainBundle] pathForResource:name ofType:nil];
+            if (bp) full = bp.UTF8String;
+        }
+
+        auto doc = lunasvg::Document::loadFromFile(full);
+        if (!doc) return 0;
+
+        // Render at 4× the SVG's logical pixel size, capped at 256px per side.
+        float sw = (float)doc->width();
+        float sh = (float)doc->height();
+        if (sw <= 0) sw = 24.0f;
+        if (sh <= 0) sh = 24.0f;
+        float scale = std::min(256.0f / std::max(sw, sh), 4.0f);
+        int   w = std::max(1, (int)(sw * scale + 0.5f));
+        int   h = std::max(1, (int)(sh * scale + 0.5f));
+
+        auto bitmap = doc->renderToBitmap(w, h);
+        if (!bitmap.valid() || !bitmap.data()) return 0;
+
+        // lunasvg outputs BGRA; Metal expects RGBA — swap R and B channels.
+        uint8_t* bdata = bitmap.data();
+        for (int i = 0; i < w * h * 4; i += 4)
+            std::swap(bdata[i], bdata[i + 2]);
+
+        texture_dimensions = {w, h};
+        MTLTextureDescriptor* td = [MTLTextureDescriptor
+            texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                         width:w height:h mipmapped:NO];
+        id<MTLTexture> mtl_tex = [m_data->device newTextureWithDescriptor:td];
+        [mtl_tex replaceRegion:MTLRegionMake2D(0,0,w,h)
+                   mipmapLevel:0 withBytes:bdata bytesPerRow:w*4];
+        auto* tex = new MetalTexture{mtl_tex, w, h};
+        return reinterpret_cast<Rml::TextureHandle>(tex);
+    }
+
+    // ── Raster image (PNG/JPG) via UIImage ──────────────────────────────────
     NSString* path = [NSString stringWithUTF8String:source.c_str()];
     UIImage*  image = [UIImage imageNamed:path];
     if (!image) {
@@ -574,7 +628,8 @@ void RenderInterface_Metal::EnableScissorRegion(bool enable)
     m_data->scissor_enabled = enable;
 
     if (!enable) {
-        MTLScissorRect full = {0, 0, (NSUInteger)m_data->viewport_width, (NSUInteger)m_data->viewport_height};
+        MTLScissorRect full = {0, (NSUInteger)m_data->viewport_top,
+                               (NSUInteger)m_data->viewport_width, (NSUInteger)m_data->viewport_height};
         [m_data->current_encoder setScissorRect:full];
     } else {
         [m_data->current_encoder setScissorRect:m_data->scissor_rect];
@@ -605,7 +660,9 @@ void RenderInterface_Metal::SetScissorRegion(Rml::Rectanglei region)
     w = Rml::Math::Min(w, vw - x0);
     h = Rml::Math::Min(h, vh - y0);
 
-    m_data->scissor_rect = {(NSUInteger)x0, (NSUInteger)y0, (NSUInteger)w, (NSUInteger)h};
+    // Context Y=0 maps to framebuffer Y=viewport_top, so offset the scissor rect Y.
+    m_data->scissor_rect = {(NSUInteger)x0, (NSUInteger)(m_data->viewport_top + y0),
+                            (NSUInteger)w, (NSUInteger)h};
 
     if (m_data->scissor_enabled && m_data->current_encoder)
         [m_data->current_encoder setScissorRect:m_data->scissor_rect];

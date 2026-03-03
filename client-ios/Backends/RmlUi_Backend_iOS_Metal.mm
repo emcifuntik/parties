@@ -46,6 +46,12 @@ void Backend::SetViewport(int width, int height)
     g_data->render_interface->SetViewport(width, height);
 }
 
+void Backend::SetViewportTopOffset(int top)
+{
+    RMLUI_ASSERT(g_data);
+    g_data->render_interface->SetViewportTopOffset(top);
+}
+
 void Backend::BeginFrame(id<MTLCommandBuffer> command_buffer,
                           MTLRenderPassDescriptor* pass_descriptor)
 {

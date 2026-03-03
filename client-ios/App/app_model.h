@@ -28,6 +28,18 @@ struct ChannelInfo {
     Rml::Vector<ChannelUser> users;
 };
 
+// ── SavedServer (sidebar server entries) ─────────────────────────────────────
+
+struct SavedServer {
+    int         idx      = 0;     // index in saved_servers vector (for callbacks)
+    Rml::String display_name;     // shown in tooltip (host:port)
+    Rml::String initials;         // 1-2 chars shown in circle
+    Rml::String host;
+    Rml::String port;
+    Rml::String username;
+    bool        is_active = false; // currently connected to this server
+};
+
 // ── LobbyModel ────────────────────────────────────────────────────────────────
 //
 // Owns all RmlUi DataModel bindings for the "lobby" model.
@@ -65,6 +77,9 @@ public:
     bool show_settings   = false;
     bool denoise_enabled = true;
 
+    // ── Saved servers sidebar ──────────────────────────────────────────────
+    Rml::Vector<SavedServer> saved_servers;
+
     // ── Callbacks set by PartiesViewController before setup() ─────────────
     std::function<void()>         on_connect;
     std::function<void()>         on_register;
@@ -74,6 +89,9 @@ public:
     std::function<void()>         on_toggle_deafen;
     std::function<void()>         on_toggle_settings;
     std::function<void()>         on_toggle_denoise;
+    std::function<void()>         on_disconnect;
+    std::function<void(int)>      on_select_server;   // arg = idx
+    std::function<void()>         on_add_server;
 
 private:
     Rml::DataModelHandle handle_;

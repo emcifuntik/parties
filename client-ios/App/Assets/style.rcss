@@ -24,7 +24,7 @@ div, h1, h2, p {
 /* ── Global ──────────────────────────────────────────────────────────── */
 
 body {
-    font-family: LatoLatin;
+    font-family: "Noto Sans";
     font-size: 16dp;
     color: #e0ddd8;
     width: 100%;
@@ -37,11 +37,10 @@ body {
 
 /* ── Screen containers ───────────────────────────────────────────────── */
 
-/* Both the login screen and the main screen are full-viewport overlays.
-   Only one is visible at a time via data-if. */
+/* Both screens are full-viewport overlays. Only one is visible via data-if. */
 .screen {
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     position: absolute;
     left: 0dp;
     top: 0dp;
@@ -49,18 +48,85 @@ body {
     height: 100%;
 }
 
+/* ── Server sidebar ──────────────────────────────────────────────────── */
+
+.server-sidebar {
+    display: flex;
+    flex-direction: column;
+    flex: none;
+    width: 72dp;
+    background-color: #0d0e17;
+    border-right: 1dp #2a2b3d;
+    align-items: center;
+    padding-top: 12dp;
+    padding-bottom: 12dp;
+    gap: 8dp;
+    overflow: hidden;
+}
+
+.server-circle {
+    display: flex;
+    width: 48dp;
+    height: 48dp;
+    border-radius: 24dp;
+    background-color: #181924;
+    border: 2dp #2a2b3d;
+    align-items: center;
+    justify-content: center;
+    font-size: 16dp;
+    font-weight: bold;
+    color: #8b8da0;
+    cursor: pointer;
+    flex: none;
+    text-align: center;
+}
+
+.server-circle:hover,
+.server-circle:active {
+    background-color: #1f2030;
+    border-color: #e8a43a;
+    color: #e8a43a;
+}
+
+.server-circle.active {
+    background-color: #e8a43a;
+    border-color: #e8a43a;
+    color: #0d0e17;
+}
+
+.server-add {
+    font-size: 22dp;
+    color: #3dd68c;
+    border-color: #3dd68c;
+    border-style: dashed;
+}
+
+.server-add:hover,
+.server-add:active {
+    background-color: #1a2a20;
+    border-color: #3dd68c;
+    color: #3dd68c;
+}
+
 /* ── Login screen ────────────────────────────────────────────────────── */
 
 .screen-login {
+    background-color: #0d0e17;
+}
+
+.login-area {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
-    background-color: #0d0e17;
+    overflow: auto;
 }
 
 .login-card {
     display: flex;
     flex-direction: column;
-    width: 340dp;
+    width: 320dp;
     padding: 32dp;
     background-color: #181924;
     border: 1dp #2a2b3d;
@@ -158,6 +224,14 @@ input.password:focus {
     background-color: #181924;
 }
 
+/* Main content area (right of server sidebar) */
+.main-content {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    overflow: hidden;
+}
+
 /* App header */
 .app-header {
     display: flex;
@@ -179,7 +253,7 @@ input.password:focus {
 
 .app-header-btn {
     color: #8b8da0;
-    font-size: 14dp;
+    font-size: 20dp;
     cursor: pointer;
     padding: 8dp;
 }
@@ -300,15 +374,13 @@ input.password:focus {
 .voice-btn {
     display: flex;
     flex: 1;
-    height: 44dp;
+    height: 52dp;
     align-items: center;
     justify-content: center;
     background-color: #1f2030;
     border: 1dp #2a2b3d;
     border-radius: 8dp;
     cursor: pointer;
-    font-size: 13dp;
-    color: #e0ddd8;
 }
 
 .voice-btn:hover,
@@ -319,38 +391,65 @@ input.password:focus {
 .voice-btn.active {
     background-color: #e8645a;
     border-color: #e8645a;
-    color: #ffffff;
 }
 
 .voice-btn-leave {
     flex: none;
-    padding: 0dp 20dp;
+    width: 56dp;
     border-color: #e8645a;
-    color: #e8645a;
 }
 
 .voice-btn-leave:hover,
 .voice-btn-leave:active {
     background-color: #e8645a;
-    color: #ffffff;
+}
+
+/* SVG icons inside voice buttons */
+.voice-icon {
+    width: 28dp;
+    height: 28dp;
 }
 
 /* User bar (bottom strip) */
 .user-bar {
     display: flex;
     flex: none;
+    flex-direction: row;
     align-items: center;
-    padding: 12dp 20dp;
+    padding: 12dp 16dp;
     background-color: #0f1019;
     border-top: 1dp #2a2b3d;
     min-height: 50dp;
     box-sizing: border-box;
+    gap: 8dp;
 }
 
 .user-bar-name {
+    flex: 1;
     color: #e0ddd8;
     font-size: 14dp;
     font-weight: bold;
+}
+
+.user-bar-disconnect {
+    display: flex;
+    width: 36dp;
+    height: 36dp;
+    align-items: center;
+    justify-content: center;
+    border-radius: 18dp;
+    background-color: #1f2030;
+    border: 1dp #2a2b3d;
+    color: #e8645a;
+    font-size: 18dp;
+    cursor: pointer;
+    flex: none;
+}
+
+.user-bar-disconnect:hover,
+.user-bar-disconnect:active {
+    background-color: #e8645a;
+    color: #ffffff;
 }
 
 /* ── Settings overlay ────────────────────────────────────────────────── */
