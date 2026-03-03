@@ -13,9 +13,9 @@
             <div data-for="srv : saved_servers">
                 <div class="server-circle"
                      data-class-active="srv.is_active"
-                     data-event-click="select_server(srv.idx)">{{ srv.initials }}</div>
+                     data-event-click="select_server(srv.idx)"><span>{{ srv.initials }}</span></div>
             </div>
-            <div class="server-circle server-add" data-event-click="add_server">+</div>
+            <div class="server-circle server-add" data-event-click="add_server"><span>+</span></div>
         </div>
 
         <!-- Login card -->
@@ -53,9 +53,9 @@
             <div data-for="srv : saved_servers">
                 <div class="server-circle"
                      data-class-active="srv.is_active"
-                     data-event-click="select_server(srv.idx)">{{ srv.initials }}</div>
+                     data-event-click="select_server(srv.idx)"><span>{{ srv.initials }}</span></div>
             </div>
-            <div class="server-circle server-add" data-event-click="add_server">+</div>
+            <div class="server-circle server-add" data-event-click="add_server"><span>+</span></div>
         </div>
 
         <!-- Main content area (right of sidebar) -->
@@ -64,7 +64,9 @@
             <!-- Header -->
             <div class="app-header">
                 <span class="app-header-title">{{ server_name }}</span>
-                <span class="app-header-btn" data-event-click="toggle_settings">&#x2699;</span>
+                <span class="app-header-btn" data-event-click="toggle_settings">
+                    <img src="icon-settings.svg" class="header-icon" />
+                </span>
             </div>
 
             <!-- Channel list (scrollable) -->
@@ -79,8 +81,12 @@
                         <span class="channel-badge">{{ ch.user_count }}</span>
                     </div>
                     <div data-for="user : ch.users" class="user-row">
-                        <span class="user-dot">&#x25CF;</span>
+                        <span class="user-dot"></span>
                         <span class="user-name-label">{{ user.name }}</span>
+                        <span class="user-share-btn" data-if="user.is_sharing">
+                            <img src="icon-play.svg" class="share-icon"
+                                 data-event-click="watch_sharer(user.id)" />
+                        </span>
                     </div>
                 </div>
             </div>
@@ -113,7 +119,7 @@
             <!-- User bar -->
             <div class="user-bar">
                 <span class="user-bar-name">{{ username }}</span>
-                <div class="user-bar-disconnect" data-event-click="do_disconnect">&#x23FB;</div>
+                <div class="user-bar-disconnect" data-event-click="do_disconnect"><span>X</span></div>
             </div>
 
         </div>

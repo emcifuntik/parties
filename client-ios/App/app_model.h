@@ -13,10 +13,16 @@ namespace parties::client {
 
 struct ChannelUser {
     Rml::String name;
-    int id       = 0;
-    int role     = 0;   // parties::Role cast to int
-    bool muted    = false;
-    bool deafened = false;
+    int id        = 0;
+    int role      = 0;   // parties::Role cast to int
+    bool muted     = false;
+    bool deafened  = false;
+    bool is_sharing = false;  // currently sharing their screen
+};
+
+struct ActiveSharer {
+    int         id = 0;
+    Rml::String name;
 };
 
 struct ChannelInfo {
@@ -80,6 +86,10 @@ public:
     // ── Saved servers sidebar ──────────────────────────────────────────────
     Rml::Vector<SavedServer> saved_servers;
 
+    // ── Screen sharing ─────────────────────────────────────────────────────
+    Rml::Vector<ActiveSharer> sharers;       // users currently sharing in channel
+    int                       viewing_sharer_id = 0;  // 0 = not watching anyone
+
     // ── Callbacks set by PartiesViewController before setup() ─────────────
     std::function<void()>         on_connect;
     std::function<void()>         on_register;
@@ -92,6 +102,8 @@ public:
     std::function<void()>         on_disconnect;
     std::function<void(int)>      on_select_server;   // arg = idx
     std::function<void()>         on_add_server;
+    std::function<void(int)>      on_watch_sharer;    // arg = user_id
+    std::function<void()>         on_stop_watching;
 
 private:
     Rml::DataModelHandle handle_;

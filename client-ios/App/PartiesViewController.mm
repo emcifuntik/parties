@@ -1,7 +1,12 @@
 #import "PartiesViewController.h"
-#import <QuartzCore/CABase.h>   // CACurrentMediaTime()
+#import <QuartzCore/QuartzCore.h>   // CACurrentMediaTime(), CADisplayLink
 #import <AVFoundation/AVFoundation.h>
 #import <Security/Security.h>
+
+#import "VideoDecoderIOS.h"
+#import "ScreenShareViewController.h"
+
+#include <unordered_map>
 
 // RmlUi Metal backend
 #import "../Backends/RmlUi_Backend_iOS_Metal.h"
@@ -34,6 +39,14 @@
 using namespace parties;
 using namespace parties::client;
 using namespace parties::protocol;
+
+// ── Sharer metadata (codec + stream dimensions) ───────────────────────────────
+
+struct SharerInfo {
+    VideoCodecId codec  = VideoCodecId::AV1;
+    uint32_t     width  = 0;
+    uint32_t     height = 0;
+};
 
 // ── Keychain helpers ──────────────────────────────────────────────────────────
 
@@ -157,6 +170,17 @@ static NSString* keychainLoadPassword(NSString* host, NSString* port,
     // Safe area top in physical pixels — used to offset the Metal viewport so the
     // RmlUi debugger (and all content) renders below the Dynamic Island / status bar.
     int                     _viewport_top_px;
+
+    // Screen share / video
+    VideoDecoderIOS*        _video_decoder;
+    ScreenShareViewController* _share_vc;
+    UserId                  _viewing_sharer_id;
+    std::unordered_map<UserId, SharerInfo> _active_sharers;
+
+    // While the screen share viewer is presented, PartiesViewController's own
+    // MTKView stops drawing (and therefore stops polling ENet). This display
+    // link keeps ENet ticking so video packets continue to arrive.
+    CADisplayLink*          _share_enet_link;
 }
 @end
 
@@ -521,6 +545,14 @@ static NSString* keychainLoadPassword(NSString* host, NSString* port,
         _model->is_connected = false;
         _model->mark_dirty();
     };
+
+    _model->on_watch_sharer = [self](int uid) {
+        [self watchSharer:(UserId)uid];
+    };
+
+    _model->on_stop_watching = [self]() {
+        [self stopWatching];
+    };
 }
 
 // ── Connection ────────────────────────────────────────────────────────────────
@@ -620,14 +652,31 @@ static NSString* keychainLoadPassword(NSString* host, NSString* port,
     _voice_mixer->clear();
     _current_channel = 0;
 
+    // Stop any active screen share playback.
+    _viewing_sharer_id = 0;
+    _active_sharers.clear();
+    if (_video_decoder) {
+        _video_decoder->on_decoded = nullptr;
+        _video_decoder->shutdown();
+        delete _video_decoder;
+        _video_decoder = nullptr;
+    }
+    if (_share_vc) {
+        _share_vc.onDismissed = nil;
+        [_share_vc dismissViewControllerAnimated:NO completion:nil];
+        _share_vc = nil;
+    }
+
     // Clear active flag on all servers
     for (auto& s : _model->saved_servers)
         s.is_active = false;
 
-    _model->is_connected = false;
-    _model->show_login   = true;
-    _model->login_status = "Disconnected.";
+    _model->is_connected       = false;
+    _model->show_login         = true;
+    _model->login_status       = "Disconnected.";
     _model->channels.clear();
+    _model->sharers.clear();
+    _model->viewing_sharer_id  = 0;
     _model->mark_dirty();
 }
 
@@ -802,6 +851,69 @@ static NSString* keychainLoadPassword(NSString* host, NSString* port,
         break;
     }
 
+    case ControlMessageType::SCREEN_SHARE_STARTED: {
+        UserId   sharer_id = r.read_u32();
+        uint8_t  codec_raw = r.read_u8();
+        uint16_t width     = r.read_u16();
+        uint16_t height    = r.read_u16();
+
+        SharerInfo info;
+        info.codec  = (VideoCodecId)codec_raw;
+        info.width  = width;
+        info.height = height;
+        _active_sharers[sharer_id] = info;
+
+        // Find sharer name and flag them as sharing in the channel user list.
+        Rml::String sharer_name;
+        for (auto& ch : _model->channels) {
+            for (auto& u : ch.users) {
+                if ((UserId)u.id == sharer_id) {
+                    u.is_sharing = true;
+                    sharer_name  = u.name;
+                }
+            }
+        }
+
+        // Add to the model's sharers list if not already there.
+        bool already_listed = false;
+        for (const auto& s : _model->sharers) {
+            if ((UserId)s.id == sharer_id) { already_listed = true; break; }
+        }
+        if (!already_listed) {
+            ActiveSharer as;
+            as.id   = (int)sharer_id;
+            as.name = sharer_name;
+            _model->sharers.push_back(as);
+        }
+        _model->mark_dirty();
+        break;
+    }
+
+    case ControlMessageType::SCREEN_SHARE_STOPPED: {
+        UserId sharer_id = r.read_u32();
+        _active_sharers.erase(sharer_id);
+
+        // Clear is_sharing flag.
+        for (auto& ch : _model->channels) {
+            for (auto& u : ch.users) {
+                if ((UserId)u.id == sharer_id) u.is_sharing = false;
+            }
+        }
+
+        // Remove from sharers list.
+        _model->sharers.erase(
+            std::remove_if(_model->sharers.begin(), _model->sharers.end(),
+                [sharer_id](const ActiveSharer& s){ return (UserId)s.id == sharer_id; }),
+            _model->sharers.end());
+
+        // If we were watching this sharer, stop.
+        if (_viewing_sharer_id == sharer_id)
+            [self stopWatching];
+
+        _model->mark_dirty();
+        break;
+    }
+
     case ControlMessageType::KEEPALIVE_PONG:
         break;  // no-op
 
@@ -841,6 +953,37 @@ static NSString* keychainLoadPassword(NSString* host, NSString* port,
                                 plaintext.data());
         if (ok)
             _voice_mixer->push_packet(sender_id, plaintext.data(), ct_len);
+
+    } else if (ptype == VIDEO_FRAME_PACKET_TYPE && len >= 33) {
+        // [0x02][sender_id(4)][nonce(12)][tag(16)][ciphertext(N)]
+        UserId sender_id;
+        memcpy(&sender_id, data + 1, 4);
+        if (sender_id != _viewing_sharer_id || !_video_decoder) return;
+
+        const uint8_t* nonce      = data + 5;
+        const uint8_t* tag        = data + 17;
+        const uint8_t* ciphertext = data + 33;
+        size_t         ct_len     = len - 33;
+        if (ct_len == 0) return;
+
+        uint8_t aad[4];
+        memcpy(aad, &sender_id, 4);
+
+        std::vector<uint8_t> plaintext(ct_len);
+        if (!voice_decrypt(_current_channel_key.data(), nonce,
+                           aad, 4,
+                           ciphertext, ct_len, tag,
+                           plaintext.data()))
+            return;
+
+        // Plaintext: [frame_number(4)][timestamp(4)][flags(1)][width(2)][height(2)][codec(1)][data...]
+        if (plaintext.size() < 14) return;
+        bool is_keyframe = (plaintext[8] & VIDEO_FLAG_KEYFRAME) != 0;
+        const uint8_t* encoded     = plaintext.data() + 14;
+        size_t         encoded_len = plaintext.size() - 14;
+        if (encoded_len == 0) return;
+
+        _video_decoder->decode(encoded, encoded_len, is_keyframe);
     }
 }
 
@@ -881,6 +1024,152 @@ static NSString* keychainLoadPassword(NSString* host, NSString* port,
         _net_client->send_message(ControlMessageType::KEEPALIVE_PING, nullptr, 0);
 }
 
+// ── Screen share playback ─────────────────────────────────────────────────────
+
+- (void)watchSharer:(UserId)uid
+{
+    NSLog(@"[Parties] watchSharer: uid=%u active_sharers.size=%zu viewing=%u",
+          (unsigned)uid, _active_sharers.size(), (unsigned)_viewing_sharer_id);
+
+    auto it = _active_sharers.find(uid);
+    if (it == _active_sharers.end()) {
+        NSLog(@"[Parties] watchSharer: uid=%u NOT found in _active_sharers — "
+              "SCREEN_SHARE_STARTED may not have been received", (unsigned)uid);
+        return;
+    }
+    if (uid == _viewing_sharer_id) {
+        NSLog(@"[Parties] watchSharer: already watching uid=%u", (unsigned)uid);
+        return;
+    }
+
+    // Stop previous stream if any.
+    if (_viewing_sharer_id != 0) [self stopWatching];
+
+    const SharerInfo& info = it->second;
+
+    // Pre-check codec support so we get a clear error instead of a silent failure.
+    if (info.codec == VideoCodecId::AV1 &&
+        !VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1)) {
+        NSLog(@"[Parties] AV1 hardware decode not available on this device (requires A14 / iPhone 12+)");
+        UIAlertController* alert = [UIAlertController
+            alertControllerWithTitle:@"Video Unavailable"
+            message:@"The sharer is using AV1 video, which requires iPhone 12 or newer. "
+                     @"Ask the sharer to switch to H264."
+            preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+                          style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
+        return;
+    }
+
+    // Initialise decoder for this sharer's codec and stream dimensions.
+    delete _video_decoder;
+    _video_decoder = new VideoDecoderIOS();
+    if (!_video_decoder->init(info.codec, info.width, info.height)) {
+        NSLog(@"[Parties] VideoDecoderIOS init failed for codec %d", (int)info.codec);
+        delete _video_decoder; _video_decoder = nullptr;
+        UIAlertController* alert = [UIAlertController
+            alertControllerWithTitle:@"Video Error"
+            message:@"Could not start the video decoder. The codec may not be "
+                     @"supported on this device."
+            preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+                          style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
+        return;
+    }
+
+    _viewing_sharer_id = uid;
+
+    // Subscribe at the server.
+    BinaryWriter w;
+    w.write_u32((uint32_t)uid);
+    _net_client->send_message(ControlMessageType::SCREEN_SHARE_VIEW,
+                              w.data().data(), w.size());
+
+    // Request immediate keyframe.
+    [self sendPliToSharer:uid];
+
+    // Present fullscreen video view.
+    _share_vc = [[ScreenShareViewController alloc] init];
+    // Capturing self strongly is intentional: stopWatching sets onDismissed=nil
+    // before dismissing, explicitly breaking this cycle.
+    _share_vc.onDismissed = ^{ [self stopWatching]; };
+
+    // Pass decoded frames to the screen share view.
+    ScreenShareViewController* shareVC = _share_vc;
+    _video_decoder->on_decoded = [shareVC](CVPixelBufferRef buf) {
+        [shareVC setPixelBuffer:buf];
+        CFRelease(buf);
+    };
+
+    // Keep ENet ticking while our MTKView is covered by the screen share VC.
+    _share_enet_link = [CADisplayLink displayLinkWithTarget:self
+                                                   selector:@selector(_pollEnetForShare)];
+    [_share_enet_link addToRunLoop:[NSRunLoop mainRunLoop]
+                           forMode:NSRunLoopCommonModes];
+
+    _share_vc.modalPresentationStyle = UIModalPresentationFullScreen;
+    [self presentViewController:_share_vc animated:YES completion:nil];
+
+    _model->viewing_sharer_id = (int)uid;
+    _model->mark_dirty();
+}
+
+- (void)_pollEnetForShare
+{
+    if (_net_client && _net_client->is_connected()) {
+        _net_client->service_enet(0);
+        [self processServerMessages];
+    }
+}
+
+- (void)stopWatching
+{
+    [_share_enet_link invalidate];
+    _share_enet_link = nil;
+
+    if (_viewing_sharer_id == 0) return;
+
+    // Unsubscribe from server.
+    BinaryWriter w;
+    w.write_u32(0u);
+    if (_net_client->is_connected())
+        _net_client->send_message(ControlMessageType::SCREEN_SHARE_VIEW,
+                                  w.data().data(), w.size());
+
+    UserId was_watching = _viewing_sharer_id;
+    _viewing_sharer_id  = 0;
+
+    if (_video_decoder) {
+        _video_decoder->on_decoded = nullptr;
+        _video_decoder->flush();
+        _video_decoder->shutdown();
+        delete _video_decoder;
+        _video_decoder = nullptr;
+    }
+
+    if (_share_vc) {
+        _share_vc.onDismissed = nil;
+        [_share_vc dismissViewControllerAnimated:YES completion:nil];
+        _share_vc = nil;
+    }
+
+    _model->viewing_sharer_id = 0;
+    _model->mark_dirty();
+    (void)was_watching;
+}
+
+- (void)sendPliToSharer:(UserId)uid
+{
+    // [VIDEO_CONTROL_TYPE(1)][VIDEO_CTL_PLI(1)][target_user_id(4)]
+    uint8_t pkt[6];
+    pkt[0] = VIDEO_CONTROL_TYPE;
+    pkt[1] = VIDEO_CTL_PLI;
+    memcpy(pkt + 2, &uid, 4);
+    _net_client->send_video(pkt, sizeof(pkt), /*reliable=*/true);
+}
+
 // ── Keyboard avoidance (same as rmlui-iphone) ─────────────────────────────────
 
 - (void)keyboardWillShow:(NSNotification*)note
@@ -913,16 +1202,34 @@ static NSString* keychainLoadPassword(NSString* host, NSString* port,
     }];
 }
 
+// ── Orientation ───────────────────────────────────────────────────────────────
+
+- (UIInterfaceOrientationMask)supportedInterfaceOrientations
+{
+    return UIInterfaceOrientationMaskPortrait;
+}
+
 // ── Teardown ──────────────────────────────────────────────────────────────────
 
 - (void)viewDidDisappear:(BOOL)animated
 {
     [super viewDidDisappear:animated];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+
+    // When we present a modal VC (e.g. ScreenShareViewController), iOS calls
+    // viewDidDisappear on us. Skip teardown in that case — only tear down when
+    // the VC is truly being removed (no modal child on screen).
+    if (self.presentedViewController) return;
+
     [_keepalive_timer invalidate];
 
     if (_audio_engine) { _audio_engine->stop(); _audio_engine->shutdown(); }
     if (_net_client)   { _net_client->disconnect(); }
+
+    if (_video_decoder) {
+        _video_decoder->shutdown();
+        delete _video_decoder; _video_decoder = nullptr;
+    }
 
     delete _model;        _model        = nullptr;
     delete _audio_engine; _audio_engine = nullptr;

@@ -85,6 +85,8 @@ set(APP_SOURCES
     App/AppDelegate.mm
     App/PartiesViewController.mm
     App/app_model.mm
+    App/VideoDecoderIOS.mm
+    App/ScreenShareViewController.mm
     App/sound_player_stub.cpp   # no-op; audio_engine null-checks before use
     Backends/RmlUi_Renderer_Metal.mm
     Backends/RmlUi_Platform_iOS.mm
@@ -95,6 +97,8 @@ set(APP_HEADERS
     App/AppDelegate.h
     App/PartiesViewController.h
     App/app_model.h
+    App/VideoDecoderIOS.h
+    App/ScreenShareViewController.h
     Backends/RmlUi_Renderer_Metal.h
     Backends/RmlUi_Platform_iOS.h
     Backends/RmlUi_Backend_iOS_Metal.h
@@ -111,6 +115,8 @@ set(APP_RESOURCES
     App/Assets/icon-deafen.svg
     App/Assets/icon-undeafen.svg
     App/Assets/icon-leave.svg
+    App/Assets/icon-play.svg
+    App/Assets/icon-settings.svg
 )
 
 add_executable(PartiesIOS MACOSX_BUNDLE
@@ -157,6 +163,9 @@ target_link_libraries(PartiesIOS PRIVATE
     "-framework AudioToolbox"
     "-framework CoreAudio"
     "-framework Security"
+    "-framework VideoToolbox"
+    "-framework CoreMedia"
+    "-framework CoreVideo"
 )
 
 set_target_properties(PartiesIOS PROPERTIES

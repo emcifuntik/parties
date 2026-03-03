@@ -15,12 +15,19 @@ void LobbyModel::setup(Rml::Context* context)
 
     // Register structs (array type must be registered before a struct that
     // contains it as a member — ChannelUser first, then ChannelInfo).
+    if (auto s = ctor.RegisterStruct<ActiveSharer>()) {
+        s.RegisterMember("id",   &ActiveSharer::id);
+        s.RegisterMember("name", &ActiveSharer::name);
+    }
+    ctor.RegisterArray<Rml::Vector<ActiveSharer>>();
+
     if (auto s = ctor.RegisterStruct<ChannelUser>()) {
-        s.RegisterMember("name",     &ChannelUser::name);
-        s.RegisterMember("id",       &ChannelUser::id);
-        s.RegisterMember("role",     &ChannelUser::role);
-        s.RegisterMember("muted",    &ChannelUser::muted);
-        s.RegisterMember("deafened", &ChannelUser::deafened);
+        s.RegisterMember("name",       &ChannelUser::name);
+        s.RegisterMember("id",         &ChannelUser::id);
+        s.RegisterMember("role",       &ChannelUser::role);
+        s.RegisterMember("muted",      &ChannelUser::muted);
+        s.RegisterMember("deafened",   &ChannelUser::deafened);
+        s.RegisterMember("is_sharing", &ChannelUser::is_sharing);
     }
     ctor.RegisterArray<Rml::Vector<ChannelUser>>();
 
@@ -67,6 +74,10 @@ void LobbyModel::setup(Rml::Context* context)
 
     // Sidebar
     ctor.Bind("saved_servers", &saved_servers);
+
+    // Screen sharing
+    ctor.Bind("sharers",           &sharers);
+    ctor.Bind("viewing_sharer_id", &viewing_sharer_id);
 
     // Event callbacks
     ctor.BindEventCallback("do_connect",
@@ -115,6 +126,19 @@ void LobbyModel::setup(Rml::Context* context)
             if (on_disconnect) on_disconnect();
         });
 
+    ctor.BindEventCallback("watch_sharer",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList& args) {
+            fprintf(stderr, "[LobbyModel] watch_sharer event: args.size=%zu uid=%d\n",
+                    args.size(), args.empty() ? -1 : args[0].Get<int>());
+            if (!args.empty() && on_watch_sharer)
+                on_watch_sharer(args[0].Get<int>());
+        });
+
+    ctor.BindEventCallback("stop_watching",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            if (on_stop_watching) on_stop_watching();
+        });
+
     ctor.BindEventCallback("select_server",
         [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList& args) {
             if (!args.empty() && on_select_server)
@@ -150,6 +174,8 @@ void LobbyModel::mark_dirty()
     handle_.DirtyVariable("show_settings");
     handle_.DirtyVariable("denoise_enabled");
     handle_.DirtyVariable("saved_servers");
+    handle_.DirtyVariable("sharers");
+    handle_.DirtyVariable("viewing_sharer_id");
 }
 
 } // namespace parties::client
