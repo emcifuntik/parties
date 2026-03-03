@@ -12,6 +12,19 @@ if(NOT DEFINED VCPKG_TARGET_TRIPLET)
     set(VCPKG_TARGET_TRIPLET "arm64-ios" CACHE STRING "vcpkg target triplet")
 endif()
 
+# Overlay ports: parties repo ships patched ports for rnnoise, wolfssl, enet, etc.
+if(NOT DEFINED VCPKG_OVERLAY_PORTS)
+    set(VCPKG_OVERLAY_PORTS "${CMAKE_CURRENT_SOURCE_DIR}/../ports"
+        CACHE STRING "vcpkg overlay ports")
+endif()
+
+# Overlay triplets: inherit custom triplets if defined in the parties repo.
+if(NOT DEFINED VCPKG_OVERLAY_TRIPLETS AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../triplets")
+    set(VCPKG_OVERLAY_TRIPLETS "${CMAKE_CURRENT_SOURCE_DIR}/../triplets"
+        CACHE STRING "vcpkg overlay triplets")
+endif()
+
 # ── Apple signing ────────────────────────────────────────────────────────────
 # Put  set(APPLE_DEVELOPMENT_TEAM "XXXXXXXXXX")  in local.cmake (gitignored).
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/local.cmake")
@@ -61,19 +74,19 @@ set(APP_SOURCES
     App/main.mm
     App/AppDelegate.mm
     App/PartiesViewController.mm
+    App/app_model.mm
     Backends/RmlUi_Renderer_Metal.mm
     Backends/RmlUi_Platform_iOS.mm
     Backends/RmlUi_Backend_iOS_Metal.mm
-    UI/app_model.mm
 )
 
 set(APP_HEADERS
     App/AppDelegate.h
     App/PartiesViewController.h
+    App/app_model.h
     Backends/RmlUi_Renderer_Metal.h
     Backends/RmlUi_Platform_iOS.h
     Backends/RmlUi_Backend_iOS_Metal.h
-    UI/app_model.h
 )
 
 set(APP_RESOURCES
@@ -96,7 +109,6 @@ target_include_directories(PartiesIOS PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/App
     ${CMAKE_CURRENT_SOURCE_DIR}/Backends
-    ${CMAKE_CURRENT_SOURCE_DIR}/UI
     ${CMAKE_CURRENT_SOURCE_DIR}/../common/include     # parties:: headers
     ${CMAKE_CURRENT_SOURCE_DIR}/../client/include     # shared client headers
     ${MINIAUDIO_INCLUDE_DIRS}

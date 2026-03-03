@@ -4,9 +4,10 @@
   "dependencies": [
     "argon2",
     "enet",
+    "freetype",
+    "miniaudio",
     "opus",
-    "wolfssl",
     "rnnoise",
-    "miniaudio"
+    "wolfssl"
   ]
 }
