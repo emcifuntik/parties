@@ -102,6 +102,14 @@ add_executable(PartiesIOS MACOSX_BUNDLE
     ${APP_RESOURCES}
 )
 
+# miniaudio's Apple backend (CoreAudio/AudioToolbox) pulls in Objective-C headers,
+# so the implementation file and audio engine must be compiled as Objective-C++.
+set_source_files_properties(
+    ../client/src/miniaudio_impl.cpp
+    ../client/src/audio_engine.cpp
+    PROPERTIES LANGUAGE OBJCXX
+)
+
 set_source_files_properties(${APP_RESOURCES} PROPERTIES
     MACOSX_PACKAGE_LOCATION Resources)
 
