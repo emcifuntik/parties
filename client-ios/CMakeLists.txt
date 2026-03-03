@@ -26,10 +26,16 @@ if(NOT DEFINED VCPKG_OVERLAY_TRIPLETS AND
 endif()
 
 # ── Apple signing ────────────────────────────────────────────────────────────
-# Put  set(APPLE_DEVELOPMENT_TEAM "XXXXXXXXXX")  in local.cmake (gitignored).
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/local.cmake")
-    include("${CMAKE_CURRENT_SOURCE_DIR}/local.cmake")
-endif()
+# Looks for local.cmake in this dir, or up to the rmlui-iphone workspace root.
+foreach(_local_dir
+    "${CMAKE_CURRENT_SOURCE_DIR}"           # client-ios/
+    "${CMAKE_CURRENT_SOURCE_DIR}/.."        # parties/
+    "${CMAKE_CURRENT_SOURCE_DIR}/../..")    # rmlui-iphone/
+    if(EXISTS "${_local_dir}/local.cmake")
+        include("${_local_dir}/local.cmake")
+        break()
+    endif()
+endforeach()
 if(NOT DEFINED APPLE_DEVELOPMENT_TEAM AND DEFINED ENV{APPLE_DEVELOPMENT_TEAM})
     set(APPLE_DEVELOPMENT_TEAM "$ENV{APPLE_DEVELOPMENT_TEAM}")
 endif()
@@ -75,6 +81,7 @@ set(APP_SOURCES
     App/AppDelegate.mm
     App/PartiesViewController.mm
     App/app_model.mm
+    App/sound_player_stub.cpp   # no-op; audio_engine null-checks before use
     Backends/RmlUi_Renderer_Metal.mm
     Backends/RmlUi_Platform_iOS.mm
     Backends/RmlUi_Backend_iOS_Metal.mm

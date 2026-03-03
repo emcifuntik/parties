@@ -16,6 +16,7 @@
 #include <parties/types.h>
 #include <parties/serialization.h>
 #include <parties/audio_common.h>
+#include <parties/crypto.h>
 
 // Shared client code
 #include <client/net_client.h>
@@ -347,10 +348,9 @@ using namespace parties::protocol;
 
 - (void)processServerMessages
 {
-    ServerMessage msg;
-    while (_net_client->incoming().try_pop(msg)) {
-        BinaryReader r(msg.payload.data(), msg.payload.size());
-        [self handleMessage:msg.type reader:r];
+    while (auto opt = _net_client->incoming().try_pop()) {
+        BinaryReader r(opt->payload.data(), opt->payload.size());
+        [self handleMessage:opt->type reader:r];
     }
 }
 
