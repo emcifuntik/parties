@@ -1,0 +1,115 @@
+<rml>
+<head>
+    <title>Parties</title>
+    <link type="text/rcss" href="style.rcss" />
+</head>
+<body data-model="lobby">
+
+    <!-- ── Login screen ──────────────────────────────────────────────────── -->
+    <div class="screen screen-login" data-if="show_login">
+        <div class="login-card">
+            <div class="login-title">Parties</div>
+
+            <div class="login-status" data-if="login_status != ''">{{ login_status }}</div>
+
+            <div class="field-label">Server Host</div>
+            <input type="text" data-value="login_host" />
+
+            <div class="field-label">Port</div>
+            <input type="text" data-value="login_port" />
+
+            <div class="field-label">Username</div>
+            <input type="text" data-value="login_username" />
+
+            <div class="field-label">Password</div>
+            <input type="password" data-value="login_password" />
+
+            <div class="error-text" data-if="login_error != ''">{{ login_error }}</div>
+
+            <div class="btn" data-event-click="do_connect">Sign In</div>
+            <div class="btn btn-outline" data-event-click="do_register">Register</div>
+        </div>
+    </div>
+
+    <!-- ── Main app ───────────────────────────────────────────────────────── -->
+    <div class="screen screen-main" data-if="is_connected">
+
+        <!-- Header -->
+        <div class="app-header">
+            <span class="app-header-title">{{ server_name }}</span>
+            <span class="app-header-btn" data-event-click="toggle_settings">Settings</span>
+        </div>
+
+        <!-- Channel list (scrollable) -->
+        <div id="channels" class="channel-list">
+            <div class="channel-category">Voice Channels</div>
+            <div data-for="ch : channels">
+                <div class="channel-row"
+                     data-class-active="ch.id == current_channel"
+                     data-event-click="join_channel(ch.id)">
+                    <span class="channel-hash">#</span>
+                    <span class="channel-name">{{ ch.name }}</span>
+                    <span class="channel-badge">{{ ch.user_count }}</span>
+                </div>
+                <div data-for="user : ch.users" class="user-row">
+                    <span class="user-dot">&#x25CF;</span>
+                    <span class="user-name-label">{{ user.name }}</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Voice controls (visible when in a channel) -->
+        <div class="voice-bar" data-if="current_channel > 0">
+            <span class="voice-channel-label"># {{ current_channel_name }}</span>
+            <div class="voice-controls">
+                <div class="voice-btn" data-class-active="is_muted"
+                     data-event-click="toggle_mute">
+                    <span data-if="is_muted">Muted</span>
+                    <span data-if="is_muted == false">Mic On</span>
+                </div>
+                <div class="voice-btn" data-class-active="is_deafened"
+                     data-event-click="toggle_deafen">
+                    <span data-if="is_deafened">Deafened</span>
+                    <span data-if="is_deafened == false">Hearing</span>
+                </div>
+                <div class="voice-btn voice-btn-leave"
+                     data-event-click="leave_channel">Leave</div>
+            </div>
+        </div>
+
+        <!-- User bar -->
+        <div class="user-bar">
+            <span class="user-bar-name">{{ username }}</span>
+        </div>
+
+    </div>
+
+    <!-- ── Settings overlay (absolute, over everything) ─────────────────── -->
+    <div class="settings-overlay" data-if="show_settings">
+        <div class="settings-header">
+            <span class="settings-title">Settings</span>
+            <span class="settings-close" data-event-click="toggle_settings">Close</span>
+        </div>
+        <div class="settings-body">
+            <div class="setting-row" data-event-click="toggle_denoise">
+                <div class="setting-toggle" data-class-on="denoise_enabled"></div>
+                <span class="setting-label">Noise Cancellation</span>
+            </div>
+            <div class="setting-row" data-event-click="toggle_mute">
+                <div class="setting-toggle" data-class-on="is_muted"></div>
+                <span class="setting-label">Mute Microphone</span>
+            </div>
+            <div class="setting-row" data-event-click="toggle_deafen">
+                <div class="setting-toggle" data-class-on="is_deafened"></div>
+                <span class="setting-label">Deafen (mute speakers)</span>
+            </div>
+            <div class="setting-row setting-row-danger"
+                 data-event-click="leave_channel"
+                 data-if="current_channel > 0">
+                <span class="setting-label-danger">Leave Voice Channel</span>
+            </div>
+        </div>
+    </div>
+
+</body>
+</rml>
