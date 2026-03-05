@@ -11,11 +11,11 @@
         "CMAKE_CXX_COMPILER": "clang-cl",
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/vcpkg/scripts/buildsystems/vcpkg.cmake",
-        "VCPKG_OVERLAY_PORTS": "${sourceDir}/ports",
-        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/triplets",
-        "VCPKG_TARGET_TRIPLET": "x64-windows-static-mt",
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/vendor/ports",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vendor/triplets",
+        "VCPKG_TARGET_TRIPLET": "x64-win-llvm",
         "VCPKG_MANIFEST_FEATURES": "client",
-        "CMAKE_MAKE_PROGRAM": "${sourceDir}/ninja.exe"
+        "CMAKE_MAKE_PROGRAM": "${sourceDir}/vendor/ninja/ninja.exe"
       }
     },
     {
@@ -45,8 +45,8 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/vcpkg/scripts/buildsystems/vcpkg.cmake",
-        "VCPKG_OVERLAY_PORTS": "${sourceDir}/ports",
-        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/triplets",
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/vendor/ports",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vendor/triplets",
         "VCPKG_TARGET_TRIPLET": "x64-linux-static",
         "BUILD_CLIENT": "OFF"
       }

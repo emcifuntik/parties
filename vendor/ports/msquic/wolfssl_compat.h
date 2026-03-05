@@ -23,11 +23,7 @@
 #endif
 
 /* ---- Early Data constants ---- */
-#ifndef SSL_EARLY_DATA_ACCEPTED
-#define SSL_EARLY_DATA_NOT_SENT  0
-#define SSL_EARLY_DATA_REJECTED  1
-#define SSL_EARLY_DATA_ACCEPTED  2
-#endif
+/* Provided by wolfSSL when WOLFSSL_EARLY_DATA is defined */
 
 /* ---- Client Hello Callback (not in wolfSSL) ---- */
 
@@ -105,34 +101,9 @@ static inline int wolfssl_compat_new_session_ticket(SSL *ssl) {
 #define SSL_CTX_set_tlsext_ticket_key_evp_cb(ctx, cb) ((void)(ctx), (void)(cb))
 
 /* ---- Early Data functions ---- */
-/* wolfSSL QUIC doesn't expose these OpenSSL-compat early data functions.
-   Stub them — early data will simply never be reported as accepted. */
-
-static inline int wolfssl_compat_ctx_set_max_early_data(SSL_CTX *ctx, unsigned int max) {
-    (void)ctx; (void)max;
-    return 1; /* pretend success */
-}
-#ifdef SSL_CTX_set_max_early_data
-#undef SSL_CTX_set_max_early_data
-#endif
-#define SSL_CTX_set_max_early_data wolfssl_compat_ctx_set_max_early_data
-
-static inline void wolfssl_compat_set_quic_early_data_enabled(SSL *ssl, int enabled) {
-    (void)ssl; (void)enabled;
-}
-#ifdef SSL_set_quic_early_data_enabled
-#undef SSL_set_quic_early_data_enabled
-#endif
-#define SSL_set_quic_early_data_enabled wolfssl_compat_set_quic_early_data_enabled
-
-static inline int wolfssl_compat_get_early_data_status(const SSL *ssl) {
-    (void)ssl;
-    return SSL_EARLY_DATA_NOT_SENT; /* never accepted */
-}
-#ifdef SSL_get_early_data_status
-#undef SSL_get_early_data_status
-#endif
-#define SSL_get_early_data_status wolfssl_compat_get_early_data_status
+/* Provided by wolfSSL natively when WOLFSSL_EARLY_DATA is defined:
+   SSL_CTX_set_max_early_data, SSL_set_quic_early_data_enabled,
+   SSL_get_early_data_status, SSL_EARLY_DATA_* constants */
 
 /* ---- PKCS7 ---- */
 /* wolfSSL's PKCS7 API differs from OpenSSL. The portable cert chain path

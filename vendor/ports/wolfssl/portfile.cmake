@@ -35,9 +35,13 @@ vcpkg_cmake_get_vars(cmake_vars_file)
 include("${cmake_vars_file}")
 
 foreach(config RELEASE DEBUG)
+  # Suppress clang-cl errors for upstream wolfSSL code (InetPtonW narrow/wide mismatch)
+  string(APPEND VCPKG_COMBINED_C_FLAGS_${config} " -Wno-incompatible-pointer-types")
   string(APPEND VCPKG_COMBINED_C_FLAGS_${config} " -DWOLFSSL_CUSTOM_OID -DHAVE_OID_ENCODING -DWOLFSSL_ASN_TEMPLATE")
   # Force PEM-to-DER support and ensure NO_CERTS is not set
   string(APPEND VCPKG_COMBINED_C_FLAGS_${config} " -DWOLFSSL_PEM_TO_DER")
+  # Enable 0-RTT early data (wolfSSL CMake doesn't have an option for this yet)
+  string(APPEND VCPKG_COMBINED_C_FLAGS_${config} " -DWOLFSSL_EARLY_DATA")
   if ("secret-callback" IN_LIST FEATURES)
       string(APPEND VCPKG_COMBINED_C_FLAGS_${config} " -DHAVE_SECRET_CALLBACK")
   endif()

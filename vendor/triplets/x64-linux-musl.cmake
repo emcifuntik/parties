@@ -1,0 +1,15 @@
+set(VCPKG_TARGET_ARCHITECTURE x64)
+set(VCPKG_CMAKE_SYSTEM_NAME Linux)
+
+set(VCPKG_LIBRARY_LINKAGE static)
+set(VCPKG_CRT_LINKAGE dynamic)
+
+set(VCPKG_CMAKE_CONFIGURE_OPTIONS
+    "-DCMAKE_C_COMPILER=clang"
+    "-DCMAKE_CXX_COMPILER=clang++"
+    "-DCMAKE_LINKER_TYPE=LLD"
+)
+
+set(VCPKG_C_FLAGS "-fPIC ")
+set(VCPKG_CXX_FLAGS "-g -mssse3 -fPIC ")
+set(VCPKG_LINKER_FLAGS "-m64 -Wl,--build-id -fuse-ld=lld -Wl,-z,stack-size=8388608")
