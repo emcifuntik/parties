@@ -539,6 +539,12 @@ void Server::handle_message(const IncomingMessage& msg) {
 
         Role target_new_role = static_cast<Role>(new_role);
 
+        // Owner role is assigned only via server config — never through API
+        if (target_new_role == Role::Owner) {
+            send_error(msg.session_id, "Owner role can only be set in server config");
+            break;
+        }
+
         // Check hierarchy: can't promote to equal or higher than self
         if (new_role <= session->role && user_role != Role::Owner) {
             send_error(msg.session_id, "Cannot assign a role equal or higher than your own");
@@ -564,6 +570,19 @@ void Server::handle_message(const IncomingMessage& msg) {
         for (auto& s : all) {
             if (s->user_id == target_id)
                 s->role = new_role;
+        }
+
+        // Broadcast role change to all authenticated clients
+        {
+            BinaryWriter role_writer;
+            role_writer.write_u32(target_id);
+            role_writer.write_u8(new_role);
+            for (auto& s : all) {
+                if (s->authenticated) {
+                    quic_.send_to(s->id, protocol::ControlMessageType::USER_ROLE_CHANGED,
+                                   role_writer.data().data(), role_writer.data().size());
+                }
+            }
         }
 
         BinaryWriter writer;

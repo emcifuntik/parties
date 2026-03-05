@@ -55,18 +55,26 @@
         </div>
 
         <div class="channel-section">
-            <div class="channel-category">Voice Channels</div>
+            <div class="channel-category-row">
+                <span class="channel-category">Voice Channels</span>
+                <span class="channel-add-btn" data-if="can_manage_channels"
+                      data-event-click="show_create_channel_form">+</span>
+            </div>
             <div data-for="ch : channels">
                 <div class="channel-item"
                      data-class-active="ch.id == current_channel"
-                     data-event-click="join_channel(ch.id)">
+                     data-event-mousedown="channel_mousedown(ch.id, ch.name)">
                     <span class="channel-hash">#</span>
                     <span class="channel-name">{{ ch.name }}</span>
                     <span class="channel-count">({{ ch.user_count }})</span>
                 </div>
-                <div data-for="user : ch.users" class="channel-user-item">
+                <div data-for="user : ch.users" class="channel-user-item"
+                     data-event-mousedown="user_mousedown(user.id, user.name, user.role)">
                     <div class="user-dot"></div>
                     <span class="channel-username">{{ user.name }}</span>
+                    <span class="role-badge" data-if="user.role == 0">OWNER</span>
+                    <span class="role-badge role-admin" data-if="user.role == 1">ADMIN</span>
+                    <span class="role-badge role-mod" data-if="user.role == 2">MOD</span>
                 </div>
             </div>
         </div>
@@ -120,7 +128,10 @@
         <div class="settings-overlay" data-if="is_connected && show_settings == true && show_share_picker == false">
             <div class="settings-header">
                 <h2>Settings</h2>
-                <span class="settings-close" data-event-click="toggle_settings">X</span>
+                <div class="close-icon" data-event-click="toggle_settings">
+                    <div class="close-icon-a"></div>
+                    <div class="close-icon-b"></div>
+                </div>
             </div>
 
             <!-- Input device -->
@@ -220,7 +231,10 @@
         <div class="share-picker-overlay" data-if="is_connected && show_share_picker">
             <div class="share-picker-header">
                 <h2>Share Screen</h2>
-                <span class="settings-close" data-event-click="cancel_share">X</span>
+                <div class="close-icon" data-event-click="cancel_share">
+                    <div class="close-icon-a"></div>
+                    <div class="close-icon-b"></div>
+                </div>
             </div>
             <div class="share-picker-section">
                 <div class="settings-label">Monitors</div>
@@ -280,7 +294,10 @@
                             </div>
                         </div>
                     </div>
-                    <div class="sharer-close" data-event-click="stop_watching">X</div>
+                    <div class="sharer-close" data-event-click="stop_watching">
+                        <div class="close-icon-a"></div>
+                        <div class="close-icon-b"></div>
+                    </div>
                 </div>
                 <video_frame id="screen-share" />
             </div>
@@ -363,14 +380,19 @@
         </div>
     </div>
 
-    <!-- Context menu (right-click on server icon) -->
-    <div class="context-backdrop" data-model="serverlist" data-if="show_context_menu"
-         data-event-click="dismiss_context_menu">
-        <div id="server-context-menu" class="context-menu">
-            <div class="context-menu-item" data-event-click="context_edit">Edit</div>
-            <div class="context-menu-item context-menu-danger" data-event-click="context_delete">Delete</div>
+    <!-- Create channel modal -->
+    <div class="modal-backdrop" data-model="lobby" data-if="show_create_channel">
+        <div class="modal-box">
+            <h1>Create Channel</h1>
+
+            <div class="label">Channel Name</div>
+            <input type="text" data-value="new_channel_name" />
+
+            <div class="btn" data-event-click="create_channel">Create</div>
+            <div class="btn btn-secondary" data-event-click="cancel_create_channel">Cancel</div>
         </div>
     </div>
+
 
 </body>
 </rml>

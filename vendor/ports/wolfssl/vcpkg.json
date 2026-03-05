@@ -1,7 +1,7 @@
 {
   "name": "wolfssl",
   "version": "5.8.4",
-  "port-version": 102,
+  "port-version": 103,
   "description": "wolfSSL overlay with QUIC + OpenSSL compat (OPENSSLALL) for MsQuic TLS backend",
   "homepage": "https://wolfssl.com",
   "license": "GPL-3.0-or-later",

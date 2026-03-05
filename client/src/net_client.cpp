@@ -3,8 +3,10 @@
 #include <parties/protocol.h>
 #include <parties/crypto.h>
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <thread>
 
 namespace parties::client {
 
@@ -30,7 +32,7 @@ bool NetClient::connect(const std::string& host, uint16_t port,
     QUIC_REGISTRATION_CONFIG reg_config = { "parties_client", QUIC_EXECUTION_PROFILE_LOW_LATENCY };
     status = api_->RegistrationOpen(&reg_config, &registration_);
     if (QUIC_FAILED(status)) {
-        std::fprintf(stderr, "[NetClient] RegistrationOpen failed: 0x%lx\n", status);
+        std::fprintf(stderr, "[NetClient] RegistrationOpen failed: 0x%lx\n", (unsigned long)status);
         return false;
     }
 
@@ -47,7 +49,7 @@ bool NetClient::connect(const std::string& host, uint16_t port,
     status = api_->ConfigurationOpen(registration_, &alpn, 1, &settings,
                                       sizeof(settings), nullptr, &configuration_);
     if (QUIC_FAILED(status)) {
-        std::fprintf(stderr, "[NetClient] ConfigurationOpen failed: 0x%lx\n", status);
+        std::fprintf(stderr, "[NetClient] ConfigurationOpen failed: 0x%lx\n", (unsigned long)status);
         api_->RegistrationClose(registration_);
         registration_ = nullptr;
         return false;
@@ -63,7 +65,7 @@ bool NetClient::connect(const std::string& host, uint16_t port,
 
     status = api_->ConfigurationLoadCredential(configuration_, &cred_config);
     if (QUIC_FAILED(status)) {
-        std::fprintf(stderr, "[NetClient] ConfigurationLoadCredential failed: 0x%lx\n", status);
+        std::fprintf(stderr, "[NetClient] ConfigurationLoadCredential failed: 0x%lx\n", (unsigned long)status);
         api_->ConfigurationClose(configuration_);
         configuration_ = nullptr;
         api_->RegistrationClose(registration_);
@@ -74,7 +76,7 @@ bool NetClient::connect(const std::string& host, uint16_t port,
     // Open connection
     status = api_->ConnectionOpen(registration_, connection_callback, this, &connection_);
     if (QUIC_FAILED(status)) {
-        std::fprintf(stderr, "[NetClient] ConnectionOpen failed: 0x%lx\n", status);
+        std::fprintf(stderr, "[NetClient] ConnectionOpen failed: 0x%lx\n", (unsigned long)status);
         api_->ConfigurationClose(configuration_);
         configuration_ = nullptr;
         api_->RegistrationClose(registration_);
@@ -87,7 +89,7 @@ bool NetClient::connect(const std::string& host, uint16_t port,
         status = api_->SetParam(connection_, QUIC_PARAM_CONN_RESUMPTION_TICKET,
                                  static_cast<uint32_t>(ticket_len), ticket);
         if (QUIC_FAILED(status)) {
-            std::fprintf(stderr, "[NetClient] SetParam(RESUMPTION_TICKET) failed: 0x%lx (non-fatal)\n", status);
+            std::fprintf(stderr, "[NetClient] SetParam(RESUMPTION_TICKET) failed: 0x%lx (non-fatal)\n", (unsigned long)status);
         }
     }
 
@@ -96,7 +98,7 @@ bool NetClient::connect(const std::string& host, uint16_t port,
                                     QUIC_ADDRESS_FAMILY_UNSPEC,
                                     host.c_str(), port);
     if (QUIC_FAILED(status)) {
-        std::fprintf(stderr, "[NetClient] ConnectionStart failed: 0x%lx\n", status);
+        std::fprintf(stderr, "[NetClient] ConnectionStart failed: 0x%lx\n", (unsigned long)status);
         api_->ConnectionClose(connection_);
         connection_ = nullptr;
         api_->ConfigurationClose(configuration_);
@@ -112,7 +114,7 @@ bool NetClient::connect(const std::string& host, uint16_t port,
     // But we need to wait for it here for API compatibility
     // Wait up to 10 seconds for connection
     for (int i = 0; i < 1000 && !connected_; i++) {
-        Sleep(10);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
     if (!connected_) {
@@ -137,7 +139,7 @@ void NetClient::disconnect() {
         api_->ConnectionShutdown(connection_, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, 0);
         // Connection and stream cleanup happens in SHUTDOWN_COMPLETE callback
         // Wait briefly for clean shutdown
-        Sleep(100);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
     // Force cleanup if callbacks haven't fired
@@ -269,11 +271,11 @@ QUIC_STATUS NetClient::on_connection_event(HQUIC connection,
             if (QUIC_SUCCEEDED(status)) {
                 control_stream_ = stream;
             } else {
-                std::fprintf(stderr, "[NetClient] Control StreamStart failed: 0x%lx\n", status);
+                std::fprintf(stderr, "[NetClient] Control StreamStart failed: 0x%lx\n", (unsigned long)status);
                 api_->StreamClose(stream);
             }
         } else {
-            std::fprintf(stderr, "[NetClient] Control StreamOpen failed: 0x%lx\n", status);
+            std::fprintf(stderr, "[NetClient] Control StreamOpen failed: 0x%lx\n", (unsigned long)status);
         }
 
         // Open bidirectional video stream
@@ -287,12 +289,12 @@ QUIC_STATUS NetClient::on_connection_event(HQUIC connection,
                     video_stream_ = vstream;
                     connected_ = true;
                 } else {
-                    std::fprintf(stderr, "[NetClient] Video StreamStart failed: 0x%lx\n", status);
+                    std::fprintf(stderr, "[NetClient] Video StreamStart failed: 0x%lx\n", (unsigned long)status);
                     api_->StreamClose(vstream);
                     connected_ = true;  // Still connected, just no video stream
                 }
             } else {
-                std::fprintf(stderr, "[NetClient] Video StreamOpen failed: 0x%lx\n", status);
+                std::fprintf(stderr, "[NetClient] Video StreamOpen failed: 0x%lx\n", (unsigned long)status);
                 connected_ = true;  // Still connected
             }
         }
@@ -344,7 +346,7 @@ QUIC_STATUS NetClient::on_connection_event(HQUIC connection,
 
     case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_TRANSPORT:
         std::printf("[NetClient] Connection shut down by transport: 0x%lx\n",
-                    event->SHUTDOWN_INITIATED_BY_TRANSPORT.Status);
+                    (unsigned long)event->SHUTDOWN_INITIATED_BY_TRANSPORT.Status);
         connected_ = false;
         break;
 

@@ -23,9 +23,11 @@ COPY . .
 # Symlink vcpkg into the source tree so CMakePresets paths resolve
 RUN ln -s /opt/vcpkg /src/vcpkg
 
-# Configure and build (server only, static libs)
-RUN cmake --preset linux-release \
-    && cmake --build build --config Release
+# Configure (vcpkg install + cmake generate)
+RUN cmake --preset linux-release
+
+# Build (compile + link)
+RUN cmake --build build-linux --config Release
 
 # ── Runtime stage ─────────────────────────────────────────────
 FROM debian:bookworm-slim
@@ -34,11 +36,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /src/build/server/parties_server /usr/local/bin/parties_server
+COPY --from=builder /src/build-linux/server/parties_server /usr/local/bin/parties_server
 
-# TLS control (TCP) + ENet data (UDP)
-EXPOSE 7800/tcp
-EXPOSE 7801/udp
+# QUIC (UDP) control + data plane on single port
+EXPOSE 7800/udp
 
 # /data holds server.toml, certs, and the SQLite database
 VOLUME /data

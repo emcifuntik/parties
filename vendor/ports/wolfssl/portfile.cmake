@@ -43,6 +43,8 @@ include("${cmake_vars_file}")
 foreach(config RELEASE DEBUG)
   # Suppress clang-cl errors for upstream wolfSSL code (InetPtonW narrow/wide mismatch)
   string(APPEND VCPKG_COMBINED_C_FLAGS_${config} " -Wno-incompatible-pointer-types")
+  # GCC false positive in tls.c Hmac_UpdateFinal_CT inlined into TLS_hmac (stringop-overflow on Hmac stack object)
+  string(APPEND VCPKG_COMBINED_C_FLAGS_${config} " -Wno-error=stringop-overflow")
   string(APPEND VCPKG_COMBINED_C_FLAGS_${config} " -DWOLFSSL_CUSTOM_OID -DHAVE_OID_ENCODING -DWOLFSSL_ASN_TEMPLATE")
   # Force PEM-to-DER support and ensure NO_CERTS is not set
   string(APPEND VCPKG_COMBINED_C_FLAGS_${config} " -DWOLFSSL_PEM_TO_DER")

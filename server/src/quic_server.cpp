@@ -33,7 +33,7 @@ bool QuicServer::start(const std::string& listen_ip, uint16_t port, size_t max_c
     QUIC_REGISTRATION_CONFIG reg_config = { "parties_server", QUIC_EXECUTION_PROFILE_LOW_LATENCY };
     status = api_->RegistrationOpen(&reg_config, &registration_);
     if (QUIC_FAILED(status)) {
-        std::fprintf(stderr, "[QuicServer] RegistrationOpen failed: 0x%lx\n", status);
+        std::fprintf(stderr, "[QuicServer] RegistrationOpen failed: 0x%lx\n", (unsigned long)status);
         return false;
     }
 
@@ -53,7 +53,7 @@ bool QuicServer::start(const std::string& listen_ip, uint16_t port, size_t max_c
     status = api_->ConfigurationOpen(registration_, &alpn, 1, &settings,
                                       sizeof(settings), nullptr, &configuration_);
     if (QUIC_FAILED(status)) {
-        std::fprintf(stderr, "[QuicServer] ConfigurationOpen failed: 0x%lx\n", status);
+        std::fprintf(stderr, "[QuicServer] ConfigurationOpen failed: 0x%lx\n", (unsigned long)status);
         api_->RegistrationClose(registration_);
         registration_ = nullptr;
         return false;
@@ -71,7 +71,7 @@ bool QuicServer::start(const std::string& listen_ip, uint16_t port, size_t max_c
 
         status = api_->ConfigurationLoadCredential(configuration_, &cred_config);
         if (QUIC_FAILED(status)) {
-            std::fprintf(stderr, "[QuicServer] ConfigurationLoadCredential failed: 0x%lx\n", status);
+            std::fprintf(stderr, "[QuicServer] ConfigurationLoadCredential failed: 0x%lx\n", (unsigned long)status);
             api_->ConfigurationClose(configuration_);
             configuration_ = nullptr;
             api_->RegistrationClose(registration_);
@@ -83,7 +83,7 @@ bool QuicServer::start(const std::string& listen_ip, uint16_t port, size_t max_c
     // Open and start listener
     status = api_->ListenerOpen(registration_, listener_callback, this, &listener_);
     if (QUIC_FAILED(status)) {
-        std::fprintf(stderr, "[QuicServer] ListenerOpen failed: 0x%lx\n", status);
+        std::fprintf(stderr, "[QuicServer] ListenerOpen failed: 0x%lx\n", (unsigned long)status);
         api_->ConfigurationClose(configuration_);
         configuration_ = nullptr;
         api_->RegistrationClose(registration_);
@@ -97,7 +97,7 @@ bool QuicServer::start(const std::string& listen_ip, uint16_t port, size_t max_c
 
     status = api_->ListenerStart(listener_, &alpn, 1, &addr);
     if (QUIC_FAILED(status)) {
-        std::fprintf(stderr, "[QuicServer] ListenerStart failed: 0x%lx\n", status);
+        std::fprintf(stderr, "[QuicServer] ListenerStart failed: 0x%lx\n", (unsigned long)status);
         api_->ListenerClose(listener_);
         listener_ = nullptr;
         api_->ConfigurationClose(configuration_);

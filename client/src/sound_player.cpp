@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 
 namespace parties::client {
@@ -80,6 +81,49 @@ SoundPlayer::SoundPlayer() {
         decode_wav(wav_leave_other, sizeof(wav_leave_other));
 }
 
+SoundPlayer::~SoundPlayer() {
+    shutdown();
+}
+
+bool SoundPlayer::init() {
+    ma_device_config config = ma_device_config_init(ma_device_type_playback);
+    config.playback.format = ma_format_f32;
+    config.playback.channels = 1;
+    config.sampleRate = kSampleRate;
+    config.dataCallback = SoundPlayer::data_callback;
+    config.pUserData = this;
+    config.periodSizeInMilliseconds = 10;
+
+    if (ma_device_init(nullptr, &config, &device_) != MA_SUCCESS) {
+        std::fprintf(stderr, "[SoundPlayer] Failed to init playback device\n");
+        return false;
+    }
+    device_initialized_ = true;
+
+    std::printf("[SoundPlayer] Device: %s\n", device_.playback.name);
+    std::printf("[SoundPlayer]   Requested: %d Hz, native: %d Hz, channels: %d\n",
+                kSampleRate,
+                device_.playback.internalSampleRate,
+                device_.playback.internalChannels);
+
+    if (ma_device_start(&device_) != MA_SUCCESS) {
+        std::fprintf(stderr, "[SoundPlayer] Failed to start playback device\n");
+        ma_device_uninit(&device_);
+        device_initialized_ = false;
+        return false;
+    }
+
+    return true;
+}
+
+void SoundPlayer::shutdown() {
+    if (device_initialized_) {
+        ma_device_stop(&device_);
+        ma_device_uninit(&device_);
+        device_initialized_ = false;
+    }
+}
+
 void SoundPlayer::play(Effect effect) {
     int idx = static_cast<int>(effect);
     if (idx < 0 || idx >= static_cast<int>(Effect::Count_)) return;
@@ -94,18 +138,23 @@ void SoundPlayer::play(Effect effect) {
     }
 }
 
-void SoundPlayer::mix_output(float* output, int frame_count) {
-    for (auto& slot : playing_) {
+void SoundPlayer::data_callback(ma_device* device, void* output,
+                                  const void* /*input*/, ma_uint32 frame_count) {
+    auto* self = static_cast<SoundPlayer*>(device->pUserData);
+    auto* out = static_cast<float*>(output);
+    std::memset(out, 0, frame_count * sizeof(float));
+
+    for (auto& slot : self->playing_) {
         int fx = slot.effect.load(std::memory_order_acquire);
         if (fx < 0) continue;
 
-        auto& pcm = sounds_[fx].samples;
+        auto& pcm = self->sounds_[fx].samples;
         size_t pos = slot.position.load(std::memory_order_acquire);
         size_t remaining = pcm.size() - pos;
         size_t to_mix = std::min(static_cast<size_t>(frame_count), remaining);
 
         for (size_t i = 0; i < to_mix; i++)
-            output[i] += pcm[pos + i];
+            out[i] += pcm[pos + i];
 
         pos += to_mix;
         if (pos >= pcm.size()) {

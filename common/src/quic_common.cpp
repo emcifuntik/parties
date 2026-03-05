@@ -10,7 +10,7 @@ const QUIC_API_TABLE* quic_init() {
 
     QUIC_STATUS status = MsQuicOpen2(&g_quic_api);
     if (QUIC_FAILED(status)) {
-        std::fprintf(stderr, "[QUIC] MsQuicOpen2 failed: 0x%lx\n", status);
+        std::fprintf(stderr, "[QUIC] MsQuicOpen2 failed: 0x%lx\n", (unsigned long)status);
         return nullptr;
     }
 

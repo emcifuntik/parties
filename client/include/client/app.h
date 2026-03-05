@@ -58,11 +58,13 @@ private:
     void on_channel_user_list(const uint8_t* data, size_t len);
     void on_user_joined(const uint8_t* data, size_t len);
     void on_user_left(const uint8_t* data, size_t len);
+    void on_user_role_changed(const uint8_t* data, size_t len);
     void on_server_error(const uint8_t* data, size_t len);
     void on_channel_key(const uint8_t* data, size_t len);
     void on_screen_share_started(const uint8_t* data, size_t len);
     void on_screen_share_stopped(const uint8_t* data, size_t len);
     void on_screen_share_denied(const uint8_t* data, size_t len);
+    void on_admin_result(const uint8_t* data, size_t len);
 
     void join_channel(ChannelId id);
     void leave_channel();
@@ -87,7 +89,6 @@ private:
     void setup_model_callbacks();
     void setup_server_model_callbacks();
     void update_voice_level();
-    void update_context_menu_position();
 
     HWND hwnd_ = nullptr;
     NetClient net_;
@@ -159,10 +160,6 @@ private:
 
     // BGRA conversion buffer for DComp video surface
     std::vector<uint8_t> bgra_buffer_;
-
-    // Context menu positioning
-    int context_menu_x_ = 0;
-    int context_menu_y_ = 0;
 
     // UI document
     Rml::ElementDocument* doc_ = nullptr;

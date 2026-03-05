@@ -1,0 +1,29 @@
+services:
+  builder:
+    image: debian:bookworm
+    working_dir: /src
+    volumes:
+      - .:/src
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+
+        apt-get update && apt-get install -y --no-install-recommends \
+          build-essential cmake ninja-build pkg-config \
+          git curl zip unzip tar \
+          autoconf automake libtool \
+          python3 \
+          ca-certificates \
+        && rm -rf /var/lib/apt/lists/*
+
+        ln -sf /opt/vcpkg /src/vcpkg
+
+        cmake --preset linux-release
+        cmake --build build-linux --config Release
+        chmod +x ./build-linux/tests/parties_integration_test
+        ./build-linux/tests/parties_integration_test
+
+volumes:
+  vcpkg:

@@ -96,6 +96,19 @@ public:
     bool show_share_picker = false;
     Rml::Vector<ShareTarget> share_targets;
 
+    // Admin / permissions
+    int my_role = 3;                       // current user's role (0=Owner..3=User)
+    bool can_manage_channels = false;      // derived from role
+    bool can_kick = false;                 // derived from role
+    bool can_manage_roles = false;         // derived from role
+
+    // Create channel form
+    bool show_create_channel = false;
+    Rml::String new_channel_name;
+
+    // Admin feedback
+    Rml::String admin_message;
+
     // --- Callbacks (set by App before init) ---
     std::function<void(int)>   on_join_channel;
     std::function<void()>      on_leave_channel;
@@ -117,6 +130,12 @@ public:
     std::function<void(int)>   on_watch_sharer;
     std::function<void(int)>   on_select_sharer;
     std::function<void()>      on_stop_watching;
+
+    // Admin
+    std::function<void()>      on_create_channel;
+    std::function<void(int)>   on_delete_channel;
+    std::function<void(int, std::string, int)> on_show_user_menu;    // (user_id, name, role)
+    std::function<void(int, std::string)>      on_show_channel_menu; // (channel_id, name)
 
 private:
     Rml::DataModelHandle handle_;

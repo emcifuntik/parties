@@ -22,6 +22,8 @@ target_link_libraries(parties_integration_test
         parties_common
         unofficial::sqlite3::sqlite3
         toml11::toml11
-        ncrypt.lib
-        crypt32.lib
 )
+
+if(WIN32)
+    target_link_libraries(parties_integration_test PRIVATE ncrypt.lib crypt32.lib)
+endif()

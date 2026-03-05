@@ -41,13 +41,16 @@
       "name": "linux-release",
       "displayName": "Linux Release (server only)",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build",
+      "binaryDir": "${sourceDir}/build-linux",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/vcpkg/scripts/buildsystems/vcpkg.cmake",
         "VCPKG_OVERLAY_PORTS": "${sourceDir}/vendor/ports",
         "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vendor/triplets",
         "VCPKG_TARGET_TRIPLET": "x64-linux-static",
+        "CMAKE_MAKE_PROGRAM": "${sourceDir}/vendor/ninja/ninja-linux",
+        "CMAKE_CXX_COMPILER": "g++",
+        "CMAKE_C_COMPILER": "gcc",
         "BUILD_CLIENT": "OFF"
       }
     }

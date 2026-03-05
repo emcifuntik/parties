@@ -19,6 +19,7 @@ add_executable(parties_client
     src/audio_engine.cpp
     src/voice_mixer.cpp
     src/sound_player.cpp
+    src/context_menu.cpp
     src/miniaudio_impl.cpp
     src/rmlui_backend.cpp
     src/ui_manager.cpp

@@ -21,5 +21,8 @@ target_link_libraries(parties_server
         parties_common
         unofficial::sqlite3::sqlite3
         toml11::toml11
-        ncrypt.lib
 )
+
+if(WIN32)
+    target_link_libraries(parties_server PRIVATE ncrypt.lib)
+endif()

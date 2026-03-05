@@ -311,13 +311,30 @@ input.password:focus {
     flex: none;
 }
 
+.channel-category-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0dp 18dp 6dp 18dp;
+}
+
 .channel-category {
     display: block;
-    padding: 0dp 18dp 6dp 18dp;
     font-size: 10dp;
     font-weight: bold;
     color: #5c5e72;
     text-transform: uppercase;
+}
+
+.channel-add-btn {
+    display: block;
+    color: #5c5e72;
+    font-size: 16dp;
+    cursor: pointer;
+}
+
+.channel-add-btn:hover {
+    color: #e0ddd8;
 }
 
 .channel-item {
@@ -375,6 +392,26 @@ input.password:focus {
 
 .channel-user-item .channel-username {
     color: #8b8da0;
+}
+
+.role-badge {
+    display: block;
+    font-size: 8dp;
+    font-weight: bold;
+    color: #e8a43a;
+    padding: 1dp 4dp;
+    margin-left: 4dp;
+    background-color: #e8a43a20;
+}
+
+.role-badge.role-admin {
+    color: #3dd68c;
+    background-color: #3dd68c20;
+}
+
+.role-badge.role-mod {
+    color: #5c9ee8;
+    background-color: #5c9ee820;
 }
 
 /* ── Voice controls ────────────────────────────────── */
@@ -579,14 +616,33 @@ input.password:focus {
     color: #e0ddd8;
 }
 
-.settings-close {
-    color: #5c5e72;
-    font-size: 18dp;
+/* ── CSS-drawn close icon (reusable X) ─────────────── */
+
+.close-icon {
+    display: block;
+    position: relative;
+    width: 14dp;
+    height: 14dp;
     cursor: pointer;
 }
 
-.settings-close:hover {
-    color: #e8645a;
+.close-icon-a,
+.close-icon-b {
+    display: block;
+    position: absolute;
+    width: 16dp;
+    height: 2dp;
+    background-color: #5c5e72;
+    top: 6dp;
+    left: -1dp;
+}
+
+.close-icon-a { transform: rotate(45deg); }
+.close-icon-b { transform: rotate(-45deg); }
+
+.close-icon:hover .close-icon-a,
+.close-icon:hover .close-icon-b {
+    background-color: #e8645a;
 }
 
 .settings-section {
@@ -886,43 +942,6 @@ scrollbarvertical sliderarrowinc {
     border: 1dp #2a2b3d;
 }
 
-/* ── Context menu ────────────────────────────────── */
-
-.context-backdrop {
-    display: block;
-    position: absolute;
-    left: 0dp;
-    top: 0dp;
-    width: 100%;
-    height: 100%;
-}
-
-.context-menu {
-    display: flex;
-    flex-direction: column;
-    position: absolute;
-    width: 140dp;
-    background-color: #0d0e17;
-    border: 1dp #2a2b3d;
-    padding: 4dp 0dp;
-}
-
-.context-menu-item {
-    display: block;
-    padding: 8dp 14dp;
-    color: #e0ddd8;
-    font-size: 13dp;
-    cursor: pointer;
-}
-
-.context-menu-item:hover {
-    background-color: #262739;
-}
-
-.context-menu-danger:hover {
-    color: #e8645a;
-}
-
 /* ── Empty state (no server connected) ───────────── */
 
 .no-server-state {
@@ -1100,15 +1119,21 @@ video_frame {
 
 .sharer-close {
     display: block;
-    padding: 4dp 8dp;
-    color: #9b98a8;
+    position: relative;
+    width: 14dp;
+    height: 14dp;
     cursor: pointer;
-    font-size: 14dp;
-    font-weight: bold;
+    margin: 4dp 8dp;
 }
 
-.sharer-close:hover {
-    color: #e0ddd8;
+.sharer-close .close-icon-a,
+.sharer-close .close-icon-b {
+    background-color: #9b98a8;
+}
+
+.sharer-close:hover .close-icon-a,
+.sharer-close:hover .close-icon-b {
+    background-color: #e8645a;
 }
 
 /* ── Seed phrase onboarding ──────────────────────── */

@@ -38,8 +38,6 @@ bool ServerListModel::init(Rml::Context* context) {
     ctor.Bind("login_error",      &login_error);
     ctor.Bind("login_status",     &login_status);
     ctor.Bind("connected_server_id", &connected_server_id);
-    ctor.Bind("show_context_menu",   &show_context_menu);
-    ctor.Bind("context_menu_server_id", &context_menu_server_id);
 
     // Identity / onboarding
     ctor.Bind("show_onboarding",  &show_onboarding);
@@ -59,54 +57,9 @@ bool ServerListModel::init(Rml::Context* context) {
                 // Left click → connect
                 if (on_connect_server) on_connect_server(id);
             } else if (button == 1) {
-                // Right click → context menu
-                context_menu_server_id = id;
-                show_context_menu = true;
-                dirty("show_context_menu");
-                dirty("context_menu_server_id");
-                if (on_show_context_menu)
-                    on_show_context_menu(id,
-                        event.GetParameter<int>("mouse_x", 0),
-                        event.GetParameter<int>("mouse_y", 0));
+                // Right click → native context menu
+                if (on_show_server_menu) on_show_server_menu(id);
             }
-        });
-
-    ctor.BindEventCallback("context_edit",
-        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
-            show_context_menu = false;
-            dirty("show_context_menu");
-            // Populate edit form with the context menu target server
-            for (auto& srv : servers) {
-                if (srv.id == context_menu_server_id) {
-                    editing_id = context_menu_server_id;
-                    edit_name = srv.name;
-                    edit_host = srv.host;
-                    edit_port = Rml::String(std::to_string(srv.port));
-                    edit_error = "";
-                    show_add_form = true;
-                    dirty("editing_id");
-                    dirty("edit_name");
-                    dirty("edit_host");
-                    dirty("edit_port");
-                    dirty("edit_error");
-                    dirty("show_add_form");
-                    break;
-                }
-            }
-        });
-
-    ctor.BindEventCallback("context_delete",
-        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
-            show_context_menu = false;
-            dirty("show_context_menu");
-            if (on_delete_server)
-                on_delete_server(context_menu_server_id);
-        });
-
-    ctor.BindEventCallback("dismiss_context_menu",
-        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
-            show_context_menu = false;
-            dirty("show_context_menu");
         });
 
     ctor.BindEventCallback("add_server",

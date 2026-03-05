@@ -16,7 +16,7 @@ Parties is a self-hosted VOIP application with screen sharing. All communication
 - **ALPN**: `parties` (7 bytes)
 - **TLS**: 1.3 via wolfSSL (QUIC-aware)
 - **Certificates**: Self-signed RSA-4096, verified via TOFU
-- **Idle timeout**: 30 seconds
+- **Idle timeout**: 60 seconds (client keepalive every 15s)
 - **Session resumption**: 0-RTT via resumption tickets
 
 ## 2. Architecture
@@ -542,7 +542,8 @@ sequenceDiagram
 |----------|-------|--------|
 | Default port | 7800 | `protocol.h` |
 | ALPN | `"parties"` | `quic_common.h` |
-| Idle timeout | 30,000 ms | QUIC settings |
+| Idle timeout | 60,000 ms | QUIC settings |
+| Keepalive interval | 15,000 ms | Client QUIC settings |
 | Max bidirectional streams | 2 | QUIC settings |
 | Max control message | 1,048,576 bytes | `net_client.cpp` |
 

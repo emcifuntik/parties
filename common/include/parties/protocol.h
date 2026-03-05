@@ -24,6 +24,7 @@ enum class ControlMessageType : uint16_t {
     USER_JOINED_CHANNEL   = 0x0104,
     USER_LEFT_CHANNEL     = 0x0105,
     USER_VOICE_STATE      = 0x0106,
+    USER_ROLE_CHANGED     = 0x0108,   // [user_id(4)][new_role(1)]
     KEEPALIVE_PONG        = 0x0107,
     CHANNEL_KEY           = 0x0109,
     SCREEN_SHARE_STARTED  = 0x010A,

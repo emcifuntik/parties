@@ -1,4 +1,5 @@
 #include <client/app.h>
+#include <client/context_menu.h>
 #include <client/screen_capture.h>
 #include <client/video_encoder.h>
 #include <client/video_decoder.h>
@@ -6,6 +7,7 @@
 #include <parties/protocol.h>
 #include <parties/serialization.h>
 #include <parties/crypto.h>
+#include <parties/permissions.h>
 
 #include <RmlUi/Core/Factory.h>
 
@@ -178,12 +180,106 @@ void App::setup_model_callbacks() {
     model_.on_stop_watching = [this]() {
         stop_watching();
     };
+
+    // Admin operations
+    model_.on_create_channel = [this]() {
+        if (!authenticated_) return;
+        std::string name(model_.new_channel_name);
+        if (name.empty()) return;
+
+        BinaryWriter writer;
+        writer.write_string(name);
+        writer.write_u32(0);  // max_users = 0 (server default)
+        net_.send_message(protocol::ControlMessageType::ADMIN_CREATE_CHANNEL,
+                          writer.data().data(), writer.data().size());
+
+        model_.show_create_channel = false;
+        model_.dirty("show_create_channel");
+    };
+
+    model_.on_delete_channel = [this](int channel_id) {
+        if (!authenticated_) return;
+
+        BinaryWriter writer;
+        writer.write_u32(static_cast<uint32_t>(channel_id));
+        net_.send_message(protocol::ControlMessageType::ADMIN_DELETE_CHANNEL,
+                          writer.data().data(), writer.data().size());
+    };
+
+    model_.on_show_user_menu = [this](int user_id, std::string name, int user_role) {
+        if (!authenticated_) return;
+
+        constexpr int ID_SET_ADMIN = 2;
+        constexpr int ID_SET_MOD   = 3;
+        constexpr int ID_SET_USER  = 4;
+        constexpr int ID_KICK      = 10;
+
+        bool can_roles = model_.can_manage_roles && role_ <= user_role;
+        bool can_kick_user = model_.can_kick && role_ <= user_role;
+        if (!can_roles && !can_kick_user) return;
+
+        std::vector<ContextMenu::Item> items;
+        if (can_roles) {
+            // Owner (role 0) is set only in server config — not assignable here
+            if (user_role != 1) items.push_back({L"Set Admin",     ID_SET_ADMIN});
+            if (user_role != 2) items.push_back({L"Set Moderator", ID_SET_MOD});
+            if (user_role != 3) items.push_back({L"Set User",      ID_SET_USER});
+        }
+        if (can_kick_user) {
+            if (can_roles) items.push_back({L"", 0, false, true}); // separator
+            items.push_back({L"Kick", ID_KICK, true});
+        }
+
+        int cmd = ContextMenu::show(hwnd_, items);
+        if (cmd == 0) return;
+
+        if (cmd == ID_KICK) {
+            BinaryWriter writer;
+            writer.write_u32(static_cast<uint32_t>(user_id));
+            net_.send_message(protocol::ControlMessageType::ADMIN_KICK_USER,
+                              writer.data().data(), writer.data().size());
+        } else {
+            int new_role = -1;
+            switch (cmd) {
+            case ID_SET_ADMIN: new_role = 1; break;
+            case ID_SET_MOD:   new_role = 2; break;
+            case ID_SET_USER:  new_role = 3; break;
+            }
+            if (new_role >= 0) {
+                BinaryWriter writer;
+                writer.write_u32(static_cast<uint32_t>(user_id));
+                writer.write_u8(static_cast<uint8_t>(new_role));
+                net_.send_message(protocol::ControlMessageType::ADMIN_SET_ROLE,
+                                  writer.data().data(), writer.data().size());
+            }
+        }
+    };
+
+    model_.on_show_channel_menu = [this](int channel_id, std::string channel_name) {
+        if (!authenticated_ || !model_.can_manage_channels) return;
+
+        constexpr int ID_DELETE = 1;
+        std::vector<ContextMenu::Item> items;
+        items.push_back({L"Delete Channel", ID_DELETE, true});
+
+        int cmd = ContextMenu::show(hwnd_, items);
+        if (cmd == ID_DELETE) {
+            BinaryWriter writer;
+            writer.write_u32(static_cast<uint32_t>(channel_id));
+            net_.send_message(protocol::ControlMessageType::ADMIN_DELETE_CHANNEL,
+                              writer.data().data(), writer.data().size());
+        }
+    };
 }
 
 void App::setup_server_model_callbacks() {
     server_model_.on_connect_server = [this](int id) {
         // Already connected to this server — do nothing
-        if (id == server_model_.connected_server_id)
+        if (authenticated_ && id == server_model_.connected_server_id)
+            return;
+
+        // Login popup already visible — don't show it again
+        if (server_model_.show_login)
             return;
 
         // If no identity, show onboarding instead
@@ -262,9 +358,39 @@ void App::setup_server_model_callbacks() {
         }
     };
 
-    server_model_.on_show_context_menu = [this](int id, int mouse_x, int mouse_y) {
-        context_menu_x_ = mouse_x;
-        context_menu_y_ = mouse_y;
+    server_model_.on_show_server_menu = [this](int id) {
+        constexpr int ID_EDIT   = 1;
+        constexpr int ID_DELETE = 2;
+        std::vector<ContextMenu::Item> items;
+        items.push_back({L"Edit",   ID_EDIT});
+        items.push_back({L"Delete", ID_DELETE, true});
+
+        int cmd = ContextMenu::show(hwnd_, items);
+
+        if (cmd == ID_EDIT) {
+            // Populate edit form
+            auto saved = settings_.get_saved_servers();
+            for (auto& srv : saved) {
+                if (srv.id == id) {
+                    server_model_.editing_id = id;
+                    server_model_.edit_name = Rml::String(srv.name);
+                    server_model_.edit_host = Rml::String(srv.host);
+                    server_model_.edit_port = Rml::String(std::to_string(srv.port));
+                    server_model_.edit_error = "";
+                    server_model_.show_add_form = true;
+                    server_model_.dirty("editing_id");
+                    server_model_.dirty("edit_name");
+                    server_model_.dirty("edit_host");
+                    server_model_.dirty("edit_port");
+                    server_model_.dirty("edit_error");
+                    server_model_.dirty("show_add_form");
+                    break;
+                }
+            }
+        } else if (cmd == ID_DELETE) {
+            settings_.delete_server(id);
+            refresh_server_list();
+        }
     };
 
     server_model_.on_generate_identity = [this]() {
@@ -395,8 +521,6 @@ bool App::init(HWND hwnd) {
     // Open client settings database
     settings_.open("parties_client.db");
 
-    // Load BIP-39 wordlist for seed phrase generation
-
     // Load identity if it exists
     if (settings_.has_identity()) {
         auto id = settings_.load_identity();
@@ -518,9 +642,11 @@ bool App::init(HWND hwnd) {
         }
     }
 
+    // UI sound effects (own playback device, always running)
+    sound_player_.init();
+
     // Wire audio to network (QUIC TLS encrypts in transit)
     audio_.set_mixer(&mixer_);
-    audio_.set_sound_player(&sound_player_);
     audio_.on_encoded_frame = [this](const uint8_t* data, size_t len) {
         if (!authenticated_ || current_channel_ == 0) return;
 
@@ -593,6 +719,12 @@ bool App::init(HWND hwnd) {
         model_.viewing_sharer_id = 0;
         model_.show_settings = false;
         model_.show_share_picker = false;
+        model_.show_create_channel = false;
+        model_.my_role = 3;
+        model_.can_manage_channels = false;
+        model_.can_kick = false;
+        model_.can_manage_roles = false;
+        model_.admin_message.clear();
         model_.dirty_all();
 
         server_model_.connected_server_id = 0;
@@ -770,7 +902,6 @@ void App::update() {
 
     // Update + render UI
     ui_.update();
-    update_context_menu_position();
     ui_.render();
 }
 
@@ -791,14 +922,6 @@ void App::update_voice_level() {
         int pct = static_cast<int>(model_.vad_threshold * 100.0f);
         marker->SetProperty("left", Rml::String(std::to_string(pct) + "%"));
     }
-}
-
-void App::update_context_menu_position() {
-    if (!doc_ || !server_model_.show_context_menu) return;
-    auto* menu = doc_->GetElementById("server-context-menu");
-    if (!menu) return;
-    menu->SetProperty("left", Rml::String(std::to_string(context_menu_x_) + "px"));
-    menu->SetProperty("top", Rml::String(std::to_string(context_menu_y_) + "px"));
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -926,8 +1049,10 @@ void App::leave_channel() {
     model_.dirty("current_channel_name");
 
     // Clear users from all channels in the model
-    for (auto& ch : model_.channels)
+    for (auto& ch : model_.channels) {
         ch.users.clear();
+        ch.user_count = 0;
+    }
     model_.dirty("channels");
 }
 
@@ -954,6 +1079,9 @@ void App::process_server_messages() {
         case protocol::ControlMessageType::USER_LEFT_CHANNEL:
             on_user_left(msg.payload.data(), msg.payload.size());
             break;
+        case protocol::ControlMessageType::USER_ROLE_CHANGED:
+            on_user_role_changed(msg.payload.data(), msg.payload.size());
+            break;
         case protocol::ControlMessageType::CHANNEL_KEY:
             on_channel_key(msg.payload.data(), msg.payload.size());
             break;
@@ -968,6 +1096,9 @@ void App::process_server_messages() {
             break;
         case protocol::ControlMessageType::SERVER_ERROR:
             on_server_error(msg.payload.data(), msg.payload.size());
+            break;
+        case protocol::ControlMessageType::ADMIN_RESULT:
+            on_admin_result(msg.payload.data(), msg.payload.size());
             break;
         default:
             break;
@@ -998,9 +1129,17 @@ void App::on_auth_response(const uint8_t* data, size_t len) {
     model_.server_name = Rml::String(server_name);
     model_.username = Rml::String(username_);
     model_.is_connected = true;
+    model_.my_role = role_;
+    model_.can_manage_channels = (role_ <= static_cast<int>(parties::Role::Admin));
+    model_.can_kick = (role_ <= static_cast<int>(parties::Role::Admin));
+    model_.can_manage_roles = (role_ <= static_cast<int>(parties::Role::Admin));
     model_.dirty("server_name");
     model_.dirty("username");
     model_.dirty("is_connected");
+    model_.dirty("my_role");
+    model_.dirty("can_manage_channels");
+    model_.dirty("can_kick");
+    model_.dirty("can_manage_roles");
 
     server_model_.connected_server_id = connecting_server_id_;
     server_model_.show_login = false;
@@ -1050,6 +1189,12 @@ void App::on_channel_user_list(const uint8_t* data, size_t len) {
     current_channel_ = channel_id;
     model_.current_channel = static_cast<int>(channel_id);
 
+    // Clear users from all channels (we only get user lists for our channel)
+    for (auto& ch : model_.channels) {
+        ch.users.clear();
+        ch.user_count = 0;
+    }
+
     // Find the channel and populate its users
     for (auto& ch : model_.channels) {
         if (ch.id == static_cast<int>(channel_id)) {
@@ -1081,7 +1226,6 @@ void App::on_channel_user_list(const uint8_t* data, size_t len) {
     model_.dirty("current_channel_name");
     model_.dirty("channels");
 
-    // Start audio
     audio_.start();
     sound_player_.play(SoundPlayer::Effect::JoinChannel);
 }
@@ -1138,6 +1282,36 @@ void App::on_user_left(const uint8_t* data, size_t len) {
     model_.dirty("channels");
 }
 
+void App::on_user_role_changed(const uint8_t* data, size_t len) {
+    BinaryReader reader(data, len);
+    uint32_t uid = reader.read_u32();
+    uint8_t new_role = reader.read_u8();
+    if (reader.error()) return;
+
+    // Update own role if it's us
+    if (uid == user_id_) {
+        role_ = new_role;
+        model_.my_role = new_role;
+        model_.can_manage_channels = (new_role <= static_cast<int>(parties::Role::Admin));
+        model_.can_kick = (new_role <= static_cast<int>(parties::Role::Admin));
+        model_.can_manage_roles = (new_role <= static_cast<int>(parties::Role::Admin));
+        model_.dirty("my_role");
+        model_.dirty("can_manage_channels");
+        model_.dirty("can_kick");
+        model_.dirty("can_manage_roles");
+    }
+
+    // Update in channel user list
+    for (auto& ch : model_.channels) {
+        for (auto& user : ch.users) {
+            if (user.id == static_cast<int>(uid)) {
+                user.role = new_role;
+            }
+        }
+    }
+    model_.dirty("channels");
+}
+
 void App::on_channel_key(const uint8_t* data, size_t len) {
     BinaryReader reader(data, len);
     ChannelId ch_id = reader.read_u32();
@@ -1158,6 +1332,19 @@ void App::on_server_error(const uint8_t* data, size_t len) {
         server_model_.dirty("login_error");
         server_model_.dirty("login_status");
     }
+}
+
+void App::on_admin_result(const uint8_t* data, size_t len) {
+    BinaryReader reader(data, len);
+    uint8_t success = reader.read_u8();
+    std::string message = reader.read_string();
+    if (reader.error()) return;
+
+    std::printf("[App] Admin result: %s — %s\n",
+                success ? "OK" : "FAIL", message.c_str());
+
+    model_.admin_message = Rml::String(message);
+    model_.dirty("admin_message");
 }
 
 // ═══════════════════════════════════════════════════════════════════════

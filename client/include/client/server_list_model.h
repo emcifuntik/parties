@@ -55,10 +55,6 @@ public:
     // Active server tracking
     int connected_server_id = 0;
 
-    // Context menu
-    bool show_context_menu = false;
-    int context_menu_server_id = 0;
-
     // --- Callbacks (set by App) ---
     std::function<void(int)>  on_connect_server;
     std::function<void(int)>  on_delete_server;
@@ -70,7 +66,7 @@ public:
     std::function<void()>     on_restore_identity;
     std::function<void()>     on_show_restore;
     std::function<void()>     on_copy_fingerprint;
-    std::function<void(int, int, int)> on_show_context_menu;  // id, mouse_x, mouse_y
+    std::function<void(int)>  on_show_server_menu;  // server_id
 
 private:
     Rml::DataModelHandle handle_;

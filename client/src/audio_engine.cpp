@@ -1,6 +1,5 @@
 #include <client/audio_engine.h>
 #include <client/voice_mixer.h>
-#include <client/sound_player.h>
 
 #include <cstdio>
 #include <cstring>
@@ -97,10 +96,21 @@ bool AudioEngine::init_device() {
 
     std::printf("[Audio] Initialized: %s -> %s\n",
                 device_.capture.name, device_.playback.name);
-    std::printf("[Audio]   Requested %d Hz, device capture=%d Hz, playback=%d Hz\n",
-                audio::SAMPLE_RATE,
+    std::printf("[Audio]   Requested: %d Hz, %d ch, period %d ms\n",
+                audio::SAMPLE_RATE, audio::CHANNELS,
+                static_cast<int>(config.periodSizeInMilliseconds));
+    std::printf("[Audio]   Negotiated sample rate: %d Hz\n",
+                device_.sampleRate);
+    std::printf("[Audio]   Capture:  native=%d Hz, internal=%d Hz, channels=%d, period=%d frames\n",
                 device_.capture.internalSampleRate,
-                device_.playback.internalSampleRate);
+                device_.sampleRate,
+                device_.capture.internalChannels,
+                device_.capture.internalPeriodSizeInFrames);
+    std::printf("[Audio]   Playback: native=%d Hz, internal=%d Hz, channels=%d, period=%d frames\n",
+                device_.playback.internalSampleRate,
+                device_.sampleRate,
+                device_.playback.internalChannels,
+                device_.playback.internalPeriodSizeInFrames);
     return true;
 }
 
@@ -297,9 +307,6 @@ void AudioEngine::process_playback(float* output, ma_uint32 frame_count) {
         }
     }
 
-    // UI sound effects mixed after normalization (unaffected by voice gain)
-    if (sound_player_)
-        sound_player_->mix_output(output, static_cast<int>(frame_count));
 }
 
 } // namespace parties::client

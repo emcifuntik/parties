@@ -31,11 +31,13 @@
 
 #include <client/net_client.h>
 
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
 #include <dbghelp.h>
+#endif
 
 #include <atomic>
 #include <chrono>
@@ -127,6 +129,7 @@ static void drain_messages(NetClient& client) {
 
 // ── Crash handler ────────────────────────────────────────────────────────
 
+#ifdef _WIN32
 static LONG WINAPI crash_handler(EXCEPTION_POINTERS* ep) {
     auto* rec = ep->ExceptionRecord;
     auto* ctx = ep->ContextRecord;
@@ -166,11 +169,14 @@ static LONG WINAPI crash_handler(EXCEPTION_POINTERS* ep) {
     std::fflush(stderr);
     return EXCEPTION_CONTINUE_SEARCH;
 }
+#endif
 
 // ── Main ─────────────────────────────────────────────────────────────────
 
 int main() {
+#ifdef _WIN32
     SetUnhandledExceptionFilter(crash_handler);
+#endif
     LOG("=== Parties Integration Test ===\n\n");
 
     // ── Init subsystems ──

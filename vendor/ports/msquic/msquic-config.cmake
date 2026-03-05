@@ -32,10 +32,18 @@ if(NOT msquic_LIBRARY_RELEASE AND NOT msquic_LIBRARY_DEBUG)
 endif()
 
 # wolfSSL TLS backend + platform dependencies
+find_package(wolfssl CONFIG REQUIRED)
+
 if(WIN32)
-    find_package(wolfssl CONFIG REQUIRED)
     set_property(TARGET msquic::msquic APPEND PROPERTY
         INTERFACE_LINK_LIBRARIES
         wolfssl::wolfssl
         ntdll wbemuuid winmm secur32 onecore crypt32)
+else()
+    find_package(Threads REQUIRED)
+    set_property(TARGET msquic::msquic APPEND PROPERTY
+        INTERFACE_LINK_LIBRARIES
+        wolfssl::wolfssl
+        Threads::Threads
+        ${CMAKE_DL_LIBS})
 endif()

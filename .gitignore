@@ -1,5 +1,6 @@
-build/
-build-release/
+/build/
+/build-release/
+/build-linux/
 out/
 vcpkg_installed/
 CMakeUserPresets.json

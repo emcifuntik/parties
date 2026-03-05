@@ -6,47 +6,50 @@ vcpkg_from_github(
     HEAD_REF main
 )
 
-# XDP headers are needed for the Windows build even if XDP isn't used at runtime
-vcpkg_from_github(
-    OUT_SOURCE_PATH XDP_WINDOWS
-    REPO microsoft/xdp-for-windows
-    REF v1.1.3
-    SHA512 8bf38182bf3c2da490e6e4df9420bacc3839e19d7cea6ca1c1420d1fd349e87a1f80992b52524eaab70a84ff1ac4e1681974211871117847fba92334350dcf13
-    HEAD_REF main
-)
-
-# Place XDP headers where MsQuic expects them
-if(NOT EXISTS "${QUIC_SOURCE_PATH}/submodules/xdp-for-windows/published/external")
-    file(REMOVE_RECURSE "${QUIC_SOURCE_PATH}/submodules/xdp-for-windows")
-    file(COPY "${XDP_WINDOWS}/published/external" DESTINATION "${QUIC_SOURCE_PATH}/submodules/xdp-for-windows/published")
-endif()
-
 string(COMPARE EQUAL "${VCPKG_CRT_LINKAGE}" "static" STATIC_CRT)
 
-# MsQuic unconditionally appends /GL (LTCG) to release flags.
-# lld-link (clang-cl) cannot consume LTCG bitcode objects. Strip /GL and /LTCG.
-vcpkg_replace_string("${QUIC_SOURCE_PATH}/CMakeLists.txt"
-    [[set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /GL /Zi")]]
-    [[set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /Zi")]]
-)
-vcpkg_replace_string("${QUIC_SOURCE_PATH}/CMakeLists.txt"
-    [[set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /GL /Zi")]]
-    [[set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /Zi")]]
-)
-vcpkg_replace_string("${QUIC_SOURCE_PATH}/CMakeLists.txt"
-    [[${CMAKE_SHARED_LINKER_FLAGS_RELEASE} /LTCG /IGNORE:4075]]
-    [[${CMAKE_SHARED_LINKER_FLAGS_RELEASE} /IGNORE:4075]]
-)
-vcpkg_replace_string("${QUIC_SOURCE_PATH}/CMakeLists.txt"
-    [[${CMAKE_EXE_LINKER_FLAGS_RELEASE} /LTCG /IGNORE:4075]]
-    [[${CMAKE_EXE_LINKER_FLAGS_RELEASE} /IGNORE:4075]]
-)
+# ── Windows-only patches ──────────────────────────────────────
+if(VCPKG_TARGET_IS_WINDOWS)
 
-# clang-cl: disable /WX — upstream MsQuic code has warnings that clang diagnoses
-# but MSVC doesn't (unused-value, microsoft-anon-tag, etc.)
-vcpkg_replace_string("${QUIC_SOURCE_PATH}/CMakeLists.txt"
-[[    set(QUIC_WARNING_FLAGS /WX /W4 /sdl /wd4206 CACHE INTERNAL "")]]
-[[    if(CMAKE_C_COMPILER_ID STREQUAL "Clang")
+    # XDP headers are needed for the Windows build even if XDP isn't used at runtime
+    vcpkg_from_github(
+        OUT_SOURCE_PATH XDP_WINDOWS
+        REPO microsoft/xdp-for-windows
+        REF v1.1.3
+        SHA512 8bf38182bf3c2da490e6e4df9420bacc3839e19d7cea6ca1c1420d1fd349e87a1f80992b52524eaab70a84ff1ac4e1681974211871117847fba92334350dcf13
+        HEAD_REF main
+    )
+
+    # Place XDP headers where MsQuic expects them
+    if(NOT EXISTS "${QUIC_SOURCE_PATH}/submodules/xdp-for-windows/published/external")
+        file(REMOVE_RECURSE "${QUIC_SOURCE_PATH}/submodules/xdp-for-windows")
+        file(COPY "${XDP_WINDOWS}/published/external" DESTINATION "${QUIC_SOURCE_PATH}/submodules/xdp-for-windows/published")
+    endif()
+
+    # MsQuic unconditionally appends /GL (LTCG) to release flags.
+    # lld-link (clang-cl) cannot consume LTCG bitcode objects. Strip /GL and /LTCG.
+    vcpkg_replace_string("${QUIC_SOURCE_PATH}/CMakeLists.txt"
+        [[set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /GL /Zi")]]
+        [[set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /Zi")]]
+    )
+    vcpkg_replace_string("${QUIC_SOURCE_PATH}/CMakeLists.txt"
+        [[set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /GL /Zi")]]
+        [[set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /Zi")]]
+    )
+    vcpkg_replace_string("${QUIC_SOURCE_PATH}/CMakeLists.txt"
+        [[${CMAKE_SHARED_LINKER_FLAGS_RELEASE} /LTCG /IGNORE:4075]]
+        [[${CMAKE_SHARED_LINKER_FLAGS_RELEASE} /IGNORE:4075]]
+    )
+    vcpkg_replace_string("${QUIC_SOURCE_PATH}/CMakeLists.txt"
+        [[${CMAKE_EXE_LINKER_FLAGS_RELEASE} /LTCG /IGNORE:4075]]
+        [[${CMAKE_EXE_LINKER_FLAGS_RELEASE} /IGNORE:4075]]
+    )
+
+    # clang-cl: disable /WX — upstream MsQuic code has warnings that clang diagnoses
+    # but MSVC doesn't (unused-value, microsoft-anon-tag, etc.)
+    vcpkg_replace_string("${QUIC_SOURCE_PATH}/CMakeLists.txt"
+    [[    set(QUIC_WARNING_FLAGS /WX /W4 /sdl /wd4206 CACHE INTERNAL "")]]
+    [[    if(CMAKE_C_COMPILER_ID STREQUAL "Clang")
         # clang-cl: drop /WX /sdl, downgrade Clang-15+ default-error diagnostics
         set(QUIC_WARNING_FLAGS /W4 /wd4206
             -Wno-error=incompatible-pointer-types
@@ -57,26 +60,37 @@ vcpkg_replace_string("${QUIC_SOURCE_PATH}/CMakeLists.txt"
     else()
         set(QUIC_WARNING_FLAGS /WX /W4 /sdl /wd4206 CACHE INTERNAL "")
     endif()]]
-)
+    )
 
-# clang-cl: /Qspectre and /guard:cf are MSVC-only.  check_c_compiler_flag lets
-# them through (clang only warns), but MsQuic's /WX promotes the warning to error.
-vcpkg_replace_string("${QUIC_SOURCE_PATH}/CMakeLists.txt"
-[[    if(NOT QUIC_ENABLE_SANITIZERS)
+    # clang-cl: /Qspectre and /guard:cf are MSVC-only.
+    vcpkg_replace_string("${QUIC_SOURCE_PATH}/CMakeLists.txt"
+    [[    if(NOT QUIC_ENABLE_SANITIZERS)
         check_c_compiler_flag(/Qspectre HAS_SPECTRE)
     endif()]]
-[[    if(NOT QUIC_ENABLE_SANITIZERS AND NOT (CMAKE_C_COMPILER_ID STREQUAL "Clang"))
+    [[    if(NOT QUIC_ENABLE_SANITIZERS AND NOT (CMAKE_C_COMPILER_ID STREQUAL "Clang"))
         check_c_compiler_flag(/Qspectre HAS_SPECTRE)
     endif()]]
-)
-vcpkg_replace_string("${QUIC_SOURCE_PATH}/CMakeLists.txt"
-[[    check_c_compiler_flag(/guard:cf HAS_GUARDCF)]]
-[[    if(NOT (CMAKE_C_COMPILER_ID STREQUAL "Clang"))
+    )
+    vcpkg_replace_string("${QUIC_SOURCE_PATH}/CMakeLists.txt"
+    [[    check_c_compiler_flag(/guard:cf HAS_GUARDCF)]]
+    [[    if(NOT (CMAKE_C_COMPILER_ID STREQUAL "Clang"))
         check_c_compiler_flag(/guard:cf HAS_GUARDCF)
     endif()]]
-)
+    )
 
-# --- wolfSSL TLS backend ---
+    # Disable /analyze for clang-cl (MSVC is TRUE for clang-cl but /analyze is MSVC-only)
+    vcpkg_replace_string("${QUIC_SOURCE_PATH}/src/platform/CMakeLists.txt"
+    [[if (MSVC AND (QUIC_TLS_LIB STREQUAL "quictls" OR QUIC_TLS_LIB STREQUAL "schannel") AND NOT QUIC_ENABLE_SANITIZERS)]]
+    [[if (MSVC AND NOT (CMAKE_C_COMPILER_ID STREQUAL "Clang") AND (QUIC_TLS_LIB STREQUAL "wolfssl" OR QUIC_TLS_LIB STREQUAL "quictls" OR QUIC_TLS_LIB STREQUAL "schannel") AND NOT QUIC_ENABLE_SANITIZERS)]]
+    )
+    vcpkg_replace_string("${QUIC_SOURCE_PATH}/src/core/CMakeLists.txt"
+    [[if (MSVC AND NOT QUIC_ENABLE_SANITIZERS)]]
+    [[if (MSVC AND NOT (CMAKE_C_COMPILER_ID STREQUAL "Clang") AND NOT QUIC_ENABLE_SANITIZERS)]]
+    )
+
+endif() # VCPKG_TARGET_IS_WINDOWS
+
+# ── Cross-platform: wolfSSL TLS backend ───────────────────────
 #
 # Instead of building QuicTLS (OpenSSL fork), we use wolfSSL with OPENSSLALL
 # as MsQuic's TLS provider. wolfSSL provides OpenSSL-compatible QUIC API
@@ -84,12 +98,15 @@ vcpkg_replace_string("${QUIC_SOURCE_PATH}/CMakeLists.txt"
 #
 # Strategy:
 #   - Use tls_quictls.c compiled against wolfSSL's OpenSSL-compat headers
-#   - Use crypt_bcrypt.c for QUIC crypto (Windows CNG, no OpenSSL 3.x APIs)
-#   - Use cert_capi.c + selfsign_capi.c for cert operations (Windows CAPI)
-#   - Install wolfssl_compat.h to stub missing OpenSSL 3.x APIs
+#   - crypt_wolfssl.c for all crypto (native wolfcrypt API, both platforms)
+#   - Windows: cert_capi.c + selfsign_capi.c (Windows CNG/CAPI)
+#   - Linux: certificates_posix.c
+#   - wolfssl_compat.h for TLS-only stubs (OpenSSL 3.x APIs not in wolfSSL)
 
-# Install the wolfSSL compatibility header into MsQuic's source
+# Install our custom files into MsQuic's source
 file(INSTALL "${CMAKE_CURRENT_LIST_DIR}/wolfssl_compat.h"
+     DESTINATION "${QUIC_SOURCE_PATH}/src/platform")
+file(INSTALL "${CMAKE_CURRENT_LIST_DIR}/crypt_wolfssl.c"
      DESTINATION "${QUIC_SOURCE_PATH}/src/platform")
 
 # -- Patch top-level CMakeLists.txt: add wolfssl TLS backend option --
@@ -152,6 +169,7 @@ elseif(QUIC_TLS_LIB STREQUAL "quictls")
 )
 
 # -- Patch platform CMakeLists.txt: add wolfssl source/link rules --
+# Platform-conditional: Windows uses bcrypt/capi, Linux uses openssl-based files
 
 vcpkg_replace_string("${QUIC_SOURCE_PATH}/src/platform/CMakeLists.txt"
 [[if (QUIC_TLS_LIB STREQUAL "schannel")
@@ -160,9 +178,11 @@ vcpkg_replace_string("${QUIC_SOURCE_PATH}/src/platform/CMakeLists.txt"
 elseif(QUIC_TLS_LIB STREQUAL "quictls")]]
 [[if (QUIC_TLS_LIB STREQUAL "wolfssl")
     message(STATUS "Configuring for wolfSSL")
-    set(SOURCES ${SOURCES} tls_quictls.c crypt_bcrypt.c certificates_capi.c cert_capi.c selfsign_capi.c)
-    # wolfSSL's options.h isn't needed — all defines come from CMake target.
-    # Without this, settings.h emits #warning which MSVC C compiler doesn't support.
+    if(WIN32)
+        set(SOURCES ${SOURCES} tls_quictls.c crypt_wolfssl.c certificates_capi.c cert_capi.c selfsign_capi.c)
+    else()
+        set(SOURCES ${SOURCES} tls_quictls.c crypt_wolfssl.c certificates_posix.c)
+    endif()
     add_compile_definitions(WOLFSSL_NO_OPTIONS_H WOLFSSL_EARLY_DATA)
 elseif(QUIC_TLS_LIB STREQUAL "schannel")
     message(STATUS "Configuring for Schannel")
@@ -170,24 +190,17 @@ elseif(QUIC_TLS_LIB STREQUAL "schannel")
 elseif(QUIC_TLS_LIB STREQUAL "quictls")]]
 )
 
-# Add wolfssl link rule
+# Add wolfssl link rule (platform-conditional)
 vcpkg_replace_string("${QUIC_SOURCE_PATH}/src/platform/CMakeLists.txt"
 [[if(QUIC_TLS_LIB STREQUAL "quictls")
     target_link_libraries(msquic_platform PUBLIC OpenSSL)]]
 [[if(QUIC_TLS_LIB STREQUAL "wolfssl")
-    target_link_libraries(msquic_platform PUBLIC OpenSSL secur32 onecore)
+    target_link_libraries(msquic_platform PUBLIC OpenSSL)
+    if(WIN32)
+        target_link_libraries(msquic_platform PUBLIC secur32 onecore)
+    endif()
 elseif(QUIC_TLS_LIB STREQUAL "quictls")
     target_link_libraries(msquic_platform PUBLIC OpenSSL)]]
-)
-
-# Disable /analyze for clang-cl (MSVC is TRUE for clang-cl but /analyze is MSVC-only)
-vcpkg_replace_string("${QUIC_SOURCE_PATH}/src/platform/CMakeLists.txt"
-[[if (MSVC AND (QUIC_TLS_LIB STREQUAL "quictls" OR QUIC_TLS_LIB STREQUAL "schannel") AND NOT QUIC_ENABLE_SANITIZERS)]]
-[[if (MSVC AND NOT (CMAKE_C_COMPILER_ID STREQUAL "Clang") AND (QUIC_TLS_LIB STREQUAL "wolfssl" OR QUIC_TLS_LIB STREQUAL "quictls" OR QUIC_TLS_LIB STREQUAL "schannel") AND NOT QUIC_ENABLE_SANITIZERS)]]
-)
-vcpkg_replace_string("${QUIC_SOURCE_PATH}/src/core/CMakeLists.txt"
-[[if (MSVC AND NOT QUIC_ENABLE_SANITIZERS)]]
-[[if (MSVC AND NOT (CMAKE_C_COMPILER_ID STREQUAL "Clang") AND NOT QUIC_ENABLE_SANITIZERS)]]
 )
 
 # -- Patch tls_quictls.c: add wolfSSL compatibility --
@@ -236,11 +249,16 @@ vcpkg_replace_string("${QUIC_SOURCE_PATH}/src/platform/tls_quictls.c"
 #include "wolfssl_compat.h"]=]
 )
 
-# Change extern AES handle to definition (normally in crypt_openssl.c which we don't use;
-# the ticket key callback referencing it is never registered with wolfSSL)
-vcpkg_replace_string("${QUIC_SOURCE_PATH}/src/platform/tls_quictls.c"
-    [[extern EVP_CIPHER *CXPLAT_AES_256_CBC_ALG_HANDLE;]]
-    [[EVP_CIPHER *CXPLAT_AES_256_CBC_ALG_HANDLE = NULL;]]
+# crypt_wolfssl.c defines CXPLAT_AES_256_CBC_ALG_HANDLE on both platforms,
+# so tls_quictls.c's extern declaration is correct as-is.
+
+# -- Patch static library merge: exclude system libraries --
+# MsQuic's flatten_link_dependencies walks transitive deps and tries to merge
+# every .a it finds into the monolithic libmsquic.a via `ar -M`. wolfSSL links
+# to system libs like -lm which get mangled into "m.a" (doesn't exist).
+vcpkg_replace_string("${QUIC_SOURCE_PATH}/src/bin/CMakeLists.txt"
+    [[set(EXCLUDE_LIST "inc")]]
+    [[set(EXCLUDE_LIST "inc" "m" "pthread" "rt" "atomic")]]
 )
 
 vcpkg_cmake_configure(

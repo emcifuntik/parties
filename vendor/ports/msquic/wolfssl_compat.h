@@ -199,21 +199,74 @@ static inline SSL_SESSION *wolfssl_compat_read_session_from_bio(
 }
 #define PEM_read_bio_SSL_SESSION wolfssl_compat_read_session_from_bio
 
-/* ---- OSSL_PARAM (not needed with stubs above) ---- */
+/* ======================================================================
+ * Minimal stubs for OpenSSL 3.x types still referenced by tls_quictls.c
+ *
+ * The session ticket key callback (CxPlatTlsOnSessionTicketKeyNeeded) uses
+ * OSSL_PARAM and EVP_MAC_CTX in its signature, but the callback is never
+ * registered (SSL_CTX_set_tlsext_ticket_key_evp_cb is a no-op above).
+ * These stubs only need to compile, not execute.
+ * ====================================================================== */
+
+#include <string.h> /* strlen */
+
+/* ---- OSSL_PARAM (compile-only, for ticket key callback signature) ---- */
+
+#define WOLFSSL_OSSL_PARAM_END          0
+#define WOLFSSL_OSSL_PARAM_UTF8_STRING  1
+#define WOLFSSL_OSSL_PARAM_OCTET_STRING 2
+
 #ifndef OSSL_PARAM
-typedef struct { int dummy; } OSSL_PARAM;
-#define OSSL_PARAM_construct_octet_string(k,v,s) ((OSSL_PARAM){0})
-#define OSSL_PARAM_construct_utf8_string(k,v,s)  ((OSSL_PARAM){0})
-#define OSSL_PARAM_construct_end()                ((OSSL_PARAM){0})
+typedef struct {
+    const char *key;
+    int         data_type;
+    void       *data;
+    size_t      data_size;
+} OSSL_PARAM;
+
+static inline OSSL_PARAM
+OSSL_PARAM_construct_utf8_string(const char *key, char *val, size_t len) {
+    OSSL_PARAM p;
+    p.key = key;
+    p.data_type = WOLFSSL_OSSL_PARAM_UTF8_STRING;
+    p.data = val;
+    p.data_size = (len != 0) ? len : (val ? strlen(val) : 0);
+    return p;
+}
+
+static inline OSSL_PARAM
+OSSL_PARAM_construct_octet_string(const char *key, void *val, size_t len) {
+    OSSL_PARAM p;
+    p.key = key;
+    p.data_type = WOLFSSL_OSSL_PARAM_OCTET_STRING;
+    p.data = val;
+    p.data_size = len;
+    return p;
+}
+
+static inline OSSL_PARAM
+OSSL_PARAM_construct_end(void) {
+    OSSL_PARAM p;
+    p.key = NULL;
+    p.data_type = WOLFSSL_OSSL_PARAM_END;
+    p.data = NULL;
+    p.data_size = 0;
+    return p;
+}
+
 #define OSSL_MAC_PARAM_KEY    "key"
 #define OSSL_MAC_PARAM_DIGEST "digest"
-#endif
+#endif /* OSSL_PARAM */
 
-/* EVP_MAC_CTX stub (the callback using it is never installed with wolfSSL) */
-#ifndef EVP_MAC_CTX
-typedef void EVP_MAC_CTX;
-static inline int EVP_MAC_CTX_set_params(EVP_MAC_CTX *ctx, const OSSL_PARAM *p) {
+/* ---- EVP_MAC_CTX (compile-only stub) ---- */
+/* Only used as a parameter type in the disabled ticket key callback. */
+
+typedef struct { int dummy; } wolfssl_compat_evp_mac_ctx_t;
+#define EVP_MAC_CTX wolfssl_compat_evp_mac_ctx_t
+
+static inline int
+wolfssl_compat_mac_ctx_set_params(EVP_MAC_CTX *ctx, const OSSL_PARAM *p) {
     (void)ctx; (void)p;
-    return 0;
+    return 1;
 }
-#endif
+#define EVP_MAC_CTX_set_params wolfssl_compat_mac_ctx_set_params

@@ -16,7 +16,6 @@
 namespace parties::client {
 
 class VoiceMixer;
-class SoundPlayer;
 
 struct DeviceInfo {
     std::string name;
@@ -35,7 +34,6 @@ public:
     void stop();
 
     void set_mixer(VoiceMixer* mixer) { mixer_ = mixer; }
-    void set_sound_player(SoundPlayer* player) { sound_player_ = player; }
 
     // Called when an encoded voice frame is ready to send
     std::function<void(const uint8_t*, size_t)> on_encoded_frame;
@@ -111,7 +109,6 @@ private:
     uint8_t opus_buf_[audio::MAX_OPUS_PACKET];
 
     VoiceMixer* mixer_ = nullptr;
-    SoundPlayer* sound_player_ = nullptr;
 
     std::atomic<bool> muted_{false};
     std::atomic<bool> deafened_{false};

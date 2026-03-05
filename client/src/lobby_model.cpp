@@ -2,6 +2,7 @@
 
 #include <RmlUi/Core/Context.h>
 #include <RmlUi/Core/DataModelHandle.h>
+#include <RmlUi/Core/Event.h>
 
 namespace parties::client {
 
@@ -91,6 +92,15 @@ bool LobbyModel::init(Rml::Context* context) {
     // Share picker
     ctor.Bind("show_share_picker", &show_share_picker);
     ctor.Bind("share_targets",     &share_targets);
+
+    // Admin / permissions
+    ctor.Bind("my_role",              &my_role);
+    ctor.Bind("can_manage_channels",  &can_manage_channels);
+    ctor.Bind("can_kick",             &can_kick);
+    ctor.Bind("can_manage_roles",     &can_manage_roles);
+    ctor.Bind("show_create_channel",  &show_create_channel);
+    ctor.Bind("new_channel_name",     &new_channel_name);
+    ctor.Bind("admin_message",        &admin_message);
 
     // Event callbacks
     ctor.BindEventCallback("join_channel",
@@ -217,6 +227,53 @@ bool LobbyModel::init(Rml::Context* context) {
             if (on_stop_watching) on_stop_watching();
         });
 
+    // Admin event callbacks
+    ctor.BindEventCallback("show_create_channel_form",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            show_create_channel = true;
+            new_channel_name = "";
+            dirty("show_create_channel");
+            dirty("new_channel_name");
+        });
+
+    ctor.BindEventCallback("cancel_create_channel",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            show_create_channel = false;
+            dirty("show_create_channel");
+        });
+
+    ctor.BindEventCallback("create_channel",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            if (on_create_channel) on_create_channel();
+        });
+
+    ctor.BindEventCallback("channel_mousedown",
+        [this](Rml::DataModelHandle, Rml::Event& ev, const Rml::VariantList& args) {
+            int button = ev.GetParameter<int>("button", 0);
+            if (button == 0) {
+                // Left click → join channel
+                if (!args.empty() && on_join_channel)
+                    on_join_channel(args[0].Get<int>());
+            } else if (button == 1) {
+                // Right click → channel context menu
+                if (args.size() >= 2 && on_show_channel_menu)
+                    on_show_channel_menu(args[0].Get<int>(), args[1].Get<Rml::String>());
+            }
+        });
+
+    ctor.BindEventCallback("user_mousedown",
+        [this](Rml::DataModelHandle, Rml::Event& ev, const Rml::VariantList& args) {
+            int button = ev.GetParameter<int>("button", 0);
+            if (button != 1) return;  // right-click only
+            ev.StopPropagation();     // don't bubble to channel_mousedown
+            if (args.size() < 3) return;
+            int uid = args[0].Get<int>();
+            auto name = args[1].Get<Rml::String>();
+            int role = args[2].Get<int>();
+            if (on_show_user_menu)
+                on_show_user_menu(uid, std::string(name), role);
+        });
+
     handle_ = ctor.GetModelHandle();
     return true;
 }
@@ -257,6 +314,12 @@ void LobbyModel::dirty_all() {
     dirty("viewing_sharer_id");
     dirty("show_share_picker");
     dirty("share_targets");
+    dirty("my_role");
+    dirty("can_manage_channels");
+    dirty("can_kick");
+    dirty("can_manage_roles");
+    dirty("show_create_channel");
+    dirty("admin_message");
 }
 
 } // namespace parties::client
