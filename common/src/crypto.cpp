@@ -1,12 +1,12 @@
 #include <parties/crypto.h>
 
 #include <wolfssl/options.h>
-#include <wolfssl/ssl.h>
+#include <wolfssl/wolfcrypt/wc_port.h>
 #include <wolfssl/wolfcrypt/sha256.h>
 #include <wolfssl/wolfcrypt/random.h>
 #include <wolfssl/wolfcrypt/rsa.h>
 #include <wolfssl/wolfcrypt/asn_public.h>
-#include <wolfssl/wolfcrypt/chacha20_poly1305.h>
+#include <wolfssl/wolfcrypt/asn.h>
 
 #include <cstdio>
 #include <fstream>
@@ -19,7 +19,7 @@ static bool g_initialized = false;
 
 bool crypto_init() {
     if (g_initialized) return true;
-    wolfSSL_Init();
+    wolfCrypt_Init();
     if (wc_InitRng(&g_rng) != 0) return false;
     g_initialized = true;
     return true;
@@ -28,7 +28,7 @@ bool crypto_init() {
 void crypto_cleanup() {
     if (!g_initialized) return;
     wc_FreeRng(&g_rng);
-    wolfSSL_Cleanup();
+    wolfCrypt_Cleanup();
     g_initialized = false;
 }
 
@@ -115,120 +115,35 @@ bool generate_self_signed_cert(const std::string& common_name,
     wc_FreeRsaKey(rsa);
     delete rsa;
 
-    // Write DER files directly — avoids wolfSSL PEM code path issues
+    // Convert DER to PEM
+    std::vector<uint8_t> cert_pem(BUF_SZ);
+    int cert_pem_len = wc_DerToPem(cert_der.data(), cert_der_len,
+                                    cert_pem.data(), BUF_SZ, CERT_TYPE);
+    if (cert_pem_len <= 0) {
+        std::fprintf(stderr, "[Crypto] wc_DerToPem (cert) failed: %d\n", cert_pem_len);
+        return false;
+    }
+
+    std::vector<uint8_t> key_pem(BUF_SZ);
+    int key_pem_len = wc_DerToPem(key_der.data(), key_der_len,
+                                   key_pem.data(), BUF_SZ, PRIVATEKEY_TYPE);
+    if (key_pem_len <= 0) {
+        std::fprintf(stderr, "[Crypto] wc_DerToPem (key) failed: %d\n", key_pem_len);
+        return false;
+    }
+
+    // Write PEM files
     std::ofstream cert_out(cert_path, std::ios::binary);
     if (!cert_out) return false;
-    cert_out.write(reinterpret_cast<const char*>(cert_der.data()), cert_der_len);
+    cert_out.write(reinterpret_cast<const char*>(cert_pem.data()), cert_pem_len);
     cert_out.close();
 
     std::ofstream key_out(key_path, std::ios::binary);
     if (!key_out) return false;
-    key_out.write(reinterpret_cast<const char*>(key_der.data()), key_der_len);
+    key_out.write(reinterpret_cast<const char*>(key_pem.data()), key_pem_len);
     key_out.close();
 
     return true;
-}
-
-static std::vector<uint8_t> read_file(const std::string& path) {
-    std::ifstream f(path, std::ios::binary | std::ios::ate);
-    if (!f) return {};
-    auto sz = f.tellg();
-    f.seekg(0);
-    std::vector<uint8_t> buf(static_cast<size_t>(sz));
-    f.read(reinterpret_cast<char*>(buf.data()), sz);
-    return buf;
-}
-
-WOLFSSL_CTX* create_tls_server_ctx(const std::string& cert_path,
-                                   const std::string& key_path) {
-    WOLFSSL_CTX* ctx = wolfSSL_CTX_new(wolfTLSv1_3_server_method());
-    if (!ctx) {
-        std::fprintf(stderr, "[Crypto] wolfSSL_CTX_new failed\n");
-        return nullptr;
-    }
-
-    auto cert_data = read_file(cert_path);
-    if (cert_data.empty()) {
-        std::fprintf(stderr, "[Crypto] Failed to read cert file %s\n",
-                     cert_path.c_str());
-        wolfSSL_CTX_free(ctx);
-        return nullptr;
-    }
-
-    if (wolfSSL_CTX_use_certificate_buffer(ctx, cert_data.data(),
-            static_cast<long>(cert_data.size()),
-            SSL_FILETYPE_ASN1) != SSL_SUCCESS) {
-        std::fprintf(stderr, "[Crypto] Failed to load cert %s\n",
-                     cert_path.c_str());
-        wolfSSL_CTX_free(ctx);
-        return nullptr;
-    }
-
-    auto key_data = read_file(key_path);
-    if (key_data.empty()) {
-        std::fprintf(stderr, "[Crypto] Failed to read key file %s\n",
-                     key_path.c_str());
-        wolfSSL_CTX_free(ctx);
-        return nullptr;
-    }
-
-    if (wolfSSL_CTX_use_PrivateKey_buffer(ctx, key_data.data(),
-            static_cast<long>(key_data.size()),
-            SSL_FILETYPE_ASN1) != SSL_SUCCESS) {
-        char buf[256];
-        wolfSSL_ERR_error_string(wolfSSL_ERR_get_error(), buf);
-        std::fprintf(stderr, "[Crypto] Failed to load key %s: %s\n",
-                     key_path.c_str(), buf);
-        wolfSSL_CTX_free(ctx);
-        return nullptr;
-    }
-
-    return ctx;
-}
-
-WOLFSSL_CTX* create_tls_client_ctx() {
-    WOLFSSL_CTX* ctx = wolfSSL_CTX_new(wolfTLSv1_3_client_method());
-    if (!ctx) return nullptr;
-
-    // No CA verification — we use TOFU
-    wolfSSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, nullptr);
-
-    return ctx;
-}
-
-std::string get_peer_cert_fingerprint(WOLFSSL* ssl) {
-    WOLFSSL_X509* cert = wolfSSL_get_peer_certificate(ssl);
-    if (!cert) return "";
-
-    int der_len = 0;
-    const unsigned char* der = wolfSSL_X509_get_der(cert, &der_len);
-    if (!der || der_len <= 0) return "";
-
-    return sha256_hex(der, static_cast<size_t>(der_len));
-}
-
-void free_tls_ctx(WOLFSSL_CTX* ctx) {
-    if (ctx) wolfSSL_CTX_free(ctx);
-}
-
-bool voice_encrypt(const uint8_t* key, const uint8_t* nonce,
-                   const uint8_t* aad, size_t aad_len,
-                   const uint8_t* plaintext, size_t plaintext_len,
-                   uint8_t* ciphertext, uint8_t* tag) {
-    return wc_ChaCha20Poly1305_Encrypt(
-        key, nonce, aad, static_cast<word32>(aad_len),
-        plaintext, static_cast<word32>(plaintext_len),
-        ciphertext, tag) == 0;
-}
-
-bool voice_decrypt(const uint8_t* key, const uint8_t* nonce,
-                   const uint8_t* aad, size_t aad_len,
-                   const uint8_t* ciphertext, size_t ciphertext_len,
-                   const uint8_t* tag, uint8_t* plaintext) {
-    return wc_ChaCha20Poly1305_Decrypt(
-        key, nonce, aad, static_cast<word32>(aad_len),
-        ciphertext, static_cast<word32>(ciphertext_len),
-        tag, plaintext) == 0;
 }
 
 } // namespace parties

@@ -3,7 +3,6 @@
 #include <parties/protocol.h>
 #include <parties/crypto.h>
 
-#include <wincrypt.h>
 #include <cstdio>
 #include <cstring>
 
@@ -15,7 +14,8 @@ NetClient::~NetClient() {
     disconnect();
 }
 
-bool NetClient::connect(const std::string& host, uint16_t port) {
+bool NetClient::connect(const std::string& host, uint16_t port,
+                         const uint8_t* ticket, size_t ticket_len) {
     if (connected_) return false;
 
     api_ = parties::quic_api();
@@ -56,7 +56,8 @@ bool NetClient::connect(const std::string& host, uint16_t port) {
     cred_config.Type = QUIC_CREDENTIAL_TYPE_NONE;
     cred_config.Flags = QUIC_CREDENTIAL_FLAG_CLIENT |
                         QUIC_CREDENTIAL_FLAG_NO_CERTIFICATE_VALIDATION |
-                        QUIC_CREDENTIAL_FLAG_INDICATE_CERTIFICATE_RECEIVED;
+                        QUIC_CREDENTIAL_FLAG_INDICATE_CERTIFICATE_RECEIVED |
+                        QUIC_CREDENTIAL_FLAG_USE_PORTABLE_CERTIFICATES;
 
     status = api_->ConfigurationLoadCredential(configuration_, &cred_config);
     if (QUIC_FAILED(status)) {
@@ -77,6 +78,15 @@ bool NetClient::connect(const std::string& host, uint16_t port) {
         api_->RegistrationClose(registration_);
         registration_ = nullptr;
         return false;
+    }
+
+    // Apply resumption ticket for 0-RTT if available
+    if (ticket && ticket_len > 0) {
+        status = api_->SetParam(connection_, QUIC_PARAM_CONN_RESUMPTION_TICKET,
+                                 static_cast<uint32_t>(ticket_len), ticket);
+        if (QUIC_FAILED(status)) {
+            std::fprintf(stderr, "[NetClient] SetParam(RESUMPTION_TICKET) failed: 0x%lx (non-fatal)\n", status);
+        }
     }
 
     // Start connection
@@ -311,19 +321,24 @@ QUIC_STATUS NetClient::on_connection_event(HQUIC connection,
 
     case QUIC_CONNECTION_EVENT_PEER_CERTIFICATE_RECEIVED: {
         // Extract server certificate fingerprint for TOFU verification.
-        // On Windows (Schannel), Certificate is a PCCERT_CONTEXT.
-        auto* cert = static_cast<PCCERT_CONTEXT>(event->PEER_CERTIFICATE_RECEIVED.Certificate);
-        if (cert && cert->pbCertEncoded && cert->cbCertEncoded > 0) {
+        // With USE_PORTABLE_CERTIFICATES, Certificate is a QUIC_BUFFER* with DER bytes.
+        auto* cert_buf = static_cast<QUIC_BUFFER*>(event->PEER_CERTIFICATE_RECEIVED.Certificate);
+        if (cert_buf && cert_buf->Buffer && cert_buf->Length > 0) {
             server_fingerprint_ = parties::sha256_hex(
-                cert->pbCertEncoded, cert->cbCertEncoded);
+                cert_buf->Buffer, cert_buf->Length);
             std::printf("[NetClient] Server fingerprint: %s\n", server_fingerprint_.c_str());
         }
         break;
     }
 
-    case QUIC_CONNECTION_EVENT_RESUMPTION_TICKET_RECEIVED:
-        // TODO: persist ticket for 0-RTT reconnection
+    case QUIC_CONNECTION_EVENT_RESUMPTION_TICKET_RECEIVED: {
+        auto& ticket_event = event->RESUMPTION_TICKET_RECEIVED;
+        if (on_resumption_ticket && ticket_event.ResumptionTicketLength > 0) {
+            on_resumption_ticket(ticket_event.ResumptionTicket,
+                                 ticket_event.ResumptionTicketLength);
+        }
         break;
+    }
 
     case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_TRANSPORT:
         std::printf("[NetClient] Connection shut down by transport: 0x%lx\n",

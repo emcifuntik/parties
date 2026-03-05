@@ -7,7 +7,10 @@
     "opus",
     "sqlite3",
     "toml11",
-    "wolfssl"
+    {
+      "name": "wolfssl",
+      "features": ["quic"]
+    }
   ],
   "features": {
     "client": {

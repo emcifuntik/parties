@@ -28,6 +28,8 @@ target_compile_definitions(parties_common
         HAVE_OID_ENCODING
         WOLFSSL_ASN_TEMPLATE
         WOLFSSL_PEM_TO_DER
+        WOLFSSL_KEY_GEN
+        WOLFSSL_CERT_GEN
 )
 
 target_link_libraries(parties_common

@@ -2,8 +2,6 @@
 #include <parties/quic_common.h>
 #include <parties/protocol.h>
 
-#include <wincrypt.h>
-#include <fstream>
 #include <cstdio>
 #include <cstring>
 
@@ -61,127 +59,19 @@ bool QuicServer::start(const std::string& listen_ip, uint16_t port, size_t max_c
         return false;
     }
 
-    // Load TLS credentials — Schannel requires CERTIFICATE_CONTEXT, not CERTIFICATE_FILE.
-    // Read DER cert + PKCS#1 RSA key, import into CNG, associate with CERT_CONTEXT.
+    // Load TLS credentials — QuicTLS uses PEM files directly
     {
-        auto read_file = [](const std::string& path) -> std::vector<uint8_t> {
-            std::ifstream f(path, std::ios::binary | std::ios::ate);
-            if (!f) return {};
-            auto sz = f.tellg();
-            f.seekg(0);
-            std::vector<uint8_t> data(static_cast<size_t>(sz));
-            f.read(reinterpret_cast<char*>(data.data()), sz);
-            return data;
-        };
+        QUIC_CERTIFICATE_FILE cert_file_config = {};
+        cert_file_config.CertificateFile = cert_file.c_str();
+        cert_file_config.PrivateKeyFile = key_file.c_str();
 
-        auto cert_der = read_file(cert_file);
-        auto key_der  = read_file(key_file);
-        if (cert_der.empty() || key_der.empty()) {
-            std::fprintf(stderr, "[QuicServer] Cannot read cert/key files: %s / %s\n",
-                         cert_file.c_str(), key_file.c_str());
-            api_->ConfigurationClose(configuration_);
-            configuration_ = nullptr;
-            api_->RegistrationClose(registration_);
-            registration_ = nullptr;
-            return false;
-        }
-
-        // Create CERT_CONTEXT from X.509 DER
-        PCCERT_CONTEXT cert = CertCreateCertificateContext(
-            X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
-            cert_der.data(), static_cast<DWORD>(cert_der.size()));
-        if (!cert) {
-            std::fprintf(stderr, "[QuicServer] CertCreateCertificateContext failed: %lu\n", GetLastError());
-            api_->ConfigurationClose(configuration_);
-            configuration_ = nullptr;
-            api_->RegistrationClose(registration_);
-            registration_ = nullptr;
-            return false;
-        }
-
-        // Decode PKCS#1 RSA private key DER → CAPI PRIVATEKEYBLOB
-        BYTE* key_blob = nullptr;
-        DWORD key_blob_len = 0;
-        if (!CryptDecodeObjectEx(
-                X509_ASN_ENCODING, PKCS_RSA_PRIVATE_KEY,
-                key_der.data(), static_cast<DWORD>(key_der.size()),
-                CRYPT_DECODE_ALLOC_FLAG, nullptr,
-                &key_blob, &key_blob_len)) {
-            std::fprintf(stderr, "[QuicServer] CryptDecodeObjectEx (key) failed: %lu\n", GetLastError());
-            CertFreeCertificateContext(cert);
-            api_->ConfigurationClose(configuration_);
-            configuration_ = nullptr;
-            api_->RegistrationClose(registration_);
-            registration_ = nullptr;
-            return false;
-        }
-
-        // Import key into a named CAPI container (Schannel looks up keys by name)
-        HCRYPTPROV capi_prov = 0;
-        if (!CryptAcquireContextW(&capi_prov, L"PartiesServer", nullptr,
-                                   PROV_RSA_FULL, CRYPT_NEWKEYSET | CRYPT_SILENT)) {
-            if (GetLastError() == static_cast<DWORD>(NTE_EXISTS)) {
-                CryptAcquireContextW(&capi_prov, L"PartiesServer", nullptr,
-                                      PROV_RSA_FULL, CRYPT_SILENT);
-            }
-        }
-        if (!capi_prov) {
-            std::fprintf(stderr, "[QuicServer] CryptAcquireContext failed: %lu\n", GetLastError());
-            LocalFree(key_blob);
-            CertFreeCertificateContext(cert);
-            api_->ConfigurationClose(configuration_);
-            configuration_ = nullptr;
-            api_->RegistrationClose(registration_);
-            registration_ = nullptr;
-            return false;
-        }
-
-        HCRYPTKEY hKey = 0;
-        if (!CryptImportKey(capi_prov, key_blob, key_blob_len, 0, 0, &hKey)) {
-            std::fprintf(stderr, "[QuicServer] CryptImportKey failed: %lu\n", GetLastError());
-            LocalFree(key_blob);
-            CryptReleaseContext(capi_prov, 0);
-            CertFreeCertificateContext(cert);
-            api_->ConfigurationClose(configuration_);
-            configuration_ = nullptr;
-            api_->RegistrationClose(registration_);
-            registration_ = nullptr;
-            return false;
-        }
-        LocalFree(key_blob);
-        CryptDestroyKey(hKey);
-        CryptReleaseContext(capi_prov, 0);
-
-        // Tell Schannel where to find the key (provider + container name)
-        CRYPT_KEY_PROV_INFO prov_info = {};
-        prov_info.pwszContainerName = const_cast<LPWSTR>(L"PartiesServer");
-        prov_info.dwProvType = PROV_RSA_FULL;
-        prov_info.dwKeySpec = AT_KEYEXCHANGE;
-
-        if (!CertSetCertificateContextProperty(
-                cert, CERT_KEY_PROV_INFO_PROP_ID, 0, &prov_info)) {
-            std::fprintf(stderr, "[QuicServer] CertSetCertificateContextProperty failed: %lu\n", GetLastError());
-            CertFreeCertificateContext(cert);
-            api_->ConfigurationClose(configuration_);
-            configuration_ = nullptr;
-            api_->RegistrationClose(registration_);
-            registration_ = nullptr;
-            return false;
-        }
-
-        cert_context_ = cert;
-
-        // Pass to MsQuic Schannel as CERTIFICATE_CONTEXT
         QUIC_CREDENTIAL_CONFIG cred_config = {};
-        cred_config.Type = QUIC_CREDENTIAL_TYPE_CERTIFICATE_CONTEXT;
-        cred_config.CertificateContext = const_cast<QUIC_CERTIFICATE*>(
-            reinterpret_cast<const QUIC_CERTIFICATE*>(cert));
+        cred_config.Type = QUIC_CREDENTIAL_TYPE_CERTIFICATE_FILE;
+        cred_config.CertificateFile = &cert_file_config;
 
         status = api_->ConfigurationLoadCredential(configuration_, &cred_config);
         if (QUIC_FAILED(status)) {
             std::fprintf(stderr, "[QuicServer] ConfigurationLoadCredential failed: 0x%lx\n", status);
-            CertFreeCertificateContext(cert);
-            cert_context_ = nullptr;
             api_->ConfigurationClose(configuration_);
             configuration_ = nullptr;
             api_->RegistrationClose(registration_);
@@ -251,16 +141,6 @@ void QuicServer::stop() {
         api_->RegistrationClose(registration_);
         registration_ = nullptr;
     }
-
-    // Free Schannel cert context and delete the CAPI key container
-    if (cert_context_) {
-        CertFreeCertificateContext(static_cast<PCCERT_CONTEXT>(const_cast<void*>(cert_context_)));
-        cert_context_ = nullptr;
-    }
-    // Delete the named CAPI container we created for Schannel
-    HCRYPTPROV del_prov = 0;
-    CryptAcquireContextW(&del_prov, L"PartiesServer", nullptr,
-                          PROV_RSA_FULL, CRYPT_DELETEKEYSET | CRYPT_SILENT);
 
     std::printf("[QuicServer] Stopped\n");
 }
@@ -520,6 +400,10 @@ QUIC_STATUS QuicServer::on_connection_event(HQUIC connection, uint32_t session_i
         }
         break;
     }
+
+    case QUIC_CONNECTION_EVENT_RESUMED:
+        std::printf("[QuicServer] Session %u resumed (0-RTT)\n", session_id);
+        break;
 
     case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_TRANSPORT:
     case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_PEER:

@@ -12,8 +12,8 @@ struct Config {
     int         max_clients    = 64;
     std::string server_password;
 
-    std::string cert_file      = "server.der";
-    std::string key_file       = "server.key.der";
+    std::string cert_file      = "server.pem";
+    std::string key_file       = "server.key.pem";
 
     std::string db_path        = "parties.db";
 

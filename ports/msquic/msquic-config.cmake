@@ -31,8 +31,11 @@ if(NOT msquic_LIBRARY_RELEASE AND NOT msquic_LIBRARY_DEBUG)
     message(FATAL_ERROR "msquic library not found")
 endif()
 
-# Schannel TLS backend dependencies on Windows
+# wolfSSL TLS backend + platform dependencies
 if(WIN32)
+    find_package(wolfssl CONFIG REQUIRED)
     set_property(TARGET msquic::msquic APPEND PROPERTY
-        INTERFACE_LINK_LIBRARIES wbemuuid winmm secur32 onecore ntdll)
+        INTERFACE_LINK_LIBRARIES
+        wolfssl::wolfssl
+        ntdll wbemuuid winmm secur32 onecore crypt32)
 endif()

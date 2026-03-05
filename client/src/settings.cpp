@@ -70,6 +70,14 @@ bool Settings::create_schema() {
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS resumption_tickets (
+            host     TEXT NOT NULL,
+            port     INTEGER NOT NULL,
+            ticket   BLOB NOT NULL,
+            saved_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (host, port)
+        );
     )SQL";
 
     if (!exec(schema))
@@ -181,6 +189,65 @@ bool Settings::delete_server(int id) {
         return false;
 
     sqlite3_bind_int(stmt, 1, id);
+    bool ok = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+    return ok;
+}
+
+// --- Resumption tickets ---
+
+bool Settings::save_resumption_ticket(const std::string& host, int port,
+                                       const uint8_t* data, size_t len) {
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "INSERT OR REPLACE INTO resumption_tickets (host, port, ticket) "
+                      "VALUES (?, ?, ?)";
+
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
+        return false;
+
+    sqlite3_bind_text(stmt, 1, host.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, port);
+    sqlite3_bind_blob(stmt, 3, data, static_cast<int>(len), SQLITE_TRANSIENT);
+
+    bool ok = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+    return ok;
+}
+
+std::vector<uint8_t> Settings::load_resumption_ticket(const std::string& host, int port) {
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "SELECT ticket FROM resumption_tickets "
+                      "WHERE host = ? AND port = ? "
+                      "AND saved_at > datetime('now', '-24 hours')";
+
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
+        return {};
+
+    sqlite3_bind_text(stmt, 1, host.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, port);
+
+    if (sqlite3_step(stmt) != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return {};
+    }
+
+    auto* blob = static_cast<const uint8_t*>(sqlite3_column_blob(stmt, 0));
+    int blob_len = sqlite3_column_bytes(stmt, 0);
+    std::vector<uint8_t> result(blob, blob + blob_len);
+    sqlite3_finalize(stmt);
+    return result;
+}
+
+bool Settings::delete_resumption_ticket(const std::string& host, int port) {
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "DELETE FROM resumption_tickets WHERE host = ? AND port = ?";
+
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
+        return false;
+
+    sqlite3_bind_int(stmt, 2, port);
+    sqlite3_bind_text(stmt, 1, host.c_str(), -1, SQLITE_TRANSIENT);
+
     bool ok = sqlite3_step(stmt) == SQLITE_DONE;
     sqlite3_finalize(stmt);
     return ok;

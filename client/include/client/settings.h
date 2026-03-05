@@ -42,6 +42,12 @@ public:
     std::vector<SavedServer> get_saved_servers();
     bool delete_server(int id);
 
+    // --- Resumption tickets (0-RTT) ---
+    bool save_resumption_ticket(const std::string& host, int port,
+                                const uint8_t* data, size_t len);
+    std::vector<uint8_t> load_resumption_ticket(const std::string& host, int port);
+    bool delete_resumption_ticket(const std::string& host, int port);
+
     // --- Preferences ---
     bool set_pref(const std::string& key, const std::string& value);
     std::optional<std::string> get_pref(const std::string& key);

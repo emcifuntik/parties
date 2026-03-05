@@ -441,6 +441,10 @@ bool App::init(HWND hwnd) {
         }
     };
 
+    net_.on_resumption_ticket = [this](const uint8_t* ticket, size_t len) {
+        settings_.save_resumption_ticket(server_host_, server_port_, ticket, len);
+    };
+
     net_.on_disconnected = [this]() {
         // Clean up screen sharing
         sharing_screen_ = false;
@@ -692,7 +696,10 @@ void App::do_connect() {
         server_model_.login_status = "Connecting...";
         server_model_.dirty("login_status");
 
-        if (!net_.connect(server_host_, server_port_)) {
+        // Load resumption ticket for 0-RTT if available
+        auto ticket = settings_.load_resumption_ticket(server_host_, server_port_);
+        if (!net_.connect(server_host_, server_port_,
+                          ticket.empty() ? nullptr : ticket.data(), ticket.size())) {
             server_model_.login_error = "Failed to connect to server";
             server_model_.dirty("login_error");
             return;
@@ -704,6 +711,7 @@ void App::do_connect() {
         if (result == Settings::TofuResult::Mismatch) {
             server_model_.login_error = "Server certificate changed! Possible MITM attack.";
             server_model_.dirty("login_error");
+            settings_.delete_resumption_ticket(server_host_, server_port_);
             net_.disconnect();
             return;
         }

@@ -128,10 +128,6 @@ private:
     HQUIC listener_ = nullptr;
     std::atomic<bool> running_{false};
 
-    // Schannel cert context (PCCERT_CONTEXT) + CNG private key handle
-    const void* cert_context_ = nullptr;
-    uintptr_t cert_key_ = 0;
-
     std::mutex sessions_mutex_;
     std::unordered_map<uint32_t, std::shared_ptr<Session>> sessions_;
     uint32_t next_session_id_ = 1;

@@ -27,7 +27,9 @@ public:
     ~NetClient();
 
     // Connect to server via QUIC (unified control + data)
-    bool connect(const std::string& host, uint16_t port);
+    // Optional resumption ticket enables 0-RTT reconnection.
+    bool connect(const std::string& host, uint16_t port,
+                 const uint8_t* ticket = nullptr, size_t ticket_len = 0);
 
     // Get the server certificate fingerprint (after QUIC connect)
     std::string get_server_fingerprint() const;
@@ -55,6 +57,9 @@ public:
 
     // Callback for disconnect events
     std::function<void()> on_disconnected;
+
+    // Callback for resumption ticket (save for 0-RTT reconnection)
+    std::function<void(const uint8_t* ticket, size_t len)> on_resumption_ticket;
 
 private:
     // MsQuic callbacks
