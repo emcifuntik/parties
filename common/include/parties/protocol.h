@@ -8,12 +8,11 @@ constexpr uint16_t DEFAULT_PORT = 7800;
 
 enum class ControlMessageType : uint16_t {
     // Client -> Server
-    AUTH_REQUEST          = 0x0001,
+    AUTH_IDENTITY         = 0x0001,  // [pubkey(32)][display_name][timestamp(8)][signature(64)]
     CHANNEL_JOIN          = 0x0002,
     CHANNEL_LEAVE         = 0x0003,
     KEEPALIVE_PING        = 0x0004,
     VOICE_STATE_UPDATE    = 0x0005,
-    REGISTER_REQUEST      = 0x0006,
     SCREEN_SHARE_START    = 0x0007,
     SCREEN_SHARE_STOP     = 0x0008,
     SCREEN_SHARE_VIEW     = 0x0009,   // Subscribe to a sharer's stream [target_user_id(4)], 0 = unsubscribe
@@ -26,7 +25,6 @@ enum class ControlMessageType : uint16_t {
     USER_LEFT_CHANNEL     = 0x0105,
     USER_VOICE_STATE      = 0x0106,
     KEEPALIVE_PONG        = 0x0107,
-    REGISTER_RESPONSE     = 0x0108,
     CHANNEL_KEY           = 0x0109,
     SCREEN_SHARE_STARTED  = 0x010A,
     SCREEN_SHARE_STOPPED  = 0x010B,

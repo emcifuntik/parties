@@ -2,6 +2,7 @@
 
 #include <sqlite3.h>
 #include <cstdio>
+#include <cstring>
 
 namespace parties::server {
 
@@ -53,8 +54,9 @@ bool Database::create_schema() {
     const char* schema = R"SQL(
         CREATE TABLE IF NOT EXISTS users (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            username      TEXT NOT NULL UNIQUE COLLATE NOCASE,
-            password_hash TEXT NOT NULL,
+            public_key    BLOB NOT NULL UNIQUE,
+            display_name  TEXT NOT NULL DEFAULT '',
+            fingerprint   TEXT NOT NULL,
             role          INTEGER NOT NULL DEFAULT 3,
             created_at    TEXT NOT NULL DEFAULT (datetime('now')),
             last_login    TEXT
@@ -88,54 +90,67 @@ bool Database::create_schema() {
 
 // --- Users ---
 
-bool Database::create_user(const std::string& username, const std::string& password_hash,
-                           Role role) {
+bool Database::create_user(const PublicKey& pubkey, const std::string& display_name,
+                           const std::string& fingerprint, Role role) {
     sqlite3_stmt* stmt = nullptr;
-    const char* sql = "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)";
+    const char* sql = "INSERT INTO users (public_key, display_name, fingerprint, role) "
+                      "VALUES (?, ?, ?, ?)";
 
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
         return false;
 
-    sqlite3_bind_text(stmt, 1, username.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 2, password_hash.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 3, static_cast<int>(role));
+    sqlite3_bind_blob(stmt, 1, pubkey.data(), static_cast<int>(pubkey.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, display_name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, fingerprint.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 4, static_cast<int>(role));
 
     bool ok = sqlite3_step(stmt) == SQLITE_DONE;
     sqlite3_finalize(stmt);
     return ok;
 }
 
-std::optional<UserRow> Database::get_user_by_name(const std::string& username) {
+static UserRow read_user_row(sqlite3_stmt* stmt) {
+    UserRow row;
+    row.id = static_cast<UserId>(sqlite3_column_int(stmt, 0));
+
+    auto* pk_blob = static_cast<const uint8_t*>(sqlite3_column_blob(stmt, 1));
+    int pk_len = sqlite3_column_bytes(stmt, 1);
+    if (pk_blob && pk_len == 32)
+        std::memcpy(row.public_key.data(), pk_blob, 32);
+
+    row.display_name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+    row.fingerprint = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+    row.role = sqlite3_column_int(stmt, 4);
+    row.created_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
+    if (sqlite3_column_type(stmt, 6) != SQLITE_NULL)
+        row.last_login = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
+
+    return row;
+}
+
+std::optional<UserRow> Database::get_user_by_pubkey(const PublicKey& pubkey) {
     sqlite3_stmt* stmt = nullptr;
-    const char* sql = "SELECT id, username, password_hash, role, created_at, last_login "
-                      "FROM users WHERE username = ?";
+    const char* sql = "SELECT id, public_key, display_name, fingerprint, role, created_at, last_login "
+                      "FROM users WHERE public_key = ?";
 
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
         return std::nullopt;
 
-    sqlite3_bind_text(stmt, 1, username.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(stmt, 1, pubkey.data(), static_cast<int>(pubkey.size()), SQLITE_TRANSIENT);
 
     if (sqlite3_step(stmt) != SQLITE_ROW) {
         sqlite3_finalize(stmt);
         return std::nullopt;
     }
 
-    UserRow row;
-    row.id = static_cast<UserId>(sqlite3_column_int(stmt, 0));
-    row.username = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-    row.password_hash = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-    row.role = sqlite3_column_int(stmt, 3);
-    row.created_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-    if (sqlite3_column_type(stmt, 5) != SQLITE_NULL)
-        row.last_login = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
-
+    auto row = read_user_row(stmt);
     sqlite3_finalize(stmt);
     return row;
 }
 
 std::optional<UserRow> Database::get_user_by_id(UserId id) {
     sqlite3_stmt* stmt = nullptr;
-    const char* sql = "SELECT id, username, password_hash, role, created_at, last_login "
+    const char* sql = "SELECT id, public_key, display_name, fingerprint, role, created_at, last_login "
                       "FROM users WHERE id = ?";
 
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
@@ -148,15 +163,7 @@ std::optional<UserRow> Database::get_user_by_id(UserId id) {
         return std::nullopt;
     }
 
-    UserRow row;
-    row.id = static_cast<UserId>(sqlite3_column_int(stmt, 0));
-    row.username = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-    row.password_hash = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-    row.role = sqlite3_column_int(stmt, 3);
-    row.created_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-    if (sqlite3_column_type(stmt, 5) != SQLITE_NULL)
-        row.last_login = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
-
+    auto row = read_user_row(stmt);
     sqlite3_finalize(stmt);
     return row;
 }
@@ -169,6 +176,20 @@ bool Database::update_last_login(UserId id) {
         return false;
 
     sqlite3_bind_int(stmt, 1, static_cast<int>(id));
+    bool ok = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+    return ok;
+}
+
+bool Database::update_display_name(UserId id, const std::string& display_name) {
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "UPDATE users SET display_name = ? WHERE id = ?";
+
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
+        return false;
+
+    sqlite3_bind_text(stmt, 1, display_name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, static_cast<int>(id));
     bool ok = sqlite3_step(stmt) == SQLITE_DONE;
     sqlite3_finalize(stmt);
     return ok;
@@ -191,23 +212,14 @@ bool Database::set_user_role(UserId id, Role role) {
 std::vector<UserRow> Database::get_all_users() {
     std::vector<UserRow> result;
     sqlite3_stmt* stmt = nullptr;
-    const char* sql = "SELECT id, username, password_hash, role, created_at, last_login "
+    const char* sql = "SELECT id, public_key, display_name, fingerprint, role, created_at, last_login "
                       "FROM users ORDER BY id";
 
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
         return result;
 
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        UserRow row;
-        row.id = static_cast<UserId>(sqlite3_column_int(stmt, 0));
-        row.username = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-        row.password_hash = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        row.role = sqlite3_column_int(stmt, 3);
-        row.created_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-        if (sqlite3_column_type(stmt, 5) != SQLITE_NULL)
-            row.last_login = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
-        result.push_back(std::move(row));
-    }
+    while (sqlite3_step(stmt) == SQLITE_ROW)
+        result.push_back(read_user_row(stmt));
 
     sqlite3_finalize(stmt);
     return result;

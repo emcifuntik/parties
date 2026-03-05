@@ -1,7 +1,9 @@
 #include <client/settings.h>
+#include <parties/crypto.h>
 
 #include <sqlite3.h>
 #include <cstdio>
+#include <cstring>
 
 namespace parties::client {
 
@@ -48,6 +50,13 @@ bool Settings::exec(const std::string& sql) {
 
 bool Settings::create_schema() {
     const char* schema = R"SQL(
+        CREATE TABLE IF NOT EXISTS identity (
+            id          INTEGER PRIMARY KEY CHECK (id = 1),
+            seed_phrase TEXT NOT NULL,
+            public_key  BLOB NOT NULL,
+            secret_key  BLOB NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS tofu_certs (
             host        TEXT NOT NULL,
             port        INTEGER NOT NULL,
@@ -80,13 +89,77 @@ bool Settings::create_schema() {
         );
     )SQL";
 
-    if (!exec(schema))
+    return exec(schema);
+}
+
+// --- Identity ---
+
+bool Settings::has_identity() {
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "SELECT COUNT(*) FROM identity";
+
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
         return false;
 
-    // Migration: add last_password column if it doesn't exist (ignores error if already present)
-    exec("ALTER TABLE saved_servers ADD COLUMN last_password TEXT NOT NULL DEFAULT ''");
+    bool has = false;
+    if (sqlite3_step(stmt) == SQLITE_ROW)
+        has = sqlite3_column_int(stmt, 0) > 0;
 
-    return true;
+    sqlite3_finalize(stmt);
+    return has;
+}
+
+bool Settings::save_identity(const std::string& seed_phrase,
+                              const SecretKey& sk, const PublicKey& pk) {
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "INSERT OR REPLACE INTO identity (id, seed_phrase, public_key, secret_key) "
+                      "VALUES (1, ?, ?, ?)";
+
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
+        return false;
+
+    sqlite3_bind_text(stmt, 1, seed_phrase.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(stmt, 2, pk.data(), static_cast<int>(pk.size()), SQLITE_TRANSIENT);
+    sqlite3_bind_blob(stmt, 3, sk.data(), static_cast<int>(sk.size()), SQLITE_TRANSIENT);
+
+    bool ok = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+    return ok;
+}
+
+std::optional<Identity> Settings::load_identity() {
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "SELECT seed_phrase, public_key, secret_key FROM identity WHERE id = 1";
+
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
+        return std::nullopt;
+
+    if (sqlite3_step(stmt) != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return std::nullopt;
+    }
+
+    Identity id;
+    id.seed_phrase = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+
+    auto* pk_blob = static_cast<const uint8_t*>(sqlite3_column_blob(stmt, 1));
+    int pk_len = sqlite3_column_bytes(stmt, 1);
+    if (pk_blob && pk_len == 32)
+        std::memcpy(id.public_key.data(), pk_blob, 32);
+
+    auto* sk_blob = static_cast<const uint8_t*>(sqlite3_column_blob(stmt, 2));
+    int sk_len = sqlite3_column_bytes(stmt, 2);
+    if (sk_blob && sk_len == 32)
+        std::memcpy(id.secret_key.data(), sk_blob, 32);
+
+    sqlite3_finalize(stmt);
+    return id;
+}
+
+std::string Settings::get_fingerprint() {
+    auto id = load_identity();
+    if (!id) return "";
+    return parties::public_key_fingerprint(id->public_key);
 }
 
 // --- TOFU ---
@@ -134,11 +207,10 @@ bool Settings::trust_fingerprint(const std::string& host, int port,
 // --- Saved servers ---
 
 bool Settings::save_server(const std::string& name, const std::string& host, int port,
-                           const std::string& fingerprint, const std::string& last_username,
-                           const std::string& last_password) {
+                           const std::string& fingerprint, const std::string& last_username) {
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "INSERT OR REPLACE INTO saved_servers "
-                      "(name, host, port, fingerprint, last_username, last_password) VALUES (?, ?, ?, ?, ?, ?)";
+                      "(name, host, port, fingerprint, last_username) VALUES (?, ?, ?, ?, ?)";
 
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
         return false;
@@ -148,7 +220,6 @@ bool Settings::save_server(const std::string& name, const std::string& host, int
     sqlite3_bind_int(stmt, 3, port);
     sqlite3_bind_text(stmt, 4, fingerprint.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 5, last_username.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 6, last_password.c_str(), -1, SQLITE_TRANSIENT);
 
     bool ok = sqlite3_step(stmt) == SQLITE_DONE;
     sqlite3_finalize(stmt);
@@ -158,7 +229,7 @@ bool Settings::save_server(const std::string& name, const std::string& host, int
 std::vector<SavedServer> Settings::get_saved_servers() {
     std::vector<SavedServer> result;
     sqlite3_stmt* stmt = nullptr;
-    const char* sql = "SELECT id, name, host, port, fingerprint, last_username, last_password "
+    const char* sql = "SELECT id, name, host, port, fingerprint, last_username "
                       "FROM saved_servers ORDER BY name";
 
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
@@ -172,8 +243,6 @@ std::vector<SavedServer> Settings::get_saved_servers() {
         s.port = sqlite3_column_int(stmt, 3);
         s.fingerprint = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
         s.last_username = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
-        auto pw = sqlite3_column_text(stmt, 6);
-        if (pw) s.last_password = reinterpret_cast<const char*>(pw);
         result.push_back(std::move(s));
     }
 

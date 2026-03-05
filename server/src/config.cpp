@@ -43,10 +43,12 @@ Config Config::load(const std::string& toml_path) {
         cfg.db_path = toml::find_or(d, "path", cfg.db_path);
     }
 
-    if (data.contains("auth")) {
-        auto& a = data.at("auth");
-        cfg.admin_password     = toml::find_or(a, "admin_password", cfg.admin_password);
-        cfg.allow_registration = toml::find_or(a, "allow_registration", cfg.allow_registration);
+    if (data.contains("identity")) {
+        auto& id = data.at("identity");
+        if (id.contains("root_fingerprints")) {
+            auto arr = toml::find<std::vector<std::string>>(id, "root_fingerprints");
+            cfg.root_fingerprints = std::move(arr);
+        }
     }
 
     if (data.contains("voice")) {

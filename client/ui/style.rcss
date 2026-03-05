@@ -447,14 +447,14 @@ input.password:focus {
 }
 
 .user-panel .settings-btn {
-    color: #5c5e72;
-    font-size: 11dp;
+    display: block;
     cursor: pointer;
-    padding: 2dp 6dp;
+    padding: 4dp;
+    opacity: 0.6;
 }
 
 .user-panel .settings-btn:hover {
-    color: #e8a43a;
+    opacity: 1;
 }
 
 .user-panel .user-status {
@@ -1109,4 +1109,65 @@ video_frame {
 
 .sharer-close:hover {
     color: #e0ddd8;
+}
+
+/* ── Seed phrase onboarding ──────────────────────── */
+
+.onboarding-box {
+    width: 440dp;
+}
+
+.seed-phrase-card {
+    display: block;
+    padding: 20dp;
+    background-color: #0d0e17;
+    border: 1dp #2a2b3d;
+    margin-top: 12dp;
+    margin-bottom: 8dp;
+}
+
+.seed-phrase-text {
+    display: block;
+    color: #e8a43a;
+    font-size: 16dp;
+    line-height: 1.6;
+    word-break: break-word;
+}
+
+.restore-input {
+    display: block;
+    width: 100%;
+    padding: 10dp 12dp;
+    background-color: #0d0e17;
+    border: 1dp #2a2b3d;
+    color: #e0ddd8;
+    font-size: 14dp;
+    margin-top: 8dp;
+    box-sizing: border-box;
+}
+
+.restore-input:focus {
+    border-color: #e8a43a;
+}
+
+/* ── User panel fingerprint ──────────────────────── */
+
+.user-panel-left {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    overflow: hidden;
+}
+
+.user-fingerprint {
+    display: block;
+    color: #5c5e72;
+    font-size: 9dp;
+    margin-top: 2dp;
+    overflow: hidden;
+    cursor: pointer;
+}
+
+.user-fingerprint:hover {
+    color: #8e90a6;
 }

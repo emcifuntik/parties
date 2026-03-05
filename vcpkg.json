@@ -2,14 +2,13 @@
   "name": "parties",
   "version-string": "0.1.0",
   "dependencies": [
-    "argon2",
     "msquic",
     "opus",
     "sqlite3",
     "toml11",
     {
       "name": "wolfssl",
-      "features": ["quic"]
+      "features": ["quic", "ed25519"]
     }
   ],
   "features": {

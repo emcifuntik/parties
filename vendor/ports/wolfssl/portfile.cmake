@@ -31,6 +31,12 @@ else()
     set(ENABLE_CURVE25519 no)
 endif()
 
+if ("ed25519" IN_LIST FEATURES)
+    set(ENABLE_ED25519 yes)
+else()
+    set(ENABLE_ED25519 no)
+endif()
+
 vcpkg_cmake_get_vars(cmake_vars_file)
 include("${cmake_vars_file}")
 
@@ -42,6 +48,10 @@ foreach(config RELEASE DEBUG)
   string(APPEND VCPKG_COMBINED_C_FLAGS_${config} " -DWOLFSSL_PEM_TO_DER")
   # Enable 0-RTT early data (wolfSSL CMake doesn't have an option for this yet)
   string(APPEND VCPKG_COMBINED_C_FLAGS_${config} " -DWOLFSSL_EARLY_DATA")
+  # Ed25519 defines for ABI consistency (must match what wolfSSL compiles with)
+  if ("ed25519" IN_LIST FEATURES)
+      string(APPEND VCPKG_COMBINED_C_FLAGS_${config} " -DHAVE_ED25519 -DHAVE_ED25519_SIGN -DHAVE_ED25519_VERIFY -DHAVE_ED25519_KEY_IMPORT -DHAVE_ED25519_KEY_EXPORT")
+  endif()
   if ("secret-callback" IN_LIST FEATURES)
       string(APPEND VCPKG_COMBINED_C_FLAGS_${config} " -DHAVE_SECRET_CALLBACK")
   endif()
@@ -65,6 +75,7 @@ vcpkg_cmake_configure(
       -DWOLFSSL_QUIC=${ENABLE_QUIC}
       -DWOLFSSL_SESSION_TICKET=${ENABLE_QUIC}
       -DWOLFSSL_CURVE25519=${ENABLE_CURVE25519}
+      -DWOLFSSL_ED25519=${ENABLE_ED25519}
     OPTIONS_RELEASE
       -DCMAKE_C_FLAGS=${VCPKG_COMBINED_C_FLAGS_RELEASE}
     OPTIONS_DEBUG

@@ -1,4 +1,5 @@
 #include <parties/crypto.h>
+#include <parties/bip39_wordlist.h>
 
 #include <wolfssl/options.h>
 #include <wolfssl/wolfcrypt/wc_port.h>
@@ -7,9 +8,12 @@
 #include <wolfssl/wolfcrypt/rsa.h>
 #include <wolfssl/wolfcrypt/asn_public.h>
 #include <wolfssl/wolfcrypt/asn.h>
+#include <wolfssl/wolfcrypt/ed25519.h>
 
 #include <cstdio>
+#include <cstring>
 #include <fstream>
+#include <sstream>
 #include <vector>
 
 namespace parties {
@@ -144,6 +148,121 @@ bool generate_self_signed_cert(const std::string& common_name,
     key_out.close();
 
     return true;
+}
+
+// --- Seed phrase identity ---
+
+std::string generate_seed_phrase() {
+
+    // Pick 12 random words (each word index needs 11 bits, use 2 random bytes per word)
+    std::string phrase;
+    for (int i = 0; i < 12; i++) {
+        uint16_t idx;
+        random_bytes(reinterpret_cast<uint8_t*>(&idx), sizeof(idx));
+        idx %= 2048;
+        if (i > 0) phrase += ' ';
+        phrase += bip39_wordlist[idx];
+    }
+    return phrase;
+}
+
+bool validate_seed_phrase(const std::string& seed_phrase) {
+    std::istringstream iss(seed_phrase);
+    std::string word;
+    int count = 0;
+    while (iss >> word) {
+        bool found = false;
+        for (auto w : bip39_wordlist) {
+            if (w == word) { found = true; break; }
+        }
+        if (!found) return false;
+        count++;
+    }
+    return count == 12;
+}
+
+bool derive_keypair(const std::string& seed_phrase, SecretKey& sk, PublicKey& pk) {
+    // SHA-256 of seed phrase → 32-byte Ed25519 seed
+    uint8_t hash[WC_SHA256_DIGEST_SIZE];
+    wc_Sha256Hash(reinterpret_cast<const uint8_t*>(seed_phrase.data()),
+                  static_cast<word32>(seed_phrase.size()), hash);
+    std::memcpy(sk.data(), hash, 32);
+
+    // Import seed as Ed25519 private key and derive public key
+    ed25519_key key;
+    if (wc_ed25519_init(&key) != 0) return false;
+
+    int ret = wc_ed25519_import_private_only(sk.data(), ED25519_KEY_SIZE, &key);
+    if (ret != 0) {
+        std::fprintf(stderr, "[Crypto] ed25519_import_private_only failed: %d\n", ret);
+        wc_ed25519_free(&key);
+        return false;
+    }
+
+    // Make public key from private
+    ret = wc_ed25519_make_public(&key, key.p, ED25519_PUB_KEY_SIZE);
+    if (ret != 0) {
+        std::fprintf(stderr, "[Crypto] ed25519_make_public failed: %d\n", ret);
+        wc_ed25519_free(&key);
+        return false;
+    }
+    key.pubKeySet = 1;
+
+    // Export public key
+    word32 pub_len = ED25519_PUB_KEY_SIZE;
+    ret = wc_ed25519_export_public(&key, pk.data(), &pub_len);
+    if (ret != 0) {
+        std::fprintf(stderr, "[Crypto] ed25519_export_public failed: %d\n", ret);
+        wc_ed25519_free(&key);
+        return false;
+    }
+
+    wc_ed25519_free(&key);
+    return true;
+}
+
+bool ed25519_sign(const uint8_t* msg, size_t msg_len,
+                  const SecretKey& sk, const PublicKey& pk,
+                  Signature& sig_out) {
+    ed25519_key key;
+    if (wc_ed25519_init(&key) != 0) return false;
+
+    int ret = wc_ed25519_import_private_key(sk.data(), ED25519_KEY_SIZE,
+                                             pk.data(), ED25519_PUB_KEY_SIZE,
+                                             &key);
+    if (ret != 0) {
+        wc_ed25519_free(&key);
+        return false;
+    }
+
+    word32 sig_len = ED25519_SIG_SIZE;
+    ret = wc_ed25519_sign_msg(msg, static_cast<word32>(msg_len),
+                               sig_out.data(), &sig_len, &key);
+    wc_ed25519_free(&key);
+    return ret == 0;
+}
+
+bool ed25519_verify(const uint8_t* msg, size_t msg_len,
+                    const Signature& sig, const PublicKey& pk) {
+    ed25519_key key;
+    if (wc_ed25519_init(&key) != 0) return false;
+
+    int ret = wc_ed25519_import_public(pk.data(), ED25519_PUB_KEY_SIZE, &key);
+    if (ret != 0) {
+        wc_ed25519_free(&key);
+        return false;
+    }
+
+    int verified = 0;
+    ret = wc_ed25519_verify_msg(sig.data(), ED25519_SIG_SIZE,
+                                 msg, static_cast<word32>(msg_len),
+                                 &verified, &key);
+    wc_ed25519_free(&key);
+    return ret == 0 && verified == 1;
+}
+
+Fingerprint public_key_fingerprint(const PublicKey& pk) {
+    return sha256_hex(pk.data(), pk.size());
 }
 
 } // namespace parties

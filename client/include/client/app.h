@@ -52,8 +52,8 @@ private:
 
     // Networking
     void process_server_messages();
+    void send_auth_identity();
     void on_auth_response(const uint8_t* data, size_t len);
-    void on_register_response(const uint8_t* data, size_t len);
     void on_channel_list(const uint8_t* data, size_t len);
     void on_channel_user_list(const uint8_t* data, size_t len);
     void on_user_joined(const uint8_t* data, size_t len);
@@ -102,16 +102,18 @@ private:
     // State
     bool authenticated_ = false;
     UserId user_id_ = 0;
-    std::string username_;
-    std::string pending_password_;
+    std::string username_;         // Display name
     int role_ = 3;
     std::string server_host_;
     uint16_t server_port_ = 7800;
     ChannelId current_channel_ = 0;
     ChannelKey channel_key_{};
 
-    // Auto-registration state
-    bool pending_auto_register_ = false;
+    // Identity (loaded from settings on startup)
+    SecretKey secret_key_{};
+    PublicKey public_key_{};
+    bool has_identity_ = false;
+
     int connecting_server_id_ = 0;
 
     // PTT release delay

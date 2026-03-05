@@ -7,7 +7,6 @@ add_executable(parties_integration_test
     ../server/src/server.cpp
     ../server/src/quic_server.cpp
     ../server/src/database.cpp
-    ../server/src/auth.cpp
     ../server/src/config.cpp
     ../client/src/net_client.cpp
 )

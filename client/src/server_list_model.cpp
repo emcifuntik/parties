@@ -35,12 +35,19 @@ bool ServerListModel::init(Rml::Context* context) {
     ctor.Bind("edit_error",       &edit_error);
     ctor.Bind("show_login",       &show_login);
     ctor.Bind("login_username",   &login_username);
-    ctor.Bind("login_password",   &login_password);
     ctor.Bind("login_error",      &login_error);
     ctor.Bind("login_status",     &login_status);
     ctor.Bind("connected_server_id", &connected_server_id);
     ctor.Bind("show_context_menu",   &show_context_menu);
     ctor.Bind("context_menu_server_id", &context_menu_server_id);
+
+    // Identity / onboarding
+    ctor.Bind("show_onboarding",  &show_onboarding);
+    ctor.Bind("show_restore",     &show_restore);
+    ctor.Bind("seed_phrase",      &seed_phrase);
+    ctor.Bind("restore_phrase",   &restore_phrase);
+    ctor.Bind("fingerprint",      &fingerprint);
+    ctor.Bind("has_identity",     &has_identity);
 
     // Event callbacks
     ctor.BindEventCallback("server_mousedown",
@@ -143,6 +150,31 @@ bool ServerListModel::init(Rml::Context* context) {
             dirty("login_error");
             dirty("login_status");
             if (on_cancel_login) on_cancel_login();
+        });
+
+    ctor.BindEventCallback("generate_identity",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            if (on_generate_identity) on_generate_identity();
+        });
+
+    ctor.BindEventCallback("save_identity",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            if (on_save_identity) on_save_identity();
+        });
+
+    ctor.BindEventCallback("restore_identity",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            if (on_restore_identity) on_restore_identity();
+        });
+
+    ctor.BindEventCallback("show_restore",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            if (on_show_restore) on_show_restore();
+        });
+
+    ctor.BindEventCallback("copy_fingerprint",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            if (on_copy_fingerprint) on_copy_fingerprint();
         });
 
     handle_ = ctor.GetModelHandle();

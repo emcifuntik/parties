@@ -8,7 +8,6 @@ add_executable(parties_server
     src/config.cpp
     src/quic_server.cpp
     src/database.cpp
-    src/auth.cpp
     src/server.cpp
 )
 

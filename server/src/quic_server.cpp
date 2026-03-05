@@ -39,7 +39,7 @@ bool QuicServer::start(const std::string& listen_ip, uint16_t port, size_t max_c
 
     // Configuration with settings
     QUIC_SETTINGS settings = {};
-    settings.IdleTimeoutMs = 30000;
+    settings.IdleTimeoutMs = 60000;
     settings.IsSet.IdleTimeoutMs = TRUE;
     settings.PeerBidiStreamCount = 2;  // Control stream + video stream
     settings.IsSet.PeerBidiStreamCount = TRUE;

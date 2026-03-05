@@ -1,5 +1,7 @@
 #pragma once
 
+#include <parties/types.h>
+
 #include <string>
 #include <vector>
 #include <optional>
@@ -15,7 +17,12 @@ struct SavedServer {
     int         port = 7800;
     std::string fingerprint;   // TOFU cert fingerprint
     std::string last_username;
-    std::string last_password;
+};
+
+struct Identity {
+    std::string seed_phrase;
+    SecretKey   secret_key{};
+    PublicKey   public_key{};
 };
 
 class Settings {
@@ -26,9 +33,14 @@ public:
     bool open(const std::string& path);
     void close();
 
+    // --- Identity ---
+    bool has_identity();
+    bool save_identity(const std::string& seed_phrase,
+                       const SecretKey& sk, const PublicKey& pk);
+    std::optional<Identity> load_identity();
+    std::string get_fingerprint();
+
     // --- TOFU certificate store ---
-    // Returns true if the fingerprint is known and matches
-    // Returns false if unknown (new server) or mismatched
     enum class TofuResult { Trusted, Unknown, Mismatch };
     TofuResult check_fingerprint(const std::string& host, int port,
                                   const std::string& fingerprint);
@@ -37,8 +49,7 @@ public:
 
     // --- Saved servers ---
     bool save_server(const std::string& name, const std::string& host, int port,
-                     const std::string& fingerprint, const std::string& last_username,
-                     const std::string& last_password);
+                     const std::string& fingerprint, const std::string& last_username);
     std::vector<SavedServer> get_saved_servers();
     bool delete_server(int id);
 

@@ -1,9 +1,9 @@
 // Integration test: Server + 2 headless clients + voice & screen share
 //
 // Voice flow:
-//   1. Start server with fresh DB (admin user + 1 channel)
-//   2. Client A connects, registers, authenticates, joins channel
-//   3. Client B connects, registers, authenticates, joins channel
+//   1. Start server with fresh DB + 1 channel
+//   2. Client A connects, authenticates via Ed25519 identity, joins channel
+//   3. Client B connects, authenticates via Ed25519 identity, joins channel
 //   4. Client A Opus-encodes PCM silence and sends as voice datagram
 //   5. Client B receives the forwarded voice data
 //   6. Verify: packet type, sender user_id, and opus payload match
@@ -16,6 +16,7 @@
 //   11. Client A sends SCREEN_SHARE_STOP → both receive SCREEN_SHARE_STOPPED
 
 #include <parties/crypto.h>
+#include <parties/types.h>
 #include <parties/net_common.h>
 #include <parties/quic_common.h>
 #include <parties/protocol.h>
@@ -40,6 +41,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <mutex>
 #include <thread>
@@ -193,8 +195,6 @@ int main() {
     cfg.cert_file      = cert_path;
     cfg.key_file       = key_path;
     cfg.db_path        = db_path;
-    cfg.admin_password = "admin123456";
-    cfg.allow_registration = true;
     cfg.max_clients    = 8;
 
     Server server;
@@ -222,32 +222,38 @@ int main() {
         fs::remove_all(tmp);
     };
 
-    // ── Client A: connect + register + auth ──
+    // ── Generate Ed25519 keypairs for both test clients ──
+    SecretKey sk_a{}, sk_b{};
+    PublicKey pk_a{}, pk_b{};
+    TEST_ASSERT(derive_keypair("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about", sk_a, pk_a),
+                "derive keypair A");
+    TEST_ASSERT(derive_keypair("zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong", sk_b, pk_b),
+                "derive keypair B");
+
+    // ── Client A: connect + auth identity ──
     LOG("[3/15] Client A connecting...\n");
     TEST_ASSERT(client_a.connect("127.0.0.1", TEST_PORT), "client A connect");
     LOG("[3/15] Client A connected\n");
 
-    {
-        BinaryWriter w;
-        w.write_string("test_user_a");
-        w.write_string("password123");
-        TEST_ASSERT(client_a.send_message(ControlMessageType::REGISTER_REQUEST,
-                    w.data().data(), w.data().size()), "client A send register");
-
-        std::vector<uint8_t> payload;
-        TEST_ASSERT(wait_for_message(client_a, ControlMessageType::REGISTER_RESPONSE, payload),
-                    "client A register response");
-        BinaryReader r(payload.data(), payload.size());
-        TEST_ASSERT(r.read_u8() == 1, "client A registration success");
-    }
-    LOG("[3/15] Client A registered\n");
-
     uint32_t user_a_id = 0;
     {
         BinaryWriter w;
+        w.write_bytes(pk_a.data(), 32);
         w.write_string("test_user_a");
-        w.write_string("password123");
-        TEST_ASSERT(client_a.send_message(ControlMessageType::AUTH_REQUEST,
+        auto now = static_cast<uint64_t>(std::time(nullptr));
+        w.write_u64(now);
+
+        // Build message to sign: pubkey + display_name + timestamp
+        BinaryWriter sign_buf;
+        sign_buf.write_bytes(pk_a.data(), 32);
+        sign_buf.write_string("test_user_a");
+        sign_buf.write_u64(now);
+        Signature sig_a{};
+        TEST_ASSERT(ed25519_sign(sign_buf.data().data(), sign_buf.data().size(),
+                    sk_a, pk_a, sig_a), "client A sign");
+        w.write_bytes(sig_a.data(), 64);
+
+        TEST_ASSERT(client_a.send_message(ControlMessageType::AUTH_IDENTITY,
                     w.data().data(), w.data().size()), "client A send auth");
 
         std::vector<uint8_t> payload;
@@ -276,27 +282,24 @@ int main() {
         LOG("[callback] Voice data stored\n");
     };
 
-    {
-        BinaryWriter w;
-        w.write_string("test_user_b");
-        w.write_string("password456");
-        TEST_ASSERT(client_b.send_message(ControlMessageType::REGISTER_REQUEST,
-                    w.data().data(), w.data().size()), "client B send register");
-
-        std::vector<uint8_t> payload;
-        TEST_ASSERT(wait_for_message(client_b, ControlMessageType::REGISTER_RESPONSE, payload),
-                    "client B register response");
-        BinaryReader r(payload.data(), payload.size());
-        TEST_ASSERT(r.read_u8() == 1, "client B registration success");
-    }
-    LOG("[4/15] Client B registered\n");
-
     uint32_t user_b_id = 0;
     {
         BinaryWriter w;
+        w.write_bytes(pk_b.data(), 32);
         w.write_string("test_user_b");
-        w.write_string("password456");
-        TEST_ASSERT(client_b.send_message(ControlMessageType::AUTH_REQUEST,
+        auto now = static_cast<uint64_t>(std::time(nullptr));
+        w.write_u64(now);
+
+        BinaryWriter sign_buf;
+        sign_buf.write_bytes(pk_b.data(), 32);
+        sign_buf.write_string("test_user_b");
+        sign_buf.write_u64(now);
+        Signature sig_b{};
+        TEST_ASSERT(ed25519_sign(sign_buf.data().data(), sign_buf.data().size(),
+                    sk_b, pk_b, sig_b), "client B sign");
+        w.write_bytes(sig_b.data(), 64);
+
+        TEST_ASSERT(client_b.send_message(ControlMessageType::AUTH_IDENTITY,
                     w.data().data(), w.data().size()), "client B send auth");
 
         std::vector<uint8_t> payload;

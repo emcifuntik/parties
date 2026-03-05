@@ -36,8 +36,10 @@ bool NetClient::connect(const std::string& host, uint16_t port,
 
     // Configuration with settings
     QUIC_SETTINGS settings = {};
-    settings.IdleTimeoutMs = 30000;
+    settings.IdleTimeoutMs = 60000;
     settings.IsSet.IdleTimeoutMs = TRUE;
+    settings.KeepAliveIntervalMs = 15000;
+    settings.IsSet.KeepAliveIntervalMs = TRUE;
     settings.DatagramReceiveEnabled = TRUE;
     settings.IsSet.DatagramReceiveEnabled = TRUE;
 

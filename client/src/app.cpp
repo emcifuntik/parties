@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <string>
 
 namespace parties::client {
@@ -181,8 +182,18 @@ void App::setup_model_callbacks() {
 
 void App::setup_server_model_callbacks() {
     server_model_.on_connect_server = [this](int id) {
+        // Already connected to this server — do nothing
+        if (id == server_model_.connected_server_id)
+            return;
+
+        // If no identity, show onboarding instead
+        if (!has_identity_) {
+            server_model_.show_onboarding = true;
+            server_model_.dirty("show_onboarding");
+            return;
+        }
+
         // Find the server entry and show login overlay
-        // Read saved servers from DB to get password (not stored in model)
         auto saved = settings_.get_saved_servers();
         for (auto& srv : saved) {
             if (srv.id == id) {
@@ -191,13 +202,11 @@ void App::setup_server_model_callbacks() {
                 server_port_ = static_cast<uint16_t>(srv.port);
 
                 server_model_.login_username = Rml::String(srv.last_username);
-                server_model_.login_password = Rml::String(srv.last_password);
                 server_model_.login_error = "";
                 server_model_.login_status = Rml::String(srv.name + " - " + srv.host + ":" + std::to_string(srv.port));
                 server_model_.show_login = true;
 
                 server_model_.dirty("login_username");
-                server_model_.dirty("login_password");
                 server_model_.dirty("login_error");
                 server_model_.dirty("login_status");
                 server_model_.dirty("show_login");
@@ -235,7 +244,7 @@ void App::setup_server_model_callbacks() {
             settings_.delete_server(server_model_.editing_id);
         }
 
-        settings_.save_server(std::string(name), std::string(host), port, "", "", "");
+        settings_.save_server(std::string(name), std::string(host), port, "", "");
 
         server_model_.show_add_form = false;
         server_model_.dirty("show_add_form");
@@ -251,13 +260,110 @@ void App::setup_server_model_callbacks() {
         if (net_.is_connected()) {
             net_.disconnect();
         }
-        pending_auto_register_ = false;
-        pending_password_.clear();
     };
 
     server_model_.on_show_context_menu = [this](int id, int mouse_x, int mouse_y) {
         context_menu_x_ = mouse_x;
         context_menu_y_ = mouse_y;
+    };
+
+    server_model_.on_generate_identity = [this]() {
+        std::string phrase = parties::generate_seed_phrase();
+        server_model_.seed_phrase = Rml::String(phrase);
+        server_model_.show_onboarding = true;
+        server_model_.show_restore = false;
+        server_model_.dirty("seed_phrase");
+        server_model_.dirty("show_onboarding");
+        server_model_.dirty("show_restore");
+    };
+
+    server_model_.on_save_identity = [this]() {
+        std::string phrase(server_model_.seed_phrase);
+        SecretKey sk{};
+        PublicKey pk{};
+        if (!parties::derive_keypair(phrase, sk, pk)) {
+            std::fprintf(stderr, "[App] Failed to derive keypair from seed phrase\n");
+            return;
+        }
+        if (!settings_.save_identity(phrase, sk, pk)) {
+            std::fprintf(stderr, "[App] Failed to save identity\n");
+            return;
+        }
+        secret_key_ = sk;
+        public_key_ = pk;
+        has_identity_ = true;
+
+        server_model_.fingerprint = Rml::String(parties::public_key_fingerprint(pk));
+        server_model_.has_identity = true;
+        server_model_.show_onboarding = false;
+        server_model_.dirty("fingerprint");
+        server_model_.dirty("has_identity");
+        server_model_.dirty("show_onboarding");
+
+        std::printf("[App] Identity saved: %s\n",
+                    parties::public_key_fingerprint(pk).c_str());
+    };
+
+    server_model_.on_restore_identity = [this]() {
+        std::string phrase(server_model_.restore_phrase);
+        if (!parties::validate_seed_phrase(phrase)) {
+            server_model_.login_error = "Invalid seed phrase";
+            server_model_.dirty("login_error");
+            return;
+        }
+        SecretKey sk{};
+        PublicKey pk{};
+        if (!parties::derive_keypair(phrase, sk, pk)) {
+            server_model_.login_error = "Failed to derive keypair";
+            server_model_.dirty("login_error");
+            return;
+        }
+        if (!settings_.save_identity(phrase, sk, pk)) {
+            server_model_.login_error = "Failed to save identity";
+            server_model_.dirty("login_error");
+            return;
+        }
+        secret_key_ = sk;
+        public_key_ = pk;
+        has_identity_ = true;
+
+        server_model_.fingerprint = Rml::String(parties::public_key_fingerprint(pk));
+        server_model_.has_identity = true;
+        server_model_.show_onboarding = false;
+        server_model_.show_restore = false;
+        server_model_.login_error = "";
+        server_model_.dirty("fingerprint");
+        server_model_.dirty("has_identity");
+        server_model_.dirty("show_onboarding");
+        server_model_.dirty("show_restore");
+        server_model_.dirty("login_error");
+
+        std::printf("[App] Identity restored: %s\n",
+                    parties::public_key_fingerprint(pk).c_str());
+    };
+
+    server_model_.on_show_restore = [this]() {
+        server_model_.show_restore = true;
+        server_model_.restore_phrase = "";
+        server_model_.login_error = "";
+        server_model_.dirty("show_restore");
+        server_model_.dirty("restore_phrase");
+        server_model_.dirty("login_error");
+    };
+
+    server_model_.on_copy_fingerprint = [this]() {
+        std::string fp(server_model_.fingerprint);
+        if (fp.empty()) return;
+        if (!OpenClipboard(hwnd_)) return;
+        EmptyClipboard();
+        HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, fp.size() + 1);
+        if (hMem) {
+            char* dst = static_cast<char*>(GlobalLock(hMem));
+            std::memcpy(dst, fp.c_str(), fp.size() + 1);
+            GlobalUnlock(hMem);
+            SetClipboardData(CF_TEXT, hMem);
+        }
+        CloseClipboard();
     };
 }
 
@@ -288,6 +394,20 @@ bool App::init(HWND hwnd) {
 
     // Open client settings database
     settings_.open("parties_client.db");
+
+    // Load BIP-39 wordlist for seed phrase generation
+
+    // Load identity if it exists
+    if (settings_.has_identity()) {
+        auto id = settings_.load_identity();
+        if (id) {
+            secret_key_ = id->secret_key;
+            public_key_ = id->public_key;
+            has_identity_ = true;
+            std::printf("[App] Identity loaded: %s\n",
+                        parties::public_key_fingerprint(public_key_).c_str());
+        }
+    }
 
     // Initialize UI
     if (!ui_.init(hwnd)) return false;
@@ -457,8 +577,6 @@ bool App::init(HWND hwnd) {
         authenticated_ = false;
         current_channel_ = 0;
         channel_key_ = {};
-        pending_auto_register_ = false;
-        pending_password_.clear();
         audio_.stop();
         mixer_.clear();
 
@@ -502,6 +620,15 @@ bool App::init(HWND hwnd) {
 
     // Populate server list
     refresh_server_list();
+
+    // Set initial identity state on model
+    if (has_identity_) {
+        server_model_.has_identity = true;
+        server_model_.fingerprint = Rml::String(
+            parties::public_key_fingerprint(public_key_));
+        server_model_.dirty("has_identity");
+        server_model_.dirty("fingerprint");
+    }
 
     return true;
 }
@@ -679,14 +806,13 @@ void App::update_context_menu_position() {
 // ═══════════════════════════════════════════════════════════════════════
 
 void App::do_connect() {
-    username_ = server_model_.login_username;
-    std::string password(server_model_.login_password);
-
-    if (username_.empty() || password.empty()) {
-        server_model_.login_error = "Please fill in all fields";
+    if (!has_identity_) {
+        server_model_.login_error = "No identity — generate seed phrase first";
         server_model_.dirty("login_error");
         return;
     }
+
+    username_ = server_model_.login_username;
 
     server_model_.login_error = "";
     server_model_.dirty("login_error");
@@ -720,16 +846,37 @@ void App::do_connect() {
         }
     }
 
-    // Save password for potential auto-register retry
-    pending_password_ = password;
-
-    server_model_.login_status = "Signing in...";
+    server_model_.login_status = "Authenticating...";
     server_model_.dirty("login_status");
 
+    send_auth_identity();
+}
+
+void App::send_auth_identity() {
+    auto now = static_cast<uint64_t>(std::time(nullptr));
+
+    // Build signed message: pubkey(32) + display_name + timestamp(8)
+    BinaryWriter sig_msg;
+    sig_msg.write_bytes(public_key_.data(), 32);
+    sig_msg.write_string(username_);
+    sig_msg.write_u64(now);
+
+    Signature sig{};
+    if (!parties::ed25519_sign(sig_msg.data().data(), sig_msg.data().size(),
+                                secret_key_, public_key_, sig)) {
+        server_model_.login_error = "Failed to sign auth message";
+        server_model_.dirty("login_error");
+        return;
+    }
+
+    // AUTH_IDENTITY: [pubkey(32)][display_name][timestamp(8)][signature(64)]
     BinaryWriter writer;
+    writer.write_bytes(public_key_.data(), 32);
     writer.write_string(username_);
-    writer.write_string(password);
-    net_.send_message(protocol::ControlMessageType::AUTH_REQUEST,
+    writer.write_u64(now);
+    writer.write_bytes(sig.data(), 64);
+
+    net_.send_message(protocol::ControlMessageType::AUTH_IDENTITY,
                       writer.data().data(), writer.data().size());
 }
 
@@ -795,9 +942,6 @@ void App::process_server_messages() {
         case protocol::ControlMessageType::AUTH_RESPONSE:
             on_auth_response(msg.payload.data(), msg.payload.size());
             break;
-        case protocol::ControlMessageType::REGISTER_RESPONSE:
-            on_register_response(msg.payload.data(), msg.payload.size());
-            break;
         case protocol::ControlMessageType::CHANNEL_LIST:
             on_channel_list(msg.payload.data(), msg.payload.size());
             break;
@@ -843,11 +987,9 @@ void App::on_auth_response(const uint8_t* data, size_t len) {
     if (reader.error()) return;
 
     authenticated_ = true;
-    pending_auto_register_ = false;
 
     settings_.save_server(server_name, server_host_, server_port_,
-                          net_.get_server_fingerprint(), username_, pending_password_);
-    pending_password_.clear();
+                          net_.get_server_fingerprint(), username_);
     refresh_server_list();
 
     // QUIC data plane is already connected (single connection)
@@ -870,35 +1012,6 @@ void App::on_auth_response(const uint8_t* data, size_t len) {
     server_model_.dirty("login_status");
 }
 
-void App::on_register_response(const uint8_t* data, size_t len) {
-    BinaryReader reader(data, len);
-    uint8_t success = reader.read_u8();
-    std::string message = reader.read_string();
-    if (reader.error()) return;
-
-    if (pending_auto_register_) {
-        if (success) {
-            // Auto-registered successfully, now re-send AUTH_REQUEST
-            pending_auto_register_ = false;
-            server_model_.login_status = "Signing in...";
-            server_model_.dirty("login_status");
-
-            BinaryWriter writer;
-            writer.write_string(username_);
-            writer.write_string(pending_password_);
-            net_.send_message(protocol::ControlMessageType::AUTH_REQUEST,
-                              writer.data().data(), writer.data().size());
-        } else {
-            // Auto-registration failed
-            pending_auto_register_ = false;
-            pending_password_.clear();
-            server_model_.login_error = Rml::String(message);
-            server_model_.login_status = "";
-            server_model_.dirty("login_error");
-            server_model_.dirty("login_status");
-        }
-    }
-}
 
 void App::on_channel_list(const uint8_t* data, size_t len) {
     BinaryReader reader(data, len);
@@ -1038,27 +1151,6 @@ void App::on_server_error(const uint8_t* data, size_t len) {
     if (reader.error()) return;
 
     std::fprintf(stderr, "[App] Server error: %s\n", message.c_str());
-
-    // Auto-register: if server says "Unknown user" and we haven't tried yet
-    if (message == "Unknown user" && !pending_auto_register_ && !pending_password_.empty()) {
-        pending_auto_register_ = true;
-
-        server_model_.login_status = "Creating account...";
-        server_model_.login_error = "";
-        server_model_.dirty("login_status");
-        server_model_.dirty("login_error");
-
-        BinaryWriter writer;
-        writer.write_string(username_);
-        writer.write_string(pending_password_);
-        net_.send_message(protocol::ControlMessageType::REGISTER_REQUEST,
-                          writer.data().data(), writer.data().size());
-        return;
-    }
-
-    // Any other error: show in login overlay if visible, clear auto-register state
-    pending_auto_register_ = false;
-    pending_password_.clear();
 
     if (server_model_.show_login) {
         server_model_.login_error = Rml::String(message);

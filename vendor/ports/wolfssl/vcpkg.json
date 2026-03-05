@@ -27,6 +27,9 @@
     "curve25519": {
       "description": "Enables Curve25519 support"
     },
+    "ed25519": {
+      "description": "Enables Ed25519 signing/verification"
+    },
     "dtls": {
       "description": "DTLS support"
     },

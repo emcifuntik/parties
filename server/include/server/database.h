@@ -14,8 +14,9 @@ namespace parties::server {
 
 struct UserRow {
     UserId      id = 0;
-    std::string username;
-    std::string password_hash;
+    PublicKey    public_key{};
+    std::string display_name;
+    std::string fingerprint;
     int         role = 3;
     std::string created_at;
     std::string last_login;
@@ -38,11 +39,12 @@ public:
     void close();
 
     // --- Users ---
-    bool create_user(const std::string& username, const std::string& password_hash,
-                     Role role = Role::User);
-    std::optional<UserRow> get_user_by_name(const std::string& username);
+    bool create_user(const PublicKey& pubkey, const std::string& display_name,
+                     const std::string& fingerprint, Role role = Role::User);
+    std::optional<UserRow> get_user_by_pubkey(const PublicKey& pubkey);
     std::optional<UserRow> get_user_by_id(UserId id);
     bool update_last_login(UserId id);
+    bool update_display_name(UserId id, const std::string& display_name);
     bool set_user_role(UserId id, Role role);
     std::vector<UserRow> get_all_users();
     bool delete_user(UserId id);

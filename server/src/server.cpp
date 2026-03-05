@@ -1,5 +1,4 @@
 #include <server/server.h>
-#include <server/auth.h>
 #include <parties/crypto.h>
 #include <parties/protocol.h>
 #include <parties/serialization.h>
@@ -7,9 +6,11 @@
 #include <parties/permissions.h>
 #include <parties/video_common.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <thread>
 
@@ -27,15 +28,9 @@ bool Server::start(const Config& cfg) {
         return false;
     }
 
-    // Create admin user if no users exist
-    if (!db_.has_any_users()) {
-        std::printf("[Server] No users found, creating admin account...\n");
-        std::string admin_hash = hash_password(config_.admin_password);
-        if (admin_hash.empty() || !db_.create_user("admin", admin_hash, Role::Owner)) {
-            std::fprintf(stderr, "[Server] Failed to create admin user\n");
-            return false;
-        }
-        std::printf("[Server] Admin user created (password from config)\n");
+    if (!config_.root_fingerprints.empty()) {
+        std::printf("[Server] %zu root fingerprint(s) configured\n",
+                    config_.root_fingerprints.size());
     }
 
     // Generate self-signed cert if not present
@@ -167,46 +162,100 @@ void Server::handle_message(const IncomingMessage& msg) {
 
     switch (msg.type) {
 
-    // ── Authentication ──────────────────────────────────────────────────
-    case protocol::ControlMessageType::AUTH_REQUEST: {
+    // ── Authentication (Ed25519 identity) ──────────────────────────────
+    case protocol::ControlMessageType::AUTH_IDENTITY: {
         if (session->authenticated) break;
 
         BinaryReader reader(msg.payload.data(), msg.payload.size());
-        std::string username = reader.read_string();
-        std::string password = reader.read_string();
-        if (reader.error()) break;
 
-        std::printf("[Server] Auth request from session %u: user='%s'\n",
-                    msg.session_id, username.c_str());
+        // Read public key (32 bytes)
+        PublicKey pubkey{};
+        reader.read_bytes(pubkey.data(), 32);
+        std::string display_name = reader.read_string();
+        uint64_t timestamp = reader.read_u64();
+        Signature sig{};
+        reader.read_bytes(sig.data(), 64);
+        if (reader.error()) {
+            send_error(msg.session_id, "Malformed auth message");
+            break;
+        }
 
-        // Check server password first (if set)
-        if (!config_.server_password.empty()) {
-            // Server password is sent as a third field
-            std::string server_pw = reader.read_string();
-            if (reader.error() || server_pw != config_.server_password) {
-                send_error(msg.session_id, "Invalid server password");
+        // Verify timestamp is within ±60 seconds
+        auto now = static_cast<uint64_t>(std::time(nullptr));
+        int64_t diff = static_cast<int64_t>(now) - static_cast<int64_t>(timestamp);
+        if (diff > 60 || diff < -60) {
+            send_error(msg.session_id, "Auth timestamp out of range");
+            break;
+        }
+
+        // Reconstruct signed message: pubkey(32) + display_name + timestamp(8)
+        BinaryWriter sig_msg;
+        sig_msg.write_bytes(pubkey.data(), 32);
+        sig_msg.write_string(display_name);
+        sig_msg.write_u64(timestamp);
+
+        // Verify Ed25519 signature
+        if (!parties::ed25519_verify(sig_msg.data().data(), sig_msg.data().size(),
+                                      sig, pubkey)) {
+            send_error(msg.session_id, "Invalid signature");
+            break;
+        }
+
+        Fingerprint fp = parties::public_key_fingerprint(pubkey);
+        std::printf("[Server] Auth from session %u: name='%s' fp=%s\n",
+                    msg.session_id, display_name.c_str(), fp.c_str());
+
+        // Look up or auto-create user
+        auto user = db_.get_user_by_pubkey(pubkey);
+        if (!user) {
+            // Auto-create new user
+            Role initial_role = Role::User;
+
+            // Check if this fingerprint is a root user
+            for (const auto& root_fp : config_.root_fingerprints) {
+                if (root_fp == fp) {
+                    initial_role = Role::Owner;
+                    std::printf("[Server] Root fingerprint matched — granting Owner role\n");
+                    break;
+                }
+            }
+
+            if (!db_.create_user(pubkey, display_name, fp, initial_role)) {
+                send_error(msg.session_id, "Failed to create user");
                 break;
             }
-        }
+            user = db_.get_user_by_pubkey(pubkey);
+            if (!user) {
+                send_error(msg.session_id, "Internal error");
+                break;
+            }
+            std::printf("[Server] New identity registered: '%s' (id=%u)\n",
+                        display_name.c_str(), user->id);
+        } else {
+            // Update display name if changed
+            if (user->display_name != display_name) {
+                db_.update_display_name(user->id, display_name);
+                user->display_name = display_name;
+            }
 
-        // Look up user in database
-        auto user = db_.get_user_by_name(username);
-        if (!user) {
-            send_error(msg.session_id, "Unknown user");
-            break;
-        }
-
-        // Verify password with argon2id
-        if (!verify_password(password, user->password_hash)) {
-            send_error(msg.session_id, "Invalid password");
-            break;
+            // Check root fingerprint — promote if needed
+            for (const auto& root_fp : config_.root_fingerprints) {
+                if (root_fp == fp && user->role != static_cast<int>(Role::Owner)) {
+                    db_.set_user_role(user->id, Role::Owner);
+                    user->role = static_cast<int>(Role::Owner);
+                    std::printf("[Server] Promoted user '%s' to Owner (root fingerprint)\n",
+                                display_name.c_str());
+                    break;
+                }
+            }
         }
 
         // Auth success
         session->authenticated = true;
         session->user_id = user->id;
-        session->username = user->username;
+        session->username = user->display_name;
         session->role = user->role;
+        session->public_key = pubkey;
 
         db_.update_last_login(user->id);
 
@@ -227,64 +276,7 @@ void Server::handle_message(const IncomingMessage& msg) {
         send_channel_list(msg.session_id);
 
         std::printf("[Server] User '%s' (id=%u, role=%d) authenticated\n",
-                    user->username.c_str(), user->id, user->role);
-        break;
-    }
-
-    // ── Registration ────────────────────────────────────────────────────
-    case protocol::ControlMessageType::REGISTER_REQUEST: {
-        if (session->authenticated) {
-            send_error(msg.session_id, "Already authenticated");
-            break;
-        }
-
-        if (!config_.allow_registration) {
-            send_error(msg.session_id, "Registration is disabled");
-            break;
-        }
-
-        BinaryReader reader(msg.payload.data(), msg.payload.size());
-        std::string username = reader.read_string();
-        std::string password = reader.read_string();
-        if (reader.error()) break;
-
-        // Validate username
-        if (username.empty() || username.size() > 32) {
-            send_error(msg.session_id, "Username must be 1-32 characters");
-            break;
-        }
-
-        if (password.size() < 6) {
-            send_error(msg.session_id, "Password must be at least 6 characters");
-            break;
-        }
-
-        // Check if username already exists
-        if (db_.get_user_by_name(username)) {
-            send_error(msg.session_id, "Username already taken");
-            break;
-        }
-
-        // Hash password and create user
-        std::string pw_hash = hash_password(password);
-        if (pw_hash.empty()) {
-            send_error(msg.session_id, "Internal error");
-            break;
-        }
-
-        if (!db_.create_user(username, pw_hash, Role::User)) {
-            send_error(msg.session_id, "Failed to create user");
-            break;
-        }
-
-        std::printf("[Server] New user registered: '%s'\n", username.c_str());
-
-        // Send success response
-        BinaryWriter writer;
-        writer.write_u8(1); // success
-        writer.write_string("Registration successful");
-        quic_.send_to(msg.session_id, protocol::ControlMessageType::REGISTER_RESPONSE,
-                     writer.data().data(), writer.data().size());
+                    user->display_name.c_str(), user->id, user->role);
         break;
     }
 

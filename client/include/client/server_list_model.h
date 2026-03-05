@@ -41,9 +41,16 @@ public:
     // Login overlay
     bool show_login = false;
     Rml::String login_username;
-    Rml::String login_password;
     Rml::String login_error;
     Rml::String login_status;
+
+    // Identity / seed phrase onboarding
+    bool show_onboarding = false;
+    bool show_restore = false;
+    Rml::String seed_phrase;
+    Rml::String restore_phrase;
+    Rml::String fingerprint;
+    bool has_identity = false;
 
     // Active server tracking
     int connected_server_id = 0;
@@ -58,6 +65,11 @@ public:
     std::function<void()>     on_save_server;
     std::function<void()>     on_do_connect;
     std::function<void()>     on_cancel_login;
+    std::function<void()>     on_generate_identity;
+    std::function<void()>     on_save_identity;
+    std::function<void()>     on_restore_identity;
+    std::function<void()>     on_show_restore;
+    std::function<void()>     on_copy_fingerprint;
     std::function<void(int, int, int)> on_show_context_menu;  // id, mouse_x, mouse_y
 
 private:

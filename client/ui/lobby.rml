@@ -98,8 +98,13 @@
             </div>
 
             <div class="user-panel">
-                <span class="user-name">{{ username }}</span>
-                <span class="settings-btn" data-event-click="toggle_settings">Settings</span>
+                <div class="user-panel-left">
+                    <span class="user-name">{{ username }}</span>
+                    <span class="user-fingerprint" data-model="serverlist" data-if="fingerprint != ''" data-event-click="copy_fingerprint">{{ fingerprint }}</span>
+                </div>
+                <div class="settings-btn" data-event-click="toggle_settings">
+                    <svg src="icon-settings.svg" width="20" height="20" />
+                </div>
             </div>
         </div>
     </div>
@@ -288,22 +293,51 @@
 
     </div><!-- /app-content -->
 
-    <!-- Login modal -->
+    <!-- Login modal (identity-based — display name only) -->
     <div class="modal-backdrop" data-model="serverlist" data-if="show_login">
         <div class="modal-box">
             <h1>Connect</h1>
             <div class="subtitle">{{ login_status }}</div>
 
-            <div class="label">Username</div>
+            <div class="label">Display Name</div>
             <input type="text" data-value="login_username" />
-
-            <div class="label">Password</div>
-            <input type="password" data-value="login_password" />
 
             <div class="error-text" data-if="login_error != ''">{{ login_error }}</div>
 
-            <div class="btn" data-event-click="do_connect">Sign In</div>
+            <div class="btn" data-event-click="do_connect">Connect</div>
             <div class="btn btn-secondary" data-event-click="cancel_login">Cancel</div>
+        </div>
+    </div>
+
+    <!-- Seed phrase onboarding modal (first launch) -->
+    <div class="modal-backdrop" data-model="serverlist" data-if="show_onboarding">
+        <div class="modal-box onboarding-box">
+            <!-- Generate view (show_restore == false) -->
+            <div data-if="show_restore == false">
+                <h1>Your Identity</h1>
+                <div class="subtitle">Save this seed phrase — it is your permanent identity.</div>
+
+                <div class="seed-phrase-card" data-if="seed_phrase != ''">
+                    <span class="seed-phrase-text">{{ seed_phrase }}</span>
+                </div>
+
+                <div class="btn" data-if="seed_phrase == ''" data-event-click="generate_identity">Generate Seed Phrase</div>
+                <div class="btn" data-if="seed_phrase != ''" data-event-click="save_identity">I Have Saved My Seed Phrase</div>
+                <div class="btn btn-secondary" data-event-click="show_restore">Restore From Existing Phrase</div>
+            </div>
+
+            <!-- Restore view (show_restore == true) -->
+            <div data-if="show_restore">
+                <h1>Restore Identity</h1>
+                <div class="subtitle">Enter your 12-word seed phrase to restore your identity.</div>
+
+                <input type="text" class="restore-input" data-value="restore_phrase" />
+
+                <div class="error-text" data-if="login_error != ''">{{ login_error }}</div>
+
+                <div class="btn" data-event-click="restore_identity">Restore</div>
+                <div class="btn btn-secondary" data-event-click="generate_identity">Back to Generate</div>
+            </div>
         </div>
     </div>
 

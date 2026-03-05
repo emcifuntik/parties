@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 #include <cstdint>
 
 namespace parties::server {
@@ -17,8 +18,8 @@ struct Config {
 
     std::string db_path        = "parties.db";
 
-    std::string admin_password = "changeme";
-    bool        allow_registration = true;
+    // Identity: fingerprints that get ROOT (Owner) role
+    std::vector<std::string> root_fingerprints;
 
     int         max_users_per_channel = 32;
     int         default_bitrate       = 32000;

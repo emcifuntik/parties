@@ -1,6 +1,5 @@
 find_package(Opus CONFIG REQUIRED)
 find_package(wolfssl CONFIG REQUIRED)
-find_package(argon2 CONFIG REQUIRED)
 find_package(msquic CONFIG REQUIRED)
 
 add_library(parties_common STATIC
@@ -31,13 +30,17 @@ target_compile_definitions(parties_common
         WOLFSSL_EARLY_DATA
         WOLFSSL_KEY_GEN
         WOLFSSL_CERT_GEN
+        HAVE_ED25519
+        HAVE_ED25519_SIGN
+        HAVE_ED25519_VERIFY
+        HAVE_ED25519_KEY_IMPORT
+        HAVE_ED25519_KEY_EXPORT
 )
 
 target_link_libraries(parties_common
     PUBLIC
         Opus::opus
         wolfssl::wolfssl
-        argon2::argon2
         msquic::msquic
 )
 

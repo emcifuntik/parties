@@ -67,13 +67,8 @@ sequenceDiagram
     C->>S: Open Stream 0 (control)
     C->>S: Open Stream 1 (video)
 
-    C->>S: AUTH_REQUEST [username, password]
-    alt Unknown user
-        S->>C: SERVER_ERROR "Unknown user"
-        C->>S: REGISTER_REQUEST [username, password]
-        S->>C: REGISTER_RESPONSE [success]
-        C->>S: AUTH_REQUEST [username, password]
-    end
+    C->>S: AUTH_IDENTITY [pubkey, display_name, timestamp, signature]
+    Note over S: Auto-create user if unknown pubkey
     S->>C: AUTH_RESPONSE [user_id, session_token, role, server_name]
     S->>C: CHANNEL_LIST [channels...]
 
@@ -120,14 +115,16 @@ All control messages on Stream 0 use length-prefixed framing:
 
 ### 5.1 Authentication
 
-#### AUTH_REQUEST (0x0001) -- C->S
+#### AUTH_IDENTITY (0x0001) -- C->S
 
-| Field | Type | Description |
-|-------|------|-------------|
-| username | string | User's login name |
-| password | string | User's password (plaintext, protected by TLS) |
+| Field | Type | Size | Description |
+|-------|------|------|-------------|
+| public_key | bytes | 32 | Ed25519 public key |
+| display_name | string | 2+N | User-chosen display name |
+| timestamp | u64 | 8 | Unix timestamp (replay protection) |
+| signature | bytes | 64 | Ed25519 signature over (public_key + display_name + timestamp) |
 
-If the server has `server_password` configured, the client appends it as a third string field.
+Server auto-creates user on first auth with an unknown public key. No separate registration step.
 
 #### AUTH_RESPONSE (0x0101) -- S->C
 
@@ -137,20 +134,6 @@ If the server has `server_password` configured, the client appends it as a third
 | session_token | bytes | 32 | Random session token |
 | role | u8 | 1 | User role (see [Roles](#9-permissions--roles)) |
 | server_name | string | 2+N | Server display name |
-
-#### REGISTER_REQUEST (0x0006) -- C->S
-
-| Field | Type | Description |
-|-------|------|-------------|
-| username | string | Desired username (1-32 characters) |
-| password | string | Password (6+ characters) |
-
-#### REGISTER_RESPONSE (0x0108) -- S->C
-
-| Field | Type | Description |
-|-------|------|-------------|
-| success | u8 | 1 = success, 0 = failure |
-| message | string | Error message (on failure) |
 
 #### SERVER_ERROR (0x01FF) -- S->C
 
@@ -508,16 +491,17 @@ All data is encrypted by QUIC's built-in TLS 1.3 layer (wolfSSL with QUIC suppor
   - Subsequent connections: compared against stored fingerprint
   - Mismatch: connection aborted (possible MITM)
 
-### Password security
+### Identity authentication
+
+Users authenticate via Ed25519 keypairs derived from a 12-word BIP-39 seed phrase. The public key serves as the user's permanent identity. No passwords are used — authentication is signature-based.
 
 | Parameter | Value |
 |-----------|-------|
-| Algorithm | Argon2id |
-| Time cost | 3 iterations |
-| Memory cost | 65,536 KB (64 MB) |
-| Parallelism | 1 |
-| Hash length | 32 bytes |
-| Salt length | 16 bytes (random) |
+| Algorithm | Ed25519 |
+| Key derivation | SHA-256(seed phrase) → 32-byte Ed25519 seed |
+| Public key | 32 bytes |
+| Signature | 64 bytes |
+| Replay protection | Timestamp within ±60s of server time |
 
 ### Channel key
 
@@ -533,7 +517,7 @@ sequenceDiagram
     Note over C,S: First connection (full handshake)
     C->>S: QUIC Initial
     S->>C: Handshake + Certificate
-    C->>S: AUTH_REQUEST
+    C->>S: AUTH_IDENTITY
     S->>C: AUTH_RESPONSE
     S->>C: Resumption Ticket
     Note over C: Store ticket in SQLite (24h TTL)

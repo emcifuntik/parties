@@ -21,9 +21,10 @@ struct Session {
     // Authenticated state (set after AUTH_RESPONSE)
     bool             authenticated = false;
     UserId           user_id = 0;
-    std::string      username;
+    std::string      username;           // Display name
     int              role = 3;           // Default: User
     SessionToken     session_token{};
+    PublicKey         public_key{};
 
     // Voice state
     ChannelId        channel_id = 0;     // 0 = not in a channel
