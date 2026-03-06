@@ -33,6 +33,13 @@ bool validate_seed_phrase(const std::string& seed_phrase);
 // Derive Ed25519 keypair from seed phrase (SHA-256 → 32-byte seed → keypair)
 bool derive_keypair(const std::string& seed_phrase, SecretKey& sk, PublicKey& pk);
 
+// Derive Ed25519 public key from raw 32-byte secret key (no seed phrase)
+bool derive_pubkey(const SecretKey& sk, PublicKey& pk);
+
+// Hex encode/decode for 32-byte keys
+std::string secret_key_to_hex(const SecretKey& sk);
+bool secret_key_from_hex(const std::string& hex, SecretKey& sk);
+
 // Ed25519 sign
 bool ed25519_sign(const uint8_t* msg, size_t msg_len,
                   const SecretKey& sk, const PublicKey& pk,

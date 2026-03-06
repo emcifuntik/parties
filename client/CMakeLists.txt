@@ -4,6 +4,8 @@ find_package(RmlUi CONFIG REQUIRED)
 find_package(D3D12MemoryAllocator CONFIG REQUIRED)
 find_package(dav1d CONFIG REQUIRED)
 find_path(MINIAUDIO_INCLUDE_DIRS "miniaudio.h")
+find_path(SPEEXDSP_INCLUDE_DIRS "speex/speex_echo.h")
+find_library(SPEEXDSP_LIBRARY speexdsp)
 
 # Generate .rc with absolute icon path (llvm-rc resolves relative to build dir)
 file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/res/logo.ico" ICON_PATH)
@@ -55,6 +57,7 @@ target_include_directories(parties_client
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dx12
         ${MINIAUDIO_INCLUDE_DIRS}
+        ${SPEEXDSP_INCLUDE_DIRS}
 )
 
 # Release: hide console (WINDOWS subsystem), Debug: keep console
@@ -74,6 +77,7 @@ target_link_libraries(parties_client
         RmlUi::Debugger
         GPUOpen::D3D12MemoryAllocator
         dav1d::dav1d
+        ${SPEEXDSP_LIBRARY}
         d3d12 dxgi d3dcompiler
         dcomp
         windowsapp

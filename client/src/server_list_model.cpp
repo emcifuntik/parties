@@ -39,11 +39,17 @@ bool ServerListModel::init(Rml::Context* context) {
     ctor.Bind("login_status",     &login_status);
     ctor.Bind("connected_server_id", &connected_server_id);
 
+    // TOFU warning
+    ctor.Bind("show_tofu_warning", &show_tofu_warning);
+    ctor.Bind("tofu_fingerprint",  &tofu_fingerprint);
+
     // Identity / onboarding
     ctor.Bind("show_onboarding",  &show_onboarding);
     ctor.Bind("show_restore",     &show_restore);
+    ctor.Bind("show_key_import",  &show_key_import);
     ctor.Bind("seed_phrase",      &seed_phrase);
     ctor.Bind("restore_phrase",   &restore_phrase);
+    ctor.Bind("import_key_hex",   &import_key_hex);
     ctor.Bind("fingerprint",      &fingerprint);
     ctor.Bind("has_identity",     &has_identity);
 
@@ -125,9 +131,29 @@ bool ServerListModel::init(Rml::Context* context) {
             if (on_show_restore) on_show_restore();
         });
 
+    ctor.BindEventCallback("show_key_import",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            if (on_show_key_import) on_show_key_import();
+        });
+
+    ctor.BindEventCallback("import_key",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            if (on_import_key) on_import_key();
+        });
+
     ctor.BindEventCallback("copy_fingerprint",
         [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
             if (on_copy_fingerprint) on_copy_fingerprint();
+        });
+
+    ctor.BindEventCallback("tofu_accept",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            if (on_tofu_accept) on_tofu_accept();
+        });
+
+    ctor.BindEventCallback("tofu_reject",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            if (on_tofu_reject) on_tofu_reject();
         });
 
     handle_ = ctor.GetModelHandle();

@@ -182,6 +182,14 @@
                 </div>
             </div>
 
+            <!-- Echo cancellation -->
+            <div class="settings-section">
+                <div class="settings-toggle" data-event-click="toggle_aec">
+                    <span class="toggle-indicator" data-class-on="aec_enabled"></span>
+                    <span class="toggle-label">Echo Cancellation</span>
+                </div>
+            </div>
+
             <!-- Voice activation -->
             <div class="settings-section">
                 <div class="settings-toggle" data-event-click="toggle_vad">
@@ -223,6 +231,42 @@
                                data-value="ptt_delay"
                                data-event-change="ptt_delay_changed" />
                     </div>
+                </div>
+            </div>
+
+            <!-- Identity backup/import -->
+            <div class="settings-section">
+                <div class="settings-label">Identity</div>
+
+                <div class="btn btn-secondary btn-small" data-event-click="toggle_seed_phrase">
+                    <span data-if="show_seed_phrase == false">Show Seed Phrase</span>
+                    <span data-if="show_seed_phrase">Hide Seed Phrase</span>
+                </div>
+
+                <div class="seed-phrase-display" data-if="show_seed_phrase">
+                    <div class="seed-phrase-text">{{ identity_seed_phrase }}</div>
+                    <div class="btn btn-secondary btn-small" data-event-click="copy_seed_phrase">Copy</div>
+                </div>
+
+                <div class="btn btn-secondary btn-small" data-event-click="toggle_private_key">
+                    <span data-if="show_private_key == false">Show Private Key</span>
+                    <span data-if="show_private_key">Hide Private Key</span>
+                </div>
+
+                <div class="seed-phrase-display" data-if="show_private_key">
+                    <div class="private-key-text">{{ identity_private_key }}</div>
+                    <div class="btn btn-secondary btn-small" data-event-click="copy_private_key">Copy</div>
+                </div>
+
+                <div class="btn btn-secondary btn-small" data-if="show_import_identity == false"
+                     data-event-click="show_import_form">Import Identity</div>
+
+                <div class="import-identity-form" data-if="show_import_identity">
+                    <div class="subtitle">Enter a 12-word seed phrase or 64-char hex private key.</div>
+                    <input type="text" class="restore-input" data-value="import_phrase" />
+                    <div class="error-text" data-if="import_error != ''">{{ import_error }}</div>
+                    <div class="btn btn-danger btn-small" data-event-click="do_import_identity">Replace Identity</div>
+                    <div class="btn btn-secondary btn-small" data-event-click="cancel_import">Cancel</div>
                 </div>
             </div>
         </div>
@@ -310,6 +354,20 @@
 
     </div><!-- /app-content -->
 
+    <!-- TOFU certificate warning modal -->
+    <div class="modal-backdrop" data-model="serverlist" data-if="show_tofu_warning">
+        <div class="modal-box">
+            <h1 class="warning-title">Certificate Changed</h1>
+            <div class="subtitle">The server's certificate has changed since your last connection. This could mean the server was reconfigured, or it could indicate a security issue.</div>
+
+            <div class="label">New fingerprint:</div>
+            <div class="tofu-fingerprint">{{ tofu_fingerprint }}</div>
+
+            <div class="btn btn-danger" data-event-click="tofu_accept">Trust New Certificate</div>
+            <div class="btn btn-secondary" data-event-click="tofu_reject">Cancel</div>
+        </div>
+    </div>
+
     <!-- Login modal (identity-based — display name only) -->
     <div class="modal-backdrop" data-model="serverlist" data-if="show_login">
         <div class="modal-box">
@@ -329,8 +387,8 @@
     <!-- Seed phrase onboarding modal (first launch) -->
     <div class="modal-backdrop" data-model="serverlist" data-if="show_onboarding">
         <div class="modal-box onboarding-box">
-            <!-- Generate view (show_restore == false) -->
-            <div data-if="show_restore == false">
+            <!-- Generate view (default: neither restore nor key_import) -->
+            <div data-if="show_restore == false && show_key_import == false">
                 <h1>Your Identity</h1>
                 <div class="subtitle">Save this seed phrase — it is your permanent identity.</div>
 
@@ -340,10 +398,11 @@
 
                 <div class="btn" data-if="seed_phrase == ''" data-event-click="generate_identity">Generate Seed Phrase</div>
                 <div class="btn" data-if="seed_phrase != ''" data-event-click="save_identity">I Have Saved My Seed Phrase</div>
-                <div class="btn btn-secondary" data-event-click="show_restore">Restore From Existing Phrase</div>
+                <div class="btn btn-secondary" data-event-click="show_restore">Restore From Seed Phrase</div>
+                <div class="btn btn-secondary" data-event-click="show_key_import">Import Private Key</div>
             </div>
 
-            <!-- Restore view (show_restore == true) -->
+            <!-- Restore view (seed phrase) -->
             <div data-if="show_restore">
                 <h1>Restore Identity</h1>
                 <div class="subtitle">Enter your 12-word seed phrase to restore your identity.</div>
@@ -353,6 +412,19 @@
                 <div class="error-text" data-if="login_error != ''">{{ login_error }}</div>
 
                 <div class="btn" data-event-click="restore_identity">Restore</div>
+                <div class="btn btn-secondary" data-event-click="generate_identity">Back to Generate</div>
+            </div>
+
+            <!-- Import private key view -->
+            <div data-if="show_key_import">
+                <h1>Import Private Key</h1>
+                <div class="subtitle">Enter your 64-character hex private key.</div>
+
+                <input type="text" class="restore-input" data-value="import_key_hex" />
+
+                <div class="error-text" data-if="login_error != ''">{{ login_error }}</div>
+
+                <div class="btn" data-event-click="import_key">Import</div>
                 <div class="btn btn-secondary" data-event-click="generate_identity">Back to Generate</div>
             </div>
         </div>

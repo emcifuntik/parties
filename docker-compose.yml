@@ -2,10 +2,15 @@ services:
   parties-server:
     image: tuxick/parties-server:latest
     ports:
-      - "7800:7800"       # TLS control plane (TCP)
-      - "7801:7801/udp"   # ENet data plane (UDP)
+      - "7800:7800/udp"    # QUIC (UDP) — control + voice + video
     volumes:
       - parties-data:/data
+    environment:
+      PARTIES_SERVER_NAME: "My Server"
+      PARTIES_PORT: "7800"
+      # PARTIES_PASSWORD: ""
+      # PARTIES_ROOT_FINGERPRINTS: "abc123,def456"
+      # PARTIES_LOG_LEVEL: "info"
     restart: unless-stopped
 
 volumes:

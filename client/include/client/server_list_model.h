@@ -47,13 +47,19 @@ public:
     // Identity / seed phrase onboarding
     bool show_onboarding = false;
     bool show_restore = false;
+    bool show_key_import = false;
     Rml::String seed_phrase;
     Rml::String restore_phrase;
+    Rml::String import_key_hex;
     Rml::String fingerprint;
     bool has_identity = false;
 
     // Active server tracking
     int connected_server_id = 0;
+
+    // TOFU certificate warning
+    bool show_tofu_warning = false;
+    Rml::String tofu_fingerprint;  // new (mismatched) fingerprint
 
     // --- Callbacks (set by App) ---
     std::function<void(int)>  on_connect_server;
@@ -65,8 +71,12 @@ public:
     std::function<void()>     on_save_identity;
     std::function<void()>     on_restore_identity;
     std::function<void()>     on_show_restore;
+    std::function<void()>     on_show_key_import;
+    std::function<void()>     on_import_key;
     std::function<void()>     on_copy_fingerprint;
     std::function<void(int)>  on_show_server_menu;  // server_id
+    std::function<void()>     on_tofu_accept;       // trust new certificate
+    std::function<void()>     on_tofu_reject;       // cancel connection
 
 private:
     Rml::DataModelHandle handle_;

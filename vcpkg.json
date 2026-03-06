@@ -22,7 +22,8 @@
           "name": "rmlui",
           "features": ["svg"]
         },
-        "rnnoise"
+        "rnnoise",
+        "speexdsp"
       ]
     }
   }

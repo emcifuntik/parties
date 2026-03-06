@@ -74,6 +74,7 @@ bool LobbyModel::init(Rml::Context* context) {
     ctor.Bind("denoise_enabled",  &denoise_enabled);
     ctor.Bind("normalize_enabled",&normalize_enabled);
     ctor.Bind("normalize_target", &normalize_target);
+    ctor.Bind("aec_enabled",      &aec_enabled);
     ctor.Bind("vad_enabled",      &vad_enabled);
     ctor.Bind("vad_threshold",    &vad_threshold);
     ctor.Bind("voice_level",      &voice_level);
@@ -101,6 +102,15 @@ bool LobbyModel::init(Rml::Context* context) {
     ctor.Bind("show_create_channel",  &show_create_channel);
     ctor.Bind("new_channel_name",     &new_channel_name);
     ctor.Bind("admin_message",        &admin_message);
+
+    // Identity backup/import/export
+    ctor.Bind("show_seed_phrase",       &show_seed_phrase);
+    ctor.Bind("identity_seed_phrase",   &identity_seed_phrase);
+    ctor.Bind("show_import_identity",   &show_import_identity);
+    ctor.Bind("import_phrase",          &import_phrase);
+    ctor.Bind("import_error",           &import_error);
+    ctor.Bind("show_private_key",       &show_private_key);
+    ctor.Bind("identity_private_key",   &identity_private_key);
 
     // Event callbacks
     ctor.BindEventCallback("join_channel",
@@ -153,6 +163,13 @@ bool LobbyModel::init(Rml::Context* context) {
             denoise_enabled = !denoise_enabled;
             dirty("denoise_enabled");
             if (on_denoise_changed) on_denoise_changed(denoise_enabled);
+        });
+
+    ctor.BindEventCallback("toggle_aec",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            aec_enabled = !aec_enabled;
+            dirty("aec_enabled");
+            if (on_aec_changed) on_aec_changed(aec_enabled);
         });
 
     ctor.BindEventCallback("toggle_normalize",
@@ -274,6 +291,42 @@ bool LobbyModel::init(Rml::Context* context) {
                 on_show_user_menu(uid, std::string(name), role);
         });
 
+    // Identity backup/import event callbacks
+    ctor.BindEventCallback("toggle_seed_phrase",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            if (on_show_seed_phrase) on_show_seed_phrase();
+        });
+
+    ctor.BindEventCallback("copy_seed_phrase",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            if (on_copy_seed_phrase) on_copy_seed_phrase();
+        });
+
+    ctor.BindEventCallback("toggle_private_key",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            if (on_show_private_key) on_show_private_key();
+        });
+
+    ctor.BindEventCallback("copy_private_key",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            if (on_copy_private_key) on_copy_private_key();
+        });
+
+    ctor.BindEventCallback("show_import_form",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            if (on_show_import) on_show_import();
+        });
+
+    ctor.BindEventCallback("do_import_identity",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            if (on_do_import) on_do_import();
+        });
+
+    ctor.BindEventCallback("cancel_import",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            if (on_cancel_import) on_cancel_import();
+        });
+
     handle_ = ctor.GetModelHandle();
     return true;
 }
@@ -298,6 +351,7 @@ void LobbyModel::dirty_all() {
     dirty("selected_capture");
     dirty("selected_playback");
     dirty("denoise_enabled");
+    dirty("aec_enabled");
     dirty("normalize_enabled");
     dirty("normalize_target");
     dirty("vad_enabled");
@@ -320,6 +374,13 @@ void LobbyModel::dirty_all() {
     dirty("can_manage_roles");
     dirty("show_create_channel");
     dirty("admin_message");
+    dirty("show_seed_phrase");
+    dirty("identity_seed_phrase");
+    dirty("show_import_identity");
+    dirty("import_phrase");
+    dirty("import_error");
+    dirty("show_private_key");
+    dirty("identity_private_key");
 }
 
 } // namespace parties::client

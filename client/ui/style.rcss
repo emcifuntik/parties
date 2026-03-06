@@ -278,6 +278,62 @@ input.password:focus {
     background-color: #181924;
 }
 
+.btn.btn-danger {
+    background-color: #d9534f;
+    color: #fff;
+    font-weight: bold;
+}
+
+.btn.btn-danger:hover {
+    background-color: #c9302c;
+}
+
+.btn.btn-small {
+    padding: 5dp 8dp;
+    font-size: 12dp;
+    margin-top: 6dp;
+}
+
+/* ── Identity backup/import ───────────────────────── */
+
+.seed-phrase-display {
+    display: block;
+    padding: 10dp;
+    background-color: #0d0e17;
+    border: 1dp #2a2b3d;
+    margin-top: 8dp;
+}
+
+.private-key-text {
+    display: block;
+    color: #e8a43a;
+    font-size: 12dp;
+    word-break: break-word;
+}
+
+.import-identity-form {
+    display: block;
+    margin-top: 8dp;
+}
+
+/* ── TOFU warning ─────────────────────────────────── */
+
+.warning-title {
+    display: block;
+    color: #e8a43a;
+}
+
+.tofu-fingerprint {
+    display: block;
+    font-size: 11dp;
+    color: #8b8da0;
+    background-color: #181924;
+    padding: 8dp;
+    margin-top: 4dp;
+    margin-bottom: 12dp;
+    word-break: break-all;
+}
+
 /* ── Server header ─────────────────────────────────── */
 
 .server-header {

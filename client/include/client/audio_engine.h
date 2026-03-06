@@ -5,6 +5,7 @@
 
 #include <miniaudio.h>
 #include <rnnoise.h>
+#include <speex/speex_echo.h>
 
 #include <functional>
 #include <atomic>
@@ -60,6 +61,10 @@ public:
     void set_normalize_enabled(bool enabled) { normalize_enabled_ = enabled; }
     void set_normalize_target(float target) { normalize_target_ = target; }
 
+    // Echo cancellation
+    void set_aec_enabled(bool enabled) { aec_enabled_ = enabled; }
+    bool is_aec_enabled() const { return aec_enabled_; }
+
     // Voice activation detection
     void set_vad_enabled(bool enabled) { vad_enabled_ = enabled; }
     void set_vad_threshold(float threshold) { vad_threshold_ = threshold; }
@@ -95,6 +100,12 @@ private:
     // RNNoise denoiser
     DenoiseState* rnn_ = nullptr;
 
+    // SpeexDSP echo canceller
+    SpeexEchoState* aec_ = nullptr;
+    std::vector<spx_int16_t> aec_ref_buf_;     // playback reference ring buffer
+    size_t aec_ref_write_ = 0;
+    size_t aec_ref_read_ = 0;
+
     // Opus encoder
     OpusCodec encoder_;
 
@@ -113,6 +124,7 @@ private:
     std::atomic<bool> muted_{false};
     std::atomic<bool> deafened_{false};
     std::atomic<bool> denoise_enabled_{true};
+    std::atomic<bool> aec_enabled_{false};
     std::atomic<bool> normalize_enabled_{false};
     std::atomic<float> normalize_target_{0.5f};
     std::atomic<bool> vad_enabled_{false};

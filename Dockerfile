@@ -41,8 +41,24 @@ COPY --from=builder /src/build-linux/server/parties_server /usr/local/bin/partie
 # QUIC (UDP) control + data plane on single port
 EXPOSE 7800/udp
 
-# /data holds server.toml, certs, and the SQLite database
+# /data holds server.toml (optional), certs, and the SQLite database
 VOLUME /data
 WORKDIR /data
+
+# ── Configuration via environment variables ───────────────────
+# All optional — env vars override server.toml which overrides defaults.
+#
+#   PARTIES_SERVER_NAME          Server display name         (default: "Parties Server")
+#   PARTIES_LISTEN_IP            Bind address                (default: "0.0.0.0")
+#   PARTIES_PORT                 QUIC UDP port               (default: 7800)
+#   PARTIES_MAX_CLIENTS          Max concurrent connections  (default: 64)
+#   PARTIES_PASSWORD             Server password             (default: none)
+#   PARTIES_CERT_FILE            TLS certificate path        (default: "server.pem")
+#   PARTIES_KEY_FILE             TLS private key path        (default: "server.key.pem")
+#   PARTIES_DB_PATH              SQLite database path        (default: "parties.db")
+#   PARTIES_ROOT_FINGERPRINTS    Comma-separated Ed25519 fingerprints for Owner role
+#   PARTIES_MAX_USERS_PER_CHANNEL                            (default: 32)
+#   PARTIES_DEFAULT_BITRATE      Opus bitrate in bps         (default: 32000)
+#   PARTIES_LOG_LEVEL            "debug", "info", "warn"     (default: "info")
 
 ENTRYPOINT ["parties_server"]

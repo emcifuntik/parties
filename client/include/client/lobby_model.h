@@ -75,6 +75,7 @@ public:
     bool denoise_enabled = true;
     bool normalize_enabled = false;
     float normalize_target = 0.5f;
+    bool aec_enabled = false;
     bool vad_enabled = false;
     float vad_threshold = 0.02f;
     float voice_level = 0.0f;
@@ -109,6 +110,15 @@ public:
     // Admin feedback
     Rml::String admin_message;
 
+    // Identity backup/import/export
+    bool show_seed_phrase = false;
+    Rml::String identity_seed_phrase;
+    bool show_import_identity = false;
+    Rml::String import_phrase;
+    Rml::String import_error;
+    bool show_private_key = false;
+    Rml::String identity_private_key;  // hex-encoded 32-byte Ed25519 seed
+
     // --- Callbacks (set by App before init) ---
     std::function<void(int)>   on_join_channel;
     std::function<void()>      on_leave_channel;
@@ -119,6 +129,7 @@ public:
     std::function<void(bool)>  on_denoise_changed;
     std::function<void(bool)>  on_normalize_changed;
     std::function<void(float)> on_normalize_target_changed;
+    std::function<void(bool)>  on_aec_changed;
     std::function<void(bool)>  on_vad_changed;
     std::function<void(float)> on_vad_threshold_changed;
     std::function<void()>      on_toggle_ptt;
@@ -130,6 +141,15 @@ public:
     std::function<void(int)>   on_watch_sharer;
     std::function<void(int)>   on_select_sharer;
     std::function<void()>      on_stop_watching;
+
+    // Identity
+    std::function<void()>      on_show_seed_phrase;
+    std::function<void()>      on_copy_seed_phrase;
+    std::function<void()>      on_show_private_key;
+    std::function<void()>      on_copy_private_key;
+    std::function<void()>      on_show_import;
+    std::function<void()>      on_do_import;
+    std::function<void()>      on_cancel_import;
 
     // Admin
     std::function<void()>      on_create_channel;

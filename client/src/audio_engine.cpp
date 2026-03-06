@@ -52,6 +52,24 @@ bool AudioEngine::init() {
         return false;
     }
 
+    // Initialize SpeexDSP echo canceller
+    // filter_length = 100ms worth of samples at 48kHz = 4800
+    aec_ = speex_echo_state_init(audio::FRAME_SIZE, audio::SAMPLE_RATE / 10);
+    if (!aec_) {
+        std::fprintf(stderr, "[Audio] Failed to create Speex AEC state\n");
+        rnnoise_destroy(rnn_);
+        rnn_ = nullptr;
+        return false;
+    }
+    {
+        int rate = audio::SAMPLE_RATE;
+        speex_echo_ctl(aec_, SPEEX_ECHO_SET_SAMPLING_RATE, &rate);
+    }
+    // Ring buffer for playback reference: enough for ~50ms latency headroom
+    aec_ref_buf_.resize(audio::SAMPLE_RATE / 10, 0);
+    aec_ref_write_ = 0;
+    aec_ref_read_ = 0;
+
     // Initialize Opus encoder
     if (!encoder_.init_encoder(audio::SAMPLE_RATE, audio::CHANNELS, audio::OPUS_BITRATE)) {
         std::fprintf(stderr, "[Audio] Failed to create Opus encoder\n");
@@ -119,6 +137,10 @@ void AudioEngine::shutdown() {
     if (device_initialized_) {
         ma_device_uninit(&device_);
         device_initialized_ = false;
+    }
+    if (aec_) {
+        speex_echo_state_destroy(aec_);
+        aec_ = nullptr;
     }
     if (rnn_) {
         rnnoise_destroy(rnn_);
@@ -194,8 +216,24 @@ void AudioEngine::set_playback_device(int index) {
 void AudioEngine::data_callback(ma_device* device, void* output,
                                   const void* input, ma_uint32 frame_count) {
     auto* engine = static_cast<AudioEngine*>(device->pUserData);
-    engine->process_capture(static_cast<const float*>(input), frame_count);
+    // Process playback first so AEC has the reference signal
     engine->process_playback(static_cast<float*>(output), frame_count);
+
+    // Store playback reference for AEC (float→int16 into ring buffer)
+    if (engine->aec_enabled_ && engine->aec_) {
+        auto* out_f = static_cast<const float*>(output);
+        size_t cap = engine->aec_ref_buf_.size();
+        for (ma_uint32 i = 0; i < frame_count; i++) {
+            float s = out_f[i];
+            if (s > 1.0f) s = 1.0f;
+            else if (s < -1.0f) s = -1.0f;
+            engine->aec_ref_buf_[engine->aec_ref_write_ % cap] =
+                static_cast<spx_int16_t>(s * 32767.0f);
+            engine->aec_ref_write_++;
+        }
+    }
+
+    engine->process_capture(static_cast<const float*>(input), frame_count);
 }
 
 void AudioEngine::process_capture(const float* input, ma_uint32 frame_count) {
@@ -214,6 +252,31 @@ void AudioEngine::process_capture(const float* input, ma_uint32 frame_count) {
         remaining -= static_cast<ma_uint32>(to_copy);
 
         if (capture_pos_ >= static_cast<size_t>(audio::FRAME_SIZE)) {
+            // AEC: cancel echo from capture using playback reference
+            if (aec_enabled_ && aec_) {
+                size_t cap = aec_ref_buf_.size();
+                size_t avail = aec_ref_write_ - aec_ref_read_;
+                if (avail >= static_cast<size_t>(audio::FRAME_SIZE)) {
+                    spx_int16_t mic[audio::FRAME_SIZE];
+                    spx_int16_t ref[audio::FRAME_SIZE];
+                    spx_int16_t out[audio::FRAME_SIZE];
+
+                    for (int i = 0; i < audio::FRAME_SIZE; i++) {
+                        float s = capture_buf_[i];
+                        if (s > 1.0f) s = 1.0f;
+                        else if (s < -1.0f) s = -1.0f;
+                        mic[i] = static_cast<spx_int16_t>(s * 32767.0f);
+                        ref[i] = aec_ref_buf_[(aec_ref_read_ + i) % cap];
+                    }
+                    aec_ref_read_ += audio::FRAME_SIZE;
+
+                    speex_echo_cancellation(aec_, mic, ref, out);
+
+                    for (int i = 0; i < audio::FRAME_SIZE; i++)
+                        capture_buf_[i] = static_cast<float>(out[i]) / 32767.0f;
+                }
+            }
+
             float processed[audio::FRAME_SIZE];
 
             if (denoise_enabled_) {

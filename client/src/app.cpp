@@ -119,6 +119,11 @@ void App::setup_model_callbacks() {
         settings_.set_pref("audio.normalize_target", std::to_string(target));
     };
 
+    model_.on_aec_changed = [this](bool enabled) {
+        audio_.set_aec_enabled(enabled);
+        settings_.set_pref("audio.aec", enabled ? "1" : "0");
+    };
+
     model_.on_vad_changed = [this](bool enabled) {
         audio_.set_vad_enabled(enabled);
         settings_.set_pref("audio.vad", enabled ? "1" : "0");
@@ -270,6 +275,150 @@ void App::setup_model_callbacks() {
                               writer.data().data(), writer.data().size());
         }
     };
+
+    // Identity backup/import
+    model_.on_show_seed_phrase = [this]() {
+        if (!has_identity_) return;
+        if (model_.show_seed_phrase) {
+            // Toggle off
+            model_.show_seed_phrase = false;
+            model_.identity_seed_phrase = "";
+            model_.dirty("show_seed_phrase");
+            model_.dirty("identity_seed_phrase");
+            return;
+        }
+        auto id = settings_.load_identity();
+        if (!id) return;
+        model_.identity_seed_phrase = Rml::String(id->seed_phrase);
+        model_.show_seed_phrase = true;
+        model_.dirty("identity_seed_phrase");
+        model_.dirty("show_seed_phrase");
+    };
+
+    model_.on_copy_seed_phrase = [this]() {
+        std::string phrase(model_.identity_seed_phrase);
+        if (phrase.empty()) return;
+        if (!OpenClipboard(hwnd_)) return;
+        EmptyClipboard();
+        HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, phrase.size() + 1);
+        if (hMem) {
+            char* dst = static_cast<char*>(GlobalLock(hMem));
+            std::memcpy(dst, phrase.c_str(), phrase.size() + 1);
+            GlobalUnlock(hMem);
+            SetClipboardData(CF_TEXT, hMem);
+        }
+        CloseClipboard();
+    };
+
+    model_.on_show_private_key = [this]() {
+        if (!has_identity_) return;
+        if (model_.show_private_key) {
+            model_.show_private_key = false;
+            model_.identity_private_key = "";
+            model_.dirty("show_private_key");
+            model_.dirty("identity_private_key");
+            return;
+        }
+        model_.identity_private_key = Rml::String(parties::secret_key_to_hex(secret_key_));
+        model_.show_private_key = true;
+        model_.dirty("identity_private_key");
+        model_.dirty("show_private_key");
+    };
+
+    model_.on_copy_private_key = [this]() {
+        std::string key_hex(model_.identity_private_key);
+        if (key_hex.empty()) return;
+        if (!OpenClipboard(hwnd_)) return;
+        EmptyClipboard();
+        HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, key_hex.size() + 1);
+        if (hMem) {
+            char* dst = static_cast<char*>(GlobalLock(hMem));
+            std::memcpy(dst, key_hex.c_str(), key_hex.size() + 1);
+            GlobalUnlock(hMem);
+            SetClipboardData(CF_TEXT, hMem);
+        }
+        CloseClipboard();
+    };
+
+    model_.on_show_import = [this]() {
+        model_.show_import_identity = true;
+        model_.import_phrase = "";
+        model_.import_error = "";
+        model_.dirty("show_import_identity");
+        model_.dirty("import_phrase");
+        model_.dirty("import_error");
+    };
+
+    model_.on_do_import = [this]() {
+        std::string input(model_.import_phrase);
+        SecretKey sk{};
+        PublicKey pk{};
+        std::string seed_phrase;
+
+        // Try as 64-char hex private key first, then as seed phrase
+        if (input.size() == 64 && parties::secret_key_from_hex(input, sk)) {
+            if (!parties::derive_pubkey(sk, pk)) {
+                model_.import_error = "Failed to derive public key";
+                model_.dirty("import_error");
+                return;
+            }
+            seed_phrase = "";  // no seed phrase for raw key import
+        } else if (parties::validate_seed_phrase(input)) {
+            if (!parties::derive_keypair(input, sk, pk)) {
+                model_.import_error = "Failed to derive keypair";
+                model_.dirty("import_error");
+                return;
+            }
+            seed_phrase = input;
+        } else {
+            model_.import_error = "Enter a 12-word seed phrase or 64-char hex private key.";
+            model_.dirty("import_error");
+            return;
+        }
+
+        if (!settings_.save_identity(seed_phrase, sk, pk)) {
+            model_.import_error = "Failed to save identity";
+            model_.dirty("import_error");
+            return;
+        }
+        secret_key_ = sk;
+        public_key_ = pk;
+        has_identity_ = true;
+
+        // Update server list model fingerprint
+        server_model_.fingerprint = Rml::String(parties::public_key_fingerprint(pk));
+        server_model_.has_identity = true;
+        server_model_.dirty("fingerprint");
+        server_model_.dirty("has_identity");
+
+        // Reset import form and seed phrase display
+        model_.show_import_identity = false;
+        model_.import_phrase = "";
+        model_.import_error = "";
+        model_.show_seed_phrase = false;
+        model_.identity_seed_phrase = "";
+        model_.show_private_key = false;
+        model_.identity_private_key = "";
+        model_.dirty("show_import_identity");
+        model_.dirty("import_phrase");
+        model_.dirty("import_error");
+        model_.dirty("show_seed_phrase");
+        model_.dirty("identity_seed_phrase");
+        model_.dirty("show_private_key");
+        model_.dirty("identity_private_key");
+
+        std::printf("[App] Identity imported: %s\n",
+                    parties::public_key_fingerprint(pk).c_str());
+    };
+
+    model_.on_cancel_import = [this]() {
+        model_.show_import_identity = false;
+        model_.import_phrase = "";
+        model_.import_error = "";
+        model_.dirty("show_import_identity");
+        model_.dirty("import_phrase");
+        model_.dirty("import_error");
+    };
 }
 
 void App::setup_server_model_callbacks() {
@@ -398,9 +547,11 @@ void App::setup_server_model_callbacks() {
         server_model_.seed_phrase = Rml::String(phrase);
         server_model_.show_onboarding = true;
         server_model_.show_restore = false;
+        server_model_.show_key_import = false;
         server_model_.dirty("seed_phrase");
         server_model_.dirty("show_onboarding");
         server_model_.dirty("show_restore");
+        server_model_.dirty("show_key_import");
     };
 
     server_model_.on_save_identity = [this]() {
@@ -477,6 +628,55 @@ void App::setup_server_model_callbacks() {
         server_model_.dirty("login_error");
     };
 
+    server_model_.on_show_key_import = [this]() {
+        server_model_.show_key_import = true;
+        server_model_.show_restore = false;
+        server_model_.import_key_hex = "";
+        server_model_.login_error = "";
+        server_model_.dirty("show_key_import");
+        server_model_.dirty("show_restore");
+        server_model_.dirty("import_key_hex");
+        server_model_.dirty("login_error");
+    };
+
+    server_model_.on_import_key = [this]() {
+        std::string hex(server_model_.import_key_hex);
+        SecretKey sk{};
+        PublicKey pk{};
+        if (!parties::secret_key_from_hex(hex, sk)) {
+            server_model_.login_error = "Invalid private key. Must be 64 hex characters.";
+            server_model_.dirty("login_error");
+            return;
+        }
+        if (!parties::derive_pubkey(sk, pk)) {
+            server_model_.login_error = "Failed to derive public key";
+            server_model_.dirty("login_error");
+            return;
+        }
+        if (!settings_.save_identity("", sk, pk)) {
+            server_model_.login_error = "Failed to save identity";
+            server_model_.dirty("login_error");
+            return;
+        }
+        secret_key_ = sk;
+        public_key_ = pk;
+        has_identity_ = true;
+
+        server_model_.fingerprint = Rml::String(parties::public_key_fingerprint(pk));
+        server_model_.has_identity = true;
+        server_model_.show_onboarding = false;
+        server_model_.show_key_import = false;
+        server_model_.login_error = "";
+        server_model_.dirty("fingerprint");
+        server_model_.dirty("has_identity");
+        server_model_.dirty("show_onboarding");
+        server_model_.dirty("show_key_import");
+        server_model_.dirty("login_error");
+
+        std::printf("[App] Identity imported from key: %s\n",
+                    parties::public_key_fingerprint(pk).c_str());
+    };
+
     server_model_.on_copy_fingerprint = [this]() {
         std::string fp(server_model_.fingerprint);
         if (fp.empty()) return;
@@ -490,6 +690,29 @@ void App::setup_server_model_callbacks() {
             SetClipboardData(CF_TEXT, hMem);
         }
         CloseClipboard();
+    };
+
+    server_model_.on_tofu_accept = [this]() {
+        // User chose to trust the new certificate
+        std::string fp(server_model_.tofu_fingerprint);
+        settings_.trust_fingerprint(server_host_, server_port_, fp);
+        settings_.delete_resumption_ticket(server_host_, server_port_);
+
+        server_model_.show_tofu_warning = false;
+        server_model_.show_login = true;
+        server_model_.login_status = "Authenticating...";
+        server_model_.dirty("show_tofu_warning");
+        server_model_.dirty("show_login");
+        server_model_.dirty("login_status");
+
+        send_auth_identity();
+    };
+
+    server_model_.on_tofu_reject = [this]() {
+        // User rejected the new certificate
+        server_model_.show_tofu_warning = false;
+        server_model_.dirty("show_tofu_warning");
+        net_.disconnect();
     };
 }
 
@@ -590,6 +813,14 @@ bool App::init(HWND hwnd) {
             float t = std::strtof(val.c_str(), nullptr);
             audio_.set_normalize_target(t);
             model_.normalize_target = t;
+        }
+
+        // AEC
+        val = pref("audio.aec");
+        if (!val.empty()) {
+            bool enabled = (val != "0");
+            audio_.set_aec_enabled(enabled);
+            model_.aec_enabled = enabled;
         }
 
         // VAD
@@ -958,10 +1189,13 @@ void App::do_connect() {
         std::string fp = net_.get_server_fingerprint();
         auto result = settings_.check_fingerprint(server_host_, server_port_, fp);
         if (result == Settings::TofuResult::Mismatch) {
-            server_model_.login_error = "Server certificate changed! Possible MITM attack.";
-            server_model_.dirty("login_error");
-            settings_.delete_resumption_ticket(server_host_, server_port_);
-            net_.disconnect();
+            // Show warning dialog — keep connection alive, let user decide
+            server_model_.tofu_fingerprint = Rml::String(fp);
+            server_model_.show_tofu_warning = true;
+            server_model_.show_login = false;
+            server_model_.dirty("tofu_fingerprint");
+            server_model_.dirty("show_tofu_warning");
+            server_model_.dirty("show_login");
             return;
         }
         if (result == Settings::TofuResult::Unknown) {

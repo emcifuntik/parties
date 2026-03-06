@@ -221,6 +221,58 @@ bool derive_keypair(const std::string& seed_phrase, SecretKey& sk, PublicKey& pk
     return true;
 }
 
+bool derive_pubkey(const SecretKey& sk, PublicKey& pk) {
+    ed25519_key key;
+    if (wc_ed25519_init(&key) != 0) return false;
+
+    int ret = wc_ed25519_import_private_only(sk.data(), ED25519_KEY_SIZE, &key);
+    if (ret != 0) {
+        wc_ed25519_free(&key);
+        return false;
+    }
+
+    ret = wc_ed25519_make_public(&key, key.p, ED25519_PUB_KEY_SIZE);
+    if (ret != 0) {
+        wc_ed25519_free(&key);
+        return false;
+    }
+    key.pubKeySet = 1;
+
+    word32 pub_len = ED25519_PUB_KEY_SIZE;
+    ret = wc_ed25519_export_public(&key, pk.data(), &pub_len);
+    wc_ed25519_free(&key);
+    return ret == 0;
+}
+
+std::string secret_key_to_hex(const SecretKey& sk) {
+    static const char hex[] = "0123456789abcdef";
+    std::string result;
+    result.reserve(64);
+    for (auto b : sk) {
+        result += hex[(b >> 4) & 0xF];
+        result += hex[b & 0xF];
+    }
+    return result;
+}
+
+bool secret_key_from_hex(const std::string& hex, SecretKey& sk) {
+    if (hex.size() != 64) return false;
+    for (size_t i = 0; i < 32; i++) {
+        auto hi = hex[i * 2];
+        auto lo = hex[i * 2 + 1];
+        auto nibble = [](char c) -> int {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+            if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+            return -1;
+        };
+        int h = nibble(hi), l = nibble(lo);
+        if (h < 0 || l < 0) return false;
+        sk[i] = static_cast<uint8_t>((h << 4) | l);
+    }
+    return true;
+}
+
 bool ed25519_sign(const uint8_t* msg, size_t msg_len,
                   const SecretKey& sk, const PublicKey& pk,
                   Signature& sig_out) {
