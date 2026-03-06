@@ -1025,6 +1025,67 @@ scrollbarvertical sliderarrowinc {
     margin-bottom: 20dp;
 }
 
+.share-picker-settings {
+    display: flex;
+    flex-direction: row;
+    gap: 24dp;
+    margin-bottom: 16dp;
+    padding: 12dp 14dp;
+    background-color: #1a1b2e;
+    border-radius: 6dp;
+}
+
+.share-setting-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6dp;
+}
+
+.share-codec-buttons {
+    display: flex;
+    flex-direction: row;
+    gap: 4dp;
+}
+
+.share-codec-btn {
+    display: block;
+    padding: 6dp 12dp;
+    background-color: #252640;
+    color: #8b8da0;
+    cursor: pointer;
+    border-radius: 4dp;
+    font-size: 13dp;
+}
+
+.share-codec-btn:hover {
+    background-color: #2d2e4a;
+    color: #e0ddd8;
+}
+
+.share-codec-btn.active {
+    background-color: #e8a43a;
+    color: #0d0e17;
+}
+
+.share-bitrate-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 10dp;
+}
+
+.share-bitrate-slider {
+    display: block;
+    width: 140dp;
+}
+
+.share-bitrate-value {
+    display: block;
+    color: #8b8da0;
+    font-size: 13dp;
+    min-width: 60dp;
+}
+
 .share-picker-section {
     display: flex;
     flex-direction: column;

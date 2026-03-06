@@ -894,6 +894,14 @@ bool App::init(HWND hwnd) {
         }
     }
 
+    // Load saved share settings (codec, bitrate)
+    {
+        auto codec_str = settings_.get_pref("video.share_codec");
+        if (codec_str) model_.share_codec = std::atoi(codec_str->c_str());
+        auto bitrate_str = settings_.get_pref("video.share_bitrate");
+        if (bitrate_str) model_.share_bitrate = std::strtof(bitrate_str->c_str(), nullptr);
+    }
+
     // Wire audio to network (QUIC TLS encrypts in transit)
     audio_.set_mixer(&mixer_);
     audio_.on_encoded_frame = [this](const uint8_t* data, size_t len) {
@@ -1674,9 +1682,22 @@ void App::start_screen_share(int target_index) {
     uint32_t width = capture_->width();
     uint32_t height = capture_->height();
 
+    // Map UI codec selection to VideoCodecId
+    VideoCodecId preferred_codec = VideoCodecId::AV1;  // Auto = try AV1 first
+    if (model_.share_codec == 1) preferred_codec = VideoCodecId::H265;
+    else if (model_.share_codec == 2) preferred_codec = VideoCodecId::H264;
+
+    uint32_t bitrate_bps = static_cast<uint32_t>(model_.share_bitrate * 1'000'000.0f);
+    bitrate_bps = (std::max)(bitrate_bps, VIDEO_MIN_BITRATE);
+    bitrate_bps = (std::min)(bitrate_bps, VIDEO_MAX_BITRATE);
+
+    // Save share settings
+    settings_.set_pref("video.share_codec", std::to_string(model_.share_codec));
+    settings_.set_pref("video.share_bitrate", std::to_string(model_.share_bitrate));
+
     // Create encoder (uses same D3D device as capture)
     encoder_ = std::make_unique<VideoEncoder>();
-    if (!encoder_->init(capture_->device(), width, height)) {
+    if (!encoder_->init(capture_->device(), width, height, 0, 0, 30, bitrate_bps, preferred_codec)) {
         std::fprintf(stderr, "[App] Video encoder init failed\n");
         capture_->stop();
         capture_->shutdown();

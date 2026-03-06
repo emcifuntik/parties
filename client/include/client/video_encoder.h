@@ -27,11 +27,12 @@ public:
     ~VideoEncoder();
 
     // Initialize with a D3D11 device (shared with screen capture)
-    // Probes for hardware encoders: AV1 > H.265 > H.264
+    // Probes for hardware encoders: AV1 > H.265 > H.264 (or preferred codec first)
     // input_width/height = capture texture size, width/height = encode output size
     bool init(ID3D11Device* device, uint32_t width, uint32_t height,
               uint32_t input_width = 0, uint32_t input_height = 0,
-              uint32_t fps = 30, uint32_t bitrate = VIDEO_DEFAULT_BITRATE);
+              uint32_t fps = 30, uint32_t bitrate = VIDEO_DEFAULT_BITRATE,
+              VideoCodecId preferred_codec = VideoCodecId::AV1);
     void shutdown();
 
     // Encode a BGRA texture. Calls on_encoded when output is ready.

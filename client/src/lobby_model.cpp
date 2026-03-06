@@ -94,6 +94,8 @@ bool LobbyModel::init(Rml::Context* context) {
     // Share picker
     ctor.Bind("show_share_picker", &show_share_picker);
     ctor.Bind("share_targets",     &share_targets);
+    ctor.Bind("share_codec",       &share_codec);
+    ctor.Bind("share_bitrate",     &share_bitrate);
 
     // Admin / permissions
     ctor.Bind("my_role",              &my_role);
@@ -221,6 +223,19 @@ bool LobbyModel::init(Rml::Context* context) {
         [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList& args) {
             if (!args.empty() && on_select_share_target)
                 on_select_share_target(args[0].Get<int>());
+        });
+
+    ctor.BindEventCallback("select_share_codec",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList& args) {
+            if (!args.empty()) {
+                share_codec = args[0].Get<int>();
+                dirty("share_codec");
+            }
+        });
+
+    ctor.BindEventCallback("share_bitrate_changed",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            // share_bitrate already updated by data binding
         });
 
     ctor.BindEventCallback("cancel_share",
@@ -375,6 +390,8 @@ void LobbyModel::dirty_all() {
     dirty("stream_volume");
     dirty("show_share_picker");
     dirty("share_targets");
+    dirty("share_codec");
+    dirty("share_bitrate");
     dirty("my_role");
     dirty("can_manage_channels");
     dirty("can_kick");

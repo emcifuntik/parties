@@ -14,7 +14,7 @@ enum class VideoCodecId : uint8_t {
 constexpr uint8_t VIDEO_FLAG_KEYFRAME = 0x01;
 
 // Bitrate limits (bits per second)
-constexpr uint32_t VIDEO_MAX_BITRATE     = 5'000'000;  // 5 Mbps
+constexpr uint32_t VIDEO_MAX_BITRATE     = 10'000'000;  // 10 Mbps
 constexpr uint32_t VIDEO_DEFAULT_BITRATE = 2'000'000;  // 2 Mbps
 constexpr uint32_t VIDEO_MIN_BITRATE     =   200'000;  // 200 kbps
 

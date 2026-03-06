@@ -280,6 +280,28 @@
                     <div class="close-icon-b"></div>
                 </div>
             </div>
+            <div class="share-picker-settings">
+                <div class="share-setting-group">
+                    <div class="settings-label">Codec</div>
+                    <div class="share-codec-buttons">
+                        <div class="share-codec-btn" data-class-active="share_codec == 0"
+                             data-event-click="select_share_codec(0)">Auto</div>
+                        <div class="share-codec-btn" data-class-active="share_codec == 1"
+                             data-event-click="select_share_codec(1)">H.265</div>
+                        <div class="share-codec-btn" data-class-active="share_codec == 2"
+                             data-event-click="select_share_codec(2)">H.264</div>
+                    </div>
+                </div>
+                <div class="share-setting-group">
+                    <div class="settings-label">Bitrate</div>
+                    <div class="share-bitrate-row">
+                        <input type="range" class="share-bitrate-slider" min="0.5" max="10" step="0.5"
+                               data-value="share_bitrate"
+                               data-event-change="share_bitrate_changed" />
+                        <div class="share-bitrate-value">{{ share_bitrate }} Mbps</div>
+                    </div>
+                </div>
+            </div>
             <div class="share-picker-section">
                 <div class="settings-label">Monitors</div>
                 <div data-for="target : share_targets">

@@ -97,6 +97,8 @@ public:
     // Share picker
     bool show_share_picker = false;
     Rml::Vector<ShareTarget> share_targets;
+    int share_codec = 0;           // 0=Auto, 1=H.265, 2=H.264
+    float share_bitrate = 2.0f;    // Mbps (0.5 - 10.0)
 
     // Admin / permissions
     int my_role = 3;                       // current user's role (0=Owner..3=User)

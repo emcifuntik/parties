@@ -27,7 +27,8 @@ VideoEncoder::~VideoEncoder() {
 
 bool VideoEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
                          uint32_t input_width, uint32_t input_height,
-                         uint32_t fps, uint32_t bitrate) {
+                         uint32_t fps, uint32_t bitrate,
+                         VideoCodecId preferred_codec) {
     if (initialized_) return false;
 
     device_ = device;
@@ -62,11 +63,33 @@ bool VideoEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
         return false;
     }
 
-    // Try codecs in priority order: AV1 > H.265 > H.264
+    // Try preferred codec first, then fall back to others
+    struct CodecEntry { GUID subtype; VideoCodecId id; };
+    CodecEntry all_codecs[] = {
+        {MFVideoFormat_AV1,  VideoCodecId::AV1},
+        {MFVideoFormat_HEVC, VideoCodecId::H265},
+        {MFVideoFormat_H264, VideoCodecId::H264},
+    };
+
     bool found = false;
-    if (!found) found = try_create_encoder(MFVideoFormat_AV1, VideoCodecId::AV1);
-    if (!found) found = try_create_encoder(MFVideoFormat_HEVC, VideoCodecId::H265);
-    if (!found) found = try_create_encoder(MFVideoFormat_H264, VideoCodecId::H264);
+
+    // Try preferred codec first
+    for (auto& c : all_codecs) {
+        if (c.id == preferred_codec) {
+            found = try_create_encoder(c.subtype, c.id);
+            break;
+        }
+    }
+
+    // Fall back to remaining codecs in priority order
+    if (!found) {
+        for (auto& c : all_codecs) {
+            if (c.id != preferred_codec) {
+                found = try_create_encoder(c.subtype, c.id);
+                if (found) break;
+            }
+        }
+    }
 
     if (!found) {
         std::fprintf(stderr, "[VideoEncoder] No hardware encoder found\n");
