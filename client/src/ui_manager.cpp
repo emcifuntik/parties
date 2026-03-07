@@ -141,8 +141,7 @@ void UiManager::update() {
 }
 
 void UiManager::render() {
-    if (!render_interface_ || !*render_interface_) return;
-    if (hwnd_ && IsIconic(hwnd_)) return;
+    if (!render_interface_ || !*render_interface_ || minimized_) return;
 
     render_interface_->BeginFrame();
     render_interface_->Clear();
@@ -152,10 +151,20 @@ void UiManager::render() {
 
 void UiManager::on_resize(int width, int height) {
     if (width <= 0 || height <= 0) return;
-    if (render_interface_)
-        render_interface_->SetViewport(width, height);
+    bool was_minimized = minimized_;
+    minimized_ = false;
+    if (render_interface_) {
+        // After restore from minimize, force a viewport reset even if
+        // dimensions match. ResizeBuffers re-registers the swap chain
+        // with the DWM compositor after a minimize/restore cycle.
+        render_interface_->SetViewport(width, height, was_minimized);
+    }
     if (context_)
         context_->SetDimensions(Rml::Vector2i(width, height));
+}
+
+void UiManager::on_minimize() {
+    minimized_ = true;
 }
 
 void UiManager::on_dpi_change(float scale) {

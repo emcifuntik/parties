@@ -30,6 +30,7 @@ enum WindowAction {
 };
 
 static constexpr int RESIZE_BORDER_PX = 8;
+static bool s_was_minimized = false;
 
 // ═══════════════════════════════════════════════════════════════════════
 // WndProc — custom titlebar, resize borders, RmlUi input forwarding
@@ -175,13 +176,27 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             app->update();
         return 0;
 
-    case WM_SIZE:
-        if (ui && wParam != SIZE_MINIMIZED) {
-            int w = LOWORD(lParam);
-            int h = HIWORD(lParam);
+    case WM_SIZE: {
+        int w = LOWORD(lParam);
+        int h = HIWORD(lParam);
+        if (wParam == SIZE_MINIMIZED) {
+            s_was_minimized = true;
+            if (ui) ui->on_minimize();
+        } else if (ui) {
+            bool restoring = s_was_minimized;
+            s_was_minimized = false;
             ui->on_resize(w, h);
+            if (restoring) {
+                // Force DWM to re-register the window surface immediately
+                // (before the next render) to avoid a white frame flash.
+                MARGINS margins = {0, 0, 0, 1};
+                DwmExtendFrameIntoClientArea(hwnd, &margins);
+                SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+            }
         }
         return 0;
+    }
 
     case WM_DPICHANGED: {
         if (ui) {
@@ -261,12 +276,13 @@ int main(int /*argc*/, char* /*argv*/[]) {
         return 1;
     }
 
-    // Create borderless window with thick frame for resize + snap support
+    // Create borderless window. WS_CAPTION enables DWM minimize/restore
+    // animations; WM_NCCALCSIZE collapses the caption to zero pixels.
     HWND hwnd = CreateWindowExW(
         0,
         L"PartiesClient",
         L"Parties",
-        WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX,
+        WS_POPUP | WS_THICKFRAME | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX,
         CW_USEDEFAULT, CW_USEDEFAULT, 1280, 720,
         nullptr, nullptr, wc.hInstance, nullptr);
 
@@ -297,7 +313,14 @@ int main(int /*argc*/, char* /*argv*/[]) {
     }
 
     ShowWindow(hwnd, SW_SHOW);
-    UpdateWindow(hwnd);
+
+    // Force frame recalculation now that the app is initialized.
+    // WS_CAPTION style means the initial WM_NCCALCSIZE during CreateWindowExW
+    // fires before the app exists, so its WM_SIZE goes to DefWindowProcW.
+    // This SWP_FRAMECHANGED triggers a fresh WM_SIZE through our handler,
+    // ensuring RmlUi gets the correct client dimensions for layout.
+    SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
 
     // Main loop
     bool running = true;

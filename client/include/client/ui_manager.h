@@ -34,6 +34,7 @@ public:
     void render();
 
     void on_resize(int width, int height);
+    void on_minimize();
     void on_dpi_change(float scale);
 
     Rml::Context* context() { return context_; }
@@ -63,7 +64,7 @@ private:
     HWND hwnd_ = nullptr;
     float dpi_scale_ = 1.0f;
     bool initialised_ = false;
-
+    bool minimized_ = false;
     class EventListenerInstancer;
     class GenericEventListener;
 };
