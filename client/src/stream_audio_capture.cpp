@@ -144,46 +144,21 @@ bool StreamAudioCapture::init(uint32_t target_pid) {
     auto state = new WasapiState();
     state->audio_client = handler->audio_client();
 
-    // The process loopback virtual device doesn't support GetMixFormat (E_NOTIMPL).
-    // Get the format from the default render endpoint instead.
-    {
-        ComPtr<IMMDeviceEnumerator> enumerator;
-        hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
-                              __uuidof(IMMDeviceEnumerator), reinterpret_cast<void**>(enumerator.GetAddressOf()));
-        if (FAILED(hr)) {
-            std::fprintf(stderr, "[StreamAudioCapture] CoCreateInstance(MMDeviceEnumerator) failed: 0x%08lX\n", hr);
-            delete state;
-            return false;
-        }
+    // Request exactly the format Opus needs: 48kHz stereo float32.
+    // AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM tells WASAPI to convert from the
+    // system mix format (which may be 44100 Hz, 7.1 surround, etc.)
+    WAVEFORMATEX* fmt = static_cast<WAVEFORMATEX*>(CoTaskMemAlloc(sizeof(WAVEFORMATEX)));
+    fmt->wFormatTag = WAVE_FORMAT_IEEE_FLOAT;
+    fmt->nChannels = kChannels;
+    fmt->nSamplesPerSec = kSampleRate;
+    fmt->wBitsPerSample = 32;
+    fmt->nBlockAlign = fmt->nChannels * fmt->wBitsPerSample / 8;
+    fmt->nAvgBytesPerSec = fmt->nSamplesPerSec * fmt->nBlockAlign;
+    fmt->cbSize = 0;
+    state->mix_format = fmt;
 
-        ComPtr<IMMDevice> default_device;
-        hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &default_device);
-        if (FAILED(hr)) {
-            std::fprintf(stderr, "[StreamAudioCapture] GetDefaultAudioEndpoint failed: 0x%08lX\n", hr);
-            delete state;
-            return false;
-        }
-
-        ComPtr<IAudioClient> default_client;
-        hr = default_device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
-                                       reinterpret_cast<void**>(default_client.GetAddressOf()));
-        if (FAILED(hr)) {
-            std::fprintf(stderr, "[StreamAudioCapture] Activate default render endpoint failed: 0x%08lX\n", hr);
-            delete state;
-            return false;
-        }
-
-        hr = default_client->GetMixFormat(&state->mix_format);
-        if (FAILED(hr)) {
-            std::fprintf(stderr, "[StreamAudioCapture] GetMixFormat (default endpoint) failed: 0x%08lX\n", hr);
-            delete state;
-            return false;
-        }
-    }
-
-    std::printf("[StreamAudioCapture] Mix format: %lu Hz, %d ch, %d bits\n",
-                state->mix_format->nSamplesPerSec, state->mix_format->nChannels,
-                state->mix_format->wBitsPerSample);
+    std::printf("[StreamAudioCapture] Requested format: %lu Hz, %d ch, %d bits (float)\n",
+                fmt->nSamplesPerSec, fmt->nChannels, fmt->wBitsPerSample);
 
     // Create event for buffer-ready notification
     state->audio_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -193,10 +168,11 @@ bool StreamAudioCapture::init(uint32_t target_pid) {
         return false;
     }
 
-    // Initialize in shared mode, event-driven
+    // Initialize in shared mode with automatic format conversion
     hr = state->audio_client->Initialize(
         AUDCLNT_SHAREMODE_SHARED,
-        AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+        AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK |
+            AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
         200000,  // 20ms in 100ns units
         0,       // periodicity (must be 0 for shared mode)
         state->mix_format,

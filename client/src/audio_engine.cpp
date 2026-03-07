@@ -78,65 +78,80 @@ bool AudioEngine::init() {
         return false;
     }
 
-    if (!init_device()) return false;
+    if (!init_devices()) return false;
 
     return true;
 }
 
-bool AudioEngine::init_device() {
-    ma_device_config config = ma_device_config_init(ma_device_type_duplex);
-    config.capture.format = ma_format_f32;
-    config.capture.channels = audio::CHANNELS;
-    config.sampleRate = audio::SAMPLE_RATE;
-    config.playback.format = ma_format_f32;
-    config.playback.channels = audio::CHANNELS;
-    config.dataCallback = AudioEngine::data_callback;
-    config.pUserData = this;
-    config.periodSizeInMilliseconds = 10;
+bool AudioEngine::init_devices() {
+    // Separate capture and playback devices to avoid duplex resampling issues
+    // (virtual surround headsets with different native sample rates cause artifacts in duplex mode)
 
-    config.resampling.algorithm = ma_resample_algorithm_linear;
-    config.resampling.linear.lpfOrder = 8;
+    // --- Capture device ---
+    ma_device_config cap_config = ma_device_config_init(ma_device_type_capture);
+    cap_config.capture.format = ma_format_f32;
+    cap_config.capture.channels = audio::CHANNELS;
+    cap_config.sampleRate = audio::SAMPLE_RATE;
+    cap_config.dataCallback = AudioEngine::capture_callback;
+    cap_config.pUserData = this;
+    cap_config.periodSizeInMilliseconds = 10;
 
-    // Use selected devices if set
     if (selected_capture_ >= 0 && selected_capture_ < static_cast<int>(capture_ids_.size()))
-        config.capture.pDeviceID = &capture_ids_[selected_capture_];
-    if (selected_playback_ >= 0 && selected_playback_ < static_cast<int>(playback_ids_.size()))
-        config.playback.pDeviceID = &playback_ids_[selected_playback_];
+        cap_config.capture.pDeviceID = &capture_ids_[selected_capture_];
 
-    if (ma_device_init(&context_, &config, &device_) != MA_SUCCESS) {
-        std::fprintf(stderr, "[Audio] Failed to initialize audio device\n");
+    if (ma_device_init(&context_, &cap_config, &capture_device_) != MA_SUCCESS) {
+        std::fprintf(stderr, "[Audio] Failed to initialize capture device\n");
         return false;
     }
+    capture_initialized_ = true;
 
-    device_initialized_ = true;
+    // --- Playback device ---
+    ma_device_config play_config = ma_device_config_init(ma_device_type_playback);
+    play_config.playback.format = ma_format_f32;
+    play_config.playback.channels = audio::CHANNELS;
+    play_config.sampleRate = audio::SAMPLE_RATE;
+    play_config.dataCallback = AudioEngine::playback_callback;
+    play_config.pUserData = this;
+    play_config.periodSizeInMilliseconds = 10;
+
+    if (selected_playback_ >= 0 && selected_playback_ < static_cast<int>(playback_ids_.size()))
+        play_config.playback.pDeviceID = &playback_ids_[selected_playback_];
+
+    if (ma_device_init(&context_, &play_config, &playback_device_) != MA_SUCCESS) {
+        std::fprintf(stderr, "[Audio] Failed to initialize playback device\n");
+        ma_device_uninit(&capture_device_);
+        capture_initialized_ = false;
+        return false;
+    }
+    playback_initialized_ = true;
+
     capture_pos_ = 0;
     encode_pos_ = 0;
 
-    std::printf("[Audio] Initialized: %s -> %s\n",
-                device_.capture.name, device_.playback.name);
-    std::printf("[Audio]   Requested: %d Hz, %d ch, period %d ms\n",
-                audio::SAMPLE_RATE, audio::CHANNELS,
-                static_cast<int>(config.periodSizeInMilliseconds));
-    std::printf("[Audio]   Negotiated sample rate: %d Hz\n",
-                device_.sampleRate);
-    std::printf("[Audio]   Capture:  native=%d Hz, internal=%d Hz, channels=%d, period=%d frames\n",
-                device_.capture.internalSampleRate,
-                device_.sampleRate,
-                device_.capture.internalChannels,
-                device_.capture.internalPeriodSizeInFrames);
-    std::printf("[Audio]   Playback: native=%d Hz, internal=%d Hz, channels=%d, period=%d frames\n",
-                device_.playback.internalSampleRate,
-                device_.sampleRate,
-                device_.playback.internalChannels,
-                device_.playback.internalPeriodSizeInFrames);
+    std::printf("[Audio] Capture:  %s (%d Hz, %dch, native=%d Hz %dch)\n",
+                capture_device_.capture.name,
+                capture_device_.sampleRate,
+                capture_device_.capture.channels,
+                capture_device_.capture.internalSampleRate,
+                capture_device_.capture.internalChannels);
+    std::printf("[Audio] Playback: %s (%d Hz, %dch, native=%d Hz %dch)\n",
+                playback_device_.playback.name,
+                playback_device_.sampleRate,
+                playback_device_.playback.channels,
+                playback_device_.playback.internalSampleRate,
+                playback_device_.playback.internalChannels);
     return true;
 }
 
 void AudioEngine::shutdown() {
     stop();
-    if (device_initialized_) {
-        ma_device_uninit(&device_);
-        device_initialized_ = false;
+    if (playback_initialized_) {
+        ma_device_uninit(&playback_device_);
+        playback_initialized_ = false;
+    }
+    if (capture_initialized_) {
+        ma_device_uninit(&capture_device_);
+        capture_initialized_ = false;
     }
     if (aec_) {
         speex_echo_state_destroy(aec_);
@@ -153,9 +168,14 @@ void AudioEngine::shutdown() {
 }
 
 bool AudioEngine::start() {
-    if (!device_initialized_ || running_) return false;
-    if (ma_device_start(&device_) != MA_SUCCESS) {
-        std::fprintf(stderr, "[Audio] Failed to start device\n");
+    if (!capture_initialized_ || !playback_initialized_ || running_) return false;
+    if (ma_device_start(&playback_device_) != MA_SUCCESS) {
+        std::fprintf(stderr, "[Audio] Failed to start playback device\n");
+        return false;
+    }
+    if (ma_device_start(&capture_device_) != MA_SUCCESS) {
+        std::fprintf(stderr, "[Audio] Failed to start capture device\n");
+        ma_device_stop(&playback_device_);
         return false;
     }
     running_ = true;
@@ -165,7 +185,8 @@ bool AudioEngine::start() {
 
 void AudioEngine::stop() {
     if (!running_) return;
-    ma_device_stop(&device_);
+    ma_device_stop(&capture_device_);
+    ma_device_stop(&playback_device_);
     running_ = false;
     std::printf("[Audio] Stopped\n");
 }
@@ -188,14 +209,17 @@ void AudioEngine::set_capture_device(int index) {
     if (index == selected_capture_) return;
     selected_capture_ = index;
 
-    // Reinitialize device with new selection
     bool was_running = running_;
     stop();
-    if (device_initialized_) {
-        ma_device_uninit(&device_);
-        device_initialized_ = false;
+    if (capture_initialized_) {
+        ma_device_uninit(&capture_device_);
+        capture_initialized_ = false;
     }
-    if (init_device() && was_running)
+    if (playback_initialized_) {
+        ma_device_uninit(&playback_device_);
+        playback_initialized_ = false;
+    }
+    if (init_devices() && was_running)
         start();
 }
 
@@ -205,21 +229,30 @@ void AudioEngine::set_playback_device(int index) {
 
     bool was_running = running_;
     stop();
-    if (device_initialized_) {
-        ma_device_uninit(&device_);
-        device_initialized_ = false;
+    if (capture_initialized_) {
+        ma_device_uninit(&capture_device_);
+        capture_initialized_ = false;
     }
-    if (init_device() && was_running)
+    if (playback_initialized_) {
+        ma_device_uninit(&playback_device_);
+        playback_initialized_ = false;
+    }
+    if (init_devices() && was_running)
         start();
 }
 
-void AudioEngine::data_callback(ma_device* device, void* output,
-                                  const void* input, ma_uint32 frame_count) {
+void AudioEngine::capture_callback(ma_device* device, void* /*output*/,
+                                    const void* input, ma_uint32 frame_count) {
     auto* engine = static_cast<AudioEngine*>(device->pUserData);
-    // Process playback first so AEC has the reference signal
+    engine->process_capture(static_cast<const float*>(input), frame_count);
+}
+
+void AudioEngine::playback_callback(ma_device* device, void* output,
+                                     const void* /*input*/, ma_uint32 frame_count) {
+    auto* engine = static_cast<AudioEngine*>(device->pUserData);
     engine->process_playback(static_cast<float*>(output), frame_count);
 
-    // Store playback reference for AEC (float→int16 into ring buffer)
+    // Store playback reference for AEC (extract mono from stereo, float→int16 into ring buffer)
     if (engine->aec_enabled_ && engine->aec_) {
         auto* out_f = static_cast<const float*>(output);
         size_t cap = engine->aec_ref_buf_.size();
@@ -232,8 +265,6 @@ void AudioEngine::data_callback(ma_device* device, void* output,
             engine->aec_ref_write_++;
         }
     }
-
-    engine->process_capture(static_cast<const float*>(input), frame_count);
 }
 
 void AudioEngine::process_capture(const float* input, ma_uint32 frame_count) {
@@ -312,8 +343,6 @@ void AudioEngine::process_capture(const float* input, ma_uint32 frame_count) {
                     vad_hold_frames_--;
                 } else {
                     // Below threshold and hold expired — don't encode
-                    // Still need to append to encode buffer for proper Opus state,
-                    // but skip the actual send. Just reset.
                     capture_pos_ = 0;
                     continue;
                 }
@@ -345,7 +374,7 @@ void AudioEngine::process_playback(float* output, ma_uint32 frame_count) {
     if (!deafened_ && mixer_)
         mixer_->mix_output(output, static_cast<int>(frame_count));
 
-    // Voice normalization (before UI sounds so it only affects voice)
+    // Voice normalization
     if (normalize_enabled_ && !deafened_) {
         float sum = 0.0f;
         for (ma_uint32 i = 0; i < frame_count; i++)
@@ -369,7 +398,6 @@ void AudioEngine::process_playback(float* output, ma_uint32 frame_count) {
             }
         }
     }
-
 }
 
 } // namespace parties::client

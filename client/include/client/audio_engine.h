@@ -73,20 +73,25 @@ public:
     float voice_level() const { return voice_level_; }
 
 private:
-    static void data_callback(ma_device* device, void* output,
-                               const void* input, ma_uint32 frame_count);
+    static void capture_callback(ma_device* device, void* output,
+                                  const void* input, ma_uint32 frame_count);
+    static void playback_callback(ma_device* device, void* output,
+                                   const void* input, ma_uint32 frame_count);
 
     void process_capture(const float* input, ma_uint32 frame_count);
     void process_playback(float* output, ma_uint32 frame_count);
 
-    bool init_device();
+    bool init_devices();
 
     // miniaudio context (owns device enumeration)
     ma_context context_{};
     bool context_initialized_ = false;
 
-    ma_device device_{};
-    bool device_initialized_ = false;
+    // Separate capture and playback devices (avoids duplex resampling issues)
+    ma_device capture_device_{};
+    ma_device playback_device_{};
+    bool capture_initialized_ = false;
+    bool playback_initialized_ = false;
     bool running_ = false;
 
     // Device selection (-1 = system default)
