@@ -28,8 +28,6 @@ bool ServerListModel::init(Rml::Context* context) {
     // Bind variables
     ctor.Bind("servers",          &servers);
     ctor.Bind("show_add_form",    &show_add_form);
-    ctor.Bind("editing_id",       &editing_id);
-    ctor.Bind("edit_name",        &edit_name);
     ctor.Bind("edit_host",        &edit_host);
     ctor.Bind("edit_port",        &edit_port);
     ctor.Bind("edit_error",       &edit_error);
@@ -70,14 +68,10 @@ bool ServerListModel::init(Rml::Context* context) {
 
     ctor.BindEventCallback("add_server",
         [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
-            editing_id = 0;
-            edit_name = "";
             edit_host = "";
             edit_port = "7800";
             edit_error = "";
             show_add_form = true;
-            dirty("editing_id");
-            dirty("edit_name");
             dirty("edit_host");
             dirty("edit_port");
             dirty("edit_error");

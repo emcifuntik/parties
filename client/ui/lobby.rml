@@ -458,14 +458,10 @@
         </div>
     </div>
 
-    <!-- Add/Edit server modal -->
+    <!-- Add server modal -->
     <div class="modal-backdrop" data-model="serverlist" data-if="show_add_form">
         <div class="modal-box">
-            <h1 data-if="editing_id == 0">Add Server</h1>
-            <h1 data-if="editing_id > 0">Edit Server</h1>
-
-            <div class="label">Server Name</div>
-            <input type="text" data-value="edit_name" />
+            <h1>Add Server</h1>
 
             <div class="label">Host</div>
             <input type="text" data-value="edit_host" />

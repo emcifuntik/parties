@@ -209,8 +209,10 @@ bool Settings::trust_fingerprint(const std::string& host, int port,
 bool Settings::save_server(const std::string& name, const std::string& host, int port,
                            const std::string& fingerprint, const std::string& last_username) {
     sqlite3_stmt* stmt = nullptr;
-    const char* sql = "INSERT OR REPLACE INTO saved_servers "
-                      "(name, host, port, fingerprint, last_username) VALUES (?, ?, ?, ?, ?)";
+    const char* sql = "INSERT INTO saved_servers (name, host, port, fingerprint, last_username) "
+                      "VALUES (?, ?, ?, ?, ?) "
+                      "ON CONFLICT(host, port) DO UPDATE SET "
+                      "name=excluded.name, fingerprint=excluded.fingerprint, last_username=excluded.last_username";
 
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
         return false;

@@ -981,9 +981,9 @@ scrollbarvertical sliderarrowinc {
     display: flex;
     position: absolute;
     left: 0dp;
-    top: 0dp;
-    width: 100%;
-    height: 100%;
+    top: 32dp;
+    right: 0dp;
+    bottom: 0dp;
     background-color: #0d0e17c0;
     align-items: center;
     justify-content: center;

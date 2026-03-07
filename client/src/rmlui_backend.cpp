@@ -54,6 +54,10 @@ static constexpr unsigned char embed_icon_settings[] = {
     #embed "../ui/icon-settings.svg"
 };
 
+static constexpr unsigned char embed_icon_volume[] = {
+    #embed "../ui/icon-volume.svg"
+};
+
 static constexpr unsigned char embed_font_regular[] = {
     #embed "../ui/fonts/NotoSans-Regular.ttf"
 };
@@ -87,6 +91,7 @@ EmbeddedFileInterface::EmbeddedFileInterface() {
     entries_["ui/icon-sharing.svg"] = { embed_icon_sharing, sizeof(embed_icon_sharing) };
     entries_["ui/icon-leave.svg"] = { embed_icon_leave, sizeof(embed_icon_leave) };
     entries_["ui/icon-settings.svg"] = { embed_icon_settings, sizeof(embed_icon_settings) };
+    entries_["ui/icon-volume.svg"] = { embed_icon_volume, sizeof(embed_icon_volume) };
     entries_["ui/fonts/NotoSans-Regular.ttf"] = { embed_font_regular, sizeof(embed_font_regular) };
     entries_["ui/fonts/NotoSans-Bold.ttf"] = { embed_font_bold, sizeof(embed_font_bold) };
     std::printf("[UI] Embedded resources: %zu files\n", entries_.size());

@@ -30,10 +30,8 @@ public:
     // --- Bound state ---
     Rml::Vector<ServerEntry> servers;
 
-    // Add/Edit form
+    // Add server form
     bool show_add_form = false;
-    int editing_id = 0;
-    Rml::String edit_name;
     Rml::String edit_host;
     Rml::String edit_port;
     Rml::String edit_error;

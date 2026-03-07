@@ -471,12 +471,10 @@ void App::setup_server_model_callbacks() {
     };
 
     server_model_.on_save_server = [this]() {
-        // Validate
-        auto& name = server_model_.edit_name;
         auto& host = server_model_.edit_host;
         auto& port_str = server_model_.edit_port;
 
-        if (name.empty() || host.empty() || port_str.empty()) {
+        if (host.empty() || port_str.empty()) {
             server_model_.edit_error = "Please fill in all fields";
             server_model_.dirty("edit_error");
             return;
@@ -489,12 +487,9 @@ void App::setup_server_model_callbacks() {
             return;
         }
 
-        // If editing, delete the old entry first (handles host/port changes)
-        if (server_model_.editing_id > 0) {
-            settings_.delete_server(server_model_.editing_id);
-        }
-
-        settings_.save_server(std::string(name), std::string(host), port, "", "");
+        // Use host:port as placeholder name (real name comes from server on connect)
+        std::string save_name = std::string(host) + ":" + std::string(port_str);
+        settings_.save_server(save_name, std::string(host), port, "", "");
 
         server_model_.show_add_form = false;
         server_model_.dirty("show_add_form");
@@ -513,35 +508,13 @@ void App::setup_server_model_callbacks() {
     };
 
     server_model_.on_show_server_menu = [this](int id) {
-        constexpr int ID_EDIT   = 1;
-        constexpr int ID_DELETE = 2;
+        constexpr int ID_DELETE = 1;
         std::vector<ContextMenu::Item> items;
-        items.push_back({L"Edit",   ID_EDIT});
         items.push_back({L"Delete", ID_DELETE, true});
 
         int cmd = ContextMenu::show(hwnd_, items);
 
-        if (cmd == ID_EDIT) {
-            // Populate edit form
-            auto saved = settings_.get_saved_servers();
-            for (auto& srv : saved) {
-                if (srv.id == id) {
-                    server_model_.editing_id = id;
-                    server_model_.edit_name = Rml::String(srv.name);
-                    server_model_.edit_host = Rml::String(srv.host);
-                    server_model_.edit_port = Rml::String(std::to_string(srv.port));
-                    server_model_.edit_error = "";
-                    server_model_.show_add_form = true;
-                    server_model_.dirty("editing_id");
-                    server_model_.dirty("edit_name");
-                    server_model_.dirty("edit_host");
-                    server_model_.dirty("edit_port");
-                    server_model_.dirty("edit_error");
-                    server_model_.dirty("show_add_form");
-                    break;
-                }
-            }
-        } else if (cmd == ID_DELETE) {
+        if (cmd == ID_DELETE) {
             settings_.delete_server(id);
             refresh_server_list();
         }
