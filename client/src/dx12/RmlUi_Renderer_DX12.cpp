@@ -147,6 +147,37 @@ VS_Output main(VS_Input input) {
 }
 )HLSL";
 
+// YUV pixel shader — samples 3 R8 textures (Y, U, V), converts to RGB in the shader.
+// Uses the same coefficients as the CPU path for consistent color reproduction.
+static const char g_ps_yuv_source[] = R"HLSL(
+Texture2D tex_y : register(t0);
+Texture2D tex_u : register(t1);
+Texture2D tex_v : register(t2);
+SamplerState samp : register(s0);
+
+struct PS_Input {
+	float4 position : SV_POSITION;
+	float4 color    : COLOR0;
+	float2 texcoord : TEXCOORD0;
+};
+
+float4 main(PS_Input input) : SV_TARGET {
+	float Y = tex_y.Sample(samp, input.texcoord).r * 255.0;
+	float U = tex_u.Sample(samp, input.texcoord).r * 255.0;
+	float V = tex_v.Sample(samp, input.texcoord).r * 255.0;
+
+	float C = Y - 16.0;
+	float D = U - 128.0;
+	float E = V - 128.0;
+
+	float R = (298.0 * C + 459.0 * E + 128.0) / 65280.0;
+	float G = (298.0 * C -  55.0 * D - 136.0 * E + 128.0) / 65280.0;
+	float B = (298.0 * C + 541.0 * D + 128.0) / 65280.0;
+
+	return float4(saturate(R), saturate(G), saturate(B), 1.0);
+}
+)HLSL";
+
 // Passthrough pixel shader — samples texture directly, no vertex color multiply.
 static const char g_ps_passthrough_source[] = R"HLSL(
 Texture2D tex : register(t0);
@@ -355,6 +386,31 @@ struct TextureData {
 	bool is_layer_texture = false; // true if this TextureData wraps a layer's color texture (SaveLayerAsTexture)
 };
 
+struct YUVUploadBuffer {
+	Microsoft::WRL::ComPtr<ID3D12Resource> resource;
+	void* mapped = nullptr;      // Persistently mapped pointer (never unmapped)
+	UINT64 size = 0;             // Allocated buffer size
+	UINT aligned_row_pitch = 0;  // D3D12-aligned row pitch
+};
+
+struct YUVTextureData {
+	Microsoft::WRL::ComPtr<ID3D12Resource> y_texture, u_texture, v_texture;
+	// Per-back-buffer upload buffers with persistent mapping
+	static constexpr int NUM_UPLOAD_SETS = 2; // Must match NUM_BACK_BUFFERS
+	YUVUploadBuffer y_upload[NUM_UPLOAD_SETS];
+	YUVUploadBuffer u_upload[NUM_UPLOAD_SETS];
+	YUVUploadBuffer v_upload[NUM_UPLOAD_SETS];
+	int32_t y_srv = -1, u_srv = -1, v_srv = -1;
+	int width = 0, height = 0;  // Full Y resolution; U/V are width/2 × height/2
+};
+
+struct RenderInterface_DX12::FrameUploadHeap {
+	Microsoft::WRL::ComPtr<ID3D12Resource> resource;
+	void* mapped = nullptr;
+	UINT64 size = 0;
+	UINT64 offset = 0;
+};
+
 struct LayerData {
 	Microsoft::WRL::ComPtr<ID3D12Resource> color_texture; // R8G8B8A8_UNORM render target
 	int32_t srv_index = -1;     // slot in SRV heap for reading as texture
@@ -470,6 +526,7 @@ RenderInterface_DX12::RenderInterface_DX12(void* p_window_handle, const Backend:
 	width_ = w;
 	height_ = h;
 
+	if (!CreateFrameUploadHeaps()) return;
 	if (!CreatePostprocessTargets()) return;
 	projection_ = Rml::Matrix4f::ProjectOrtho(0.0f, static_cast<float>(w),
 		static_cast<float>(h), 0.0f, -10000.0f, 10000.0f);
@@ -493,6 +550,17 @@ RenderInterface_DX12::~RenderInterface_DX12() {
 		if (fullscreen_quad_) {
 			delete fullscreen_quad_;
 			fullscreen_quad_ = nullptr;
+		}
+
+		// Release frame upload heaps
+		if (frame_upload_heaps_) {
+			for (int i = 0; i < NUM_BACK_BUFFERS; ++i) {
+				auto& fuh = frame_upload_heaps_[i];
+				if (fuh.mapped && fuh.resource) fuh.resource->Unmap(0, nullptr);
+				fuh.resource.Reset();
+			}
+			delete[] frame_upload_heaps_;
+			frame_upload_heaps_ = nullptr;
 		}
 
 		// Process all remaining deferred releases after GPU is idle
@@ -1233,6 +1301,95 @@ bool RenderInterface_DX12::CreatePipelineState() {
 		"CreateGraphicsPipelineState(GradientStencil)");
 	pso_gradient_stencil_->SetName(L"RmlUi_PSO_GradientStencil");
 
+	// ---------------------------------------------------------------
+	// 15 & 16. YUV video PSOs — 3 R8 textures → RGB in pixel shader
+	// Uses a separate root signature with 3 SRV descriptor tables.
+	// ---------------------------------------------------------------
+	{
+		auto ps_yuv_blob = CompileHLSL(g_ps_yuv_source, sizeof(g_ps_yuv_source) - 1,
+			"main", "ps_5_0", "RmlUi_PS_YUV");
+		if (!ps_yuv_blob) return false;
+
+		// YUV root signature: CBV@b0 + 3 separate descriptor tables (t0,t1,t2)
+		D3D12_DESCRIPTOR_RANGE1 yuv_ranges[3] = {};
+		for (int i = 0; i < 3; i++) {
+			yuv_ranges[i].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+			yuv_ranges[i].NumDescriptors = 1;
+			yuv_ranges[i].BaseShaderRegister = static_cast<UINT>(i); // t0, t1, t2
+			yuv_ranges[i].RegisterSpace = 0;
+			yuv_ranges[i].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE;
+			yuv_ranges[i].OffsetInDescriptorsFromTableStart = 0;
+		}
+
+		D3D12_ROOT_PARAMETER1 yuv_params[4] = {};
+		// Param 0: Root CBV at b0 (TransformCB)
+		yuv_params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+		yuv_params[0].Descriptor.ShaderRegister = 0;
+		yuv_params[0].Descriptor.RegisterSpace = 0;
+		yuv_params[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC;
+		yuv_params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+		// Params 1-3: Descriptor tables for t0(Y), t1(U), t2(V)
+		for (int i = 0; i < 3; i++) {
+			yuv_params[1 + i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+			yuv_params[1 + i].DescriptorTable.NumDescriptorRanges = 1;
+			yuv_params[1 + i].DescriptorTable.pDescriptorRanges = &yuv_ranges[i];
+			yuv_params[1 + i].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+		}
+
+		D3D12_VERSIONED_ROOT_SIGNATURE_DESC yuv_rs_desc{};
+		yuv_rs_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+		yuv_rs_desc.Desc_1_1.NumParameters = 4;
+		yuv_rs_desc.Desc_1_1.pParameters = yuv_params;
+		yuv_rs_desc.Desc_1_1.NumStaticSamplers = 1;
+		yuv_rs_desc.Desc_1_1.pStaticSamplers = &sampler; // reuse same bilinear sampler
+		yuv_rs_desc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
+			D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS |
+			D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
+			D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
+
+		ComPtr<ID3DBlob> yuv_rs_blob, yuv_rs_error;
+		DX_CHECK(D3D12SerializeVersionedRootSignature(&yuv_rs_desc, &yuv_rs_blob, &yuv_rs_error),
+			"D3D12SerializeVersionedRootSignature(YUV)");
+		DX_CHECK(device_->CreateRootSignature(0, yuv_rs_blob->GetBufferPointer(), yuv_rs_blob->GetBufferSize(),
+			IID_PPV_ARGS(&yuv_root_signature_)),
+			"CreateRootSignature(YUV)");
+		yuv_root_signature_->SetName(L"RmlUi_YUV_RootSignature");
+
+		// YUV PSO — same vertex layout, premultiplied alpha blend, with DSV
+		D3D12_GRAPHICS_PIPELINE_STATE_DESC yuv_pso{};
+		yuv_pso.pRootSignature = yuv_root_signature_.Get();
+		yuv_pso.VS = { vs_blob->GetBufferPointer(), vs_blob->GetBufferSize() };
+		yuv_pso.PS = { ps_yuv_blob->GetBufferPointer(), ps_yuv_blob->GetBufferSize() };
+		yuv_pso.InputLayout = { input_layout, _countof(input_layout) };
+		yuv_pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+		yuv_pso.BlendState.RenderTarget[0].BlendEnable = FALSE; // Video is opaque
+		yuv_pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+		yuv_pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+		yuv_pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+		yuv_pso.RasterizerState.DepthClipEnable = TRUE;
+		yuv_pso.DepthStencilState.DepthEnable = FALSE;
+		yuv_pso.DepthStencilState.StencilEnable = FALSE;
+		yuv_pso.DepthStencilState.StencilReadMask = 0xFF;
+		yuv_pso.DepthStencilState.StencilWriteMask = 0xFF;
+		yuv_pso.DepthStencilState.FrontFace = stencil_keep;
+		yuv_pso.DepthStencilState.BackFace = stencil_keep;
+		yuv_pso.NumRenderTargets = 1;
+		yuv_pso.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+		yuv_pso.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
+		yuv_pso.SampleDesc.Count = 1;
+		yuv_pso.SampleMask = UINT_MAX;
+
+		DX_CHECK(device_->CreateGraphicsPipelineState(&yuv_pso, IID_PPV_ARGS(&pso_yuv_)),
+			"CreateGraphicsPipelineState(YUV)");
+		pso_yuv_->SetName(L"RmlUi_PSO_YUV");
+
+		// 16. YUV with stencil EQUAL test
+		yuv_pso.DepthStencilState.StencilEnable = TRUE;
+		DX_CHECK(device_->CreateGraphicsPipelineState(&yuv_pso, IID_PPV_ARGS(&pso_yuv_stencil_)),
+			"CreateGraphicsPipelineState(YUVStencil)");
+		pso_yuv_stencil_->SetName(L"RmlUi_PSO_YUVStencil");
+	}
+
 	return true;
 }
 
@@ -1327,6 +1484,64 @@ RenderInterface_DX12::ComPtr<ID3D12Resource> RenderInterface_DX12::CreateUploadB
 	}
 
 	return resource;
+}
+
+// ---------------------------------------------------------------------------
+// Per-frame linear upload heap (eliminates per-draw CreateCommittedResource)
+// ---------------------------------------------------------------------------
+
+bool RenderInterface_DX12::CreateFrameUploadHeaps() {
+	frame_upload_heaps_ = new FrameUploadHeap[NUM_BACK_BUFFERS]();
+
+	D3D12_HEAP_PROPERTIES heap{};
+	heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+
+	D3D12_RESOURCE_DESC buf_desc{};
+	buf_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+	buf_desc.Width = FRAME_UPLOAD_HEAP_SIZE;
+	buf_desc.Height = 1;
+	buf_desc.DepthOrArraySize = 1;
+	buf_desc.MipLevels = 1;
+	buf_desc.Format = DXGI_FORMAT_UNKNOWN;
+	buf_desc.SampleDesc.Count = 1;
+	buf_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+	for (int i = 0; i < NUM_BACK_BUFFERS; ++i) {
+		auto& fuh = frame_upload_heaps_[i];
+		DX_CHECK(device_->CreateCommittedResource(
+			&heap, D3D12_HEAP_FLAG_NONE, &buf_desc,
+			D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+			IID_PPV_ARGS(&fuh.resource)),
+			"CreateCommittedResource(FrameUploadHeap)");
+
+		D3D12_RANGE read_range{0, 0};
+		DX_CHECK(fuh.resource->Map(0, &read_range, &fuh.mapped),
+			"Map(FrameUploadHeap)");
+		fuh.size = FRAME_UPLOAD_HEAP_SIZE;
+		fuh.offset = 0;
+	}
+	return true;
+}
+
+RenderInterface_DX12::CbAllocation RenderInterface_DX12::AllocateCB(uint32_t size, const void* data) {
+	uint32_t aligned_size = (size + 255) & ~255u;
+	auto& fuh = frame_upload_heaps_[current_back_buffer_index_];
+
+	if (fuh.offset + aligned_size > fuh.size) {
+		std::fprintf(stderr, "[DX12] Frame upload heap exhausted (%llu / %llu)\n",
+			fuh.offset + aligned_size, fuh.size);
+		return {0, nullptr};
+	}
+
+	CbAllocation alloc{};
+	alloc.gpu_address = fuh.resource->GetGPUVirtualAddress() + fuh.offset;
+	alloc.cpu_ptr = static_cast<uint8_t*>(fuh.mapped) + fuh.offset;
+
+	if (data)
+		std::memcpy(alloc.cpu_ptr, data, size);
+
+	fuh.offset += aligned_size;
+	return alloc;
 }
 
 // ---------------------------------------------------------------------------
@@ -1678,6 +1893,9 @@ void RenderInterface_DX12::BeginFrame() {
 	// Wait until the GPU has finished with this frame's command allocator
 	WaitForFenceValue(fence_values_[current_back_buffer_index_]);
 
+	// Reset per-frame upload heap for this back buffer
+	frame_upload_heaps_[current_back_buffer_index_].offset = 0;
+
 	// Free deferred releases from the previous use of this back buffer slot
 	ProcessDeferredReleases();
 
@@ -1929,43 +2147,8 @@ void RenderInterface_DX12::RenderGeometry(
 	cb_data._pad[0] = 0.0f;
 	cb_data._pad[1] = 0.0f;
 
-	// Create per-draw CB upload buffer
-	D3D12_HEAP_PROPERTIES upload_heap{};
-	upload_heap.Type = D3D12_HEAP_TYPE_UPLOAD;
-
-	D3D12_RESOURCE_DESC buf_desc{};
-	buf_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-	buf_desc.Width = sizeof(TransformCB);
-	buf_desc.Height = 1;
-	buf_desc.DepthOrArraySize = 1;
-	buf_desc.MipLevels = 1;
-	buf_desc.Format = DXGI_FORMAT_UNKNOWN;
-	buf_desc.SampleDesc.Count = 1;
-	buf_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-	ComPtr<ID3D12Resource> cb_resource;
-	HRESULT hr = device_->CreateCommittedResource(
-		&upload_heap, D3D12_HEAP_FLAG_NONE, &buf_desc,
-		D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-		IID_PPV_ARGS(&cb_resource));
-	if (FAILED(hr)) {
-		std::fprintf(stderr, "[DX12] CB creation failed: 0x%08lX\n", static_cast<unsigned long>(hr));
-		return;
-	}
-
-	// Map, write, unmap
-	void* mapped = nullptr;
-	D3D12_RANGE read_range{0, 0};
-	hr = cb_resource->Map(0, &read_range, &mapped);
-	if (FAILED(hr)) {
-		std::fprintf(stderr, "[DX12] CB Map failed: 0x%08lX\n", static_cast<unsigned long>(hr));
-		return;
-	}
-	std::memcpy(mapped, &cb_data, sizeof(cb_data));
-	cb_resource->Unmap(0, nullptr);
-
-	// Defer-release the CB after this frame completes
-	DeferRelease(cb_resource);
+	auto cb = AllocateCB(sizeof(TransformCB), &cb_data);
+	if (!cb.cpu_ptr) return;
 
 	// --- Set pipeline state ---
 	bool has_texture = (tex != nullptr && tex->srv_index >= 0);
@@ -1977,7 +2160,7 @@ void RenderInterface_DX12::RenderGeometry(
 	}
 
 	// --- Set root CBV (parameter 0) ---
-	command_list_->SetGraphicsRootConstantBufferView(0, cb_resource->GetGPUVirtualAddress());
+	command_list_->SetGraphicsRootConstantBufferView(0, cb.gpu_address);
 
 	// --- Bind texture SRV (parameter 1) ---
 	if (has_texture) {
@@ -2204,6 +2387,288 @@ void RenderInterface_DX12::UpdateTextureData(
 }
 
 // ===========================================================================
+// YUV Textures (I420 → 3 × R8 GPU textures)
+// ===========================================================================
+
+void RenderInterface_DX12::UploadR8TextureData(ID3D12Resource* dest_texture,
+	const uint8_t* data, uint32_t src_stride, int width, int height,
+	void* upload_buf_ptr) {
+	auto* upload_buf = static_cast<YUVUploadBuffer*>(upload_buf_ptr);
+
+	const UINT aligned_row_pitch = (static_cast<UINT>(width) + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1)
+		& ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1);
+	const UINT64 upload_size = static_cast<UINT64>(aligned_row_pitch) * height;
+
+	// Allocate and persistently map upload buffer on first use or size change
+	if (!upload_buf->resource || upload_buf->size < upload_size) {
+		// Unmap old buffer if any
+		if (upload_buf->mapped && upload_buf->resource) {
+			upload_buf->resource->Unmap(0, nullptr);
+			upload_buf->mapped = nullptr;
+		}
+		if (upload_buf->resource)
+			DeferRelease(std::move(upload_buf->resource));
+
+		D3D12_HEAP_PROPERTIES heap{};
+		heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+
+		D3D12_RESOURCE_DESC buf_desc{};
+		buf_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+		buf_desc.Width = upload_size;
+		buf_desc.Height = 1;
+		buf_desc.DepthOrArraySize = 1;
+		buf_desc.MipLevels = 1;
+		buf_desc.Format = DXGI_FORMAT_UNKNOWN;
+		buf_desc.SampleDesc.Count = 1;
+		buf_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+		HRESULT hr = device_->CreateCommittedResource(
+			&heap, D3D12_HEAP_FLAG_NONE, &buf_desc,
+			D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+			IID_PPV_ARGS(&upload_buf->resource));
+		if (FAILED(hr)) return;
+
+		// Persistently map — never unmapped until buffer is destroyed
+		D3D12_RANGE read_range{0, 0};
+		hr = upload_buf->resource->Map(0, &read_range, &upload_buf->mapped);
+		if (FAILED(hr)) { upload_buf->resource.Reset(); return; }
+
+		upload_buf->size = upload_size;
+		upload_buf->aligned_row_pitch = aligned_row_pitch;
+	}
+
+	// Fast path: just memcpy into the already-mapped buffer
+	auto* dst = static_cast<uint8_t*>(upload_buf->mapped);
+	if (aligned_row_pitch == src_stride) {
+		// Strides match — single bulk copy
+		std::memcpy(dst, data, static_cast<size_t>(aligned_row_pitch) * height);
+	} else {
+		for (int y = 0; y < height; ++y)
+			std::memcpy(dst + y * aligned_row_pitch, data + y * src_stride,
+				static_cast<size_t>(width));
+	}
+
+	D3D12_TEXTURE_COPY_LOCATION src_loc{};
+	src_loc.pResource = upload_buf->resource.Get();
+	src_loc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+	src_loc.PlacedFootprint.Offset = 0;
+	src_loc.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8_UNORM;
+	src_loc.PlacedFootprint.Footprint.Width = static_cast<UINT>(width);
+	src_loc.PlacedFootprint.Footprint.Height = static_cast<UINT>(height);
+	src_loc.PlacedFootprint.Footprint.Depth = 1;
+	src_loc.PlacedFootprint.Footprint.RowPitch = aligned_row_pitch;
+
+	D3D12_TEXTURE_COPY_LOCATION dst_loc{};
+	dst_loc.pResource = dest_texture;
+	dst_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+	dst_loc.SubresourceIndex = 0;
+
+	command_list_->CopyTextureRegion(&dst_loc, 0, 0, 0, &src_loc, nullptr);
+
+	D3D12_RESOURCE_BARRIER barrier{};
+	barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+	barrier.Transition.pResource = dest_texture;
+	barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+	barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+	barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+	command_list_->ResourceBarrier(1, &barrier);
+}
+
+static ID3D12Resource* CreateR8Texture(ID3D12Device* device, int width, int height,
+	ID3D12DescriptorHeap* srv_heap, uint32_t srv_descriptor_size, int32_t srv_slot) {
+
+	D3D12_HEAP_PROPERTIES default_heap{};
+	default_heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+	D3D12_RESOURCE_DESC desc{};
+	desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	desc.Width = static_cast<UINT64>(width);
+	desc.Height = static_cast<UINT>(height);
+	desc.DepthOrArraySize = 1;
+	desc.MipLevels = 1;
+	desc.Format = DXGI_FORMAT_R8_UNORM;
+	desc.SampleDesc.Count = 1;
+	desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+
+	ID3D12Resource* tex = nullptr;
+	HRESULT hr = device->CreateCommittedResource(
+		&default_heap, D3D12_HEAP_FLAG_NONE, &desc,
+		D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+		IID_PPV_ARGS(&tex));
+	if (FAILED(hr)) return nullptr;
+
+	D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+	srv.Format = DXGI_FORMAT_R8_UNORM;
+	srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srv.Texture2D.MipLevels = 1;
+
+	D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle = srv_heap->GetCPUDescriptorHandleForHeapStart();
+	cpu_handle.ptr += static_cast<SIZE_T>(srv_slot) * srv_descriptor_size;
+	device->CreateShaderResourceView(tex, &srv, cpu_handle);
+
+	return tex;
+}
+
+uintptr_t RenderInterface_DX12::GenerateYUVTexture(
+	const uint8_t* y_data, uint32_t y_stride,
+	const uint8_t* u_data, const uint8_t* v_data, uint32_t uv_stride,
+	uint32_t width, uint32_t height) {
+
+	int32_t y_srv = AllocateSrvSlot();
+	int32_t u_srv = AllocateSrvSlot();
+	int32_t v_srv = AllocateSrvSlot();
+	if (y_srv < 0 || u_srv < 0 || v_srv < 0) {
+		if (y_srv >= 0) FreeSrvSlot(y_srv);
+		if (u_srv >= 0) FreeSrvSlot(u_srv);
+		if (v_srv >= 0) FreeSrvSlot(v_srv);
+		return 0;
+	}
+
+	auto* yuv = new YUVTextureData();
+	yuv->width = static_cast<int>(width);
+	yuv->height = static_cast<int>(height);
+	yuv->y_srv = y_srv;
+	yuv->u_srv = u_srv;
+	yuv->v_srv = v_srv;
+
+	int half_w = static_cast<int>(width / 2);
+	int half_h = static_cast<int>(height / 2);
+
+	yuv->y_texture.Attach(CreateR8Texture(device_.Get(), static_cast<int>(width), static_cast<int>(height),
+		srv_heap_.Get(), srv_descriptor_size_, y_srv));
+	yuv->u_texture.Attach(CreateR8Texture(device_.Get(), half_w, half_h,
+		srv_heap_.Get(), srv_descriptor_size_, u_srv));
+	yuv->v_texture.Attach(CreateR8Texture(device_.Get(), half_w, half_h,
+		srv_heap_.Get(), srv_descriptor_size_, v_srv));
+
+	if (!yuv->y_texture || !yuv->u_texture || !yuv->v_texture) {
+		delete yuv;
+		return 0;
+	}
+
+	yuv->y_texture->SetName(L"YUV_Y");
+	yuv->u_texture->SetName(L"YUV_U");
+	yuv->v_texture->SetName(L"YUV_V");
+
+	int ub = current_back_buffer_index_;
+	UploadR8TextureData(yuv->y_texture.Get(), y_data, y_stride,
+		static_cast<int>(width), static_cast<int>(height), &yuv->y_upload[ub]);
+	UploadR8TextureData(yuv->u_texture.Get(), u_data, uv_stride, half_w, half_h, &yuv->u_upload[ub]);
+	UploadR8TextureData(yuv->v_texture.Get(), v_data, uv_stride, half_w, half_h, &yuv->v_upload[ub]);
+
+	return reinterpret_cast<uintptr_t>(yuv);
+}
+
+void RenderInterface_DX12::UpdateYUVTexture(uintptr_t handle,
+	const uint8_t* y_data, uint32_t y_stride,
+	const uint8_t* u_data, const uint8_t* v_data, uint32_t uv_stride,
+	uint32_t width, uint32_t height) {
+
+	if (!handle) return;
+	auto* yuv = reinterpret_cast<YUVTextureData*>(handle);
+
+	int half_w = static_cast<int>(width / 2);
+	int half_h = static_cast<int>(height / 2);
+
+	// Transition all 3 textures: PIXEL_SHADER_RESOURCE → COPY_DEST
+	D3D12_RESOURCE_BARRIER barriers[3] = {};
+	ID3D12Resource* textures[3] = { yuv->y_texture.Get(), yuv->u_texture.Get(), yuv->v_texture.Get() };
+	for (int i = 0; i < 3; i++) {
+		barriers[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		barriers[i].Transition.pResource = textures[i];
+		barriers[i].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		barriers[i].Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+		barriers[i].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+	}
+	command_list_->ResourceBarrier(3, barriers);
+
+	// Upload all 3 planes using persistent upload buffers (no per-frame allocation)
+	int ub = current_back_buffer_index_;
+	UploadR8TextureData(yuv->y_texture.Get(), y_data, y_stride,
+		static_cast<int>(width), static_cast<int>(height), &yuv->y_upload[ub]);
+	UploadR8TextureData(yuv->u_texture.Get(), u_data, uv_stride, half_w, half_h, &yuv->u_upload[ub]);
+	UploadR8TextureData(yuv->v_texture.Get(), v_data, uv_stride, half_w, half_h, &yuv->v_upload[ub]);
+}
+
+void RenderInterface_DX12::ReleaseYUVTexture(uintptr_t handle) {
+	if (!handle) return;
+	auto* yuv = reinterpret_cast<YUVTextureData*>(handle);
+	DeferRelease(std::move(yuv->y_texture), yuv->y_srv);
+	DeferRelease(std::move(yuv->u_texture), yuv->u_srv);
+	DeferRelease(std::move(yuv->v_texture), yuv->v_srv);
+	for (int i = 0; i < YUVTextureData::NUM_UPLOAD_SETS; i++) {
+		if (yuv->y_upload[i].mapped) { yuv->y_upload[i].resource->Unmap(0, nullptr); yuv->y_upload[i].mapped = nullptr; }
+		if (yuv->u_upload[i].mapped) { yuv->u_upload[i].resource->Unmap(0, nullptr); yuv->u_upload[i].mapped = nullptr; }
+		if (yuv->v_upload[i].mapped) { yuv->v_upload[i].resource->Unmap(0, nullptr); yuv->v_upload[i].mapped = nullptr; }
+		DeferRelease(std::move(yuv->y_upload[i].resource));
+		DeferRelease(std::move(yuv->u_upload[i].resource));
+		DeferRelease(std::move(yuv->v_upload[i].resource));
+	}
+	delete yuv;
+}
+
+void RenderInterface_DX12::RenderYUVGeometry(
+	Rml::CompiledGeometryHandle geometry,
+	Rml::Vector2f translation, uintptr_t yuv_handle) {
+
+	if (!geometry || !yuv_handle) return;
+	auto* geom = reinterpret_cast<GeometryData*>(geometry);
+	auto* yuv = reinterpret_cast<YUVTextureData*>(yuv_handle);
+
+	// Build transform CB (same as RenderGeometry)
+	Rml::Matrix4f mvp = transform_active_ ? projection_ * transform_ : projection_;
+	TransformCB cb_data{};
+	std::memcpy(cb_data.transform, mvp.data(), 16 * sizeof(float));
+	cb_data.translate[0] = translation.x;
+	cb_data.translate[1] = translation.y;
+	auto cb = AllocateCB(sizeof(TransformCB), &cb_data);
+	if (!cb.cpu_ptr) return;
+
+	// Switch to YUV root signature and PSO
+	command_list_->SetGraphicsRootSignature(yuv_root_signature_.Get());
+	if (clip_mask_enabled_) {
+		command_list_->SetPipelineState(pso_yuv_stencil_.Get());
+		command_list_->OMSetStencilRef(stencil_ref_);
+	} else {
+		command_list_->SetPipelineState(pso_yuv_.Get());
+	}
+
+	// Re-bind the SRV heap (required after root signature change)
+	ID3D12DescriptorHeap* heaps[] = { srv_heap_.Get() };
+	command_list_->SetDescriptorHeaps(1, heaps);
+
+	// Param 0: transform CBV
+	command_list_->SetGraphicsRootConstantBufferView(0, cb.gpu_address);
+
+	// Params 1-3: Y, U, V texture SRVs
+	D3D12_GPU_DESCRIPTOR_HANDLE base = srv_heap_->GetGPUDescriptorHandleForHeapStart();
+	int32_t srv_indices[3] = { yuv->y_srv, yuv->u_srv, yuv->v_srv };
+	for (int i = 0; i < 3; i++) {
+		D3D12_GPU_DESCRIPTOR_HANDLE h = base;
+		h.ptr += static_cast<UINT64>(srv_indices[i]) * srv_descriptor_size_;
+		command_list_->SetGraphicsRootDescriptorTable(1 + i, h);
+	}
+
+	// Scissor
+	if (scissor_enabled_) {
+		command_list_->RSSetScissorRects(1, &scissor_rect_);
+	} else {
+		D3D12_RECT full_rect = { 0, 0, static_cast<LONG>(width_), static_cast<LONG>(height_) };
+		command_list_->RSSetScissorRects(1, &full_rect);
+	}
+
+	// Draw
+	command_list_->IASetVertexBuffers(0, 1, &geom->vbv);
+	command_list_->IASetIndexBuffer(&geom->ibv);
+	command_list_->DrawIndexedInstanced(static_cast<UINT>(geom->num_indices), 1, 0, 0, 0);
+
+	// Restore main root signature for subsequent RmlUi draws
+	command_list_->SetGraphicsRootSignature(root_signature_.Get());
+	command_list_->SetDescriptorHeaps(1, heaps);
+}
+
+// ===========================================================================
 // Scissor
 // ===========================================================================
 
@@ -2294,46 +2759,11 @@ void RenderInterface_DX12::RenderToClipMask(
 	cb_data._pad[0] = 0.0f;
 	cb_data._pad[1] = 0.0f;
 
-	// Create per-draw CB upload buffer
-	D3D12_HEAP_PROPERTIES upload_heap{};
-	upload_heap.Type = D3D12_HEAP_TYPE_UPLOAD;
-
-	D3D12_RESOURCE_DESC buf_desc{};
-	buf_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-	buf_desc.Width = sizeof(TransformCB);
-	buf_desc.Height = 1;
-	buf_desc.DepthOrArraySize = 1;
-	buf_desc.MipLevels = 1;
-	buf_desc.Format = DXGI_FORMAT_UNKNOWN;
-	buf_desc.SampleDesc.Count = 1;
-	buf_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-	ComPtr<ID3D12Resource> cb_resource;
-	HRESULT hr = device_->CreateCommittedResource(
-		&upload_heap, D3D12_HEAP_FLAG_NONE, &buf_desc,
-		D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-		IID_PPV_ARGS(&cb_resource));
-	if (FAILED(hr)) {
-		std::fprintf(stderr, "[DX12] ClipMask CB creation failed: 0x%08lX\n",
-			static_cast<unsigned long>(hr));
-		return;
-	}
-
-	void* mapped = nullptr;
-	D3D12_RANGE read_range{0, 0};
-	hr = cb_resource->Map(0, &read_range, &mapped);
-	if (FAILED(hr)) {
-		std::fprintf(stderr, "[DX12] ClipMask CB Map failed: 0x%08lX\n",
-			static_cast<unsigned long>(hr));
-		return;
-	}
-	std::memcpy(mapped, &cb_data, sizeof(cb_data));
-	cb_resource->Unmap(0, nullptr);
-
-	DeferRelease(cb_resource);
+	auto cb = AllocateCB(sizeof(TransformCB), &cb_data);
+	if (!cb.cpu_ptr) return;
 
 	// Bind root CBV
-	command_list_->SetGraphicsRootConstantBufferView(0, cb_resource->GetGPUVirtualAddress());
+	command_list_->SetGraphicsRootConstantBufferView(0, cb.gpu_address);
 
 	// Set scissor
 	if (scissor_enabled_) {
@@ -2785,9 +3215,8 @@ void RenderInterface_DX12::RenderShader(
 	cb_data.translate[0] = translation.x;
 	cb_data.translate[1] = translation.y;
 
-	auto cb_resource = CreateUploadBuffer(sizeof(TransformCB), &cb_data);
-	if (!cb_resource) return;
-	DeferRelease(cb_resource);
+	auto cb = AllocateCB(sizeof(TransformCB), &cb_data);
+	if (!cb.cpu_ptr) return;
 
 	// Build gradient CB
 	const int num_stops = static_cast<int>(shader->stop_positions.size());
@@ -2808,9 +3237,8 @@ void RenderInterface_DX12::RenderShader(
 		grad_cb.stop_positions[i] = shader->stop_positions[i];
 	}
 
-	auto grad_resource = CreateUploadBuffer(sizeof(GradientCB), &grad_cb);
-	if (!grad_resource) return;
-	DeferRelease(grad_resource);
+	auto grad = AllocateCB(sizeof(GradientCB), &grad_cb);
+	if (!grad.cpu_ptr) return;
 
 	// Set PSO
 	if (clip_mask_enabled_) {
@@ -2821,8 +3249,8 @@ void RenderInterface_DX12::RenderShader(
 	}
 
 	// Bind CBVs
-	command_list_->SetGraphicsRootConstantBufferView(0, cb_resource->GetGPUVirtualAddress());
-	command_list_->SetGraphicsRootConstantBufferView(2, grad_resource->GetGPUVirtualAddress());
+	command_list_->SetGraphicsRootConstantBufferView(0, cb.gpu_address);
+	command_list_->SetGraphicsRootConstantBufferView(2, grad.gpu_address);
 
 	// Set scissor
 	if (scissor_enabled_) {
@@ -2911,15 +3339,14 @@ void RenderInterface_DX12::RenderBlur(float sigma, int src_pp, int dst_pp) {
 		f[3] = 0.0f;                                  // _pad
 		f[4] = weights[0]; f[5] = weights[1]; f[6] = weights[2]; f[7] = weights[3];
 
-		auto cb_resource = CreateUploadBuffer(sizeof(FilterCB), &cb);
-		if (!cb_resource) return;
-		DeferRelease(cb_resource);
+		auto cb_alloc = AllocateCB(sizeof(FilterCB), &cb);
+		if (!cb_alloc.cpu_ptr) return;
 
 		D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart();
 		rtv.ptr += static_cast<SIZE_T>(dst->rtv_slot) * rtv_descriptor_size_;
 		command_list_->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
 
-		command_list_->SetGraphicsRootConstantBufferView(2, cb_resource->GetGPUVirtualAddress());
+		command_list_->SetGraphicsRootConstantBufferView(2, cb_alloc.gpu_address);
 
 		D3D12_GPU_DESCRIPTOR_HANDLE srv = srv_heap_->GetGPUDescriptorHandleForHeapStart();
 		srv.ptr += static_cast<UINT64>(src->srv_index) * srv_descriptor_size_;
@@ -2953,15 +3380,14 @@ void RenderInterface_DX12::RenderBlur(float sigma, int src_pp, int dst_pp) {
 		f[3] = 0.0f;
 		f[4] = weights[0]; f[5] = weights[1]; f[6] = weights[2]; f[7] = weights[3];
 
-		auto cb_resource = CreateUploadBuffer(sizeof(FilterCB), &cb);
-		if (!cb_resource) return;
-		DeferRelease(cb_resource);
+		auto cb_alloc = AllocateCB(sizeof(FilterCB), &cb);
+		if (!cb_alloc.cpu_ptr) return;
 
 		D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart();
 		rtv.ptr += static_cast<SIZE_T>(src->rtv_slot) * rtv_descriptor_size_;
 		command_list_->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
 
-		command_list_->SetGraphicsRootConstantBufferView(2, cb_resource->GetGPUVirtualAddress());
+		command_list_->SetGraphicsRootConstantBufferView(2, cb_alloc.gpu_address);
 
 		D3D12_GPU_DESCRIPTOR_HANDLE srv = srv_heap_->GetGPUDescriptorHandleForHeapStart();
 		srv.ptr += static_cast<UINT64>(dst->srv_index) * srv_descriptor_size_;
@@ -3098,9 +3524,8 @@ void RenderInterface_DX12::RenderFilters(
 			cb.data[8] = 0; cb.data[9] = 0; cb.data[10] = bf; cb.data[11] = 0;
 			cb.data[12] = 0; cb.data[13] = 0; cb.data[14] = 0; cb.data[15] = bf;
 
-			auto cb_resource = CreateUploadBuffer(sizeof(FilterCB), &cb);
-			if (!cb_resource) continue;
-			DeferRelease(cb_resource);
+			auto cb_alloc = AllocateCB(sizeof(FilterCB), &cb);
+			if (!cb_alloc.cpu_ptr) continue;
 
 			// Transition pp0 to PSR, pp1 to RT
 			D3D12_RESOURCE_BARRIER barriers[2] = {};
@@ -3122,7 +3547,7 @@ void RenderInterface_DX12::RenderFilters(
 			rtv.ptr += static_cast<SIZE_T>(pp1->rtv_slot) * rtv_descriptor_size_;
 			command_list_->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
 
-			command_list_->SetGraphicsRootConstantBufferView(2, cb_resource->GetGPUVirtualAddress());
+			command_list_->SetGraphicsRootConstantBufferView(2, cb_alloc.gpu_address);
 
 			D3D12_GPU_DESCRIPTOR_HANDLE srv = srv_heap_->GetGPUDescriptorHandleForHeapStart();
 			srv.ptr += static_cast<UINT64>(pp0->srv_index) * srv_descriptor_size_;
@@ -3180,9 +3605,8 @@ void RenderInterface_DX12::RenderFilters(
 				cb.data[6] = shadow_colorf.blue;
 				cb.data[7] = shadow_colorf.alpha;
 
-				auto cb_resource = CreateUploadBuffer(sizeof(FilterCB), &cb);
-				if (!cb_resource) continue;
-				DeferRelease(cb_resource);
+				auto cb_alloc = AllocateCB(sizeof(FilterCB), &cb);
+				if (!cb_alloc.cpu_ptr) continue;
 
 				command_list_->SetPipelineState(pso_drop_shadow_.Get());
 
@@ -3190,7 +3614,7 @@ void RenderInterface_DX12::RenderFilters(
 				rtv.ptr += static_cast<SIZE_T>(pp1->rtv_slot) * rtv_descriptor_size_;
 				command_list_->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
 
-				command_list_->SetGraphicsRootConstantBufferView(2, cb_resource->GetGPUVirtualAddress());
+				command_list_->SetGraphicsRootConstantBufferView(2, cb_alloc.gpu_address);
 
 				D3D12_GPU_DESCRIPTOR_HANDLE srv = srv_heap_->GetGPUDescriptorHandleForHeapStart();
 				srv.ptr += static_cast<UINT64>(pp0->srv_index) * srv_descriptor_size_;
@@ -3268,9 +3692,8 @@ void RenderInterface_DX12::RenderFilters(
 			FilterCB cb{};
 			std::memcpy(cb.data, filter->color_matrix.data(), 16 * sizeof(float));
 
-			auto cb_resource = CreateUploadBuffer(sizeof(FilterCB), &cb);
-			if (!cb_resource) continue;
-			DeferRelease(cb_resource);
+			auto cb_alloc = AllocateCB(sizeof(FilterCB), &cb);
+			if (!cb_alloc.cpu_ptr) continue;
 
 			D3D12_RESOURCE_BARRIER barriers[2] = {};
 			barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -3291,7 +3714,7 @@ void RenderInterface_DX12::RenderFilters(
 			rtv.ptr += static_cast<SIZE_T>(pp1->rtv_slot) * rtv_descriptor_size_;
 			command_list_->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
 
-			command_list_->SetGraphicsRootConstantBufferView(2, cb_resource->GetGPUVirtualAddress());
+			command_list_->SetGraphicsRootConstantBufferView(2, cb_alloc.gpu_address);
 
 			D3D12_GPU_DESCRIPTOR_HANDLE srv = srv_heap_->GetGPUDescriptorHandleForHeapStart();
 			srv.ptr += static_cast<UINT64>(pp0->srv_index) * srv_descriptor_size_;

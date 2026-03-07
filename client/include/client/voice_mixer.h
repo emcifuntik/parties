@@ -17,8 +17,8 @@ public:
     VoiceMixer();
     ~VoiceMixer();
 
-    // Feed an incoming opus packet for a given user
-    void push_packet(UserId user_id, const uint8_t* opus_data, size_t opus_len);
+    // Feed an incoming opus packet for a given user (with sequence number for reordering)
+    void push_packet(UserId user_id, uint16_t seq, const uint8_t* opus_data, size_t opus_len);
 
     // Called from the audio playback callback.
     // Decodes all active streams, mixes them into output buffer.
@@ -34,13 +34,20 @@ public:
     void set_user_volume(UserId user_id, float volume);
 
 private:
+    struct JitterPacket {
+        uint16_t seq;
+        std::vector<uint8_t> data;
+    };
+
     struct UserStream {
         OpusCodec decoder;
-        std::deque<std::vector<uint8_t>> packet_queue;  // Buffered opus packets
+        std::deque<JitterPacket> packet_queue;  // Sorted by sequence number
         float volume = 1.0f;
         int consecutive_empty = 0;     // Count of consecutive empty frames (for PLC)
         bool initialized = false;
         bool primed = false;           // True once we've buffered enough packets to start
+        uint16_t next_seq = 0;         // Expected next sequence number for playback
+        bool has_seq = false;          // True once first packet establishes sequence
 
         // Decoded PCM buffer for partial reads
         std::vector<float> pcm_buf;

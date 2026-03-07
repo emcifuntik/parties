@@ -112,6 +112,11 @@ bool VideoEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
     encoder_->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);
     encoder_->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0);
 
+    // Cache output stream info (constant for the encoder's lifetime)
+    MFT_OUTPUT_STREAM_INFO stream_info = {};
+    if (SUCCEEDED(encoder_->GetOutputStreamInfo(0, &stream_info)))
+        encoder_provides_samples_ = (stream_info.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES) != 0;
+
     // Start encoder thread for async MFTs
     if (async_mode_ && encoder_events_) {
         encoder_running_ = true;
@@ -452,7 +457,7 @@ bool VideoEncoder::encode_frame(ID3D11Texture2D* bgra_texture, int64_t timestamp
         // Push to queue for encoder thread
         {
             std::lock_guard<std::mutex> lock(queue_mutex_);
-            // Keep queue small — drop old frames if backed up
+            // Drop old frames if encoder can't keep up (keep ~33ms of buffer at 60fps)
             while (input_queue_.size() >= 2)
                 input_queue_.pop();
             input_queue_.push(nv12_sample);
@@ -523,9 +528,7 @@ bool VideoEncoder::collect_output() {
             buf->Unlock();
             collected++;
 
-            MFT_OUTPUT_STREAM_INFO stream_info = {};
-            encoder_->GetOutputStreamInfo(0, &stream_info);
-            if (stream_info.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES)
+            if (encoder_provides_samples_)
                 output_data.pSample->Release();
         }
     }

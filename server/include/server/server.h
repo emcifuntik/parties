@@ -39,7 +39,7 @@ private:
     void send_channel_key(uint32_t session_id, ChannelId channel_id);
 
     // Screen sharing
-    void forward_video_frame(const DataPacket& pkt);
+    void forward_video_frame(uint32_t session_id, const uint8_t* data, size_t len);
     void forward_stream_audio(const DataPacket& pkt);
     void handle_video_control(const DataPacket& pkt);
     void stop_screen_share(ChannelId channel_id, UserId user_id);
@@ -51,6 +51,7 @@ private:
     std::unordered_map<ChannelId, std::array<uint8_t, 32>> channel_keys_;
 
     // Screen share state: channel_id -> set of sharer user_ids
+    std::mutex sharers_mutex_;
     std::unordered_map<ChannelId, std::set<UserId>> channel_screen_sharers_;
 };
 

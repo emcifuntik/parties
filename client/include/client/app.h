@@ -118,6 +118,7 @@ private:
     bool has_identity_ = false;
 
     int connecting_server_id_ = 0;
+    uint16_t voice_seq_ = 0;          // Sequence number for outgoing voice packets
 
     // PTT release delay
     std::chrono::steady_clock::time_point ptt_release_time_{};
@@ -131,6 +132,12 @@ private:
     std::unique_ptr<VideoElementInstancer> video_instancer_;
     bool sharing_screen_ = false;
     uint32_t video_frame_number_ = 0;
+
+    // Capture frame rate limiting (QPC-based)
+    int64_t qpc_frequency_ = 0;
+    int64_t capture_start_qpc_ = 0;
+    int64_t last_capture_qpc_ = 0;
+    int64_t capture_interval_qpc_ = 0;
 
     // Stream audio (capture for sharer, playback for viewer)
     std::unique_ptr<StreamAudioCapture> stream_audio_capture_;
@@ -157,15 +164,31 @@ private:
     std::condition_variable decode_queue_cv_;
     std::queue<DecodeWork> decode_queue_;
 
-    // Latest decoded frame (decode thread → main thread)
+    // Latest decoded frame — I420 planes passed directly to GPU (no CPU conversion)
     std::mutex frame_mutex_;
     std::atomic<bool> new_frame_available_{false};
     std::vector<uint8_t> shared_y_, shared_u_, shared_v_;
     uint32_t shared_width_ = 0, shared_height_ = 0;
     uint32_t shared_y_stride_ = 0, shared_uv_stride_ = 0;
 
-    // RGBA conversion buffer for video texture
-    std::vector<uint8_t> rgba_buffer_;
+    // Video pipeline FPS diagnostics
+    struct FpsCounter {
+        std::atomic<uint32_t> count{0};
+        std::chrono::steady_clock::time_point last_log{std::chrono::steady_clock::now()};
+        void tick() { count.fetch_add(1, std::memory_order_relaxed); }
+        // Returns FPS and resets if >= 2 seconds elapsed, else returns 0
+        float check() {
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration<float>(now - last_log).count();
+            if (elapsed >= 2.0f) {
+                float fps = count.exchange(0, std::memory_order_relaxed) / elapsed;
+                last_log = now;
+                return fps;
+            }
+            return 0;
+        }
+    };
+    FpsCounter fps_encode_, fps_recv_, fps_decode_, fps_display_;
 
     // UI document
     Rml::ElementDocument* doc_ = nullptr;

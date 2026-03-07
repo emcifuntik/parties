@@ -390,6 +390,9 @@ int main() {
 
         std::vector<uint8_t> voice_pkt;
         voice_pkt.push_back(VOICE_PACKET_TYPE);
+        uint16_t seq = 0;
+        voice_pkt.insert(voice_pkt.end(), reinterpret_cast<uint8_t*>(&seq),
+                         reinterpret_cast<uint8_t*>(&seq) + 2);
         voice_pkt.insert(voice_pkt.end(), opus_buf, opus_buf + opus_len);
 
         TEST_ASSERT(client_a.send_data(voice_pkt.data(), voice_pkt.size()),
@@ -410,7 +413,7 @@ int main() {
 
         std::lock_guard<std::mutex> lock(voice_mutex);
 
-        TEST_ASSERT(received_voice.size() >= 5, "voice packet minimum size");
+        TEST_ASSERT(received_voice.size() >= 7, "voice packet minimum size");
         TEST_ASSERT(received_voice[0] == VOICE_PACKET_TYPE, "voice packet type byte");
 
         uint32_t sender_id;
@@ -418,9 +421,13 @@ int main() {
         TEST_ASSERT(sender_id == user_a_id,
                     "voice packet sender_id matches client A");
 
-        size_t opus_len = received_voice.size() - 5;
+        uint16_t recv_seq;
+        std::memcpy(&recv_seq, received_voice.data() + 5, 2);
+        TEST_ASSERT(recv_seq == 0, "voice packet sequence number");
+
+        size_t opus_len = received_voice.size() - 7;
         TEST_ASSERT(opus_len == original_opus.size(), "opus payload length matches");
-        TEST_ASSERT(std::memcmp(received_voice.data() + 5, original_opus.data(),
+        TEST_ASSERT(std::memcmp(received_voice.data() + 7, original_opus.data(),
                     opus_len) == 0, "opus payload content matches");
 
         LOG("[8/15] Voice verified: sender=%u, opus=%zu bytes\n", sender_id, opus_len);

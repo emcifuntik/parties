@@ -47,6 +47,11 @@ bool QuicServer::start(const std::string& listen_ip, uint16_t port, size_t max_c
     settings.IsSet.DatagramReceiveEnabled = TRUE;
     settings.ServerResumptionLevel = QUIC_SERVER_RESUME_AND_ZERORTT;
     settings.IsSet.ServerResumptionLevel = TRUE;
+    // Low-latency: disable send buffering (flush immediately) and pacing
+    settings.SendBufferingEnabled = FALSE;
+    settings.IsSet.SendBufferingEnabled = TRUE;
+    settings.PacingEnabled = FALSE;
+    settings.IsSet.PacingEnabled = TRUE;
     // MaxBytesPerKey left at default — MsQuic rejects values > QUIC_DEFAULT_MAX_BYTES_PER_KEY
 
     QUIC_BUFFER alpn = parties::make_alpn();
@@ -574,37 +579,57 @@ void QuicServer::process_stream_data(uint32_t session_id,
 
 void QuicServer::process_video_stream_data(uint32_t session_id,
                                             const uint8_t* data, size_t len) {
-    std::lock_guard<std::mutex> lock(buffers_mutex_);
-    auto& buffer = video_recv_buffers_[session_id];
-    buffer.insert(buffer.end(), data, data + len);
+    // Parse complete frames and collect them, then forward outside the lock
+    // to avoid holding buffers_mutex_ during network sends.
+    struct PendingFrame {
+        uint8_t packet_type;
+        std::vector<uint8_t> data;
+    };
+    std::vector<PendingFrame> frames;
 
-    // Parse complete frames: [u32 length][data]
-    while (buffer.size() >= 4) {
-        uint32_t frame_len;
-        std::memcpy(&frame_len, buffer.data(), 4);
+    {
+        std::lock_guard<std::mutex> lock(buffers_mutex_);
+        auto& buffer = video_recv_buffers_[session_id];
+        buffer.insert(buffer.end(), data, data + len);
 
-        if (frame_len == 0 || frame_len > 4 * 1024 * 1024) {
-            std::fprintf(stderr, "[QuicServer] Invalid video frame length %u from session %u\n",
-                         frame_len, session_id);
-            buffer.clear();
-            break;
+        while (buffer.size() >= 4) {
+            uint32_t frame_len;
+            std::memcpy(&frame_len, buffer.data(), 4);
+
+            if (frame_len == 0 || frame_len > 4 * 1024 * 1024) {
+                std::fprintf(stderr, "[QuicServer] Invalid video frame length %u from session %u\n",
+                             frame_len, session_id);
+                buffer.clear();
+                break;
+            }
+
+            size_t total_needed = 4 + frame_len;
+            if (buffer.size() < total_needed) break;
+
+            if (frame_len > 1) {
+                PendingFrame f;
+                f.packet_type = buffer[4];
+                f.data.assign(buffer.data() + 5, buffer.data() + 4 + frame_len);
+                frames.push_back(std::move(f));
+            }
+
+            buffer.erase(buffer.begin(), buffer.begin() + total_needed);
         }
+    }
 
-        size_t total_needed = 4 + frame_len;
-        if (buffer.size() < total_needed) break;  // Wait for more data
-
-        // Create DataPacket: first byte is packet_type, rest is data
-        if (frame_len > 0) {
+    // Forward outside the lock
+    for (auto& f : frames) {
+        if (on_video_frame) {
+            on_video_frame(session_id, f.packet_type, f.data.data(), f.data.size());
+        } else {
             DataPacket pkt;
             pkt.session_id = session_id;
-            pkt.packet_type = buffer[4];
+            pkt.packet_type = f.packet_type;
             pkt.channel_id = 0;
             pkt.reliable = true;
-            pkt.data.assign(buffer.data() + 5, buffer.data() + 4 + frame_len);
+            pkt.data = std::move(f.data);
             data_incoming_.push(std::move(pkt));
         }
-
-        buffer.erase(buffer.begin(), buffer.begin() + total_needed);
     }
 }
 

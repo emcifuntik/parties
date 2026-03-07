@@ -44,6 +44,11 @@ bool NetClient::connect(const std::string& host, uint16_t port,
     settings.IsSet.KeepAliveIntervalMs = TRUE;
     settings.DatagramReceiveEnabled = TRUE;
     settings.IsSet.DatagramReceiveEnabled = TRUE;
+    // Low-latency: disable send buffering (flush immediately) and pacing
+    settings.SendBufferingEnabled = FALSE;
+    settings.IsSet.SendBufferingEnabled = TRUE;
+    settings.PacingEnabled = FALSE;
+    settings.IsSet.PacingEnabled = TRUE;
 
     QUIC_BUFFER alpn = parties::make_alpn();
     status = api_->ConfigurationOpen(registration_, &alpn, 1, &settings,

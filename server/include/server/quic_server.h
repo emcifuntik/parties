@@ -69,6 +69,12 @@ public:
     // Callback for when a session disconnects
     std::function<void(uint32_t session_id)> on_disconnect;
 
+    // Callback for video frames — called directly from QUIC receive thread
+    // to bypass the polling loop and avoid 1ms+ latency.
+    // Parameters: session_id, packet_type, data (after type byte), length
+    std::function<void(uint32_t session_id, uint8_t packet_type,
+                       const uint8_t* data, size_t len)> on_video_frame;
+
     // ── Data plane (replaces EnetServer) ──
 
     // Queue of received data packets (voice, video)

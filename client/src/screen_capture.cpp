@@ -224,11 +224,11 @@ bool ScreenCapture::start(const CaptureTarget& target) {
         width_ = static_cast<uint32_t>(size.Width);
         height_ = static_cast<uint32_t>(size.Height);
 
-        // Create frame pool (2 buffers, free-threaded delivery)
+        // Create frame pool (3 buffers for triple-buffering, free-threaded delivery)
         impl_->frame_pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
             impl_->winrt_device,
             DirectXPixelFormat::B8G8R8A8UIntNormalized,
-            2,
+            3,
             size);
 
         // Subscribe to frame arrived events
@@ -258,7 +258,7 @@ bool ScreenCapture::start(const CaptureTarget& target) {
                     impl_->frame_pool.Recreate(
                         impl_->winrt_device,
                         DirectXPixelFormat::B8G8R8A8UIntNormalized,
-                        2,
+                        3,
                         content_size);
                 }
 

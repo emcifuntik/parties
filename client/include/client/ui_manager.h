@@ -32,6 +32,9 @@ public:
 
     void update();
     void render();
+    void render_begin();
+    void render_body();
+    void render_end();
 
     void on_resize(int width, int height);
     void on_minimize();

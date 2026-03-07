@@ -58,6 +58,24 @@ bool Server::start(const Config& cfg) {
         on_client_disconnect(session_id);
     };
 
+    // Forward video frames directly from QUIC receive thread,
+    // bypassing the polling loop to eliminate up to 1ms latency per frame.
+    quic_.on_video_frame = [this](uint32_t session_id, uint8_t packet_type,
+                                  const uint8_t* data, size_t len) {
+        if (packet_type == protocol::VIDEO_FRAME_PACKET_TYPE) {
+            forward_video_frame(session_id, data, len);
+        } else {
+            // Non-video packets (control, stream audio) still go through the queue
+            DataPacket pkt;
+            pkt.session_id = session_id;
+            pkt.packet_type = packet_type;
+            pkt.channel_id = 0;
+            pkt.reliable = true;
+            pkt.data.assign(data, data + len);
+            quic_.data_incoming().push(std::move(pkt));
+        }
+    };
+
     running_ = true;
     std::printf("[Server] %s started successfully\n", config_.server_name.c_str());
     return true;
@@ -116,7 +134,7 @@ void Server::process_data_packets() {
                 quic_.send_to_many(targets, fwd.data(), fwd.size());
         }
         else if (pkt.packet_type == protocol::VIDEO_FRAME_PACKET_TYPE) {
-            forward_video_frame(pkt);
+            forward_video_frame(pkt.session_id, pkt.data.data(), pkt.data.size());
         }
         else if (pkt.packet_type == protocol::STREAM_AUDIO_PACKET_TYPE) {
             forward_stream_audio(pkt);
@@ -378,6 +396,7 @@ void Server::handle_message(const IncomingMessage& msg) {
 
         // Notify new joiner about all active screen sharers in this channel
         {
+            std::lock_guard<std::mutex> lock(sharers_mutex_);
             auto ss_it = channel_screen_sharers_.find(channel_id);
             if (ss_it != channel_screen_sharers_.end()) {
                 auto all2 = quic_.get_sessions();
@@ -645,7 +664,10 @@ void Server::handle_message(const IncomingMessage& msg) {
         ChannelId ch = session->channel_id;
 
         // Allow multiple sharers per channel
-        channel_screen_sharers_[ch].insert(session->user_id);
+        {
+            std::lock_guard<std::mutex> lock(sharers_mutex_);
+            channel_screen_sharers_[ch].insert(session->user_id);
+        }
         session->share_codec = codec_id;
         session->share_width = width;
         session->share_height = height;
@@ -689,9 +711,14 @@ void Server::handle_message(const IncomingMessage& msg) {
             session->subscribed_sharer = 0;
         } else {
             // Verify target is actually sharing in this channel
-            auto it = channel_screen_sharers_.find(session->channel_id);
-            if (it != channel_screen_sharers_.end() &&
-                it->second.count(target_id)) {
+            bool is_sharer = false;
+            {
+                std::lock_guard<std::mutex> lock(sharers_mutex_);
+                auto it = channel_screen_sharers_.find(session->channel_id);
+                is_sharer = (it != channel_screen_sharers_.end() &&
+                             it->second.count(target_id));
+            }
+            if (is_sharer) {
                 session->subscribed_sharer = target_id;
 
                 // Auto-PLI: tell the sharer to send a keyframe so the new viewer
@@ -744,36 +771,39 @@ void Server::on_client_disconnect(uint32_t session_id) {
     }
 }
 
-void Server::forward_video_frame(const DataPacket& pkt) {
-    auto session = quic_.get_session(pkt.session_id);
+void Server::forward_video_frame(uint32_t session_id, const uint8_t* data, size_t len) {
+    auto session = quic_.get_session(session_id);
     if (!session || !session->authenticated || session->channel_id == 0)
         return;
 
     // Verify this user is an active screen sharer in the channel
-    auto it = channel_screen_sharers_.find(session->channel_id);
-    if (it == channel_screen_sharers_.end() ||
-        it->second.count(session->user_id) == 0)
-        return;
+    {
+        std::lock_guard<std::mutex> lock(sharers_mutex_);
+        auto it = channel_screen_sharers_.find(session->channel_id);
+        if (it == channel_screen_sharers_.end() ||
+            it->second.count(session->user_id) == 0)
+            return;
+    }
 
-    // Reconstruct forwarded packet: [type(1)][sender_id(4)][encrypted_data]
-    std::vector<uint8_t> fwd;
-    fwd.reserve(1 + 4 + pkt.data.size());
-    fwd.push_back(protocol::VIDEO_FRAME_PACKET_TYPE);
+    // Reconstruct forwarded packet: [type(1)][sender_id(4)][data]
+    size_t fwd_len = 1 + 4 + len;
+    auto* fwd = new uint8_t[fwd_len];
+    fwd[0] = protocol::VIDEO_FRAME_PACKET_TYPE;
     uint32_t uid = session->user_id;
-    fwd.insert(fwd.end(), reinterpret_cast<uint8_t*>(&uid),
-               reinterpret_cast<uint8_t*>(&uid) + 4);
-    fwd.insert(fwd.end(), pkt.data.begin(), pkt.data.end());
+    std::memcpy(fwd + 1, &uid, 4);
+    std::memcpy(fwd + 5, data, len);
 
     // Forward to viewers subscribed to this sharer via video stream
     auto all_sessions = quic_.get_sessions();
     for (auto& s : all_sessions) {
-        if (s->id != pkt.session_id &&
+        if (s->id != session_id &&
             s->authenticated &&
             s->channel_id == session->channel_id &&
             s->subscribed_sharer == session->user_id) {
-            quic_.send_video_to(s->id, fwd.data(), fwd.size());
+            quic_.send_video_to(s->id, fwd, fwd_len);
         }
     }
+    delete[] fwd;
 }
 
 void Server::handle_video_control(const DataPacket& pkt) {
@@ -791,10 +821,13 @@ void Server::handle_video_control(const DataPacket& pkt) {
         std::memcpy(&target_id, pkt.data.data() + 1, 4);
 
         // Verify target is an active sharer in this channel
-        auto it = channel_screen_sharers_.find(session->channel_id);
-        if (it == channel_screen_sharers_.end() ||
-            it->second.count(target_id) == 0)
-            return;
+        {
+            std::lock_guard<std::mutex> lock(sharers_mutex_);
+            auto it = channel_screen_sharers_.find(session->channel_id);
+            if (it == channel_screen_sharers_.end() ||
+                it->second.count(target_id) == 0)
+                return;
+        }
 
         // Forward PLI to the target sharer's session
         auto all = quic_.get_sessions();
@@ -819,10 +852,13 @@ void Server::forward_stream_audio(const DataPacket& pkt) {
         return;
 
     // Verify this user is an active screen sharer
-    auto it = channel_screen_sharers_.find(session->channel_id);
-    if (it == channel_screen_sharers_.end() ||
-        it->second.count(session->user_id) == 0)
-        return;
+    {
+        std::lock_guard<std::mutex> lock(sharers_mutex_);
+        auto it = channel_screen_sharers_.find(session->channel_id);
+        if (it == channel_screen_sharers_.end() ||
+            it->second.count(session->user_id) == 0)
+            return;
+    }
 
     // Forward: [STREAM_AUDIO_PACKET_TYPE][sender_id(4)][opus_data]
     std::vector<uint8_t> fwd;
@@ -846,11 +882,14 @@ void Server::forward_stream_audio(const DataPacket& pkt) {
 }
 
 void Server::stop_screen_share(ChannelId channel_id, UserId user_id) {
-    auto it = channel_screen_sharers_.find(channel_id);
-    if (it == channel_screen_sharers_.end()) return;
-    if (it->second.erase(user_id) == 0) return; // wasn't sharing
-    if (it->second.empty())
-        channel_screen_sharers_.erase(it);
+    {
+        std::lock_guard<std::mutex> lock(sharers_mutex_);
+        auto it = channel_screen_sharers_.find(channel_id);
+        if (it == channel_screen_sharers_.end()) return;
+        if (it->second.erase(user_id) == 0) return; // wasn't sharing
+        if (it->second.empty())
+            channel_screen_sharers_.erase(it);
+    }
 
     // Clear subscriptions pointing to this sharer
     auto all = quic_.get_sessions();

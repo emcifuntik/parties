@@ -86,6 +86,21 @@ public:
 	// Dimensions must match the original texture. For streaming video.
 	void UpdateTextureData(Rml::TextureHandle texture_handle, Rml::Span<const Rml::byte> source_data, Rml::Vector2i source_dimensions);
 
+	// YUV texture support — uploads I420 planes as 3 separate R8 GPU textures,
+	// converted to RGB by a pixel shader during rendering (zero CPU conversion).
+	// The handle is an opaque pointer (cast to YUVTextureData*).
+	uintptr_t GenerateYUVTexture(
+		const uint8_t* y_data, uint32_t y_stride,
+		const uint8_t* u_data, const uint8_t* v_data, uint32_t uv_stride,
+		uint32_t width, uint32_t height);
+	void UpdateYUVTexture(uintptr_t handle,
+		const uint8_t* y_data, uint32_t y_stride,
+		const uint8_t* u_data, const uint8_t* v_data, uint32_t uv_stride,
+		uint32_t width, uint32_t height);
+	void ReleaseYUVTexture(uintptr_t handle);
+	void RenderYUVGeometry(Rml::CompiledGeometryHandle geometry,
+		Rml::Vector2f translation, uintptr_t yuv_handle);
+
 	void EnableScissorRegion(bool enable) override;
 	void SetScissorRegion(Rml::Rectanglei region) override;
 
@@ -160,9 +175,23 @@ private:
 
 	// --- Texture upload helpers ---
 	void UploadTextureData(ID3D12Resource* dest_texture, const Rml::byte* data, int width, int height);
+	void UploadR8TextureData(ID3D12Resource* dest_texture, const uint8_t* data,
+		uint32_t src_stride, int width, int height,
+		void* upload_buf = nullptr);
 
 	// --- CB helpers ---
 	ComPtr<ID3D12Resource> CreateUploadBuffer(UINT size, const void* data);
+
+	// Per-frame linear upload heap for constant buffers (avoids per-draw CreateCommittedResource)
+	struct FrameUploadHeap;
+	struct CbAllocation {
+		uint64_t gpu_address;
+		void* cpu_ptr;
+	};
+	static constexpr uint64_t FRAME_UPLOAD_HEAP_SIZE = 256 * 1024; // 256 KB per frame
+	FrameUploadHeap* frame_upload_heaps_ = nullptr; // array of NUM_BACK_BUFFERS
+	bool CreateFrameUploadHeaps();
+	CbAllocation AllocateCB(uint32_t size, const void* data = nullptr);
 
 	// --- State ---
 	bool valid_ = false;
@@ -199,6 +228,11 @@ private:
 	ComPtr<ID3D12PipelineState> pso_texture_stencil_;    // with texture, stencil EQUAL test
 	ComPtr<ID3D12PipelineState> pso_stencil_set_;        // write stencil (REPLACE), no color
 	ComPtr<ID3D12PipelineState> pso_stencil_intersect_;  // write stencil (INCR_SAT), no color
+
+	// YUV video rendering (3 × R8 textures → RGB conversion in pixel shader)
+	ComPtr<ID3D12RootSignature> yuv_root_signature_;
+	ComPtr<ID3D12PipelineState> pso_yuv_;
+	ComPtr<ID3D12PipelineState> pso_yuv_stencil_;
 
 	// Per-frame resources
 	std::array<ComPtr<ID3D12Resource>, NUM_BACK_BUFFERS> back_buffers_;

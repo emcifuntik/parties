@@ -87,6 +87,7 @@ private:
     uint32_t fps_ = 30;
     bool initialized_ = false;
     bool force_keyframe_ = false;
+    bool encoder_provides_samples_ = false;  // Cached from GetOutputStreamInfo
 };
 
 } // namespace parties::client

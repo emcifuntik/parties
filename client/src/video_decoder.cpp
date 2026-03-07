@@ -32,6 +32,7 @@ struct VideoDecoder::Impl {
 
     uint32_t width = 0;
     uint32_t height = 0;
+    uint32_t nv12_stride = 0;   // Actual row stride from MFT (may be > width)
 
     // NV12 -> I420 conversion buffer
     std::vector<uint8_t> i420_buffer;
@@ -87,6 +88,11 @@ struct VideoDecoder::Impl {
                         mft->SetOutputType(0, avail.Get(), 0);
                         MFGetAttributeSize(avail.Get(), MF_MT_FRAME_SIZE,
                                            &width, &height);
+                        UINT32 default_stride = 0;
+                        if (SUCCEEDED(avail->GetUINT32(MF_MT_DEFAULT_STRIDE, &default_stride)))
+                            nv12_stride = default_stride;
+                        else
+                            nv12_stride = 0;
                         break;
                     }
                 }
@@ -106,24 +112,41 @@ struct VideoDecoder::Impl {
                 result->ConvertToContiguousBuffer(&buf);
                 if (buf) {
                     BYTE* raw = nullptr;
-                    if (SUCCEEDED(buf->Lock(&raw, nullptr, nullptr))) {
-                        uint32_t y_size = width * height;
+                    DWORD raw_len = 0;
+                    if (SUCCEEDED(buf->Lock(&raw, nullptr, &raw_len))) {
+                        uint32_t stride = nv12_stride;
+                        if (stride == 0) stride = width;
+
+                        // Infer stride from buffer size if it doesn't match expected
+                        uint32_t expected_tight = width * height * 3 / 2;
+                        if (raw_len > expected_tight && stride == width) {
+                            // Buffer is larger than tight packing — stride must be wider
+                            stride = raw_len * 2 / (height * 3);
+                        }
+
                         uint32_t half_w = width / 2;
                         uint32_t half_h = height / 2;
+                        uint32_t uv_stride = stride;  // NV12 UV rows have same stride as Y
+                        uint32_t y_size = width * height;
                         uint32_t uv_size = half_w * half_h;
 
                         i420_buffer.resize(y_size + uv_size * 2);
 
-                        // Y plane: straight copy (assumes stride == width)
-                        std::memcpy(i420_buffer.data(), raw, y_size);
+                        // Y plane: copy with stride (skip padding bytes per row)
+                        uint8_t* y_dst = i420_buffer.data();
+                        for (uint32_t row = 0; row < height; row++)
+                            std::memcpy(y_dst + row * width, raw + row * stride, width);
 
-                        // Deinterleave NV12 UV -> I420 U + V
-                        const uint8_t* nv12_uv = raw + y_size;
+                        // Deinterleave NV12 UV -> I420 U + V (stride-aware)
                         uint8_t* u_dst = i420_buffer.data() + y_size;
                         uint8_t* v_dst = u_dst + uv_size;
-                        for (uint32_t j = 0; j < uv_size; j++) {
-                            u_dst[j] = nv12_uv[j * 2];
-                            v_dst[j] = nv12_uv[j * 2 + 1];
+                        const uint8_t* nv12_uv_base = raw + stride * height;
+                        for (uint32_t row = 0; row < half_h; row++) {
+                            const uint8_t* uv_row = nv12_uv_base + row * uv_stride;
+                            for (uint32_t x = 0; x < half_w; x++) {
+                                u_dst[row * half_w + x] = uv_row[x * 2];
+                                v_dst[row * half_w + x] = uv_row[x * 2 + 1];
+                            }
                         }
 
                         buf->Unlock();
@@ -234,7 +257,13 @@ bool VideoDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height) {
             avail->GetGUID(MF_MT_SUBTYPE, &out_sub);
             if (out_sub == MFVideoFormat_NV12) {
                 hr = impl_->mft->SetOutputType(0, avail.Get(), 0);
-                if (SUCCEEDED(hr)) output_set = true;
+                if (SUCCEEDED(hr)) {
+                    // Query actual stride (may differ from width on some hardware)
+                    UINT32 default_stride = 0;
+                    if (SUCCEEDED(avail->GetUINT32(MF_MT_DEFAULT_STRIDE, &default_stride)))
+                        impl_->nv12_stride = default_stride;
+                    output_set = true;
+                }
             }
         }
 

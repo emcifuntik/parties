@@ -141,11 +141,24 @@ void UiManager::update() {
 }
 
 void UiManager::render() {
-    if (!render_interface_ || !*render_interface_ || minimized_) return;
+    render_begin();
+    render_body();
+    render_end();
+}
 
+void UiManager::render_begin() {
+    if (!render_interface_ || !*render_interface_ || minimized_) return;
     render_interface_->BeginFrame();
+}
+
+void UiManager::render_body() {
+    if (!render_interface_ || !*render_interface_ || minimized_) return;
     render_interface_->Clear();
     if (context_) context_->Render();
+}
+
+void UiManager::render_end() {
+    if (!render_interface_ || !*render_interface_ || minimized_) return;
     render_interface_->EndFrame();
 }
 

@@ -24,15 +24,47 @@ VoiceMixer::UserStream& VoiceMixer::get_or_create_stream(UserId user_id) {
     return stream;
 }
 
-void VoiceMixer::push_packet(UserId user_id, const uint8_t* opus_data, size_t opus_len) {
+// Signed distance from a to b in uint16_t sequence space.
+// Positive means b is ahead of a.
+static int16_t seq_diff(uint16_t a, uint16_t b) {
+    return static_cast<int16_t>(b - a);
+}
+
+void VoiceMixer::push_packet(UserId user_id, uint16_t seq, const uint8_t* opus_data, size_t opus_len) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto& stream = get_or_create_stream(user_id);
 
-    // Drop oldest if buffer is full
-    if (stream.packet_queue.size() >= MAX_JITTER_PACKETS)
-        stream.packet_queue.pop_front();
+    // First packet establishes the sequence baseline
+    if (!stream.has_seq) {
+        stream.next_seq = seq;
+        stream.has_seq = true;
+    }
 
-    stream.packet_queue.emplace_back(opus_data, opus_data + opus_len);
+    // Discard packets that are too old (already played)
+    if (seq_diff(stream.next_seq, seq) < 0)
+        return;
+
+    // Find insertion index (sorted by seq). Search from the back since
+    // packets typically arrive roughly in order.
+    size_t insert_idx = stream.packet_queue.size();
+    for (size_t i = stream.packet_queue.size(); i > 0; --i) {
+        int16_t d = seq_diff(stream.packet_queue[i - 1].seq, seq);
+        if (d == 0) return;  // duplicate
+        if (d > 0) {
+            insert_idx = i;
+            break;
+        }
+        insert_idx = i - 1;
+    }
+
+    // Drop oldest if buffer is full
+    if (stream.packet_queue.size() >= MAX_JITTER_PACKETS) {
+        stream.packet_queue.pop_front();
+        if (insert_idx > 0) --insert_idx;
+    }
+
+    stream.packet_queue.insert(stream.packet_queue.begin() + insert_idx,
+                               {seq, {opus_data, opus_data + opus_len}});
     stream.consecutive_empty = 0;
 }
 
@@ -48,8 +80,9 @@ bool VoiceMixer::decode_frame(UserStream& stream, float* pcm_out, int frame_size
 
     if (!stream.packet_queue.empty()) {
         auto& pkt = stream.packet_queue.front();
-        int decoded = stream.decoder.decode(pkt.data(), static_cast<int>(pkt.size()),
+        int decoded = stream.decoder.decode(pkt.data.data(), static_cast<int>(pkt.data.size()),
                                              pcm_out, frame_size);
+        stream.next_seq = pkt.seq + 1;
         stream.packet_queue.pop_front();
         stream.consecutive_empty = 0;
 
@@ -65,6 +98,7 @@ bool VoiceMixer::decode_frame(UserStream& stream, float* pcm_out, int frame_size
 
     // Too many consecutive PLC frames — reset priming so we re-buffer
     stream.primed = false;
+    stream.has_seq = false;
     return false;
 }
 

@@ -880,10 +880,12 @@ bool App::init(HWND hwnd) {
     audio_.on_encoded_frame = [this](const uint8_t* data, size_t len) {
         if (!authenticated_ || current_channel_ == 0) return;
 
-        // Packet: [type(1)][opus_data(N)]
-        std::vector<uint8_t> pkt(1 + len);
+        // Packet: [type(1)][seq(2)][opus_data(N)]
+        uint16_t seq = voice_seq_++;
+        std::vector<uint8_t> pkt(1 + 2 + len);
         pkt[0] = parties::protocol::VOICE_PACKET_TYPE;
-        std::memcpy(pkt.data() + 1, data, len);
+        std::memcpy(pkt.data() + 1, &seq, 2);
+        std::memcpy(pkt.data() + 3, data, len);
         net_.send_data(pkt.data(), pkt.size());
     };
 
@@ -893,13 +895,15 @@ bool App::init(HWND hwnd) {
         uint8_t type = data[0];
 
         if (type == parties::protocol::VOICE_PACKET_TYPE) {
-            // Format: [type(1)][sender_id(4)][opus_data(N)] — QUIC TLS encrypts in transit
-            if (len < 6) return;
+            // Format: [type(1)][sender_id(4)][seq(2)][opus_data(N)]
+            if (len < 8) return;
             uint32_t sender_id;
             std::memcpy(&sender_id, data + 1, 4);
             if (sender_id == user_id_) return;
 
-            mixer_.push_packet(sender_id, data + 5, len - 5);
+            uint16_t seq;
+            std::memcpy(&seq, data + 5, 2);
+            mixer_.push_packet(sender_id, seq, data + 7, len - 7);
         }
         else if (type == parties::protocol::VIDEO_FRAME_PACKET_TYPE) {
             // Format: [type(1)][sender_id(4)][frame_number(4)][timestamp(4)][flags(1)][w(2)][h(2)][codec(1)][data(N)]
@@ -1080,52 +1084,86 @@ void App::update() {
 
     // QUIC datagrams are received via callbacks — no polling needed
 
-    // Deliver latest decoded video frame to VideoElement for GPU rendering
+    // Deliver latest decoded video frame to VideoElement for GPU rendering.
+    // I420 planes are passed directly — the pixel shader converts YUV→RGB on the GPU.
     if (new_frame_available_ && doc_) {
-        std::lock_guard<std::mutex> lock(frame_mutex_);
-        if (new_frame_available_) {
-            uint32_t w = shared_width_, h = shared_height_;
-            new_frame_available_ = false;
-
-            if (w > 0 && h > 0) {
-                // Convert I420 → RGBA for RmlUi texture
-                rgba_buffer_.resize(w * h * 4);
-                uint8_t* dst = rgba_buffer_.data();
-                for (uint32_t row = 0; row < h; row++) {
-                    const uint8_t* y_row = shared_y_.data() + row * shared_y_stride_;
-                    const uint8_t* u_row = shared_u_.data() + (row / 2) * shared_uv_stride_;
-                    const uint8_t* v_row = shared_v_.data() + (row / 2) * shared_uv_stride_;
-                    for (uint32_t x = 0; x < w; x++) {
-                        int Y = y_row[x];
-                        int U = u_row[x / 2];
-                        int V = v_row[x / 2];
-                        int C = Y - 16;
-                        int D = U - 128;
-                        int E = V - 128;
-                        int R = (298 * C + 459 * E + 128) >> 8;
-                        int G = (298 * C -  55 * D - 136 * E + 128) >> 8;
-                        int B = (298 * C + 541 * D + 128) >> 8;
-                        *dst++ = static_cast<uint8_t>(std::clamp(R, 0, 255));
-                        *dst++ = static_cast<uint8_t>(std::clamp(G, 0, 255));
-                        *dst++ = static_cast<uint8_t>(std::clamp(B, 0, 255));
-                        *dst++ = 255;
-                    }
-                }
-
-                // Upload frame to VideoElement (rendered as textured quad in OnRender)
-                auto* elem = doc_->GetElementById("screen-share");
-                if (elem)
-                    static_cast<VideoElement*>(elem)->UpdateFrame(rgba_buffer_.data(), w, h);
+        std::vector<uint8_t> y, u, v;
+        uint32_t w, h, ys, uvs;
+        {
+            std::lock_guard<std::mutex> lock(frame_mutex_);
+            if (new_frame_available_) {
+                y.swap(shared_y_);
+                u.swap(shared_u_);
+                v.swap(shared_v_);
+                w = shared_width_;
+                h = shared_height_;
+                ys = shared_y_stride_;
+                uvs = shared_uv_stride_;
+                new_frame_available_ = false;
             }
+        }
+        if (!y.empty() && w > 0 && h > 0) {
+            fps_display_.tick();
+            auto* elem = doc_->GetElementById("screen-share");
+            if (elem)
+                static_cast<VideoElement*>(elem)->UpdateYUVFrame(
+                    y.data(), ys, u.data(), v.data(), uvs, w, h);
+        }
+    }
+
+    // Video pipeline FPS diagnostics (prints every 2 seconds)
+    if (viewing_sharer_ != 0) {
+        float enc = fps_encode_.check();
+        float recv = fps_recv_.check();
+        float dec = fps_decode_.check();
+        float disp = fps_display_.check();
+        if (enc > 0 || recv > 0 || dec > 0 || disp > 0) {
+            std::printf("[Video FPS] encode=%.1f recv=%.1f decode=%.1f display=%.1f\n",
+                        enc, recv, dec, disp);
         }
     }
 
     // Update voice level meter
     update_voice_level();
 
+    // Timing: measure where time is spent in the render loop
+    static LARGE_INTEGER qpc_freq = {};
+    static double accum_update_ms = 0, accum_begin_ms = 0, accum_render_ms = 0, accum_end_ms = 0;
+    static int timing_count = 0;
+    static auto timing_last = std::chrono::steady_clock::now();
+    if (!qpc_freq.QuadPart) QueryPerformanceFrequency(&qpc_freq);
+
+    LARGE_INTEGER t0, t1, t2, t3, t4;
+    QueryPerformanceCounter(&t0);
+
     // Update + render UI
     ui_.update();
-    ui_.render();
+    QueryPerformanceCounter(&t1);
+    ui_.render_begin();
+    QueryPerformanceCounter(&t2);
+    ui_.render_body();
+    QueryPerformanceCounter(&t3);
+    ui_.render_end();
+    QueryPerformanceCounter(&t4);
+
+    auto to_ms = [&](LARGE_INTEGER a, LARGE_INTEGER b) {
+        return (b.QuadPart - a.QuadPart) * 1000.0 / qpc_freq.QuadPart;
+    };
+    accum_update_ms += to_ms(t0, t1);
+    accum_begin_ms += to_ms(t1, t2);
+    accum_render_ms += to_ms(t2, t3);
+    accum_end_ms += to_ms(t3, t4);
+    timing_count++;
+
+    auto now = std::chrono::steady_clock::now();
+    if (std::chrono::duration<float>(now - timing_last).count() >= 2.0f && timing_count > 0) {
+        std::printf("[Render Timing] update=%.2fms begin=%.2fms render=%.2fms end=%.2fms (avg over %d frames)\n",
+            accum_update_ms / timing_count, accum_begin_ms / timing_count,
+            accum_render_ms / timing_count, accum_end_ms / timing_count, timing_count);
+        accum_update_ms = accum_begin_ms = accum_render_ms = accum_end_ms = 0;
+        timing_count = 0;
+        timing_last = now;
+    }
 }
 
 void App::update_voice_level() {
@@ -1670,7 +1708,7 @@ void App::start_screen_share(int target_index) {
 
     // Create encoder (uses same D3D device as capture)
     encoder_ = std::make_unique<VideoEncoder>();
-    if (!encoder_->init(capture_->device(), width, height, 0, 0, 30, bitrate_bps, preferred_codec)) {
+    if (!encoder_->init(capture_->device(), width, height, 0, 0, 60, bitrate_bps, preferred_codec)) {
         std::fprintf(stderr, "[App] Video encoder init failed\n");
         capture_->stop();
         capture_->shutdown();
@@ -1681,10 +1719,30 @@ void App::start_screen_share(int target_index) {
 
     video_frame_number_ = 0;
 
+    // Initialize capture timing for frame rate limiting
+    LARGE_INTEGER freq, now;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&now);
+    qpc_frequency_ = freq.QuadPart;
+    capture_start_qpc_ = now.QuadPart;
+    last_capture_qpc_ = 0;
+    capture_interval_qpc_ = freq.QuadPart / 60;  // 60 FPS target
+
     // Wire capture -> encoder (only encodes when sharing_screen_ is true)
+    // Capture fires at display refresh rate (60-144Hz); limit to encoder FPS.
     capture_->on_frame = [this](ID3D11Texture2D* texture, uint32_t w, uint32_t h) {
         if (!encoder_ || !sharing_screen_) return;
-        int64_t ts = static_cast<int64_t>(video_frame_number_) * 333333; // ~30fps in 100ns units
+
+        // Frame rate limiting: skip frames that arrive faster than target FPS
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        int64_t elapsed = now.QuadPart - last_capture_qpc_;
+        if (elapsed < capture_interval_qpc_)
+            return;
+        last_capture_qpc_ = now.QuadPart;
+
+        // Timestamp in 100ns units relative to capture start
+        int64_t ts = (now.QuadPart - capture_start_qpc_) * 10'000'000LL / qpc_frequency_;
         encoder_->encode_frame(texture, ts);
     };
 
@@ -1713,6 +1771,7 @@ void App::start_screen_share(int target_index) {
         std::memcpy(pkt.data() + off, data, len);
 
         net_.send_video(pkt.data(), pkt.size(), true);
+        fps_encode_.tick();
 
         // Feed raw bitstream to local preview decoder (no encryption needed)
         if (decoder_ && viewing_sharer_ == user_id_) {
@@ -1796,6 +1855,8 @@ void App::on_video_frame_received(uint32_t sender_id, const uint8_t* data, size_
     size_t encoded_len = len - 14;
 
     if (decode_running_ && encoded_len > 0) {
+        fps_recv_.tick();
+
         DecodeWork work;
         work.data.assign(encoded, encoded + encoded_len);
         work.timestamp = timestamp;
@@ -2038,22 +2099,30 @@ void App::sync_sharer_model() {
 void App::start_decode_thread() {
     if (decode_running_) return;
 
-    // Set up decoder callback to copy frames into shared buffer
+    // Set up decoder callback: copy I420 planes into shared buffers.
+    // GPU does the YUV→RGB conversion in a pixel shader — zero CPU conversion.
     decoder_->on_decoded = [this](const DecodedFrame& frame) {
-        uint32_t half_h = frame.height / 2;
+        uint32_t w = frame.width, h = frame.height;
+        uint32_t half_h = h / 2;
+
+        // Copy planes outside lock for minimal contention
+        std::vector<uint8_t> y(static_cast<size_t>(frame.y_stride) * h);
+        std::memcpy(y.data(), frame.y_plane, y.size());
+
+        std::vector<uint8_t> u(static_cast<size_t>(frame.uv_stride) * half_h);
+        std::memcpy(u.data(), frame.u_plane, u.size());
+
+        std::vector<uint8_t> v(static_cast<size_t>(frame.uv_stride) * half_h);
+        std::memcpy(v.data(), frame.v_plane, v.size());
+
+        fps_decode_.tick();
 
         std::lock_guard<std::mutex> lock(frame_mutex_);
-        shared_y_.resize(frame.y_stride * frame.height);
-        std::memcpy(shared_y_.data(), frame.y_plane, frame.y_stride * frame.height);
-
-        shared_u_.resize(frame.uv_stride * half_h);
-        std::memcpy(shared_u_.data(), frame.u_plane, frame.uv_stride * half_h);
-
-        shared_v_.resize(frame.uv_stride * half_h);
-        std::memcpy(shared_v_.data(), frame.v_plane, frame.uv_stride * half_h);
-
-        shared_width_ = frame.width;
-        shared_height_ = frame.height;
+        shared_y_.swap(y);
+        shared_u_.swap(u);
+        shared_v_.swap(v);
+        shared_width_ = w;
+        shared_height_ = h;
         shared_y_stride_ = frame.y_stride;
         shared_uv_stride_ = frame.uv_stride;
         new_frame_available_ = true;
@@ -2080,8 +2149,12 @@ void App::stop_decode_thread() {
 }
 
 void App::decode_loop() {
+    // If the decode queue backs up beyond this many frames, the decoder
+    // can't keep up.  Flush everything and request a keyframe (PLI) so
+    // the sharer sends a fresh IDR/key and we restart cleanly.
+    static constexpr size_t MAX_DECODE_QUEUE = 10;
+
     while (decode_running_) {
-        // Grab ALL queued frames at once
         std::queue<DecodeWork> batch;
         {
             std::unique_lock<std::mutex> lock(decode_queue_mutex_);
@@ -2092,9 +2165,23 @@ void App::decode_loop() {
             batch.swap(decode_queue_);
         }
 
-        // Decode every frame (AV1 needs all frames for inter-prediction)
-        // The on_decoded callback overwrites the shared buffer each time,
-        // so the main thread only sees the latest decoded result.
+        // If queue is too deep, decoder can't keep up — drop everything
+        // and request a keyframe so we restart from a clean reference.
+        if (batch.size() > MAX_DECODE_QUEUE) {
+            std::fprintf(stderr, "[Video] Decode queue backed up (%zu frames), "
+                         "flushing and requesting keyframe\n", batch.size());
+            if (decoder_) decoder_->flush();
+            while (!batch.empty()) batch.pop();
+
+            if (viewing_sharer_ != 0)
+                send_pli(viewing_sharer_);
+            continue;
+        }
+
+        // Decode every frame (inter-predicted codecs need all frames
+        // for correct reference chains).  The on_decoded callback
+        // overwrites the shared buffer each time, so the main thread
+        // only sees the latest decoded result.
         while (!batch.empty()) {
             auto& work = batch.front();
             if (decoder_ && !work.data.empty())
