@@ -30,8 +30,18 @@ public:
     // Remove all user streams
     void clear();
 
-    // Set per-user volume (0.0 - 1.0)
+    // Set per-user volume (0.0 - 2.0)
     void set_user_volume(UserId user_id, float volume);
+
+    // Get per-user volume (returns 1.0 if not set)
+    float get_user_volume(UserId user_id) const;
+
+    // Per-user voice compression (normalization).
+    // When enabled, automatically adjusts gain to bring this user's voice to the target level.
+    // Overrides global normalization for this user's stream.
+    void set_user_compression(UserId user_id, bool enabled, float target = 0.8f);
+    bool get_user_compression(UserId user_id) const;
+    float get_user_compression_target(UserId user_id) const;
 
     // Get per-user audio RMS level (0.0 - 1.0, updated each mix cycle)
     // Returns map of user_id -> level for all active streams.
@@ -59,6 +69,11 @@ private:
 
         // Audio level (RMS of last decoded frame, updated in mix_output)
         float level = 0.0f;
+
+        // Per-user compression (normalization)
+        bool compress = false;
+        float compress_target = 0.8f;  // Target RMS level (0.0 - 1.0)
+        float compress_gain = 1.0f;    // Smoothed gain (converges toward target/rms)
     };
 
     UserStream& get_or_create_stream(UserId user_id);

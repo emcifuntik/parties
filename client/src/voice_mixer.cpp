@@ -140,8 +140,17 @@ void VoiceMixer::mix_output(float* output, int frame_count) {
                 stream.pcm_pos = 0;
             }
 
+            // Per-user compression: adjust gain to normalize this user's level
+            if (stream.compress && stream.level > 0.001f) {
+                float target = stream.compress_target * stream.compress_target * stream.compress_target;
+                float desired_gain = target / stream.level;
+                desired_gain = std::clamp(desired_gain, 0.1f, 10.0f);
+                constexpr float alpha = 0.05f;
+                stream.compress_gain += alpha * (desired_gain - stream.compress_gain);
+            }
+
             // Mix this user's decoded PCM into output
-            float vol = stream.volume;
+            float vol = stream.volume * (stream.compress ? stream.compress_gain : 1.0f);
             for (int i = 0; i < chunk; i++) {
                 output[written + i] += stream.pcm_buf[stream.pcm_pos + i] * vol;
             }
@@ -171,7 +180,40 @@ void VoiceMixer::set_user_volume(UserId user_id, float volume) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = streams_.find(user_id);
     if (it != streams_.end())
-        it->second.volume = std::clamp(volume, 0.0f, 1.0f);
+        it->second.volume = std::clamp(volume, 0.0f, 2.0f);
+}
+
+float VoiceMixer::get_user_volume(UserId user_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = streams_.find(user_id);
+    if (it != streams_.end())
+        return it->second.volume;
+    return 1.0f;
+}
+
+void VoiceMixer::set_user_compression(UserId user_id, bool enabled, float target) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = streams_.find(user_id);
+    if (it != streams_.end()) {
+        it->second.compress = enabled;
+        it->second.compress_target = std::clamp(target, 0.0f, 1.0f);
+        if (!enabled)
+            it->second.compress_gain = 1.0f; // Reset gain when disabling
+    }
+}
+
+bool VoiceMixer::get_user_compression(UserId user_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = streams_.find(user_id);
+    return it != streams_.end() && it->second.compress;
+}
+
+float VoiceMixer::get_user_compression_target(UserId user_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = streams_.find(user_id);
+    if (it != streams_.end())
+        return it->second.compress_target;
+    return 0.8f;
 }
 
 std::unordered_map<UserId, float> VoiceMixer::get_user_levels() const {

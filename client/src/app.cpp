@@ -236,51 +236,57 @@ void App::setup_model_callbacks() {
 
     model_.on_show_user_menu = [this](int user_id, std::string name, int user_role) {
         if (!authenticated_) return;
-
-        constexpr int ID_SET_ADMIN = 2;
-        constexpr int ID_SET_MOD   = 3;
-        constexpr int ID_SET_USER  = 4;
-        constexpr int ID_KICK      = 10;
+        // Don't show menu for ourselves
+        if (static_cast<uint32_t>(user_id) == user_id_) return;
 
         bool can_roles = model_.can_manage_roles && role_ <= user_role;
         bool can_kick_user = model_.can_kick && role_ <= user_role;
-        if (!can_roles && !can_kick_user) return;
 
-        std::vector<ContextMenu::Item> items;
-        if (can_roles) {
-            // Owner (role 0) is set only in server config — not assignable here
-            if (user_role != 1) items.push_back({L"Set Admin",     ID_SET_ADMIN});
-            if (user_role != 2) items.push_back({L"Set Moderator", ID_SET_MOD});
-            if (user_role != 3) items.push_back({L"Set User",      ID_SET_USER});
-        }
-        if (can_kick_user) {
-            if (can_roles) items.push_back({L"", 0, false, true}); // separator
-            items.push_back({L"Kick", ID_KICK, true});
-        }
+        model_.menu_user_id = user_id;
+        model_.menu_user_name = name;
+        model_.menu_user_role = user_role;
+        model_.menu_can_roles = can_roles;
+        model_.menu_can_kick = can_kick_user;
+        // Retrieve current volume and compression state from mixer
+        model_.menu_user_volume = mixer_.get_user_volume(static_cast<UserId>(user_id));
+        model_.menu_user_compress = mixer_.get_user_compression(static_cast<UserId>(user_id));
+        model_.menu_user_compress_target = mixer_.get_user_compression_target(static_cast<UserId>(user_id));
+        model_.show_user_menu = true;
 
-        int cmd = ContextMenu::show(hwnd_, items);
-        if (cmd == 0) return;
+        model_.dirty("menu_user_id");
+        model_.dirty("menu_user_name");
+        model_.dirty("menu_user_role");
+        model_.dirty("menu_can_roles");
+        model_.dirty("menu_can_kick");
+        model_.dirty("menu_user_volume");
+        model_.dirty("menu_user_compress");
+        model_.dirty("menu_user_compress_target");
+        model_.dirty("show_user_menu");
+    };
 
-        if (cmd == ID_KICK) {
-            BinaryWriter writer;
-            writer.write_u32(static_cast<uint32_t>(user_id));
-            net_.send_message(protocol::ControlMessageType::ADMIN_KICK_USER,
-                              writer.data().data(), writer.data().size());
-        } else {
-            int new_role = -1;
-            switch (cmd) {
-            case ID_SET_ADMIN: new_role = 1; break;
-            case ID_SET_MOD:   new_role = 2; break;
-            case ID_SET_USER:  new_role = 3; break;
-            }
-            if (new_role >= 0) {
-                BinaryWriter writer;
-                writer.write_u32(static_cast<uint32_t>(user_id));
-                writer.write_u8(static_cast<uint8_t>(new_role));
-                net_.send_message(protocol::ControlMessageType::ADMIN_SET_ROLE,
-                                  writer.data().data(), writer.data().size());
-            }
-        }
+    model_.on_set_user_role = [this](int user_id, int new_role) {
+        if (!authenticated_) return;
+        BinaryWriter writer;
+        writer.write_u32(static_cast<uint32_t>(user_id));
+        writer.write_u8(static_cast<uint8_t>(new_role));
+        net_.send_message(protocol::ControlMessageType::ADMIN_SET_ROLE,
+                          writer.data().data(), writer.data().size());
+    };
+
+    model_.on_kick_user = [this](int user_id) {
+        if (!authenticated_) return;
+        BinaryWriter writer;
+        writer.write_u32(static_cast<uint32_t>(user_id));
+        net_.send_message(protocol::ControlMessageType::ADMIN_KICK_USER,
+                          writer.data().data(), writer.data().size());
+    };
+
+    model_.on_user_volume_changed = [this](int user_id, float volume) {
+        mixer_.set_user_volume(static_cast<UserId>(user_id), volume);
+    };
+
+    model_.on_user_compress_changed = [this](int user_id, bool enabled, float target) {
+        mixer_.set_user_compression(static_cast<UserId>(user_id), enabled, target);
     };
 
     model_.on_show_channel_menu = [this](int channel_id, std::string channel_name) {

@@ -19,6 +19,9 @@ struct ID3D12PipelineState;
 struct IDXGISwapChain4;
 struct IDXGIFactory4;
 struct IDXGIAdapter1;
+struct IDCompositionDevice;
+struct IDCompositionTarget;
+struct IDCompositionVisual;
 
 // Required for HANDLE, HWND
 // clang-format off
@@ -227,6 +230,11 @@ private:
 	ComPtr<ID3D12Device> device_;
 	ComPtr<ID3D12CommandQueue> command_queue_;
 	ComPtr<IDXGISwapChain4> swap_chain_;
+
+	// DirectComposition — DWM-managed presentation for proper VRR/G-Sync pacing
+	ComPtr<IDCompositionDevice> dcomp_device_;
+	ComPtr<IDCompositionTarget> dcomp_target_;
+	ComPtr<IDCompositionVisual> dcomp_visual_;
 
 	// RTV descriptor heap
 	ComPtr<ID3D12DescriptorHeap> rtv_heap_;

@@ -107,6 +107,17 @@ bool LobbyModel::init(Rml::Context* context) {
     ctor.Bind("new_channel_name",     &new_channel_name);
     ctor.Bind("admin_message",        &admin_message);
 
+    // User context menu
+    ctor.Bind("show_user_menu",     &show_user_menu);
+    ctor.Bind("menu_user_id",       &menu_user_id);
+    ctor.Bind("menu_user_name",     &menu_user_name);
+    ctor.Bind("menu_user_role",     &menu_user_role);
+    ctor.Bind("menu_user_volume",   &menu_user_volume);
+    ctor.Bind("menu_user_compress", &menu_user_compress);
+    ctor.Bind("menu_user_compress_target", &menu_user_compress_target);
+    ctor.Bind("menu_can_roles",     &menu_can_roles);
+    ctor.Bind("menu_can_kick",      &menu_can_kick);
+
     // Identity backup/import/export
     ctor.Bind("show_seed_phrase",       &show_seed_phrase);
     ctor.Bind("identity_seed_phrase",   &identity_seed_phrase);
@@ -313,6 +324,49 @@ bool LobbyModel::init(Rml::Context* context) {
                 on_show_user_menu(uid, std::string(name), role);
         });
 
+    // User context menu event callbacks
+    ctor.BindEventCallback("close_user_menu",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            show_user_menu = false;
+            dirty("show_user_menu");
+        });
+
+    ctor.BindEventCallback("set_user_role",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList& args) {
+            if (!args.empty() && on_set_user_role)
+                on_set_user_role(menu_user_id, args[0].Get<int>());
+            show_user_menu = false;
+            dirty("show_user_menu");
+        });
+
+    ctor.BindEventCallback("kick_user",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            if (on_kick_user)
+                on_kick_user(menu_user_id);
+            show_user_menu = false;
+            dirty("show_user_menu");
+        });
+
+    ctor.BindEventCallback("user_volume_changed",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            if (on_user_volume_changed)
+                on_user_volume_changed(menu_user_id, menu_user_volume);
+        });
+
+    ctor.BindEventCallback("toggle_user_compress",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            menu_user_compress = !menu_user_compress;
+            dirty("menu_user_compress");
+            if (on_user_compress_changed)
+                on_user_compress_changed(menu_user_id, menu_user_compress, menu_user_compress_target);
+        });
+
+    ctor.BindEventCallback("user_compress_target_changed",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            if (on_user_compress_changed)
+                on_user_compress_changed(menu_user_id, menu_user_compress, menu_user_compress_target);
+        });
+
     // Identity backup/import event callbacks
     ctor.BindEventCallback("toggle_seed_phrase",
         [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
@@ -399,6 +453,15 @@ void LobbyModel::dirty_all() {
     dirty("can_manage_roles");
     dirty("show_create_channel");
     dirty("admin_message");
+    dirty("show_user_menu");
+    dirty("menu_user_id");
+    dirty("menu_user_name");
+    dirty("menu_user_role");
+    dirty("menu_user_volume");
+    dirty("menu_user_compress");
+    dirty("menu_user_compress_target");
+    dirty("menu_can_roles");
+    dirty("menu_can_kick");
     dirty("show_seed_phrase");
     dirty("identity_seed_phrase");
     dirty("show_import_identity");

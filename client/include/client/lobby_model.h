@@ -107,6 +107,17 @@ public:
     bool can_kick = false;                 // derived from role
     bool can_manage_roles = false;         // derived from role
 
+    // User context menu (RmlUi-based, non-blocking)
+    bool show_user_menu = false;
+    int menu_user_id = 0;
+    Rml::String menu_user_name;
+    int menu_user_role = 0;
+    float menu_user_volume = 1.0f;         // 0.0 - 2.0
+    bool menu_user_compress = false;       // per-user voice compression enabled
+    float menu_user_compress_target = 0.8f; // compression target (0.0 - 1.0)
+    bool menu_can_roles = false;           // can we change this user's role?
+    bool menu_can_kick = false;            // can we kick this user?
+
     // Create channel form
     bool show_create_channel = false;
     Rml::String new_channel_name;
@@ -161,6 +172,12 @@ public:
     std::function<void(int)>   on_delete_channel;
     std::function<void(int, std::string, int)> on_show_user_menu;    // (user_id, name, role)
     std::function<void(int, std::string)>      on_show_channel_menu; // (channel_id, name)
+
+    // User context menu actions
+    std::function<void(int, int)>    on_set_user_role;       // (user_id, new_role)
+    std::function<void(int)>         on_kick_user;           // (user_id)
+    std::function<void(int, float)>  on_user_volume_changed; // (user_id, volume)
+    std::function<void(int, bool, float)> on_user_compress_changed; // (user_id, enabled, target)
 
 private:
     Rml::DataModelHandle handle_;

@@ -830,16 +830,27 @@ input.password:focus {
 
 input.range slidertrack {
     height: 4dp;
-    background-color: #1f2030;
+    background-color: #2a2b3d;
+    border-radius: 2dp;
 }
 
 input.range sliderbar {
-    width: 14dp;
-    height: 14dp;
+    width: 12dp;
+    height: 12dp;
     background-color: #e8a43a;
+    border-radius: 6dp;
+    margin-top: -4dp;
 }
 
 input.range sliderbar:hover {
+    background-color: #f0b44e;
+    width: 14dp;
+    height: 14dp;
+    border-radius: 7dp;
+    margin-top: -5dp;
+}
+
+input.range sliderbar:active {
     background-color: #c48a2e;
 }
 
@@ -1274,7 +1285,7 @@ video_frame {
     width: 14dp;
     height: 14dp;
     cursor: pointer;
-    margin: 4dp 8dp;
+    margin: 0dp 8dp;
 }
 
 .sharer-close .close-icon-a,
@@ -1304,6 +1315,8 @@ video_frame {
 
 .stream-volume-slider {
     display: block;
+    flex: none;
+    align-self: center;
     width: 100dp;
 }
 
@@ -1366,4 +1379,147 @@ video_frame {
 
 .user-fingerprint:hover {
     color: #8e90a6;
+}
+
+/* ── User context menu (RmlUi popup) ─────────────── */
+
+.user-menu-backdrop {
+    display: flex;
+    position: absolute;
+    left: 0dp;
+    top: 32dp;
+    right: 0dp;
+    bottom: 0dp;
+    background-color: #0d0e1780;
+    justify-content: flex-start;
+    align-items: flex-start;
+}
+
+.user-menu-popup {
+    display: flex;
+    flex-direction: column;
+    width: 240dp;
+    margin-left: 322dp;
+    margin-top: 60dp;
+    background-color: #181924;
+    border: 1dp #2a2b3d;
+    border-radius: 8dp;
+    overflow: hidden;
+}
+
+.user-menu-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10dp 16dp;
+    background-color: #1f2030;
+}
+
+.user-menu-name {
+    display: block;
+    font-size: 14dp;
+    font-weight: bold;
+    color: #e0ddd8;
+}
+
+/* Sections */
+.user-menu-section {
+    display: flex;
+    flex-direction: column;
+    padding: 10dp 16dp;
+}
+
+.user-menu-section-border {
+    border-top: 1dp #2a2b3d;
+}
+
+.user-menu-label {
+    display: block;
+    font-size: 10dp;
+    font-weight: bold;
+    color: #5c5e72;
+    text-transform: uppercase;
+    margin-bottom: 8dp;
+}
+
+/* Slider rows */
+.user-menu-slider-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 10dp;
+}
+
+.user-menu-slider {
+    display: block;
+    flex: 1;
+}
+
+.user-menu-slider-value {
+    display: block;
+    font-size: 11dp;
+    color: #8b8da0;
+    min-width: 28dp;
+    text-align: right;
+}
+
+/* Small inline toggle (checkbox-sized) */
+.toggle-sm {
+    width: 12dp;
+    height: 12dp;
+}
+
+/* Normalize row: sublabel + toggle aligned like slider rows */
+.user-menu-normalize-row {
+    cursor: pointer;
+    padding: 4dp 0dp;
+}
+
+.user-menu-normalize-row:hover .user-menu-sublabel {
+    color: #8b8da0;
+}
+
+.user-menu-sublabel {
+    display: block;
+    font-size: 11dp;
+    color: #5c5e72;
+    min-width: 50dp;
+}
+
+/* Actions wrapper (needed for data-if on group) */
+.user-menu-actions {
+    display: flex;
+    flex-direction: column;
+}
+
+/* Action buttons (role, kick) */
+.user-menu-action {
+    display: flex;
+    align-items: center;
+    padding: 7dp 16dp;
+    color: #8b8da0;
+    cursor: pointer;
+    font-size: 13dp;
+}
+
+.user-menu-action:hover {
+    background-color: #262739;
+    color: #e0ddd8;
+}
+
+.user-menu-action.danger {
+    color: #e8645a;
+}
+
+.user-menu-action.danger:hover {
+    background-color: #e8645a18;
+    color: #e8645a;
+}
+
+/* Separator between action groups */
+.user-menu-sep {
+    display: block;
+    height: 1dp;
+    background-color: #2a2b3d;
+    margin: 2dp 16dp;
 }

@@ -383,6 +383,57 @@
 
     </div><!-- /app-content -->
 
+    <!-- User context menu (non-blocking, RmlUi overlay) -->
+    <div class="user-menu-backdrop" data-model="lobby" data-if="show_user_menu">
+        <div class="user-menu-popup">
+            <!-- Header -->
+            <div class="user-menu-header">
+                <span class="user-menu-name">{{ menu_user_name }}</span>
+                <div class="close-icon" data-event-click="close_user_menu">
+                    <div class="close-icon-a"></div>
+                    <div class="close-icon-b"></div>
+                </div>
+            </div>
+
+            <!-- Audio -->
+            <div class="user-menu-section">
+                <div class="user-menu-slider-row">
+                    <span class="user-menu-sublabel">Volume</span>
+                    <input type="range" class="user-menu-slider" min="0" max="2" step="0.01"
+                           data-value="menu_user_volume"
+                           data-event-change="user_volume_changed" />
+                </div>
+                <div class="user-menu-slider-row user-menu-normalize-row" data-event-click="toggle_user_compress">
+                    <span class="user-menu-sublabel">Normalize</span>
+                    <span class="toggle-indicator toggle-sm" data-class-on="menu_user_compress"></span>
+                </div>
+                <div class="user-menu-slider-row" data-if="menu_user_compress">
+                    <span class="user-menu-sublabel">Target</span>
+                    <input type="range" class="user-menu-slider" min="0.1" max="1" step="0.01"
+                           data-value="menu_user_compress_target"
+                           data-event-change="user_compress_target_changed" />
+                </div>
+            </div>
+
+            <!-- Role management (only if permitted) -->
+            <div class="user-menu-actions" data-if="menu_can_roles">
+                <div class="user-menu-sep"></div>
+                <div class="user-menu-action" data-if="menu_user_role != 1"
+                     data-event-click="set_user_role(1)"><span>Set Admin</span></div>
+                <div class="user-menu-action" data-if="menu_user_role != 2"
+                     data-event-click="set_user_role(2)"><span>Set Moderator</span></div>
+                <div class="user-menu-action" data-if="menu_user_role != 3"
+                     data-event-click="set_user_role(3)"><span>Set User</span></div>
+            </div>
+
+            <!-- Kick (only if permitted) -->
+            <div class="user-menu-actions" data-if="menu_can_kick">
+                <div class="user-menu-sep"></div>
+                <div class="user-menu-action danger" data-event-click="kick_user"><span>Kick</span></div>
+            </div>
+        </div>
+    </div>
+
     <!-- TOFU certificate warning modal -->
     <div class="modal-backdrop" data-model="serverlist" data-if="show_tofu_warning">
         <div class="modal-box">

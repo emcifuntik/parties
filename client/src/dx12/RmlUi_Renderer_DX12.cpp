@@ -15,10 +15,14 @@
 #include <d3d12.h>
 #include <dxgi1_6.h>
 #include <d3dcompiler.h>
+#include <dcomp.h>
+#include <dwmapi.h>
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "d3dcompiler.lib")
+#pragma comment(lib, "dcomp.lib")
+#pragma comment(lib, "dwmapi.lib")
 
 #include <parties/profiler.h>
 
@@ -737,13 +741,16 @@ bool RenderInterface_DX12::CreateSwapChain(int width, int height) {
 	sc_desc.BufferCount = NUM_BACK_BUFFERS;
 	sc_desc.Scaling = DXGI_SCALING_STRETCH;
 	sc_desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-	sc_desc.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
+	sc_desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
 	sc_desc.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
 
+	// Use CreateSwapChainForComposition + DirectComposition for proper VRR/G-Sync
+	// frame pacing. With HWND swap chains, G-Sync makes Present non-blocking,
+	// causing uncapped FPS. DComp lets DWM manage presentation timing correctly.
 	ComPtr<IDXGISwapChain1> swap_chain1;
-	DX_CHECK(factory_->CreateSwapChainForHwnd(
-		command_queue_.Get(), hwnd_, &sc_desc, nullptr, nullptr, &swap_chain1),
-		"CreateSwapChainForHwnd");
+	DX_CHECK(factory_->CreateSwapChainForComposition(
+		command_queue_.Get(), &sc_desc, nullptr, &swap_chain1),
+		"CreateSwapChainForComposition");
 
 	// Disable Alt+Enter fullscreen toggle
 	DX_CHECK(factory_->MakeWindowAssociation(hwnd_, DXGI_MWA_NO_ALT_ENTER),
@@ -753,6 +760,27 @@ bool RenderInterface_DX12::CreateSwapChain(int width, int height) {
 
 	swap_chain_->SetMaximumFrameLatency(NUM_BACK_BUFFERS);
 	frame_latency_waitable_ = swap_chain_->GetFrameLatencyWaitableObject();
+
+	// Set up DirectComposition visual tree: DComp device -> target (HWND) -> visual -> swap chain
+	DX_CHECK(DCompositionCreateDevice(nullptr, IID_PPV_ARGS(&dcomp_device_)),
+		"DCompositionCreateDevice");
+
+	DX_CHECK(dcomp_device_->CreateTargetForHwnd(hwnd_, TRUE, &dcomp_target_),
+		"CreateTargetForHwnd");
+
+	DX_CHECK(dcomp_device_->CreateVisual(&dcomp_visual_),
+		"CreateVisual");
+
+	DX_CHECK(dcomp_visual_->SetContent(swap_chain_.Get()),
+		"SetContent(SwapChain)");
+
+	DX_CHECK(dcomp_target_->SetRoot(dcomp_visual_.Get()),
+		"SetRoot");
+
+	DX_CHECK(dcomp_device_->Commit(),
+		"DComp Commit");
+
+	std::printf("[DX12] DirectComposition swap chain created\n");
 
 	return true;
 }
@@ -2016,6 +2044,10 @@ void RenderInterface_DX12::SetViewport(int viewport_width, int viewport_height, 
 
 	// Recreate postprocess targets at new dimensions
 	CreatePostprocessTargets();
+
+	// Notify DComp that the swap chain was resized
+	if (dcomp_device_)
+		dcomp_device_->Commit();
 }
 
 
@@ -2159,12 +2191,10 @@ void RenderInterface_DX12::EndFrame() {
 	}
 	fence_values_[current_back_buffer_index_] = signal_value;
 
-	UINT sync_interval = vsync_ ? 1 : 0;
-	UINT present_flags = 0;
 	HRESULT present_hr;
 	{
 		ZoneScopedN("DX12::Present");
-		present_hr = swap_chain_->Present(sync_interval, present_flags);
+		present_hr = swap_chain_->Present(vsync_ ? 1 : 0, 0);
 	}
 	hr = present_hr;
 	if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
@@ -2177,6 +2207,13 @@ void RenderInterface_DX12::EndFrame() {
 	if (FAILED(hr)) {
 		std::fprintf(stderr, "[DX12] Present FAILED: %s (0x%08lX)\n",
 			HrToString(hr), static_cast<unsigned long>(hr));
+	}
+
+	// Force vblank sync — DwmFlush blocks until the compositor presents.
+	// Needed because G-Sync/FreeSync makes Present non-blocking even with SyncInterval=1.
+	if (vsync_) {
+		ZoneScopedN("DX12::DwmFlush");
+		DwmFlush();
 	}
 
 	// Update back buffer index for next frame
