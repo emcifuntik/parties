@@ -4,6 +4,7 @@
 #include <client/video_encoder.h>
 #include <client/video_decoder.h>
 #include <client/video_element.h>
+#include <client/level_meter_element.h>
 #include <parties/protocol.h>
 #include <parties/serialization.h>
 #include <parties/crypto.h>
@@ -985,13 +986,18 @@ bool App::init(HWND hwnd) {
         server_model_.dirty("login_status");
     };
 
-    // Register custom video_frame element before loading documents
+    // Register custom elements before loading documents
     video_instancer_ = std::make_unique<VideoElementInstancer>();
     Rml::Factory::RegisterElementInstancer("video_frame", video_instancer_.get());
+    level_meter_instancer_ = std::make_unique<LevelMeterInstancer>();
+    Rml::Factory::RegisterElementInstancer("level_meter", level_meter_instancer_.get());
 
     // Load UI document (single merged layout)
     doc_ = ui_.load_document("ui/lobby.rml");
-    if (doc_) ui_.show_document(doc_);
+    if (doc_) {
+        ui_.show_document(doc_);
+        level_meter_ = static_cast<LevelMeterElement*>(doc_->GetElementById("voice-level-meter"));
+    }
 
     // Titlebar buttons are handled natively by Win32 WM_NCHITTEST
     // (HTMINBUTTON, HTMAXBUTTON, HTCLOSE) — no RmlUi event bindings needed.
@@ -1025,6 +1031,7 @@ void App::shutdown() {
 }
 
 void App::update() {
+	ZoneScopedN("App::update");
     // Check async connection progress
     if (awaiting_connection_)
         poll_connecting();
@@ -1091,6 +1098,7 @@ void App::update() {
 
     // Deliver latest decoded video frame to VideoElement for GPU rendering.
     if (new_frame_available_ && doc_) {
+        ZoneScopedN("App::deliver_video_frame");
         std::vector<uint8_t> y, u, v;
         uint32_t w = 0, h = 0, ys = 0, uvs = 0;
         bool nv12 = false;
@@ -1157,22 +1165,11 @@ void App::update() {
 
 void App::update_voice_level() {
 	ZoneScopedN("App::update_voice_level");
-    if (!doc_ || !model_.is_connected) return;
+    if (!level_meter_ || !model_.is_connected) return;
 
     float level = audio_.voice_level();
-    model_.voice_level = level;
-    model_.dirty("voice_level");
-
-    // Update level meter bar width and threshold marker position directly
-    if (auto* fill = doc_->GetElementById("voice-level-fill")) {
-        int pct = static_cast<int>(level * 100.0f);
-        if (pct > 100) pct = 100;
-        fill->SetProperty("width", Rml::String(std::to_string(pct) + "%"));
-    }
-    if (auto* marker = doc_->GetElementById("vad-threshold-marker")) {
-        int pct = static_cast<int>(model_.vad_threshold * 100.0f);
-        marker->SetProperty("left", Rml::String(std::to_string(pct) + "%"));
-    }
+    level_meter_->SetLevel(level);
+    level_meter_->SetThreshold(model_.vad_threshold);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1793,6 +1790,10 @@ void App::start_screen_share(int target_index) {
 
         // Feed raw bitstream to local preview decoder (no encryption needed)
         if (decoder_ && viewing_sharer_ == user_id_) {
+            if (awaiting_keyframe_) {
+                if (!keyframe) return;
+                awaiting_keyframe_ = false;
+            }
             std::lock_guard<std::mutex> lock(decode_queue_mutex_);
             decode_queue_.push({std::vector<uint8_t>(data, data + len), 0});
             decode_queue_cv_.notify_one();
@@ -1870,6 +1871,14 @@ void App::on_video_frame_received(uint32_t sender_id, const uint8_t* data, size_
     uint32_t frame_number;
     std::memcpy(&frame_number, data, 4);
     int64_t timestamp = static_cast<int64_t>(frame_number);
+    uint8_t flags = data[8];
+    bool is_keyframe = (flags & VIDEO_FLAG_KEYFRAME) != 0;
+
+    // Skip non-keyframes until the first keyframe after a stream switch
+    if (awaiting_keyframe_) {
+        if (!is_keyframe) return;
+        awaiting_keyframe_ = false;
+    }
 
     const uint8_t* encoded = data + 14;
     size_t encoded_len = len - 14;
@@ -1914,11 +1923,15 @@ void App::on_screen_share_started(const uint8_t* data, size_t len) {
         self_info.height = height;
         active_sharers_[user_id_] = std::move(self_info);
 
-        // Start local preview: decode our own encoded stream
-        viewing_sharer_ = user_id_;
-        decoder_ = std::make_unique<VideoDecoder>();
-        if (decoder_->init(codec, width, height)) {
-            start_decode_thread();
+        // Only start self-preview if not already watching someone else
+        if (viewing_sharer_ == 0) {
+            viewing_sharer_ = user_id_;
+            decoder_ = std::make_unique<VideoDecoder>();
+            if (decoder_->init(codec, width, height)) {
+                awaiting_keyframe_ = true;
+                if (encoder_) encoder_->force_keyframe();
+                start_decode_thread();
+            }
         }
         sync_sharer_model();
         return;
@@ -2033,9 +2046,13 @@ void App::watch_sharer(UserId id) {
     start_decode_thread();
 
     if (id == user_id_ && sharing_screen_) {
-        // Self-preview: encoder callback feeds decode queue directly, no network subscribe needed
+        // Self-preview: force a keyframe so the decoder can start immediately.
+        awaiting_keyframe_ = true;
+        if (encoder_) encoder_->force_keyframe();
     } else {
-        // Remote sharer: subscribe via server and request keyframe
+        // Remote sharer: subscribe via server and request keyframe.
+        // Skip P-frames until the keyframe arrives.
+        awaiting_keyframe_ = true;
         BinaryWriter writer;
         writer.write_u32(id);
         net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_VIEW,

@@ -7,6 +7,11 @@
 
 namespace parties::client {
 
+static void stream_playback_notification(const ma_device_notification* pNotification) {
+    if (pNotification->type == ma_device_notification_type_started)
+        TracySetThreadName("StreamAudioPlayback");
+}
+
 StreamAudioPlayer::StreamAudioPlayer() = default;
 
 StreamAudioPlayer::~StreamAudioPlayer() {
@@ -30,6 +35,7 @@ bool StreamAudioPlayer::init() {
     config.dataCallback = StreamAudioPlayer::data_callback;
     config.pUserData = this;
     config.periodSizeInMilliseconds = 10;
+    config.notificationCallback = stream_playback_notification;
 
     if (ma_device_init(nullptr, &config, &device_) != MA_SUCCESS) {
         std::fprintf(stderr, "[StreamAudio] Failed to init playback device\n");

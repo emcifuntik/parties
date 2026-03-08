@@ -78,6 +78,11 @@ bool NvdecDecoder::init(uint32_t width, uint32_t height) {
         return false;
     }
 
+    // Pop the CUDA context — cuCtxCreate pushes it as current, but decode()
+    // runs on a different thread and uses cuCtxPushCurrent/Pop explicitly.
+    CUcontext dummy;
+    cuda_.cuCtxPopCurrent(&dummy);
+
     std::fprintf(stderr, "[NVDEC] Initialized AV1 decoder (NVDEC engines: %u)\n",
                  caps.nNumNVDECs);
 
@@ -175,6 +180,14 @@ int NvdecDecoder::on_sequence(CUVIDEOFORMAT* fmt) {
                  fmt->coded_width, fmt->coded_height,
                  fmt->bit_depth_luma_minus8 + 8, fmt->chroma_format,
                  fmt->min_num_decode_surfaces);
+
+    // Skip invalid sequence headers (garbage from partial data after stream switch).
+    // Return positive value to keep the parser alive — returning 0 is fatal.
+    if (fmt->coded_width == 0 || fmt->coded_height == 0 ||
+        fmt->chroma_format > cudaVideoChromaFormat_444) {
+        std::fprintf(stderr, "[NVDEC] Ignoring invalid sequence header\n");
+        return 1;
+    }
 
     // (Re)create the decoder based on stream parameters
     if (decoder_) {

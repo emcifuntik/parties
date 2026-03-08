@@ -573,8 +573,8 @@ RenderInterface_DX12::RenderInterface_DX12(void* p_window_handle, const Backend:
 	projection_ = Rml::Matrix4f::ProjectOrtho(0.0f, static_cast<float>(w),
 		static_cast<float>(h), 0.0f, -10000.0f, 10000.0f);
 	current_back_buffer_index_ = static_cast<IDXGISwapChain4*>(swap_chain_.Get())->GetCurrentBackBufferIndex();
-	valid_ = true;
 
+	valid_ = true;
 	std::printf("[DX12] Renderer initialized (%dx%d)\n", width_, height_);
 }
 
@@ -2025,12 +2025,30 @@ void RenderInterface_DX12::SetViewport(int viewport_width, int viewport_height, 
 
 void RenderInterface_DX12::BeginFrame() {
 	ZoneScopedN("DX12::BeginFrame");
-	// Wait on frame latency waitable object (limits CPU queue depth)
-	if (frame_latency_waitable_)
-		WaitForSingleObjectEx(frame_latency_waitable_, 1000, TRUE);
 
-	// Wait until the GPU has finished with this frame's command allocator
-	WaitForFenceValue(fence_values_[current_back_buffer_index_]);
+	// Wait on frame latency waitable object (limits CPU queue depth).
+	// Skip during window move — DWM stalls the waitable while repositioning.
+	// The fence wait below still prevents overwriting in-flight frames.
+	if (!in_size_move_) {
+		ZoneScopedN("DX12::WaitFrameLatency");
+		if (frame_latency_waitable_)
+			WaitForSingleObjectEx(frame_latency_waitable_, 1000, TRUE);
+	}
+
+	// Wait until the GPU has finished with this frame's command allocator.
+	// During window move, use a non-blocking check — DWM stalls the GPU pipeline.
+	{
+		ZoneScopedN("DX12::WaitFence");
+		if (in_size_move_) {
+			if (fence_->GetCompletedValue() < fence_values_[current_back_buffer_index_]) {
+				frame_skipped_ = true;
+				return;
+			}
+		} else {
+			WaitForFenceValue(fence_values_[current_back_buffer_index_]);
+		}
+	}
+	frame_skipped_ = false;
 
 	// Reset per-frame upload heap for this back buffer
 	frame_upload_heaps_[current_back_buffer_index_].offset = 0;
@@ -2153,10 +2171,15 @@ void RenderInterface_DX12::EndFrame() {
 	}
 	fence_values_[current_back_buffer_index_] = signal_value;
 
-	// Present
-	UINT sync_interval = vsync_ ? 1 : 0;
+	// Present — skip vsync during window move (DWM stalls the present queue)
+	UINT sync_interval = (vsync_ && !in_size_move_) ? 1 : 0;
 	UINT present_flags = 0;
-	hr = swap_chain_->Present(sync_interval, present_flags);
+	HRESULT present_hr;
+	{
+		ZoneScopedN("DX12::Present");
+		present_hr = swap_chain_->Present(sync_interval, present_flags);
+	}
+	hr = present_hr;
 	if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
 		HRESULT reason = device_->GetDeviceRemovedReason();
 		std::fprintf(stderr, "[DX12] Device removed during Present: %s (0x%08lX)\n",
@@ -2182,6 +2205,7 @@ Rml::CompiledGeometryHandle RenderInterface_DX12::CompileGeometry(
 	Rml::Span<const Rml::Vertex> vertices, Rml::Span<const int> indices) {
 	ZoneScopedN("DX12::CompileGeometry");
 
+
 	if (vertices.empty() || indices.empty()) return Rml::CompiledGeometryHandle(0);
 
 	auto* geom = new GeometryData();
@@ -2189,7 +2213,6 @@ Rml::CompiledGeometryHandle RenderInterface_DX12::CompileGeometry(
 	const UINT vb_size = static_cast<UINT>(vertices.size() * sizeof(Rml::Vertex));
 	const UINT ib_size = static_cast<UINT>(indices.size() * sizeof(int));
 
-	// Create vertex buffer in UPLOAD heap (data is small UI geometry, written once)
 	D3D12_HEAP_PROPERTIES upload_heap{};
 	upload_heap.Type = D3D12_HEAP_TYPE_UPLOAD;
 
@@ -2214,9 +2237,8 @@ Rml::CompiledGeometryHandle RenderInterface_DX12::CompileGeometry(
 	}
 	geom->vertex_buffer->SetName(L"RmlUi_VB");
 
-	// Map and copy vertex data
 	void* mapped = nullptr;
-	D3D12_RANGE read_range{0, 0}; // We do not read from this resource on the CPU
+	D3D12_RANGE read_range{0, 0};
 	hr = geom->vertex_buffer->Map(0, &read_range, &mapped);
 	if (FAILED(hr)) {
 		std::fprintf(stderr, "[DX12] VB Map failed: 0x%08lX\n", static_cast<unsigned long>(hr));
@@ -2226,7 +2248,6 @@ Rml::CompiledGeometryHandle RenderInterface_DX12::CompileGeometry(
 	std::memcpy(mapped, vertices.data(), vb_size);
 	geom->vertex_buffer->Unmap(0, nullptr);
 
-	// Create index buffer in UPLOAD heap
 	buf_desc.Width = ib_size;
 	hr = device_->CreateCommittedResource(
 		&upload_heap, D3D12_HEAP_FLAG_NONE, &buf_desc,
@@ -2239,7 +2260,6 @@ Rml::CompiledGeometryHandle RenderInterface_DX12::CompileGeometry(
 	}
 	geom->index_buffer->SetName(L"RmlUi_IB");
 
-	// Map and copy index data
 	hr = geom->index_buffer->Map(0, &read_range, &mapped);
 	if (FAILED(hr)) {
 		std::fprintf(stderr, "[DX12] IB Map failed: 0x%08lX\n", static_cast<unsigned long>(hr));
@@ -2249,7 +2269,6 @@ Rml::CompiledGeometryHandle RenderInterface_DX12::CompileGeometry(
 	std::memcpy(mapped, indices.data(), ib_size);
 	geom->index_buffer->Unmap(0, nullptr);
 
-	// Set up views
 	geom->vbv.BufferLocation = geom->vertex_buffer->GetGPUVirtualAddress();
 	geom->vbv.SizeInBytes = vb_size;
 	geom->vbv.StrideInBytes = sizeof(Rml::Vertex);
@@ -2263,10 +2282,25 @@ Rml::CompiledGeometryHandle RenderInterface_DX12::CompileGeometry(
 	return reinterpret_cast<Rml::CompiledGeometryHandle>(geom);
 }
 
+void RenderInterface_DX12::UpdateGeometryVertices(
+	Rml::CompiledGeometryHandle geometry, Rml::Span<const Rml::Vertex> vertices) {
+	if (!geometry || vertices.empty()) return;
+	auto* geom = reinterpret_cast<GeometryData*>(geometry);
+	const UINT vb_size = static_cast<UINT>(vertices.size() * sizeof(Rml::Vertex));
+	void* mapped = nullptr;
+	D3D12_RANGE read_range{0, 0};
+	HRESULT hr = geom->vertex_buffer->Map(0, &read_range, &mapped);
+	if (SUCCEEDED(hr)) {
+		std::memcpy(mapped, vertices.data(), vb_size);
+		geom->vertex_buffer->Unmap(0, nullptr);
+	}
+}
+
 void RenderInterface_DX12::RenderGeometry(
 	Rml::CompiledGeometryHandle geometry, Rml::Vector2f translation,
 	Rml::TextureHandle texture) {
 	ZoneScopedN("DX12::RenderGeometry");
+
 
 	if (!geometry) return;
 
@@ -2410,6 +2444,7 @@ void RenderInterface_DX12::UploadTextureData(ID3D12Resource* dest_texture,
 	dst_loc.SubresourceIndex = 0;
 
 	command_list_->CopyTextureRegion(&dst_loc, 0, 0, 0, &src_loc, nullptr);
+
 
 	// Transition: COPY_DEST -> PIXEL_SHADER_RESOURCE
 	D3D12_RESOURCE_BARRIER barrier{};
@@ -2612,6 +2647,7 @@ void RenderInterface_DX12::UploadR8TextureData(ID3D12Resource* dest_texture,
 	dst_loc.SubresourceIndex = 0;
 
 	command_list_->CopyTextureRegion(&dst_loc, 0, 0, 0, &src_loc, nullptr);
+
 
 	D3D12_RESOURCE_BARRIER barrier{};
 	barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -2930,6 +2966,7 @@ void RenderInterface_DX12::UploadR8G8TextureData(ID3D12Resource* dest_texture,
 	dst_loc.SubresourceIndex = 0;
 
 	command_list_->CopyTextureRegion(&dst_loc, 0, 0, 0, &src_loc, nullptr);
+
 
 	D3D12_RESOURCE_BARRIER barrier{};
 	barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;

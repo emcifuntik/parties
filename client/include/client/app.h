@@ -32,6 +32,8 @@ class VideoEncoder;
 class VideoDecoder;
 class VideoElement;
 class VideoElementInstancer;
+class LevelMeterElement;
+class LevelMeterInstancer;
 
 class App {
 public:
@@ -133,6 +135,8 @@ private:
     std::unique_ptr<VideoEncoder> encoder_;
     std::unique_ptr<VideoDecoder> decoder_;
     std::unique_ptr<VideoElementInstancer> video_instancer_;
+    std::unique_ptr<LevelMeterInstancer> level_meter_instancer_;
+    LevelMeterElement* level_meter_ = nullptr;  // owned by RmlUi document
     bool sharing_screen_ = false;
     uint32_t video_frame_number_ = 0;
 
@@ -155,6 +159,7 @@ private:
     };
     std::unordered_map<UserId, SharerInfo> active_sharers_;
     UserId viewing_sharer_ = 0;
+    bool awaiting_keyframe_ = false;  // skip non-keyframes until first keyframe after stream switch
 
     // Video decode thread
     struct DecodeWork {
@@ -181,6 +186,7 @@ private:
     // FPS counter
     uint32_t fps_frame_count_ = 0;
     std::chrono::steady_clock::time_point fps_last_update_{std::chrono::steady_clock::now()};
+
 
     // UI document
     Rml::ElementDocument* doc_ = nullptr;

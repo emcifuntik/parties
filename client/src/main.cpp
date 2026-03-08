@@ -6,6 +6,7 @@
 #include <parties/profiler.h>
 
 #include "RmlUi_Platform_Win32.h"
+#include "dx12/RmlUi_Renderer_DX12.h"
 
 #include <dwmapi.h>
 #include <windowsx.h>
@@ -32,6 +33,7 @@ enum WindowAction {
 
 static constexpr int RESIZE_BORDER_PX = 8;
 static bool s_was_minimized = false;
+static bool s_in_sizemove = false;
 
 // ═══════════════════════════════════════════════════════════════════════
 // WndProc — custom titlebar, resize borders, RmlUi input forwarding
@@ -164,18 +166,21 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     }
 
     // Keep app running during the modal move/resize loop.
-    // DefWindowProcW blocks our main loop during drag/resize, so without a
-    // timer ENet stops being serviced and voice playback freezes.
+    // DefWindowProcW blocks our main loop, so we render from WM_MOVING/WM_SIZING
+    // which fire on every mouse move during drag. WM_TIMER is too low priority
+    // (only dispatched when the queue is empty, which rarely happens during drag).
     case WM_ENTERSIZEMOVE:
-        SetTimer(hwnd, 1, 16, nullptr);
+        s_in_sizemove = true;
+        if (ui) ui->dx12_renderer()->SetInSizeMove(true);
         return 0;
     case WM_EXITSIZEMOVE:
-        KillTimer(hwnd, 1);
+        s_in_sizemove = false;
+        if (ui) ui->dx12_renderer()->SetInSizeMove(false);
         return 0;
-    case WM_TIMER:
-        if (wParam == 1 && app)
-            app->update();
-        return 0;
+    case WM_MOVING:
+    case WM_SIZING:
+        if (app) app->update();
+        break;  // let DefWindowProc handle the actual move/size
 
     case WM_SIZE: {
         int w = LOWORD(lParam);

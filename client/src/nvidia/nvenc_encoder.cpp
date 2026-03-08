@@ -73,13 +73,18 @@ bool NvencEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
         return false;
     }
 
+    // Build codec GUID from try_codec result
+    GUID encode_guid = (codec_ == parties::VideoCodecId::AV1)  ? NV_ENC_CODEC_AV1_GUID
+                      : (codec_ == parties::VideoCodecId::H265) ? NV_ENC_CODEC_HEVC_GUID
+                                                                 : NV_ENC_CODEC_H264_GUID;
+
     // Get preset config for low-latency tuning
     NV_ENC_PRESET_CONFIG preset_config{};
     preset_config.version = NV_ENC_PRESET_CONFIG_VER;
     preset_config.presetCfg.version = NV_ENC_CONFIG_VER;
 
     status = funcs_.nvEncGetEncodePresetConfigEx(
-        encoder_, init_params_.encodeGUID,
+        encoder_, encode_guid,
         NV_ENC_PRESET_P4_GUID, NV_ENC_TUNING_INFO_LOW_LATENCY,
         &preset_config);
     if (status != NV_ENC_SUCCESS) {
@@ -102,9 +107,7 @@ bool NvencEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
     // Initialize encoder
     std::memset(&init_params_, 0, sizeof(init_params_));
     init_params_.version = NV_ENC_INITIALIZE_PARAMS_VER;
-    init_params_.encodeGUID = (codec_ == parties::VideoCodecId::AV1)  ? NV_ENC_CODEC_AV1_GUID
-                            : (codec_ == parties::VideoCodecId::H265) ? NV_ENC_CODEC_HEVC_GUID
-                                                                       : NV_ENC_CODEC_H264_GUID;
+    init_params_.encodeGUID = encode_guid;
     init_params_.presetGUID = NV_ENC_PRESET_P4_GUID;
     init_params_.encodeWidth = width;
     init_params_.encodeHeight = height;
@@ -289,6 +292,7 @@ bool NvencEncoder::encode_frame(ID3D11Texture2D* bgra_texture, int64_t timestamp
     // Encode
     NV_ENC_PIC_PARAMS pic{};
     pic.version = NV_ENC_PIC_PARAMS_VER;
+    pic.pictureStruct = NV_ENC_PIC_STRUCT_FRAME;
     pic.inputWidth = width_;
     pic.inputHeight = height_;
     pic.inputBuffer = map.mappedResource;

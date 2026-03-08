@@ -32,6 +32,7 @@ add_executable(parties_client
     src/video_encoder.cpp
     src/video_decoder.cpp
     src/video_element.cpp
+    src/level_meter_element.cpp
     src/stream_audio_capture.cpp
     src/stream_audio_player.cpp
     src/nvidia/nvidia_loader.cpp

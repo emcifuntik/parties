@@ -9,6 +9,16 @@
 
 namespace parties::client {
 
+static void capture_notification(const ma_device_notification* pNotification) {
+    if (pNotification->type == ma_device_notification_type_started)
+        TracySetThreadName("AudioCapture");
+}
+
+static void playback_notification(const ma_device_notification* pNotification) {
+    if (pNotification->type == ma_device_notification_type_started)
+        TracySetThreadName("AudioPlayback");
+}
+
 AudioEngine::AudioEngine()
     : capture_buf_(audio::FRAME_SIZE, 0.0f) {}
 
@@ -97,6 +107,7 @@ bool AudioEngine::init_devices() {
     cap_config.dataCallback = AudioEngine::capture_callback;
     cap_config.pUserData = this;
     cap_config.periodSizeInMilliseconds = 10;
+    cap_config.notificationCallback = capture_notification;
 
     if (selected_capture_ >= 0 && selected_capture_ < static_cast<int>(capture_ids_.size()))
         cap_config.capture.pDeviceID = &capture_ids_[selected_capture_];
@@ -115,6 +126,7 @@ bool AudioEngine::init_devices() {
     play_config.dataCallback = AudioEngine::playback_callback;
     play_config.pUserData = this;
     play_config.periodSizeInMilliseconds = 10;
+    play_config.notificationCallback = playback_notification;
 
     if (selected_playback_ >= 0 && selected_playback_ < static_cast<int>(playback_ids_.size()))
         play_config.playback.pDeviceID = &playback_ids_[selected_playback_];

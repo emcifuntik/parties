@@ -204,10 +204,7 @@
                                data-value="vad_threshold"
                                data-event-change="vad_threshold_changed" />
                     </div>
-                    <div class="level-meter">
-                        <div id="voice-level-fill" class="level-fill"></div>
-                        <div id="vad-threshold-marker" class="threshold-marker"></div>
-                    </div>
+                    <level_meter id="voice-level-meter" class="level-meter" />
                 </div>
             </div>
 

@@ -66,6 +66,10 @@ public:
 	// Sets up DX12 states for taking rendering commands from RmlUi.
 	void BeginFrame();
 
+	// Skip frame latency wait (use during window move when DWM stalls the waitable).
+	void SetInSizeMove(bool in_size_move) { in_size_move_ = in_size_move; }
+	bool IsFrameSkipped() const { return frame_skipped_; }
+
 	// Optional, can be used to clear the active framebuffer.
 	void Clear();
 
@@ -77,6 +81,9 @@ public:
 	Rml::CompiledGeometryHandle CompileGeometry(Rml::Span<const Rml::Vertex> vertices, Rml::Span<const int> indices) override;
 	void RenderGeometry(Rml::CompiledGeometryHandle geometry, Rml::Vector2f translation, Rml::TextureHandle texture) override;
 	void ReleaseGeometry(Rml::CompiledGeometryHandle geometry) override;
+
+	// Re-map existing VB with new vertex data (no GPU resource allocation).
+	void UpdateGeometryVertices(Rml::CompiledGeometryHandle geometry, Rml::Span<const Rml::Vertex> vertices);
 
 	Rml::TextureHandle LoadTexture(Rml::Vector2i& texture_dimensions, const Rml::String& source) override;
 	Rml::TextureHandle GenerateTexture(Rml::Span<const Rml::byte> source_data, Rml::Vector2i source_dimensions) override;
@@ -214,6 +221,8 @@ private:
 	// --- State ---
 	bool valid_ = false;
 	bool vsync_ = true;
+	bool in_size_move_ = false;
+	bool frame_skipped_ = false;
 	int width_ = 0;
 	int height_ = 0;
 	HWND hwnd_ = nullptr;

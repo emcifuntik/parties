@@ -240,6 +240,8 @@ bool ScreenCapture::start(const CaptureTarget& target) {
         impl_->frame_arrived_token = impl_->frame_pool.FrameArrived(
             [this](Direct3D11CaptureFramePool const& sender,
                    winrt::Windows::Foundation::IInspectable const&) {
+                thread_local bool named = (TracySetThreadName("ScreenCapture"), true);
+                (void)named;
                 auto frame = sender.TryGetNextFrame();
                 if (!frame) return;
 
