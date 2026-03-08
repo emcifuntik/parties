@@ -5,6 +5,7 @@
 #include <parties/types.h>
 #include <parties/permissions.h>
 #include <parties/video_common.h>
+#include <parties/profiler.h>
 
 #include <algorithm>
 #include <chrono>
@@ -20,6 +21,7 @@ Server::Server() = default;
 Server::~Server() { stop(); }
 
 bool Server::start(const Config& cfg) {
+	ZoneScopedN("Server::start");
     config_ = cfg;
 
     // Open database
@@ -83,6 +85,7 @@ bool Server::start(const Config& cfg) {
 
 void Server::run() {
     while (running_) {
+        ZoneScopedN("Server::run");
         process_control_messages();
         process_data_packets();
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -98,12 +101,14 @@ void Server::stop() {
 }
 
 void Server::process_control_messages() {
+	ZoneScopedN("Server::process_control_messages");
     auto messages = quic_.incoming().drain();
     for (auto& msg : messages)
         handle_message(msg);
 }
 
 void Server::process_data_packets() {
+	ZoneScopedN("Server::process_data_packets");
     auto packets = quic_.data_incoming().drain();
     for (auto& pkt : packets) {
         if (pkt.packet_type == protocol::VOICE_PACKET_TYPE) {
@@ -153,6 +158,7 @@ void Server::send_error(uint32_t session_id, const std::string& message) {
 }
 
 void Server::send_channel_list(uint32_t session_id) {
+	ZoneScopedN("Server::send_channel_list");
     auto channels = db_.get_all_channels();
 
     BinaryWriter writer;
@@ -178,6 +184,7 @@ void Server::send_channel_list(uint32_t session_id) {
 }
 
 void Server::handle_message(const IncomingMessage& msg) {
+	ZoneScopedN("Server::handle_message");
     auto session = quic_.get_session(msg.session_id);
     if (!session) return;
 
@@ -749,6 +756,7 @@ void Server::handle_message(const IncomingMessage& msg) {
 }
 
 void Server::on_client_disconnect(uint32_t session_id) {
+	ZoneScopedN("Server::on_client_disconnect");
     auto session = quic_.get_session(session_id);
     if (session && session->authenticated && session->channel_id != 0) {
         // Clean up screen share if this user was sharing
@@ -772,6 +780,7 @@ void Server::on_client_disconnect(uint32_t session_id) {
 }
 
 void Server::forward_video_frame(uint32_t session_id, const uint8_t* data, size_t len) {
+	ZoneScopedN("Server::forward_video_frame");
     auto session = quic_.get_session(session_id);
     if (!session || !session->authenticated || session->channel_id == 0)
         return;
@@ -807,6 +816,7 @@ void Server::forward_video_frame(uint32_t session_id, const uint8_t* data, size_
 }
 
 void Server::handle_video_control(const DataPacket& pkt) {
+	ZoneScopedN("Server::handle_video_control");
     auto session = quic_.get_session(pkt.session_id);
     if (!session || !session->authenticated || session->channel_id == 0)
         return;
@@ -847,6 +857,7 @@ void Server::handle_video_control(const DataPacket& pkt) {
 }
 
 void Server::forward_stream_audio(const DataPacket& pkt) {
+	ZoneScopedN("Server::forward_stream_audio");
     auto session = quic_.get_session(pkt.session_id);
     if (!session || !session->authenticated || session->channel_id == 0)
         return;
@@ -914,6 +925,7 @@ void Server::stop_screen_share(ChannelId channel_id, UserId user_id) {
 }
 
 void Server::send_channel_key(uint32_t session_id, ChannelId channel_id) {
+	ZoneScopedN("Server::send_channel_key");
     auto it = channel_keys_.find(channel_id);
     if (it == channel_keys_.end()) {
         std::array<uint8_t, 32> key;

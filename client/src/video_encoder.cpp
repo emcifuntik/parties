@@ -1,4 +1,5 @@
 #include <client/video_encoder.h>
+#include "nvidia/nvenc_encoder.h"
 
 #include <mfapi.h>
 #include <mftransform.h>
@@ -9,6 +10,7 @@
 #include <d3d11.h>
 
 #include <cstdio>
+#include <parties/profiler.h>
 
 #pragma comment(lib, "mf.lib")
 #pragma comment(lib, "mfplat.lib")
@@ -29,13 +31,41 @@ bool VideoEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
                          uint32_t input_width, uint32_t input_height,
                          uint32_t fps, uint32_t bitrate,
                          VideoCodecId preferred_codec) {
+	ZoneScopedN("VideoEncoder::init");
     if (initialized_) return false;
 
-    device_ = device;
-    device_->GetImmediateContext(&context_);
     width_ = width;
     height_ = height;
     fps_ = fps;
+
+    // Even dimensions for NV12
+    uint32_t enc_w = (width + 1) & ~1u;
+    uint32_t enc_h = (height + 1) & ~1u;
+
+    // Try NVENC first (direct D3D11, no color conversion needed)
+    {
+        auto nvenc = std::make_unique<nvidia::NvencEncoder>();
+        if (nvenc->init(device, enc_w, enc_h, fps, bitrate, preferred_codec)) {
+            nvenc_ = std::move(nvenc);
+            codec_ = nvenc_->codec();
+            width_ = enc_w;
+            height_ = enc_h;
+            initialized_ = true;
+            return true;
+        }
+    }
+
+    // Fall back to MFT encoder
+    return init_mft(device, width, height, input_width, input_height,
+                    fps, bitrate, preferred_codec);
+}
+
+bool VideoEncoder::init_mft(ID3D11Device* device, uint32_t width, uint32_t height,
+                              uint32_t input_width, uint32_t input_height,
+                              uint32_t fps, uint32_t bitrate,
+                              VideoCodecId preferred_codec) {
+    device_ = device;
+    device_->GetImmediateContext(&context_);
 
     // Default input size to output size if not specified
     if (input_width == 0) input_width = width;
@@ -123,12 +153,21 @@ bool VideoEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
         encoder_thread_ = std::thread(&VideoEncoder::encoder_loop, this);
     }
 
+    width_ = width;
+    height_ = height;
     initialized_ = true;
     return true;
 }
 
 void VideoEncoder::shutdown() {
     if (!initialized_) return;
+
+    if (nvenc_) {
+        nvenc_->shutdown();
+        nvenc_.reset();
+        initialized_ = false;
+        return;
+    }
 
     // Stop encoder thread first
     encoder_running_ = false;
@@ -161,6 +200,7 @@ void VideoEncoder::shutdown() {
 }
 
 bool VideoEncoder::try_create_encoder(const GUID& codec_subtype, VideoCodecId id) {
+	ZoneScopedN("VideoEncoder::try_create_encoder");
     MFT_REGISTER_TYPE_INFO output_info = {};
     output_info.guidMajorType = MFMediaType_Video;
     output_info.guidSubtype = codec_subtype;
@@ -359,7 +399,9 @@ bool VideoEncoder::create_color_converter(uint32_t in_w, uint32_t in_h,
 }
 
 void VideoEncoder::encoder_loop() {
+	TracySetThreadName("VideoEncoder");
     while (encoder_running_) {
+        ZoneScopedN("VideoEncoder::encoder_loop");
         // Blocking wait for next MFT event
         ComPtr<IMFMediaEvent> event;
         HRESULT hr = encoder_events_->GetEvent(0, &event);
@@ -408,7 +450,13 @@ void VideoEncoder::encoder_loop() {
 }
 
 bool VideoEncoder::encode_frame(ID3D11Texture2D* bgra_texture, int64_t timestamp_100ns) {
+	ZoneScopedN("VideoEncoder::encode_frame");
     if (!initialized_) return false;
+
+    if (nvenc_) {
+        nvenc_->on_encoded = on_encoded;
+        return nvenc_->encode_frame(bgra_texture, timestamp_100ns);
+    }
 
     int64_t duration = 10'000'000LL / fps_;
 
@@ -495,6 +543,7 @@ bool VideoEncoder::encode_frame(ID3D11Texture2D* bgra_texture, int64_t timestamp
 }
 
 bool VideoEncoder::collect_output() {
+	ZoneScopedN("VideoEncoder::collect_output");
     int collected = 0;
     while (true) {
         MFT_OUTPUT_DATA_BUFFER output_data = {};
@@ -537,11 +586,14 @@ bool VideoEncoder::collect_output() {
 }
 
 void VideoEncoder::force_keyframe() {
+    if (nvenc_) { nvenc_->force_keyframe(); return; }
     force_keyframe_ = true;
 }
 
 void VideoEncoder::set_bitrate(uint32_t bitrate) {
     if (!initialized_) return;
+
+    if (nvenc_) { nvenc_->set_bitrate(bitrate); return; }
 
     ComPtr<ICodecAPI> codec_api;
     if (SUCCEEDED(encoder_.As(&codec_api))) {

@@ -7,6 +7,10 @@
     "sqlite3",
     "toml11",
     {
+      "name": "tracy",
+      "features": ["on-demand"]
+    },
+    {
       "name": "wolfssl",
       "features": ["quic", "ed25519"]
     }

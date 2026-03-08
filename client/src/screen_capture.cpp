@@ -1,4 +1,5 @@
 #include <client/screen_capture.h>
+#include <parties/profiler.h>
 
 // WinRT / Windows Graphics Capture headers
 #include <winrt/base.h>
@@ -84,6 +85,7 @@ ScreenCapture::~ScreenCapture() {
 }
 
 bool ScreenCapture::init() {
+	ZoneScopedN("ScreenCapture::init");
     // Create D3D11 device with VIDEO_SUPPORT for sharing with encoder later
     D3D_FEATURE_LEVEL feature_level;
     UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
@@ -137,6 +139,7 @@ void ScreenCapture::shutdown() {
 }
 
 std::vector<CaptureTarget> ScreenCapture::enumerate_windows() {
+	ZoneScopedN("ScreenCapture::enumerate_windows");
     std::vector<CaptureTarget> results;
 
     EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
@@ -179,6 +182,7 @@ std::vector<CaptureTarget> ScreenCapture::enumerate_windows() {
 }
 
 std::vector<CaptureTarget> ScreenCapture::enumerate_monitors() {
+	ZoneScopedN("ScreenCapture::enumerate_monitors");
     std::vector<CaptureTarget> results;
 
     EnumDisplayMonitors(nullptr, nullptr,
@@ -210,6 +214,7 @@ std::vector<CaptureTarget> ScreenCapture::enumerate_monitors() {
 }
 
 bool ScreenCapture::start(const CaptureTarget& target) {
+	ZoneScopedN("ScreenCapture::start");
     if (capturing_ || !impl_) return false;
 
     try {
@@ -290,6 +295,7 @@ bool ScreenCapture::start(const CaptureTarget& target) {
 }
 
 void ScreenCapture::stop() {
+	ZoneScopedN("ScreenCapture::stop");
     if (!capturing_ || !impl_) return;
 
     try {

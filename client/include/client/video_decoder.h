@@ -6,17 +6,20 @@
 #include <functional>
 #include <memory>
 
+namespace parties::client::nvidia { class NvdecDecoder; }
+
 namespace parties::client {
 
 struct DecodedFrame {
     const uint8_t* y_plane;
-    const uint8_t* u_plane;
-    const uint8_t* v_plane;
+    const uint8_t* u_plane;   // I420: U plane; NV12: interleaved UV plane
+    const uint8_t* v_plane;   // I420: V plane; NV12: unused (nullptr)
     uint32_t y_stride;
     uint32_t uv_stride;
     uint32_t width;
     uint32_t height;
     int64_t timestamp;
+    bool nv12 = false;        // true = NV12 (Y + interleaved UV), false = I420 (Y + U + V)
 };
 
 class VideoDecoder {
@@ -43,6 +46,7 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
+    std::unique_ptr<nvidia::NvdecDecoder> nvdec_;
     VideoCodecId codec_ = VideoCodecId::AV1;
     bool initialized_ = false;
 };

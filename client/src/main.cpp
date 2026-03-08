@@ -3,6 +3,7 @@
 #include <parties/crypto.h>
 #include <parties/net_common.h>
 #include <parties/quic_common.h>
+#include <parties/profiler.h>
 
 #include "RmlUi_Platform_Win32.h"
 
@@ -235,6 +236,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 // ═══════════════════════════════════════════════════════════════════════
 
 int main(int /*argc*/, char* /*argv*/[]) {
+    TracySetThreadName("Main");
     std::printf("%s Client v%s\n", parties::APP_NAME, parties::APP_VERSION);
 
     // Per-monitor DPI awareness (must be set before creating any windows)
@@ -335,6 +337,13 @@ int main(int /*argc*/, char* /*argv*/[]) {
             DispatchMessageW(&msg);
         }
         if (!running) break;
+
+        // When minimized, no rendering occurs and the vsync wait is skipped,
+        // so throttle the loop to avoid spinning the CPU.
+        if (app.ui_manager()->is_minimized()) {
+            Sleep(16);
+            continue;
+        }
 
         app.update();
     }

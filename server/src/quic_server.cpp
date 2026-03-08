@@ -1,6 +1,7 @@
 #include <server/quic_server.h>
 #include <parties/quic_common.h>
 #include <parties/protocol.h>
+#include <parties/profiler.h>
 
 #include <cstdio>
 #include <cstring>
@@ -21,6 +22,7 @@ QuicServer::~QuicServer() {
 
 bool QuicServer::start(const std::string& listen_ip, uint16_t port, size_t max_clients,
                        const std::string& cert_file, const std::string& key_file) {
+	ZoneScopedN("QuicServer::start");
     api_ = parties::quic_api();
     if (!api_) {
         std::fprintf(stderr, "[QuicServer] MsQuic not initialized\n");
@@ -118,6 +120,7 @@ bool QuicServer::start(const std::string& listen_ip, uint16_t port, size_t max_c
 }
 
 void QuicServer::stop() {
+	ZoneScopedN("QuicServer::stop");
     if (!running_) return;
     running_ = false;
 
@@ -154,6 +157,7 @@ void QuicServer::stop() {
 
 bool QuicServer::send_to(uint32_t session_id, protocol::ControlMessageType type,
                           const uint8_t* payload, size_t payload_len) {
+	ZoneScopedN("QuicServer::send_to");
     std::lock_guard<std::mutex> lock(sessions_mutex_);
     auto it = sessions_.find(session_id);
     if (it == sessions_.end() || !it->second->alive) return false;
@@ -205,6 +209,7 @@ std::vector<std::shared_ptr<Session>> QuicServer::get_sessions() {
 // ── Data plane ──
 
 bool QuicServer::send_datagram(uint32_t session_id, const uint8_t* data, size_t len) {
+	ZoneScopedN("QuicServer::send_datagram");
     std::lock_guard<std::mutex> lock(sessions_mutex_);
     auto it = sessions_.find(session_id);
     if (it == sessions_.end() || !it->second->alive || !it->second->quic_connection)
@@ -229,6 +234,7 @@ bool QuicServer::send_datagram(uint32_t session_id, const uint8_t* data, size_t 
 
 void QuicServer::send_to_many(const std::vector<uint32_t>& session_ids,
                                const uint8_t* data, size_t len) {
+	ZoneScopedN("QuicServer::send_to_many");
     for (uint32_t id : session_ids)
         send_datagram(id, data, len);
 }
@@ -238,6 +244,7 @@ bool QuicServer::send_stream(uint32_t session_id, const uint8_t* data, size_t le
 }
 
 bool QuicServer::send_video_to(uint32_t session_id, const uint8_t* data, size_t len) {
+	ZoneScopedN("QuicServer::send_video_to");
     std::lock_guard<std::mutex> lock(sessions_mutex_);
     auto it = sessions_.find(session_id);
     if (it == sessions_.end() || !it->second->alive || !it->second->quic_video_stream)
@@ -264,6 +271,7 @@ bool QuicServer::send_video_to(uint32_t session_id, const uint8_t* data, size_t 
 void QuicServer::send_to_many_on_channel(const std::vector<uint32_t>& session_ids,
                                           uint8_t /*channel*/, const uint8_t* data, size_t len,
                                           uint32_t /*flags*/) {
+	ZoneScopedN("QuicServer::send_to_many_on_channel");
     // Channel is ignored in QUIC (no ENet channels).
     // Reliability flags are ignored — datagrams are unreliable, streams are reliable.
     send_to_many(session_ids, data, len);
@@ -542,6 +550,7 @@ bool QuicServer::send_control_on_stream(HQUIC stream,
 
 void QuicServer::process_stream_data(uint32_t session_id,
                                       const uint8_t* data, size_t len) {
+	ZoneScopedN("QuicServer::process_stream_data");
     std::lock_guard<std::mutex> lock(buffers_mutex_);
     auto& buffer = recv_buffers_[session_id];
     buffer.insert(buffer.end(), data, data + len);
@@ -579,6 +588,7 @@ void QuicServer::process_stream_data(uint32_t session_id,
 
 void QuicServer::process_video_stream_data(uint32_t session_id,
                                             const uint8_t* data, size_t len) {
+	ZoneScopedN("QuicServer::process_video_stream_data");
     // Parse complete frames and collect them, then forward outside the lock
     // to avoid holding buffers_mutex_ during network sends.
     struct PendingFrame {

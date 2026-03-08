@@ -56,6 +56,7 @@ public:
     TextInputMethodEditor_Win32& text_input_editor();
     RenderInterface_DX12* dx12_renderer() { return render_interface_.get(); }
     float dpi_scale() const { return dpi_scale_; }
+    bool is_minimized() const { return minimized_; }
 
 private:
     std::unique_ptr<RenderInterface_DX12> render_interface_;

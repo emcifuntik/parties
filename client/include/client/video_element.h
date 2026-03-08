@@ -18,10 +18,23 @@ public:
     ~VideoElement() override;
 
     // Upload I420 YUV planes directly — GPU converts to RGB in pixel shader.
-    // This is the fastest path: no CPU conversion, 2.67× less upload bandwidth.
     void UpdateYUVFrame(
         const uint8_t* y_data, uint32_t y_stride,
         const uint8_t* u_data, const uint8_t* v_data, uint32_t uv_stride,
+        uint32_t width, uint32_t height);
+
+    // Upload NV12 frame (Y + interleaved UV) — native hardware decoder format.
+    // No CPU deinterleave needed; GPU shader handles NV12 → RGB.
+    void UpdateNV12Frame(
+        const uint8_t* y_data, uint32_t y_stride,
+        const uint8_t* uv_data, uint32_t uv_stride,
+        uint32_t width, uint32_t height);
+
+    // Swap-based NV12 upload — exchanges buffers with caller, zero memcpy.
+    // Caller's old buffers cycle back through the swap chain for reuse.
+    void UpdateNV12Frame(
+        std::vector<uint8_t>& y_data, uint32_t y_stride,
+        std::vector<uint8_t>& uv_data, uint32_t uv_stride,
         uint32_t width, uint32_t height);
 
     // Upload a new RGBA video frame (move semantics — zero-copy from caller).
@@ -67,6 +80,14 @@ private:
     // I420 plane data (held until OnRender uploads to GPU)
     std::vector<uint8_t> yuv_y_, yuv_u_, yuv_v_;
     uint32_t yuv_y_stride_ = 0, yuv_uv_stride_ = 0;
+
+    // NV12 mode (Y + interleaved UV, native hw decoder format)
+    bool nv12_mode_ = false;
+    uintptr_t nv12_texture_ = 0;
+    uint32_t nv12_tex_w_ = 0, nv12_tex_h_ = 0;
+    bool nv12_dirty_ = false;
+    std::vector<uint8_t> nv12_y_, nv12_uv_;
+    uint32_t nv12_y_stride_ = 0, nv12_uv_stride_ = 0;
 
     // Compiled quad geometry
     Rml::CompiledGeometryHandle video_geom_ = 0;

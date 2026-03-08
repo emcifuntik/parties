@@ -20,6 +20,8 @@
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "d3dcompiler.lib")
 
+#include <parties/profiler.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -165,6 +167,36 @@ float4 main(PS_Input input) : SV_TARGET {
 	float Y = tex_y.Sample(samp, input.texcoord).r * 255.0;
 	float U = tex_u.Sample(samp, input.texcoord).r * 255.0;
 	float V = tex_v.Sample(samp, input.texcoord).r * 255.0;
+
+	float C = Y - 16.0;
+	float D = U - 128.0;
+	float E = V - 128.0;
+
+	float R = (298.0 * C + 459.0 * E + 128.0) / 65280.0;
+	float G = (298.0 * C -  55.0 * D - 136.0 * E + 128.0) / 65280.0;
+	float B = (298.0 * C + 541.0 * D + 128.0) / 65280.0;
+
+	return float4(saturate(R), saturate(G), saturate(B), 1.0);
+}
+)HLSL";
+
+// NV12 pixel shader — samples R8 Y texture (t0) and R8G8 UV texture (t1).
+// UV plane is interleaved (U,V) pairs at half resolution, hardware bilinear filters.
+static const char g_ps_nv12_source[] = R"HLSL(
+Texture2D tex_y  : register(t0);
+Texture2D tex_uv : register(t1);
+SamplerState samp : register(s0);
+
+struct PS_Input {
+	float4 position : SV_POSITION;
+	float4 color    : COLOR0;
+	float2 texcoord : TEXCOORD0;
+};
+
+float4 main(PS_Input input) : SV_TARGET {
+	float Y = tex_y.Sample(samp, input.texcoord).r * 255.0;
+	float U = tex_uv.Sample(samp, input.texcoord).r * 255.0;
+	float V = tex_uv.Sample(samp, input.texcoord).g * 255.0;
 
 	float C = Y - 16.0;
 	float D = U - 128.0;
@@ -404,6 +436,16 @@ struct YUVTextureData {
 	int width = 0, height = 0;  // Full Y resolution; U/V are width/2 × height/2
 };
 
+struct NV12TextureData {
+	Microsoft::WRL::ComPtr<ID3D12Resource> y_texture;   // R8_UNORM, width × height
+	Microsoft::WRL::ComPtr<ID3D12Resource> uv_texture;  // R8G8_UNORM, width/2 × height/2
+	static constexpr int NUM_UPLOAD_SETS = 2; // Must match NUM_BACK_BUFFERS
+	YUVUploadBuffer y_upload[NUM_UPLOAD_SETS];
+	YUVUploadBuffer uv_upload[NUM_UPLOAD_SETS];
+	int32_t y_srv = -1, uv_srv = -1;
+	int width = 0, height = 0;
+};
+
 struct RenderInterface_DX12::FrameUploadHeap {
 	Microsoft::WRL::ComPtr<ID3D12Resource> resource;
 	void* mapped = nullptr;
@@ -564,13 +606,11 @@ RenderInterface_DX12::~RenderInterface_DX12() {
 		}
 
 		// Process all remaining deferred releases after GPU is idle
-		for (auto& releases : deferred_releases_) {
-			for (auto& dr : releases) {
-				if (dr.srv_index >= 0) FreeSrvSlot(dr.srv_index);
-				dr.resource.Reset();
-			}
-			releases.clear();
+		for (auto& dr : deferred_releases_) {
+			if (dr.srv_index >= 0) FreeSrvSlot(dr.srv_index);
+			dr.resource.Reset();
 		}
+		deferred_releases_.clear();
 	}
 
 	if (frame_latency_waitable_) {
@@ -1390,6 +1430,92 @@ bool RenderInterface_DX12::CreatePipelineState() {
 		pso_yuv_stencil_->SetName(L"RmlUi_PSO_YUVStencil");
 	}
 
+	// ---------------------------------------------------------------
+	// 17 & 18. NV12 video PSOs — R8 Y + R8G8 UV → RGB in pixel shader
+	// Uses a root signature with 2 SRV descriptor tables (t0, t1).
+	// ---------------------------------------------------------------
+	{
+		auto ps_nv12_blob = CompileHLSL(g_ps_nv12_source, sizeof(g_ps_nv12_source) - 1,
+			"main", "ps_5_0", "RmlUi_PS_NV12");
+		if (!ps_nv12_blob) return false;
+
+		// NV12 root signature: CBV@b0 + 2 descriptor tables (t0, t1)
+		D3D12_DESCRIPTOR_RANGE1 nv12_ranges[2] = {};
+		for (int i = 0; i < 2; i++) {
+			nv12_ranges[i].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+			nv12_ranges[i].NumDescriptors = 1;
+			nv12_ranges[i].BaseShaderRegister = static_cast<UINT>(i);
+			nv12_ranges[i].RegisterSpace = 0;
+			nv12_ranges[i].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE;
+			nv12_ranges[i].OffsetInDescriptorsFromTableStart = 0;
+		}
+
+		D3D12_ROOT_PARAMETER1 nv12_params[3] = {};
+		// Param 0: Root CBV at b0 (TransformCB)
+		nv12_params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+		nv12_params[0].Descriptor.ShaderRegister = 0;
+		nv12_params[0].Descriptor.RegisterSpace = 0;
+		nv12_params[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC;
+		nv12_params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+		// Params 1-2: Descriptor tables for t0(Y), t1(UV)
+		for (int i = 0; i < 2; i++) {
+			nv12_params[1 + i].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+			nv12_params[1 + i].DescriptorTable.NumDescriptorRanges = 1;
+			nv12_params[1 + i].DescriptorTable.pDescriptorRanges = &nv12_ranges[i];
+			nv12_params[1 + i].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+		}
+
+		D3D12_VERSIONED_ROOT_SIGNATURE_DESC nv12_rs_desc{};
+		nv12_rs_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+		nv12_rs_desc.Desc_1_1.NumParameters = 3;
+		nv12_rs_desc.Desc_1_1.pParameters = nv12_params;
+		nv12_rs_desc.Desc_1_1.NumStaticSamplers = 1;
+		nv12_rs_desc.Desc_1_1.pStaticSamplers = &sampler;
+		nv12_rs_desc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+		ComPtr<ID3DBlob> nv12_sig_blob, nv12_sig_err;
+		DX_CHECK(D3D12SerializeVersionedRootSignature(&nv12_rs_desc,
+			&nv12_sig_blob, &nv12_sig_err),
+			"D3D12SerializeVersionedRootSignature(NV12)");
+		DX_CHECK(device_->CreateRootSignature(0,
+			nv12_sig_blob->GetBufferPointer(), nv12_sig_blob->GetBufferSize(),
+			IID_PPV_ARGS(&nv12_root_signature_)),
+			"CreateRootSignature(NV12)");
+		nv12_root_signature_->SetName(L"RmlUi_NV12_RootSignature");
+
+		D3D12_GRAPHICS_PIPELINE_STATE_DESC nv12_pso{};
+		nv12_pso.pRootSignature = nv12_root_signature_.Get();
+		nv12_pso.VS = { vs_blob->GetBufferPointer(), vs_blob->GetBufferSize() };
+		nv12_pso.PS = { ps_nv12_blob->GetBufferPointer(), ps_nv12_blob->GetBufferSize() };
+		nv12_pso.InputLayout = { input_layout, _countof(input_layout) };
+		nv12_pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+		nv12_pso.BlendState.RenderTarget[0].BlendEnable = FALSE;
+		nv12_pso.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+		nv12_pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+		nv12_pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+		nv12_pso.RasterizerState.DepthClipEnable = TRUE;
+		nv12_pso.DepthStencilState.DepthEnable = FALSE;
+		nv12_pso.DepthStencilState.StencilEnable = FALSE;
+		nv12_pso.DepthStencilState.StencilReadMask = 0xFF;
+		nv12_pso.DepthStencilState.StencilWriteMask = 0xFF;
+		nv12_pso.DepthStencilState.FrontFace = stencil_keep;
+		nv12_pso.DepthStencilState.BackFace = stencil_keep;
+		nv12_pso.NumRenderTargets = 1;
+		nv12_pso.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+		nv12_pso.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
+		nv12_pso.SampleDesc.Count = 1;
+		nv12_pso.SampleMask = UINT_MAX;
+
+		DX_CHECK(device_->CreateGraphicsPipelineState(&nv12_pso, IID_PPV_ARGS(&pso_nv12_)),
+			"CreateGraphicsPipelineState(NV12)");
+		pso_nv12_->SetName(L"RmlUi_PSO_NV12");
+
+		nv12_pso.DepthStencilState.StencilEnable = TRUE;
+		DX_CHECK(device_->CreateGraphicsPipelineState(&nv12_pso, IID_PPV_ARGS(&pso_nv12_stencil_)),
+			"CreateGraphicsPipelineState(NV12Stencil)");
+		pso_nv12_stencil_->SetName(L"RmlUi_PSO_NV12Stencil");
+	}
+
 	return true;
 }
 
@@ -1813,18 +1939,26 @@ void RenderInterface_DX12::Flush() {
 // ---------------------------------------------------------------------------
 
 void RenderInterface_DX12::DeferRelease(ComPtr<ID3D12Resource> resource, int32_t srv_index) {
-	deferred_releases_[current_back_buffer_index_].push_back({ std::move(resource), srv_index });
+	// Tag with the fence value that will be signaled when the current frame's
+	// command list finishes executing (signaled in EndFrame).
+	// next_fence_value_ is the value that WILL be used at the next Signal call.
+	deferred_releases_.push_back({ std::move(resource), srv_index, next_fence_value_ });
 }
 
 void RenderInterface_DX12::ProcessDeferredReleases() {
-	// Free resources queued for this back buffer slot.
-	// We only get here after the fence wait, so the GPU is done with these.
-	auto& releases = deferred_releases_[current_back_buffer_index_];
-	for (auto& dr : releases) {
-		if (dr.srv_index >= 0) FreeSrvSlot(dr.srv_index);
-		dr.resource.Reset();
-	}
-	releases.clear();
+	ZoneScopedN("DX12::ProcessDeferredReleases");
+	// Release resources whose tagged fence value has been completed by the GPU.
+	uint64_t completed = fence_->GetCompletedValue();
+	auto it = std::remove_if(deferred_releases_.begin(), deferred_releases_.end(),
+		[&](DeferredRelease& dr) {
+			if (completed >= dr.fence_value) {
+				if (dr.srv_index >= 0) FreeSrvSlot(dr.srv_index);
+				dr.resource.Reset();
+				return true;
+			}
+			return false;
+		});
+	deferred_releases_.erase(it, deferred_releases_.end());
 }
 
 // ---------------------------------------------------------------------------
@@ -1832,11 +1966,15 @@ void RenderInterface_DX12::ProcessDeferredReleases() {
 // ---------------------------------------------------------------------------
 
 void RenderInterface_DX12::SetViewport(int viewport_width, int viewport_height, bool force) {
+	ZoneScopedN("DX12::SetViewport");
 	if (viewport_width <= 0 || viewport_height <= 0) return;
 	if (!force && viewport_width == width_ && viewport_height == height_) return;
 
 	// Wait for all GPU work to finish before resizing
 	Flush();
+
+	// Drain all deferred releases now that GPU is idle
+	ProcessDeferredReleases();
 
 	// Release postprocess targets — recreated after resize
 	ReleasePostprocessTargets();
@@ -1886,6 +2024,7 @@ void RenderInterface_DX12::SetViewport(int viewport_width, int viewport_height, 
 // ---------------------------------------------------------------------------
 
 void RenderInterface_DX12::BeginFrame() {
+	ZoneScopedN("DX12::BeginFrame");
 	// Wait on frame latency waitable object (limits CPU queue depth)
 	if (frame_latency_waitable_)
 		WaitForSingleObjectEx(frame_latency_waitable_, 1000, TRUE);
@@ -1961,6 +2100,7 @@ void RenderInterface_DX12::BeginFrame() {
 // ---------------------------------------------------------------------------
 
 void RenderInterface_DX12::Clear() {
+	ZoneScopedN("DX12::Clear");
 	// Dark background: #0d0e17
 	const float clear_color[4] = { 0.051f, 0.055f, 0.090f, 1.0f };
 
@@ -1982,6 +2122,7 @@ void RenderInterface_DX12::Clear() {
 // ---------------------------------------------------------------------------
 
 void RenderInterface_DX12::EndFrame() {
+	ZoneScopedN("DX12::EndFrame");
 	// Transition back buffer: RENDER_TARGET -> PRESENT
 	D3D12_RESOURCE_BARRIER barrier{};
 	barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -2030,6 +2171,7 @@ void RenderInterface_DX12::EndFrame() {
 
 	// Update back buffer index for next frame
 	current_back_buffer_index_ = swap_chain_->GetCurrentBackBufferIndex();
+	FrameMark;
 }
 
 // ===========================================================================
@@ -2038,6 +2180,7 @@ void RenderInterface_DX12::EndFrame() {
 
 Rml::CompiledGeometryHandle RenderInterface_DX12::CompileGeometry(
 	Rml::Span<const Rml::Vertex> vertices, Rml::Span<const int> indices) {
+	ZoneScopedN("DX12::CompileGeometry");
 
 	if (vertices.empty() || indices.empty()) return Rml::CompiledGeometryHandle(0);
 
@@ -2123,6 +2266,7 @@ Rml::CompiledGeometryHandle RenderInterface_DX12::CompileGeometry(
 void RenderInterface_DX12::RenderGeometry(
 	Rml::CompiledGeometryHandle geometry, Rml::Vector2f translation,
 	Rml::TextureHandle texture) {
+	ZoneScopedN("DX12::RenderGeometry");
 
 	if (!geometry) return;
 
@@ -2198,6 +2342,7 @@ void RenderInterface_DX12::ReleaseGeometry(Rml::CompiledGeometryHandle geometry)
 
 void RenderInterface_DX12::UploadTextureData(ID3D12Resource* dest_texture,
 	const Rml::byte* data, int width, int height) {
+	ZoneScopedN("DX12::UploadTextureData");
 
 	const UINT64 row_pitch = static_cast<UINT64>(width) * 4;
 	// D3D12 requires 256-byte aligned row pitch for texture upload
@@ -2281,6 +2426,7 @@ void RenderInterface_DX12::UploadTextureData(ID3D12Resource* dest_texture,
 
 Rml::TextureHandle RenderInterface_DX12::GenerateTexture(
 	Rml::Span<const Rml::byte> source_data, Rml::Vector2i source_dimensions) {
+	ZoneScopedN("DX12::GenerateTexture");
 
 	if (source_data.empty() || source_dimensions.x <= 0 || source_dimensions.y <= 0)
 		return Rml::TextureHandle(0);
@@ -2363,6 +2509,7 @@ void RenderInterface_DX12::ReleaseTexture(Rml::TextureHandle texture_handle) {
 void RenderInterface_DX12::UpdateTextureData(
 	Rml::TextureHandle texture_handle, Rml::Span<const Rml::byte> source_data,
 	Rml::Vector2i source_dimensions) {
+	ZoneScopedN("DX12::UpdateTextureData");
 
 	if (!texture_handle) return;
 	auto* tex = reinterpret_cast<TextureData*>(texture_handle);
@@ -2393,6 +2540,7 @@ void RenderInterface_DX12::UpdateTextureData(
 void RenderInterface_DX12::UploadR8TextureData(ID3D12Resource* dest_texture,
 	const uint8_t* data, uint32_t src_stride, int width, int height,
 	void* upload_buf_ptr) {
+	ZoneScopedN("DX12::UploadR8TextureData");
 	auto* upload_buf = static_cast<YUVUploadBuffer*>(upload_buf_ptr);
 
 	const UINT aligned_row_pitch = (static_cast<UINT>(width) + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1)
@@ -2514,6 +2662,7 @@ uintptr_t RenderInterface_DX12::GenerateYUVTexture(
 	const uint8_t* y_data, uint32_t y_stride,
 	const uint8_t* u_data, const uint8_t* v_data, uint32_t uv_stride,
 	uint32_t width, uint32_t height) {
+	ZoneScopedN("DX12::GenerateYUVTexture");
 
 	int32_t y_srv = AllocateSrvSlot();
 	int32_t u_srv = AllocateSrvSlot();
@@ -2564,6 +2713,7 @@ void RenderInterface_DX12::UpdateYUVTexture(uintptr_t handle,
 	const uint8_t* y_data, uint32_t y_stride,
 	const uint8_t* u_data, const uint8_t* v_data, uint32_t uv_stride,
 	uint32_t width, uint32_t height) {
+	ZoneScopedN("DX12::UpdateYUVTexture");
 
 	if (!handle) return;
 	auto* yuv = reinterpret_cast<YUVTextureData*>(handle);
@@ -2592,6 +2742,7 @@ void RenderInterface_DX12::UpdateYUVTexture(uintptr_t handle,
 }
 
 void RenderInterface_DX12::ReleaseYUVTexture(uintptr_t handle) {
+	ZoneScopedN("DX12::ReleaseYUVTexture");
 	if (!handle) return;
 	auto* yuv = reinterpret_cast<YUVTextureData*>(handle);
 	DeferRelease(std::move(yuv->y_texture), yuv->y_srv);
@@ -2611,6 +2762,7 @@ void RenderInterface_DX12::ReleaseYUVTexture(uintptr_t handle) {
 void RenderInterface_DX12::RenderYUVGeometry(
 	Rml::CompiledGeometryHandle geometry,
 	Rml::Vector2f translation, uintptr_t yuv_handle) {
+	ZoneScopedN("DX12::RenderYUVGeometry");
 
 	if (!geometry || !yuv_handle) return;
 	auto* geom = reinterpret_cast<GeometryData*>(geometry);
@@ -2669,6 +2821,268 @@ void RenderInterface_DX12::RenderYUVGeometry(
 }
 
 // ===========================================================================
+// NV12 Texture (R8 Y + R8G8 UV — native hardware decoder format)
+// ===========================================================================
+
+static ID3D12Resource* CreateR8G8Texture(ID3D12Device* device, int width, int height,
+	ID3D12DescriptorHeap* srv_heap, uint32_t srv_descriptor_size, int32_t srv_slot) {
+
+	D3D12_HEAP_PROPERTIES default_heap{};
+	default_heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+	D3D12_RESOURCE_DESC desc{};
+	desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	desc.Width = static_cast<UINT64>(width);
+	desc.Height = static_cast<UINT>(height);
+	desc.DepthOrArraySize = 1;
+	desc.MipLevels = 1;
+	desc.Format = DXGI_FORMAT_R8G8_UNORM;
+	desc.SampleDesc.Count = 1;
+	desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+
+	ID3D12Resource* tex = nullptr;
+	HRESULT hr = device->CreateCommittedResource(
+		&default_heap, D3D12_HEAP_FLAG_NONE, &desc,
+		D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+		IID_PPV_ARGS(&tex));
+	if (FAILED(hr)) return nullptr;
+
+	D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+	srv.Format = DXGI_FORMAT_R8G8_UNORM;
+	srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srv.Texture2D.MipLevels = 1;
+
+	D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle = srv_heap->GetCPUDescriptorHandleForHeapStart();
+	cpu_handle.ptr += static_cast<SIZE_T>(srv_slot) * srv_descriptor_size;
+	device->CreateShaderResourceView(tex, &srv, cpu_handle);
+
+	return tex;
+}
+
+void RenderInterface_DX12::UploadR8G8TextureData(ID3D12Resource* dest_texture,
+	const uint8_t* data, uint32_t src_stride, int width, int height,
+	void* upload_buf_ptr) {
+	ZoneScopedN("DX12::UploadR8G8TextureData");
+	auto* upload_buf = static_cast<YUVUploadBuffer*>(upload_buf_ptr);
+
+	const UINT width_bytes = static_cast<UINT>(width) * 2;  // R8G8 = 2 bytes per pixel
+	const UINT aligned_row_pitch = (width_bytes + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1)
+		& ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1);
+	const UINT64 upload_size = static_cast<UINT64>(aligned_row_pitch) * height;
+
+	if (!upload_buf->resource || upload_buf->size < upload_size) {
+		if (upload_buf->mapped && upload_buf->resource) {
+			upload_buf->resource->Unmap(0, nullptr);
+			upload_buf->mapped = nullptr;
+		}
+		if (upload_buf->resource)
+			DeferRelease(std::move(upload_buf->resource));
+
+		D3D12_HEAP_PROPERTIES heap{};
+		heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+
+		D3D12_RESOURCE_DESC buf_desc{};
+		buf_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+		buf_desc.Width = upload_size;
+		buf_desc.Height = 1;
+		buf_desc.DepthOrArraySize = 1;
+		buf_desc.MipLevels = 1;
+		buf_desc.Format = DXGI_FORMAT_UNKNOWN;
+		buf_desc.SampleDesc.Count = 1;
+		buf_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+		HRESULT hr = device_->CreateCommittedResource(
+			&heap, D3D12_HEAP_FLAG_NONE, &buf_desc,
+			D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+			IID_PPV_ARGS(&upload_buf->resource));
+		if (FAILED(hr)) return;
+
+		D3D12_RANGE read_range{0, 0};
+		hr = upload_buf->resource->Map(0, &read_range, &upload_buf->mapped);
+		if (FAILED(hr)) { upload_buf->resource.Reset(); return; }
+
+		upload_buf->size = upload_size;
+		upload_buf->aligned_row_pitch = aligned_row_pitch;
+	}
+
+	auto* dst = static_cast<uint8_t*>(upload_buf->mapped);
+	if (aligned_row_pitch == src_stride) {
+		std::memcpy(dst, data, static_cast<size_t>(aligned_row_pitch) * height);
+	} else {
+		for (int y = 0; y < height; ++y)
+			std::memcpy(dst + y * aligned_row_pitch, data + y * src_stride, width_bytes);
+	}
+
+	D3D12_TEXTURE_COPY_LOCATION src_loc{};
+	src_loc.pResource = upload_buf->resource.Get();
+	src_loc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+	src_loc.PlacedFootprint.Offset = 0;
+	src_loc.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8G8_UNORM;
+	src_loc.PlacedFootprint.Footprint.Width = static_cast<UINT>(width);
+	src_loc.PlacedFootprint.Footprint.Height = static_cast<UINT>(height);
+	src_loc.PlacedFootprint.Footprint.Depth = 1;
+	src_loc.PlacedFootprint.Footprint.RowPitch = aligned_row_pitch;
+
+	D3D12_TEXTURE_COPY_LOCATION dst_loc{};
+	dst_loc.pResource = dest_texture;
+	dst_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+	dst_loc.SubresourceIndex = 0;
+
+	command_list_->CopyTextureRegion(&dst_loc, 0, 0, 0, &src_loc, nullptr);
+
+	D3D12_RESOURCE_BARRIER barrier{};
+	barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+	barrier.Transition.pResource = dest_texture;
+	barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+	barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+	barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+	command_list_->ResourceBarrier(1, &barrier);
+}
+
+uintptr_t RenderInterface_DX12::GenerateNV12Texture(
+	const uint8_t* y_data, uint32_t y_stride,
+	const uint8_t* uv_data, uint32_t uv_stride,
+	uint32_t width, uint32_t height) {
+	ZoneScopedN("DX12::GenerateNV12Texture");
+
+	int32_t y_srv = AllocateSrvSlot();
+	int32_t uv_srv = AllocateSrvSlot();
+	if (y_srv < 0 || uv_srv < 0) {
+		if (y_srv >= 0) FreeSrvSlot(y_srv);
+		if (uv_srv >= 0) FreeSrvSlot(uv_srv);
+		return 0;
+	}
+
+	auto* nv12 = new NV12TextureData();
+	nv12->width = static_cast<int>(width);
+	nv12->height = static_cast<int>(height);
+	nv12->y_srv = y_srv;
+	nv12->uv_srv = uv_srv;
+
+	int half_w = static_cast<int>(width / 2);
+	int half_h = static_cast<int>(height / 2);
+
+	nv12->y_texture.Attach(CreateR8Texture(device_.Get(), static_cast<int>(width), static_cast<int>(height),
+		srv_heap_.Get(), srv_descriptor_size_, y_srv));
+	nv12->uv_texture.Attach(CreateR8G8Texture(device_.Get(), half_w, half_h,
+		srv_heap_.Get(), srv_descriptor_size_, uv_srv));
+
+	if (!nv12->y_texture || !nv12->uv_texture) {
+		delete nv12;
+		return 0;
+	}
+
+	nv12->y_texture->SetName(L"NV12_Y");
+	nv12->uv_texture->SetName(L"NV12_UV");
+
+	int ub = current_back_buffer_index_;
+	UploadR8TextureData(nv12->y_texture.Get(), y_data, y_stride,
+		static_cast<int>(width), static_cast<int>(height), &nv12->y_upload[ub]);
+	UploadR8G8TextureData(nv12->uv_texture.Get(), uv_data, uv_stride, half_w, half_h, &nv12->uv_upload[ub]);
+
+	return reinterpret_cast<uintptr_t>(nv12);
+}
+
+void RenderInterface_DX12::UpdateNV12Texture(uintptr_t handle,
+	const uint8_t* y_data, uint32_t y_stride,
+	const uint8_t* uv_data, uint32_t uv_stride,
+	uint32_t width, uint32_t height) {
+	ZoneScopedN("DX12::UpdateNV12Texture");
+
+	if (!handle) return;
+	auto* nv12 = reinterpret_cast<NV12TextureData*>(handle);
+
+	int half_w = static_cast<int>(width / 2);
+	int half_h = static_cast<int>(height / 2);
+
+	// Transition textures: PIXEL_SHADER_RESOURCE → COPY_DEST
+	D3D12_RESOURCE_BARRIER barriers[2] = {};
+	ID3D12Resource* textures[2] = { nv12->y_texture.Get(), nv12->uv_texture.Get() };
+	for (int i = 0; i < 2; i++) {
+		barriers[i].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		barriers[i].Transition.pResource = textures[i];
+		barriers[i].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		barriers[i].Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+		barriers[i].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+	}
+	command_list_->ResourceBarrier(2, barriers);
+
+	int ub = current_back_buffer_index_;
+	UploadR8TextureData(nv12->y_texture.Get(), y_data, y_stride,
+		static_cast<int>(width), static_cast<int>(height), &nv12->y_upload[ub]);
+	UploadR8G8TextureData(nv12->uv_texture.Get(), uv_data, uv_stride, half_w, half_h, &nv12->uv_upload[ub]);
+}
+
+void RenderInterface_DX12::ReleaseNV12Texture(uintptr_t handle) {
+	ZoneScopedN("DX12::ReleaseNV12Texture");
+	if (!handle) return;
+	auto* nv12 = reinterpret_cast<NV12TextureData*>(handle);
+	DeferRelease(std::move(nv12->y_texture), nv12->y_srv);
+	DeferRelease(std::move(nv12->uv_texture), nv12->uv_srv);
+	for (int i = 0; i < NV12TextureData::NUM_UPLOAD_SETS; i++) {
+		if (nv12->y_upload[i].mapped) { nv12->y_upload[i].resource->Unmap(0, nullptr); nv12->y_upload[i].mapped = nullptr; }
+		if (nv12->uv_upload[i].mapped) { nv12->uv_upload[i].resource->Unmap(0, nullptr); nv12->uv_upload[i].mapped = nullptr; }
+		DeferRelease(std::move(nv12->y_upload[i].resource));
+		DeferRelease(std::move(nv12->uv_upload[i].resource));
+	}
+	delete nv12;
+}
+
+void RenderInterface_DX12::RenderNV12Geometry(
+	Rml::CompiledGeometryHandle geometry,
+	Rml::Vector2f translation, uintptr_t nv12_handle) {
+	ZoneScopedN("DX12::RenderNV12Geometry");
+
+	if (!geometry || !nv12_handle) return;
+	auto* geom = reinterpret_cast<GeometryData*>(geometry);
+	auto* nv12 = reinterpret_cast<NV12TextureData*>(nv12_handle);
+
+	Rml::Matrix4f mvp = transform_active_ ? projection_ * transform_ : projection_;
+	TransformCB cb_data{};
+	std::memcpy(cb_data.transform, mvp.data(), 16 * sizeof(float));
+	cb_data.translate[0] = translation.x;
+	cb_data.translate[1] = translation.y;
+	auto cb = AllocateCB(sizeof(TransformCB), &cb_data);
+	if (!cb.cpu_ptr) return;
+
+	command_list_->SetGraphicsRootSignature(nv12_root_signature_.Get());
+	if (clip_mask_enabled_) {
+		command_list_->SetPipelineState(pso_nv12_stencil_.Get());
+		command_list_->OMSetStencilRef(stencil_ref_);
+	} else {
+		command_list_->SetPipelineState(pso_nv12_.Get());
+	}
+
+	ID3D12DescriptorHeap* heaps[] = { srv_heap_.Get() };
+	command_list_->SetDescriptorHeaps(1, heaps);
+
+	command_list_->SetGraphicsRootConstantBufferView(0, cb.gpu_address);
+
+	D3D12_GPU_DESCRIPTOR_HANDLE base = srv_heap_->GetGPUDescriptorHandleForHeapStart();
+	int32_t srv_indices[2] = { nv12->y_srv, nv12->uv_srv };
+	for (int i = 0; i < 2; i++) {
+		D3D12_GPU_DESCRIPTOR_HANDLE h = base;
+		h.ptr += static_cast<UINT64>(srv_indices[i]) * srv_descriptor_size_;
+		command_list_->SetGraphicsRootDescriptorTable(1 + i, h);
+	}
+
+	if (scissor_enabled_) {
+		command_list_->RSSetScissorRects(1, &scissor_rect_);
+	} else {
+		D3D12_RECT full_rect = { 0, 0, static_cast<LONG>(width_), static_cast<LONG>(height_) };
+		command_list_->RSSetScissorRects(1, &full_rect);
+	}
+
+	command_list_->IASetVertexBuffers(0, 1, &geom->vbv);
+	command_list_->IASetIndexBuffer(&geom->ibv);
+	command_list_->DrawIndexedInstanced(static_cast<UINT>(geom->num_indices), 1, 0, 0, 0);
+
+	command_list_->SetGraphicsRootSignature(root_signature_.Get());
+	command_list_->SetDescriptorHeaps(1, heaps);
+}
+
+// ===========================================================================
 // Scissor
 // ===========================================================================
 
@@ -2710,6 +3124,7 @@ void RenderInterface_DX12::EnableClipMask(bool enable) {
 void RenderInterface_DX12::RenderToClipMask(
 	Rml::ClipMaskOperation mask_operation, Rml::CompiledGeometryHandle geometry,
 	Rml::Vector2f translation) {
+	ZoneScopedN("DX12::RenderToClipMask");
 
 	if (!geometry) return;
 
@@ -2789,6 +3204,7 @@ void RenderInterface_DX12::RenderToClipMask(
 // ===========================================================================
 
 Rml::LayerHandle RenderInterface_DX12::PushLayer() {
+	ZoneScopedN("DX12::PushLayer");
 	int layer_idx = AllocateLayer();
 	if (layer_idx < 0) return Rml::LayerHandle(0);
 
@@ -2820,6 +3236,7 @@ Rml::LayerHandle RenderInterface_DX12::PushLayer() {
 }
 
 void RenderInterface_DX12::PopLayer() {
+	ZoneScopedN("DX12::PopLayer");
 	if (layer_stack_.empty()) return;
 
 	int popped_idx = layer_stack_.back();
@@ -2851,6 +3268,7 @@ void RenderInterface_DX12::PopLayer() {
 void RenderInterface_DX12::CompositeLayers(
 	Rml::LayerHandle source, Rml::LayerHandle destination,
 	Rml::BlendMode blend_mode, Rml::Span<const Rml::CompiledFilterHandle> filters) {
+	ZoneScopedN("DX12::CompositeLayers");
 
 	// source and destination are LayerHandle values: 0 = back buffer, >0 = layer_idx + 1
 	int src_idx = static_cast<int>(source) - 1;   // -1 means back buffer
@@ -2946,6 +3364,7 @@ void RenderInterface_DX12::CompositeLayers(
 }
 
 Rml::TextureHandle RenderInterface_DX12::SaveLayerAsTexture() {
+	ZoneScopedN("DX12::SaveLayerAsTexture");
 	if (layer_stack_.empty()) return Rml::TextureHandle(0);
 
 	int layer_idx = layer_stack_.back();
@@ -2975,6 +3394,7 @@ Rml::TextureHandle RenderInterface_DX12::SaveLayerAsTexture() {
 }
 
 Rml::CompiledFilterHandle RenderInterface_DX12::SaveLayerAsMaskImage() {
+	ZoneScopedN("DX12::SaveLayerAsMaskImage");
 	// Save the current layer as a mask image. For now (Phase 5), just save the SRV reference.
 	// Actual mask application will be implemented in Phase 6 (filters).
 	if (layer_stack_.empty()) return Rml::CompiledFilterHandle(0);
@@ -3199,6 +3619,7 @@ Rml::CompiledShaderHandle RenderInterface_DX12::CompileShader(
 void RenderInterface_DX12::RenderShader(
 	Rml::CompiledShaderHandle shader_handle, Rml::CompiledGeometryHandle geometry_handle,
 	Rml::Vector2f translation, Rml::TextureHandle /*texture*/) {
+	ZoneScopedN("DX12::RenderShader");
 
 	if (!shader_handle || !geometry_handle) return;
 
@@ -3290,6 +3711,7 @@ static void ComputeBlurWeights(float sigma, float* weights, int num_weights) {
 }
 
 void RenderInterface_DX12::RenderBlur(float sigma, int src_pp, int dst_pp) {
+	ZoneScopedN("DX12::RenderBlur");
 	// Two-pass separable Gaussian blur: vertical then horizontal.
 	// src_pp -> dst_pp (vertical), dst_pp -> src_pp (horizontal).
 	// After this call, the blurred result is in src_pp.
@@ -3404,6 +3826,7 @@ void RenderInterface_DX12::RenderBlur(float sigma, int src_pp, int dst_pp) {
 
 void RenderInterface_DX12::RenderFilters(
 	Rml::Span<const Rml::CompiledFilterHandle> filters, int source_layer_idx) {
+	ZoneScopedN("DX12::RenderFilters");
 
 	if (filters.empty()) return;
 

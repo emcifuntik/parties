@@ -1,4 +1,5 @@
 #include <client/ui_manager.h>
+#include <parties/profiler.h>
 
 #include "RmlUi_Renderer_DX12.h"
 #include "RmlUi_Platform_Win32.h"
@@ -32,6 +33,7 @@ UiManager::UiManager() = default;
 UiManager::~UiManager() { shutdown(); }
 
 bool UiManager::init(HWND hwnd) {
+	ZoneScopedN("UiManager::init");
     hwnd_ = hwnd;
 
     // Create system interface (from vendored Win32 platform)
@@ -137,6 +139,7 @@ void UiManager::unload_all() {
 }
 
 void UiManager::update() {
+	ZoneScopedN("UiManager::update");
     if (context_) context_->Update();
 }
 
@@ -163,6 +166,7 @@ void UiManager::render_end() {
 }
 
 void UiManager::on_resize(int width, int height) {
+	ZoneScopedN("UiManager::on_resize");
     if (width <= 0 || height <= 0) return;
     bool was_minimized = minimized_;
     minimized_ = false;
@@ -181,6 +185,7 @@ void UiManager::on_minimize() {
 }
 
 void UiManager::on_dpi_change(float scale) {
+	ZoneScopedN("UiManager::on_dpi_change");
     dpi_scale_ = scale;
     if (context_)
         context_->SetDensityIndependentPixelRatio(scale);

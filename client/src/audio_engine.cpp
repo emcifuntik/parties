@@ -1,4 +1,5 @@
 #include <client/audio_engine.h>
+#include <parties/profiler.h>
 #include <client/voice_mixer.h>
 
 #include <cstdio>
@@ -16,6 +17,7 @@ AudioEngine::~AudioEngine() {
 }
 
 bool AudioEngine::init() {
+	ZoneScopedN("AudioEngine::init");
     // Initialize miniaudio context (needed for device enumeration)
     if (ma_context_init(nullptr, 0, nullptr, &context_) != MA_SUCCESS) {
         std::fprintf(stderr, "[Audio] Failed to initialize audio context\n");
@@ -268,6 +270,7 @@ void AudioEngine::playback_callback(ma_device* device, void* output,
 }
 
 void AudioEngine::process_capture(const float* input, ma_uint32 frame_count) {
+	ZoneScopedN("AudioEngine::process_capture");
     if (muted_ || !on_encoded_frame) return;
 
     ma_uint32 remaining = frame_count;
@@ -368,6 +371,7 @@ void AudioEngine::process_capture(const float* input, ma_uint32 frame_count) {
 }
 
 void AudioEngine::process_playback(float* output, ma_uint32 frame_count) {
+	ZoneScopedN("AudioEngine::process_playback");
     std::memset(output, 0, frame_count * sizeof(float));
 
     // Mix voice audio (skip when deafened)

@@ -5,9 +5,9 @@
 #include <RmlUi/Core/RenderInterface.h>
 #include <RmlUi/Core/Context.h>
 
-#include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <parties/profiler.h>
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -27,6 +27,7 @@ void VideoElement::UpdateYUVFrame(
     const uint8_t* y_data, uint32_t y_stride,
     const uint8_t* u_data, const uint8_t* v_data, uint32_t uv_stride,
     uint32_t width, uint32_t height) {
+	ZoneScopedN("VideoElement::UpdateYUVFrame");
 
     bool size_changed = (frame_width_ != width || frame_height_ != height);
     frame_width_ = width;
@@ -50,6 +51,60 @@ void VideoElement::UpdateYUVFrame(
     yuv_y_stride_ = y_stride;
     yuv_uv_stride_ = uv_stride;
     yuv_dirty_ = true;
+
+    if (size_changed)
+        DirtyLayout();
+}
+
+void VideoElement::UpdateNV12Frame(
+    const uint8_t* y_data, uint32_t y_stride,
+    const uint8_t* uv_data, uint32_t uv_stride,
+    uint32_t width, uint32_t height) {
+	ZoneScopedN("VideoElement::UpdateNV12Frame");
+
+    bool size_changed = (frame_width_ != width || frame_height_ != height);
+    frame_width_ = width;
+    frame_height_ = height;
+    has_frame_ = true;
+    nv12_mode_ = true;
+    yuv_mode_ = false;
+
+    uint32_t half_h = height / 2;
+
+    nv12_y_.resize(static_cast<size_t>(y_stride) * height);
+    std::memcpy(nv12_y_.data(), y_data, nv12_y_.size());
+
+    nv12_uv_.resize(static_cast<size_t>(uv_stride) * half_h);
+    std::memcpy(nv12_uv_.data(), uv_data, nv12_uv_.size());
+
+    nv12_y_stride_ = y_stride;
+    nv12_uv_stride_ = uv_stride;
+    nv12_dirty_ = true;
+
+    if (size_changed)
+        DirtyLayout();
+}
+
+void VideoElement::UpdateNV12Frame(
+    std::vector<uint8_t>& y_data, uint32_t y_stride,
+    std::vector<uint8_t>& uv_data, uint32_t uv_stride,
+    uint32_t width, uint32_t height) {
+	ZoneScopedN("VideoElement::UpdateNV12Frame(swap)");
+
+    bool size_changed = (frame_width_ != width || frame_height_ != height);
+    frame_width_ = width;
+    frame_height_ = height;
+    has_frame_ = true;
+    nv12_mode_ = true;
+    yuv_mode_ = false;
+
+    // Swap instead of move — caller gets our old buffer back,
+    // which cycles through the swap chain and avoids malloc every frame.
+    nv12_y_.swap(y_data);
+    nv12_uv_.swap(uv_data);
+    nv12_y_stride_ = y_stride;
+    nv12_uv_stride_ = uv_stride;
+    nv12_dirty_ = true;
 
     if (size_changed)
         DirtyLayout();
@@ -84,6 +139,7 @@ void VideoElement::UpdateFrame(const uint8_t* rgba_data, uint32_t width, uint32_
 }
 
 void VideoElement::SetVideoDimensions(uint32_t width, uint32_t height) {
+	ZoneScopedN("VideoElement::SetVideoDimensions");
     bool size_changed = (frame_width_ != width || frame_height_ != height);
     frame_width_  = width;
     frame_height_ = height;
@@ -104,6 +160,10 @@ void VideoElement::Clear() {
     yuv_y_.clear();
     yuv_u_.clear();
     yuv_v_.clear();
+    nv12_mode_ = false;
+    nv12_dirty_ = false;
+    nv12_y_.clear();
+    nv12_uv_.clear();
     ReleaseResources();
     DirtyLayout();
 }
@@ -124,6 +184,12 @@ void VideoElement::ReleaseResources() {
     }
     yuv_tex_w_ = yuv_tex_h_ = 0;
 
+    if (nv12_texture_) {
+        static_cast<RenderInterface_DX12*>(ri)->ReleaseNV12Texture(nv12_texture_);
+        nv12_texture_ = 0;
+    }
+    nv12_tex_w_ = nv12_tex_h_ = 0;
+
     if (video_geom_) {
         ri->ReleaseGeometry(video_geom_);
         video_geom_ = 0;
@@ -142,6 +208,7 @@ bool VideoElement::GetIntrinsicDimensions(Rml::Vector2f& dimensions, float& rati
 }
 
 void VideoElement::RebuildGeometry() {
+	ZoneScopedN("VideoElement::RebuildGeometry");
     auto* ri = Rml::GetRenderInterface();
     if (!ri) return;
 
@@ -207,6 +274,7 @@ void VideoElement::OnResize() {
 }
 
 void VideoElement::OnRender() {
+	ZoneScopedN("VideoElement::OnRender");
     if (!has_frame_ || frame_width_ == 0 || frame_height_ == 0) return;
 
     auto* ri = Rml::GetRenderInterface();
@@ -221,13 +289,31 @@ void VideoElement::OnRender() {
 
     Rml::Vector2f offset = GetAbsoluteOffset(Rml::BoxArea::Content);
 
-    if (yuv_mode_) {
-        LARGE_INTEGER freq, ta, tb, tc;
-        QueryPerformanceFrequency(&freq);
-
-        // GPU YUV path: upload I420 planes as R8 textures, convert in pixel shader
+    if (nv12_mode_) {
+        // NV12 path: Y + interleaved UV, native hardware decoder format
+        if (nv12_dirty_ && !nv12_y_.empty()) {
+            if (nv12_texture_ && nv12_tex_w_ == frame_width_ && nv12_tex_h_ == frame_height_) {
+                dx12_ri->UpdateNV12Texture(nv12_texture_,
+                    nv12_y_.data(), nv12_y_stride_,
+                    nv12_uv_.data(), nv12_uv_stride_,
+                    frame_width_, frame_height_);
+            } else {
+                if (nv12_texture_)
+                    dx12_ri->ReleaseNV12Texture(nv12_texture_);
+                nv12_texture_ = dx12_ri->GenerateNV12Texture(
+                    nv12_y_.data(), nv12_y_stride_,
+                    nv12_uv_.data(), nv12_uv_stride_,
+                    frame_width_, frame_height_);
+                nv12_tex_w_ = frame_width_;
+                nv12_tex_h_ = frame_height_;
+            }
+            nv12_dirty_ = false;
+        }
+        if (nv12_texture_)
+            dx12_ri->RenderNV12Geometry(video_geom_, offset, nv12_texture_);
+    } else if (yuv_mode_) {
+        // I420 path: 3 separate R8 textures
         if (yuv_dirty_ && !yuv_y_.empty()) {
-            QueryPerformanceCounter(&ta);
             if (yuv_texture_ && yuv_tex_w_ == frame_width_ && yuv_tex_h_ == frame_height_) {
                 dx12_ri->UpdateYUVTexture(yuv_texture_,
                     yuv_y_.data(), yuv_y_stride_,
@@ -243,33 +329,10 @@ void VideoElement::OnRender() {
                 yuv_tex_w_ = frame_width_;
                 yuv_tex_h_ = frame_height_;
             }
-            QueryPerformanceCounter(&tb);
             yuv_dirty_ = false;
-
-            static double accum_upload = 0, accum_draw = 0;
-            static int count = 0;
-            static auto last = std::chrono::steady_clock::now();
-            accum_upload += (tb.QuadPart - ta.QuadPart) * 1000.0 / freq.QuadPart;
-
-            if (yuv_texture_) {
-                QueryPerformanceCounter(&ta);
-                dx12_ri->RenderYUVGeometry(video_geom_, offset, yuv_texture_);
-                QueryPerformanceCounter(&tc);
-                accum_draw += (tc.QuadPart - ta.QuadPart) * 1000.0 / freq.QuadPart;
-            }
-            count++;
-            auto now = std::chrono::steady_clock::now();
-            if (std::chrono::duration<float>(now - last).count() >= 2.0f && count > 0) {
-                std::printf("[VideoElement] upload=%.2fms draw=%.2fms (avg over %d frames)\n",
-                    accum_upload / count, accum_draw / count, count);
-                accum_upload = accum_draw = 0;
-                count = 0;
-                last = now;
-            }
-        } else {
-            if (yuv_texture_)
-                dx12_ri->RenderYUVGeometry(video_geom_, offset, yuv_texture_);
         }
+        if (yuv_texture_)
+            dx12_ri->RenderYUVGeometry(video_geom_, offset, yuv_texture_);
     } else {
         // RGBA path (fallback)
         if (frame_data_.empty()) return;

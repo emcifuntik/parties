@@ -2,6 +2,7 @@
 #include <parties/crypto.h>
 #include <parties/net_common.h>
 #include <parties/quic_common.h>
+#include <parties/profiler.h>
 #include <server/config.h>
 #include <server/server.h>
 
@@ -16,6 +17,7 @@ static void signal_handler(int) {
 }
 
 int main(int argc, char* argv[]) {
+    TracySetThreadName("Main");
     std::printf("%s Server v%s\n", parties::APP_NAME, parties::APP_VERSION);
 
     if (!parties::crypto_init()) {

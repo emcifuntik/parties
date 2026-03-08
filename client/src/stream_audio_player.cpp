@@ -1,4 +1,5 @@
 #include <client/stream_audio_player.h>
+#include <parties/profiler.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -61,6 +62,7 @@ void StreamAudioPlayer::shutdown() {
 }
 
 void StreamAudioPlayer::push_packet(const uint8_t* opus_data, size_t opus_len) {
+	ZoneScopedN("StreamAudioPlayer::push_packet");
     std::lock_guard<std::mutex> lock(mutex_);
 
     if (packet_queue_.size() >= kMaxJitterPackets)
@@ -89,6 +91,7 @@ void StreamAudioPlayer::data_callback(ma_device* device, void* output,
 }
 
 void StreamAudioPlayer::process_playback(float* output, ma_uint32 frame_count) {
+	ZoneScopedN("StreamAudioPlayer::process_playback");
     const int total_samples = frame_count * kChannels;
     std::memset(output, 0, total_samples * sizeof(float));
 

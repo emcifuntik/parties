@@ -1,4 +1,5 @@
 #include <client/stream_audio_capture.h>
+#include <parties/profiler.h>
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -85,6 +86,7 @@ StreamAudioCapture::~StreamAudioCapture() {
 }
 
 bool StreamAudioCapture::init(uint32_t target_pid) {
+	ZoneScopedN("StreamAudioCapture::init");
     // Ensure COM is initialized on the calling thread (needed for IMMDeviceEnumerator)
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 
@@ -243,6 +245,7 @@ void StreamAudioCapture::stop() {
 }
 
 void StreamAudioCapture::capture_thread_func() {
+	TracySetThreadName("StreamAudioCapture");
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 
     const int mix_channels = wasapi_->mix_format->nChannels;
@@ -253,6 +256,7 @@ void StreamAudioCapture::capture_thread_func() {
     const int samples_per_frame = kFrameSize * kChannels;
 
     while (running_) {
+        ZoneScopedN("StreamAudioCapture::capture_thread_func");
         DWORD wait_result = WaitForSingleObject(wasapi_->audio_event, 100);
         if (!running_) break;
         if (wait_result != WAIT_OBJECT_0) continue;

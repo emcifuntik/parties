@@ -1,0 +1,8 @@
+diff --git a/public/client/TracyProfiler.cpp b/public/client/TracyProfiler.cpp
+--- a/public/client/TracyProfiler.cpp
++++ b/public/client/TracyProfiler.cpp
+@@ -935,3 +935,3 @@
+ #ifdef TRACY_HAS_SYSTEM_TRACING
+-static std::atomic<Thread*> s_sysTraceThread = nullptr;
++static std::atomic<Thread*> s_sysTraceThread { nullptr };
+ #endif

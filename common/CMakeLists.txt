@@ -37,11 +37,16 @@ target_compile_definitions(parties_common
         HAVE_ED25519_KEY_EXPORT
 )
 
+if(ENABLE_TRACY)
+    find_package(Tracy CONFIG REQUIRED)
+endif()
+
 target_link_libraries(parties_common
     PUBLIC
         Opus::opus
         wolfssl::wolfssl
         msquic::msquic
+        $<$<BOOL:${ENABLE_TRACY}>:Tracy::TracyClient>
 )
 
 if(WIN32)

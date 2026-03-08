@@ -10,6 +10,7 @@
 #include <condition_variable>
 #include <queue>
 #include <atomic>
+#include <memory>
 
 #include <d3d11.h>
 #include <wrl/client.h>
@@ -19,6 +20,8 @@ struct IMFDXGIDeviceManager;
 struct IMFMediaEventGenerator;
 struct IMFSample;
 
+namespace parties::client::nvidia { class NvencEncoder; }
+
 namespace parties::client {
 
 class VideoEncoder {
@@ -27,7 +30,8 @@ public:
     ~VideoEncoder();
 
     // Initialize with a D3D11 device (shared with screen capture)
-    // Probes for hardware encoders: AV1 > H.265 > H.264 (or preferred codec first)
+    // Tries NVENC first, falls back to MFT hardware encoders.
+    // Probes codecs: AV1 > H.265 > H.264 (or preferred codec first)
     // input_width/height = capture texture size, width/height = encode output size
     bool init(ID3D11Device* device, uint32_t width, uint32_t height,
               uint32_t input_width = 0, uint32_t input_height = 0,
@@ -53,6 +57,9 @@ public:
     std::function<void(const uint8_t* data, size_t len, bool keyframe)> on_encoded;
 
 private:
+    bool init_mft(ID3D11Device* device, uint32_t width, uint32_t height,
+                  uint32_t input_width, uint32_t input_height,
+                  uint32_t fps, uint32_t bitrate, VideoCodecId preferred_codec);
     bool try_create_encoder(const GUID& codec_subtype, VideoCodecId id);
     bool configure_encoder(uint32_t width, uint32_t height,
                            uint32_t fps, uint32_t bitrate);
@@ -61,6 +68,10 @@ private:
     bool collect_output();
     void encoder_loop();
 
+    // NVENC (preferred path on NVIDIA GPUs)
+    std::unique_ptr<nvidia::NvencEncoder> nvenc_;
+
+    // MFT fallback
     Microsoft::WRL::ComPtr<ID3D11Device> device_;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> context_;
     Microsoft::WRL::ComPtr<IMFDXGIDeviceManager> dxgi_manager_;

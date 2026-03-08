@@ -101,6 +101,20 @@ public:
 	void RenderYUVGeometry(Rml::CompiledGeometryHandle geometry,
 		Rml::Vector2f translation, uintptr_t yuv_handle);
 
+	// NV12 texture support — Y as R8, interleaved UV as R8G8 (2 textures instead of 3).
+	// Native format for hardware decoders (NVDEC, MFT) — no CPU deinterleave needed.
+	uintptr_t GenerateNV12Texture(
+		const uint8_t* y_data, uint32_t y_stride,
+		const uint8_t* uv_data, uint32_t uv_stride,
+		uint32_t width, uint32_t height);
+	void UpdateNV12Texture(uintptr_t handle,
+		const uint8_t* y_data, uint32_t y_stride,
+		const uint8_t* uv_data, uint32_t uv_stride,
+		uint32_t width, uint32_t height);
+	void ReleaseNV12Texture(uintptr_t handle);
+	void RenderNV12Geometry(Rml::CompiledGeometryHandle geometry,
+		Rml::Vector2f translation, uintptr_t nv12_handle);
+
 	void EnableScissorRegion(bool enable) override;
 	void SetScissorRegion(Rml::Rectanglei region) override;
 
@@ -165,6 +179,7 @@ private:
 	struct DeferredRelease {
 		ComPtr<ID3D12Resource> resource;
 		int32_t srv_index = -1;  // -1 if no SRV slot to free
+		uint64_t fence_value = 0; // GPU fence value that must complete before release
 	};
 	void DeferRelease(ComPtr<ID3D12Resource> resource, int32_t srv_index = -1);
 	void ProcessDeferredReleases();
@@ -176,6 +191,9 @@ private:
 	// --- Texture upload helpers ---
 	void UploadTextureData(ID3D12Resource* dest_texture, const Rml::byte* data, int width, int height);
 	void UploadR8TextureData(ID3D12Resource* dest_texture, const uint8_t* data,
+		uint32_t src_stride, int width, int height,
+		void* upload_buf = nullptr);
+	void UploadR8G8TextureData(ID3D12Resource* dest_texture, const uint8_t* data,
 		uint32_t src_stride, int width, int height,
 		void* upload_buf = nullptr);
 
@@ -234,13 +252,18 @@ private:
 	ComPtr<ID3D12PipelineState> pso_yuv_;
 	ComPtr<ID3D12PipelineState> pso_yuv_stencil_;
 
+	// NV12 video rendering (R8 Y + R8G8 UV → RGB conversion in pixel shader)
+	ComPtr<ID3D12RootSignature> nv12_root_signature_;
+	ComPtr<ID3D12PipelineState> pso_nv12_;
+	ComPtr<ID3D12PipelineState> pso_nv12_stencil_;
+
 	// Per-frame resources
 	std::array<ComPtr<ID3D12Resource>, NUM_BACK_BUFFERS> back_buffers_;
 	std::array<ComPtr<ID3D12CommandAllocator>, NUM_BACK_BUFFERS> command_allocators_;
 	ComPtr<ID3D12GraphicsCommandList> command_list_;
 
-	// Per-frame deferred deletion
-	std::array<std::vector<DeferredRelease>, NUM_BACK_BUFFERS> deferred_releases_;
+	// Deferred deletion (fence-value tagged, single list)
+	std::vector<DeferredRelease> deferred_releases_;
 
 	// Synchronization
 	ComPtr<ID3D12Fence> fence_;

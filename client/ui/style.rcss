@@ -74,6 +74,12 @@ body {
     font-weight: bold;
 }
 
+.titlebar-fps {
+    color: #555770;
+    font-size: 11dp;
+    margin-right: 8dp;
+}
+
 .titlebar-buttons {
     display: flex;
     flex-direction: row;

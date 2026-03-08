@@ -26,18 +26,21 @@ public:
     NetClient();
     ~NetClient();
 
-    // Connect to server via QUIC (unified control + data)
-    // Optional resumption ticket enables 0-RTT reconnection.
+    // Start connecting to server via QUIC (non-blocking).
+    // Returns false if setup failed immediately (bad params, MsQuic not init).
+    // Poll is_connected() / connect_failed() to check result.
     bool connect(const std::string& host, uint16_t port,
                  const uint8_t* ticket = nullptr, size_t ticket_len = 0);
 
     // Get the server certificate fingerprint (after QUIC connect)
     std::string get_server_fingerprint() const;
 
-    // Disconnect from server
+    // Disconnect from server (or cancel pending connection)
     void disconnect();
 
     bool is_connected() const { return connected_; }
+    bool is_connecting() const { return connecting_ && !connected_ && !connect_failed_; }
+    bool connect_failed() const { return connect_failed_; }
 
     // Send a control message to the server (reliable, on control stream)
     bool send_message(protocol::ControlMessageType type,
@@ -85,6 +88,8 @@ private:
     HQUIC video_stream_ = nullptr;
 
     std::atomic<bool> connected_{false};
+    std::atomic<bool> connecting_{false};
+    std::atomic<bool> connect_failed_{false};
     std::mutex write_mutex_;
 
     // Stream receive buffers

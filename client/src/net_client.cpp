@@ -1,5 +1,6 @@
 #include <client/net_client.h>
 #include <parties/quic_common.h>
+#include <parties/profiler.h>
 #include <parties/protocol.h>
 #include <parties/crypto.h>
 
@@ -18,6 +19,7 @@ NetClient::~NetClient() {
 
 bool NetClient::connect(const std::string& host, uint16_t port,
                          const uint8_t* ticket, size_t ticket_len) {
+	ZoneScopedN("NetClient::connect");
     if (connected_) return false;
 
     api_ = parties::quic_api();
@@ -115,20 +117,10 @@ bool NetClient::connect(const std::string& host, uint16_t port,
 
     std::printf("[NetClient] Connecting to %s:%u via QUIC...\n", host.c_str(), port);
 
-    // Connection is async — connected_ will be set in the CONNECTED event
-    // But we need to wait for it here for API compatibility
-    // Wait up to 10 seconds for connection
-    for (int i = 0; i < 1000 && !connected_; i++) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-
-    if (!connected_) {
-        std::fprintf(stderr, "[NetClient] QUIC connection timed out\n");
-        api_->ConnectionShutdown(connection_, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, 0);
-        // Cleanup happens in SHUTDOWN_COMPLETE callback
-        return false;
-    }
-
+    // Connection is async — connected_ will be set in the CONNECTED event.
+    // Poll is_connected() / connect_failed() from the UI thread.
+    connecting_ = true;
+    connect_failed_ = false;
     return true;
 }
 
@@ -137,8 +129,11 @@ std::string NetClient::get_server_fingerprint() const {
 }
 
 void NetClient::disconnect() {
-    if (!connected_ && !connection_) return;
+	ZoneScopedN("NetClient::disconnect");
+    if (!connected_ && !connecting_ && !connection_) return;
     connected_ = false;
+    connecting_ = false;
+    connect_failed_ = false;
 
     if (connection_) {
         api_->ConnectionShutdown(connection_, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, 0);
@@ -181,6 +176,7 @@ void NetClient::disconnect() {
 
 bool NetClient::send_message(protocol::ControlMessageType type,
                               const uint8_t* payload, size_t payload_len) {
+	ZoneScopedN("NetClient::send_message");
     std::lock_guard<std::mutex> lock(write_mutex_);
     if (!connected_ || !control_stream_) return false;
 
@@ -208,6 +204,7 @@ bool NetClient::send_message(protocol::ControlMessageType type,
 }
 
 bool NetClient::send_data(const uint8_t* data, size_t len, bool /*reliable*/) {
+	ZoneScopedN("NetClient::send_data");
     if (!connected_ || !connection_) return false;
 
     // Both the data buffer AND the QUIC_BUFFER descriptor must be heap-allocated
@@ -227,6 +224,7 @@ bool NetClient::send_data(const uint8_t* data, size_t len, bool /*reliable*/) {
 }
 
 bool NetClient::send_video(const uint8_t* data, size_t len, bool /*reliable*/) {
+	ZoneScopedN("NetClient::send_video");
     if (!connected_ || !video_stream_) return false;
 
     // Wire format: [u32 len][data]
@@ -266,6 +264,7 @@ QUIC_STATUS NetClient::on_connection_event(HQUIC connection,
     switch (event->Type) {
     case QUIC_CONNECTION_EVENT_CONNECTED: {
         std::printf("[NetClient] QUIC connected\n");
+        connecting_ = false;
 
         // Open bidirectional control stream
         HQUIC stream = nullptr;
@@ -352,16 +351,22 @@ QUIC_STATUS NetClient::on_connection_event(HQUIC connection,
     case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_TRANSPORT:
         std::printf("[NetClient] Connection shut down by transport: 0x%lx\n",
                     (unsigned long)event->SHUTDOWN_INITIATED_BY_TRANSPORT.Status);
+        if (connecting_) connect_failed_ = true;
+        connecting_ = false;
         connected_ = false;
         break;
 
     case QUIC_CONNECTION_EVENT_SHUTDOWN_INITIATED_BY_PEER:
         std::printf("[NetClient] Connection shut down by server\n");
+        if (connecting_) connect_failed_ = true;
+        connecting_ = false;
         connected_ = false;
         break;
 
     case QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE:
         std::printf("[NetClient] Connection shutdown complete\n");
+        if (connecting_) connect_failed_ = true;
+        connecting_ = false;
         connected_ = false;
         control_stream_ = nullptr;
         video_stream_ = nullptr;
@@ -425,6 +430,7 @@ QUIC_STATUS NetClient::on_stream_event(HQUIC stream, QUIC_STREAM_EVENT* event) {
 }
 
 void NetClient::process_stream_data(const uint8_t* data, size_t len) {
+	ZoneScopedN("NetClient::process_stream_data");
     std::lock_guard<std::mutex> lock(buffer_mutex_);
     recv_buffer_.insert(recv_buffer_.end(), data, data + len);
 
@@ -458,6 +464,7 @@ void NetClient::process_stream_data(const uint8_t* data, size_t len) {
 }
 
 void NetClient::process_video_stream_data(const uint8_t* data, size_t len) {
+	ZoneScopedN("NetClient::process_video_stream_data");
     std::lock_guard<std::mutex> lock(video_buffer_mutex_);
     video_recv_buffer_.insert(video_recv_buffer_.end(), data, data + len);
 

@@ -34,6 +34,9 @@ add_executable(parties_client
     src/video_element.cpp
     src/stream_audio_capture.cpp
     src/stream_audio_player.cpp
+    src/nvidia/nvidia_loader.cpp
+    src/nvidia/nvenc_encoder.cpp
+    src/nvidia/nvdec_decoder.cpp
     "${CMAKE_CURRENT_BINARY_DIR}/app.rc"
 )
 

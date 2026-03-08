@@ -8,6 +8,7 @@
 #include <parties/serialization.h>
 #include <parties/crypto.h>
 #include <parties/permissions.h>
+#include <parties/profiler.h>
 
 #include <RmlUi/Core/Factory.h>
 
@@ -1024,6 +1025,10 @@ void App::shutdown() {
 }
 
 void App::update() {
+    // Check async connection progress
+    if (awaiting_connection_)
+        poll_connecting();
+
     // Process network messages
     if (net_.is_connected())
         process_server_messages();
@@ -1085,10 +1090,10 @@ void App::update() {
     // QUIC datagrams are received via callbacks — no polling needed
 
     // Deliver latest decoded video frame to VideoElement for GPU rendering.
-    // I420 planes are passed directly — the pixel shader converts YUV→RGB on the GPU.
     if (new_frame_available_ && doc_) {
         std::vector<uint8_t> y, u, v;
-        uint32_t w, h, ys, uvs;
+        uint32_t w = 0, h = 0, ys = 0, uvs = 0;
+        bool nv12 = false;
         {
             std::lock_guard<std::mutex> lock(frame_mutex_);
             if (new_frame_available_) {
@@ -1099,74 +1104,59 @@ void App::update() {
                 h = shared_height_;
                 ys = shared_y_stride_;
                 uvs = shared_uv_stride_;
+                nv12 = shared_nv12_;
                 new_frame_available_ = false;
             }
         }
         if (!y.empty() && w > 0 && h > 0) {
-            fps_display_.tick();
             auto* elem = doc_->GetElementById("screen-share");
-            if (elem)
-                static_cast<VideoElement*>(elem)->UpdateYUVFrame(
-                    y.data(), ys, u.data(), v.data(), uvs, w, h);
+            if (elem) {
+                auto* ve = static_cast<VideoElement*>(elem);
+                if (nv12)
+                    ve->UpdateNV12Frame(y, ys, u, uvs, w, h);
+                else
+                    ve->UpdateYUVFrame(y.data(), ys, u.data(), v.data(), uvs, w, h);
+            }
         }
-    }
-
-    // Video pipeline FPS diagnostics (prints every 2 seconds)
-    if (viewing_sharer_ != 0) {
-        float enc = fps_encode_.check();
-        float recv = fps_recv_.check();
-        float dec = fps_decode_.check();
-        float disp = fps_display_.check();
-        if (enc > 0 || recv > 0 || dec > 0 || disp > 0) {
-            std::printf("[Video FPS] encode=%.1f recv=%.1f decode=%.1f display=%.1f\n",
-                        enc, recv, dec, disp);
+        // Return spent buffers so they cycle back to staging_ via swap chain.
+        // Without this, buffers get destroyed and staging_ must malloc every frame.
+        // Only return if no new frame arrived in the meantime.
+        {
+            std::lock_guard<std::mutex> lock(frame_mutex_);
+            if (!new_frame_available_) {
+                shared_y_.swap(y);
+                shared_u_.swap(u);
+                shared_v_.swap(v);
+            }
         }
     }
 
     // Update voice level meter
     update_voice_level();
 
-    // Timing: measure where time is spent in the render loop
-    static LARGE_INTEGER qpc_freq = {};
-    static double accum_update_ms = 0, accum_begin_ms = 0, accum_render_ms = 0, accum_end_ms = 0;
-    static int timing_count = 0;
-    static auto timing_last = std::chrono::steady_clock::now();
-    if (!qpc_freq.QuadPart) QueryPerformanceFrequency(&qpc_freq);
-
-    LARGE_INTEGER t0, t1, t2, t3, t4;
-    QueryPerformanceCounter(&t0);
+    // Update FPS counter in titlebar (once per second)
+    fps_frame_count_++;
+    auto now_fps = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration<float>(now_fps - fps_last_update_).count();
+    if (elapsed >= 1.0f) {
+        int fps = static_cast<int>(fps_frame_count_ / elapsed);
+        fps_frame_count_ = 0;
+        fps_last_update_ = now_fps;
+        if (doc_) {
+            if (auto* elem = doc_->GetElementById("titlebar-fps"))
+                elem->SetInnerRML(Rml::String(std::to_string(fps) + " fps"));
+        }
+    }
 
     // Update + render UI
     ui_.update();
-    QueryPerformanceCounter(&t1);
     ui_.render_begin();
-    QueryPerformanceCounter(&t2);
     ui_.render_body();
-    QueryPerformanceCounter(&t3);
     ui_.render_end();
-    QueryPerformanceCounter(&t4);
-
-    auto to_ms = [&](LARGE_INTEGER a, LARGE_INTEGER b) {
-        return (b.QuadPart - a.QuadPart) * 1000.0 / qpc_freq.QuadPart;
-    };
-    accum_update_ms += to_ms(t0, t1);
-    accum_begin_ms += to_ms(t1, t2);
-    accum_render_ms += to_ms(t2, t3);
-    accum_end_ms += to_ms(t3, t4);
-    timing_count++;
-
-    auto now = std::chrono::steady_clock::now();
-    if (std::chrono::duration<float>(now - timing_last).count() >= 2.0f && timing_count > 0) {
-        std::printf("[Render Timing] update=%.2fms begin=%.2fms render=%.2fms end=%.2fms (avg over %d frames)\n",
-            accum_update_ms / timing_count, accum_begin_ms / timing_count,
-            accum_render_ms / timing_count, accum_end_ms / timing_count, timing_count);
-        accum_update_ms = accum_begin_ms = accum_render_ms = accum_end_ms = 0;
-        timing_count = 0;
-        timing_last = now;
-    }
 }
 
 void App::update_voice_level() {
+	ZoneScopedN("App::update_voice_level");
     if (!doc_ || !model_.is_connected) return;
 
     float level = audio_.voice_level();
@@ -1201,36 +1191,62 @@ void App::do_connect() {
     server_model_.login_error = "";
     server_model_.dirty("login_error");
 
-    // Connect TLS if not already connected
-    if (!net_.is_connected()) {
-        server_model_.login_status = "Connecting...";
+    // Already connected — go straight to auth
+    if (net_.is_connected()) {
+        finish_connect();
+        return;
+    }
+
+    // Already connecting — don't start again
+    if (net_.is_connecting()) return;
+
+    server_model_.login_status = "Connecting...";
+    server_model_.dirty("login_status");
+
+    // Start async QUIC connection
+    auto ticket = settings_.load_resumption_ticket(server_host_, server_port_);
+    if (!net_.connect(server_host_, server_port_,
+                      ticket.empty() ? nullptr : ticket.data(), ticket.size())) {
+        server_model_.login_error = "Failed to connect to server";
+        server_model_.dirty("login_error");
+        return;
+    }
+    awaiting_connection_ = true;
+    // poll_connecting() in update() will handle the rest
+}
+
+void App::poll_connecting() {
+    if (net_.connect_failed()) {
+        awaiting_connection_ = false;
+        server_model_.login_error = "Failed to connect to server";
+        server_model_.login_status = "";
+        server_model_.dirty("login_error");
         server_model_.dirty("login_status");
+        net_.disconnect();  // Clean up QUIC resources
+        return;
+    }
 
-        // Load resumption ticket for 0-RTT if available
-        auto ticket = settings_.load_resumption_ticket(server_host_, server_port_);
-        if (!net_.connect(server_host_, server_port_,
-                          ticket.empty() ? nullptr : ticket.data(), ticket.size())) {
-            server_model_.login_error = "Failed to connect to server";
-            server_model_.dirty("login_error");
-            return;
-        }
+    if (net_.is_connected()) {
+        awaiting_connection_ = false;
+        finish_connect();
+    }
+}
 
-        // TOFU check
-        std::string fp = net_.get_server_fingerprint();
-        auto result = settings_.check_fingerprint(server_host_, server_port_, fp);
-        if (result == Settings::TofuResult::Mismatch) {
-            // Show warning dialog — keep connection alive, let user decide
-            server_model_.tofu_fingerprint = Rml::String(fp);
-            server_model_.show_tofu_warning = true;
-            server_model_.show_login = false;
-            server_model_.dirty("tofu_fingerprint");
-            server_model_.dirty("show_tofu_warning");
-            server_model_.dirty("show_login");
-            return;
-        }
-        if (result == Settings::TofuResult::Unknown) {
-            settings_.trust_fingerprint(server_host_, server_port_, fp);
-        }
+void App::finish_connect() {
+    // TOFU check
+    std::string fp = net_.get_server_fingerprint();
+    auto result = settings_.check_fingerprint(server_host_, server_port_, fp);
+    if (result == Settings::TofuResult::Mismatch) {
+        server_model_.tofu_fingerprint = Rml::String(fp);
+        server_model_.show_tofu_warning = true;
+        server_model_.show_login = false;
+        server_model_.dirty("tofu_fingerprint");
+        server_model_.dirty("show_tofu_warning");
+        server_model_.dirty("show_login");
+        return;
+    }
+    if (result == Settings::TofuResult::Unknown) {
+        settings_.trust_fingerprint(server_host_, server_port_, fp);
     }
 
     server_model_.login_status = "Authenticating...";
@@ -1325,6 +1341,7 @@ void App::leave_channel() {
 // ═══════════════════════════════════════════════════════════════════════
 
 void App::process_server_messages() {
+	ZoneScopedN("App::process_server_messages");
     auto messages = net_.incoming().drain();
     for (auto& msg : messages) {
         switch (msg.type) {
@@ -1618,6 +1635,7 @@ void App::on_admin_result(const uint8_t* data, size_t len) {
 // ═══════════════════════════════════════════════════════════════════════
 
 void App::show_share_picker() {
+	ZoneScopedN("App::show_share_picker");
     if (sharing_screen_ || !authenticated_ || current_channel_ == 0) return;
 
     // Enumerate available capture targets
@@ -1659,6 +1677,7 @@ void App::show_share_picker() {
 }
 
 void App::start_screen_share(int target_index) {
+	ZoneScopedN("App::start_screen_share");
     if (sharing_screen_ || !authenticated_ || current_channel_ == 0) return;
 
     if (target_index < 0 || target_index >= static_cast<int>(capture_targets_.size())) {
@@ -1771,7 +1790,6 @@ void App::start_screen_share(int target_index) {
         std::memcpy(pkt.data() + off, data, len);
 
         net_.send_video(pkt.data(), pkt.size(), true);
-        fps_encode_.tick();
 
         // Feed raw bitstream to local preview decoder (no encryption needed)
         if (decoder_ && viewing_sharer_ == user_id_) {
@@ -1810,6 +1828,7 @@ void App::start_screen_share(int target_index) {
 }
 
 void App::stop_screen_share() {
+	ZoneScopedN("App::stop_screen_share");
     if (!sharing_screen_) return;
 
     sharing_screen_ = false;
@@ -1843,6 +1862,7 @@ void App::stop_screen_share() {
 }
 
 void App::on_video_frame_received(uint32_t sender_id, const uint8_t* data, size_t len) {
+	ZoneScopedN("App::on_video_frame_received");
     // data = [frame_number(4)][timestamp(4)][flags(1)][width(2)][height(2)][codec_id(1)][encoded(N)]
     if (len < 14) return;
     if (sender_id != viewing_sharer_) return;
@@ -1855,8 +1875,6 @@ void App::on_video_frame_received(uint32_t sender_id, const uint8_t* data, size_
     size_t encoded_len = len - 14;
 
     if (decode_running_ && encoded_len > 0) {
-        fps_recv_.tick();
-
         DecodeWork work;
         work.data.assign(encoded, encoded + encoded_len);
         work.timestamp = timestamp;
@@ -1870,6 +1888,7 @@ void App::on_video_frame_received(uint32_t sender_id, const uint8_t* data, size_
 }
 
 void App::on_screen_share_started(const uint8_t* data, size_t len) {
+	ZoneScopedN("App::on_screen_share_started");
     BinaryReader reader(data, len);
     uint32_t sharer_id = reader.read_u32();
     uint8_t codec_id = reader.read_u8();
@@ -1883,19 +1902,22 @@ void App::on_screen_share_started(const uint8_t* data, size_t len) {
         model_.is_sharing = true;
         model_.dirty("is_sharing");
 
+        // Use codec/dimensions from server message (authoritative, avoids null encoder_ race)
+        auto codec = static_cast<VideoCodecId>(codec_id);
+
         // Add self to active sharers (appears as a tab)
         SharerInfo self_info;
         self_info.user_id = user_id_;
         self_info.name = username_;
-        self_info.codec = encoder_->codec();
-        self_info.width = static_cast<uint16_t>(encoder_->width());
-        self_info.height = static_cast<uint16_t>(encoder_->height());
+        self_info.codec = codec;
+        self_info.width = width;
+        self_info.height = height;
         active_sharers_[user_id_] = std::move(self_info);
 
         // Start local preview: decode our own encoded stream
         viewing_sharer_ = user_id_;
         decoder_ = std::make_unique<VideoDecoder>();
-        if (decoder_->init(encoder_->codec(), encoder_->width(), encoder_->height())) {
+        if (decoder_->init(codec, width, height)) {
             start_decode_thread();
         }
         sync_sharer_model();
@@ -1928,6 +1950,7 @@ void App::on_screen_share_started(const uint8_t* data, size_t len) {
 }
 
 void App::on_screen_share_stopped(const uint8_t* data, size_t len) {
+	ZoneScopedN("App::on_screen_share_stopped");
     BinaryReader reader(data, len);
     uint32_t sharer_id = reader.read_u32();
     if (reader.error()) return;
@@ -1979,6 +2002,7 @@ void App::on_screen_share_denied(const uint8_t* data, size_t len) {
 // ═══════════════════════════════════════════════════════════════════════
 
 void App::watch_sharer(UserId id) {
+	ZoneScopedN("App::watch_sharer");
     auto it = active_sharers_.find(id);
     if (it == active_sharers_.end() || id == viewing_sharer_) return;
 
@@ -2023,6 +2047,7 @@ void App::watch_sharer(UserId id) {
 }
 
 void App::stop_watching() {
+	ZoneScopedN("App::stop_watching");
     if (viewing_sharer_ == 0) return;
 
     bool was_self = (viewing_sharer_ == user_id_);
@@ -2097,35 +2122,55 @@ void App::sync_sharer_model() {
 // ═══════════════════════════════════════════════════════════════════════
 
 void App::start_decode_thread() {
+	ZoneScopedN("App::start_decode_thread");
     if (decode_running_) return;
 
     // Set up decoder callback: copy I420 planes into shared buffers.
     // GPU does the YUV→RGB conversion in a pixel shader — zero CPU conversion.
     decoder_->on_decoded = [this](const DecodedFrame& frame) {
+        ZoneScopedN("on_decoded::copy_planes");
         uint32_t w = frame.width, h = frame.height;
         uint32_t half_h = h / 2;
 
-        // Copy planes outside lock for minimal contention
-        std::vector<uint8_t> y(static_cast<size_t>(frame.y_stride) * h);
-        std::memcpy(y.data(), frame.y_plane, y.size());
+        // Reuse staging buffers — resize is free after first frame (same size).
+        // memcpy from pinned GPU memory is the only real cost (~1ms for 4K NV12).
+        {
+            ZoneScopedN("copy_planes::Y");
+            size_t y_size = static_cast<size_t>(frame.y_stride) * h;
+            staging_y_.resize(y_size);
+            std::memcpy(staging_y_.data(), frame.y_plane, y_size);
+        }
 
-        std::vector<uint8_t> u(static_cast<size_t>(frame.uv_stride) * half_h);
-        std::memcpy(u.data(), frame.u_plane, u.size());
+        size_t uv_size = static_cast<size_t>(frame.uv_stride) * half_h;
+        {
+            ZoneScopedN("copy_planes::U");
+            staging_u_.resize(uv_size);
+            std::memcpy(staging_u_.data(), frame.u_plane, uv_size);
+        }
+        
 
-        std::vector<uint8_t> v(static_cast<size_t>(frame.uv_stride) * half_h);
-        std::memcpy(v.data(), frame.v_plane, v.size());
+        if (!frame.nv12 && frame.v_plane) {
+            ZoneScopedN("copy_planes::V");
+            staging_v_.resize(uv_size);
+            std::memcpy(staging_v_.data(), frame.v_plane, uv_size);
+        }
 
-        fps_decode_.tick();
-
-        std::lock_guard<std::mutex> lock(frame_mutex_);
-        shared_y_.swap(y);
-        shared_u_.swap(u);
-        shared_v_.swap(v);
-        shared_width_ = w;
-        shared_height_ = h;
-        shared_y_stride_ = frame.y_stride;
-        shared_uv_stride_ = frame.uv_stride;
-        new_frame_available_ = true;
+        // Swap under lock — pointer exchanges only (~0 ns).
+        // Old shared_ buffers move into staging_, reused next frame.
+        {
+            ZoneScopedN("copy_planes::swap");
+            std::lock_guard<std::mutex> lock(frame_mutex_);
+            shared_y_.swap(staging_y_);
+            shared_u_.swap(staging_u_);
+            shared_v_.swap(staging_v_);
+            shared_width_ = w;
+            shared_height_ = h;
+            shared_y_stride_ = frame.y_stride;
+            shared_uv_stride_ = frame.uv_stride;
+            shared_nv12_ = frame.nv12;
+            new_frame_available_ = true;
+        }
+        
     };
 
     decode_running_ = true;
@@ -2149,14 +2194,17 @@ void App::stop_decode_thread() {
 }
 
 void App::decode_loop() {
+	TracySetThreadName("VideoDecoder");
     // If the decode queue backs up beyond this many frames, the decoder
     // can't keep up.  Flush everything and request a keyframe (PLI) so
     // the sharer sends a fresh IDR/key and we restart cleanly.
     static constexpr size_t MAX_DECODE_QUEUE = 10;
 
     while (decode_running_) {
+        ZoneScopedN("App::decode_loop");
         std::queue<DecodeWork> batch;
         {
+            ZoneScopedN("decode_loop::wait");
             std::unique_lock<std::mutex> lock(decode_queue_mutex_);
             decode_queue_cv_.wait(lock, [this]() {
                 return !decode_queue_.empty() || !decode_running_;

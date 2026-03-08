@@ -1,7 +1,9 @@
 #include <client/video_decoder.h>
+#include "nvidia/nvdec_decoder.h"
 
 #include <cstdio>
 #include <cstring>
+#include <parties/profiler.h>
 #include <vector>
 
 // AV1 decoder
@@ -39,6 +41,7 @@ struct VideoDecoder::Impl {
 
     // Drain all available dav1d pictures and deliver via callback
     void drain_dav1d(const std::function<void(const DecodedFrame&)>& cb) {
+        ZoneScopedN("VideoDecoder::drain_dav1d");
         Dav1dPicture pic = {};
         while (dav1d_get_picture(dav1d_ctx, &pic) == 0) {
             if (cb) {
@@ -59,6 +62,7 @@ struct VideoDecoder::Impl {
 
     // Collect all available MFT output, convert NV12 -> I420, deliver
     void collect_mft(const std::function<void(const DecodedFrame&)>& cb) {
+        ZoneScopedN("VideoDecoder::collect_mft");
         for (;;) {
             MFT_OUTPUT_DATA_BUFFER output = {};
             ComPtr<IMFSample> out_sample;
@@ -114,6 +118,7 @@ struct VideoDecoder::Impl {
                     BYTE* raw = nullptr;
                     DWORD raw_len = 0;
                     if (SUCCEEDED(buf->Lock(&raw, nullptr, &raw_len))) {
+                        ZoneScopedN("NV12_to_I420");
                         uint32_t stride = nv12_stride;
                         if (stride == 0) stride = width;
 
@@ -177,6 +182,7 @@ VideoDecoder::VideoDecoder() = default;
 VideoDecoder::~VideoDecoder() { shutdown(); }
 
 bool VideoDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height) {
+	ZoneScopedN("VideoDecoder::init");
     shutdown();
 
     impl_ = std::make_unique<Impl>();
@@ -185,6 +191,15 @@ bool VideoDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height) {
     codec_ = codec;
 
     if (codec == VideoCodecId::AV1) {
+        // Try NVDEC first for AV1
+        auto nvdec = std::make_unique<nvidia::NvdecDecoder>();
+        if (nvdec->init(width, height)) {
+            nvdec_ = std::move(nvdec);
+            initialized_ = true;
+            return true;
+        }
+
+        // Fall back to dav1d
         Dav1dSettings settings;
         dav1d_default_settings(&settings);
         settings.n_threads = 4;
@@ -293,6 +308,13 @@ bool VideoDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height) {
 }
 
 void VideoDecoder::shutdown() {
+    if (nvdec_) {
+        nvdec_->shutdown();
+        nvdec_.reset();
+        initialized_ = false;
+        return;
+    }
+
     if (!impl_) return;
 
     if (impl_->dav1d_ctx) {
@@ -311,10 +333,18 @@ void VideoDecoder::shutdown() {
 }
 
 bool VideoDecoder::decode(const uint8_t* data, size_t len, int64_t timestamp) {
-    if (!initialized_ || !impl_) return false;
+	ZoneScopedN("VideoDecoder::decode");
+    if (!initialized_) return false;
+
+    if (nvdec_) {
+        nvdec_->on_decoded = on_decoded;
+        return nvdec_->decode(data, len, timestamp);
+    }
+
+    if (!impl_) return false;
 
     if (codec_ == VideoCodecId::AV1) {
-        // dav1d path
+        ZoneScopedN("decode::dav1d");
         Dav1dData dav1d_data = {};
         uint8_t* buf = dav1d_data_create(&dav1d_data, len);
         if (!buf) return false;
@@ -332,7 +362,7 @@ bool VideoDecoder::decode(const uint8_t* data, size_t len, int64_t timestamp) {
         }
         return true;
     } else {
-        // MFT path (H.264/H.265)
+        ZoneScopedN("decode::mft");
         ComPtr<IMFMediaBuffer> in_buf;
         MFCreateMemoryBuffer(static_cast<DWORD>(len), &in_buf);
 
@@ -361,7 +391,16 @@ bool VideoDecoder::decode(const uint8_t* data, size_t len, int64_t timestamp) {
 }
 
 void VideoDecoder::flush() {
-    if (!initialized_ || !impl_) return;
+	ZoneScopedN("VideoDecoder::flush");
+    if (!initialized_) return;
+
+    if (nvdec_) {
+        nvdec_->on_decoded = on_decoded;
+        nvdec_->flush();
+        return;
+    }
+
+    if (!impl_) return;
 
     if (codec_ == VideoCodecId::AV1) {
         impl_->drain_dav1d(on_decoded);

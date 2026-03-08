@@ -3,6 +3,7 @@
 #include <cstring>
 #include <algorithm>
 #include <cstdio>
+#include <parties/profiler.h>
 
 namespace parties::client {
 
@@ -31,6 +32,7 @@ static int16_t seq_diff(uint16_t a, uint16_t b) {
 }
 
 void VoiceMixer::push_packet(UserId user_id, uint16_t seq, const uint8_t* opus_data, size_t opus_len) {
+	ZoneScopedN("VoiceMixer::push_packet");
     std::lock_guard<std::mutex> lock(mutex_);
     auto& stream = get_or_create_stream(user_id);
 
@@ -69,6 +71,7 @@ void VoiceMixer::push_packet(UserId user_id, uint16_t seq, const uint8_t* opus_d
 }
 
 bool VoiceMixer::decode_frame(UserStream& stream, float* pcm_out, int frame_size) {
+	ZoneScopedN("VoiceMixer::decode_frame");
     if (!stream.initialized) return false;
 
     // Wait until we've buffered enough packets before starting playback
@@ -103,6 +106,7 @@ bool VoiceMixer::decode_frame(UserStream& stream, float* pcm_out, int frame_size
 }
 
 void VoiceMixer::mix_output(float* output, int frame_count) {
+	ZoneScopedN("VoiceMixer::mix_output");
     std::lock_guard<std::mutex> lock(mutex_);
 
     std::memset(output, 0, frame_count * sizeof(float));

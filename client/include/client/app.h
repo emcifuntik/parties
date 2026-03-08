@@ -50,6 +50,8 @@ public:
 private:
     // Server list actions
     void do_connect();
+    void poll_connecting();
+    void finish_connect();
     void refresh_server_list();
 
     // Networking
@@ -118,6 +120,7 @@ private:
     bool has_identity_ = false;
 
     int connecting_server_id_ = 0;
+    bool awaiting_connection_ = false;  // True while waiting for async QUIC connect
     uint16_t voice_seq_ = 0;          // Sequence number for outgoing voice packets
 
     // PTT release delay
@@ -164,31 +167,20 @@ private:
     std::condition_variable decode_queue_cv_;
     std::queue<DecodeWork> decode_queue_;
 
-    // Latest decoded frame — I420 planes passed directly to GPU (no CPU conversion)
+    // Latest decoded frame — YUV planes passed directly to GPU (no CPU conversion)
+    // Decode thread writes to staging_*, swaps with shared_* under lock.
+    // Main thread swaps shared_* out. Buffers are reused across frames (no malloc after first).
     std::mutex frame_mutex_;
     std::atomic<bool> new_frame_available_{false};
     std::vector<uint8_t> shared_y_, shared_u_, shared_v_;
+    std::vector<uint8_t> staging_y_, staging_u_, staging_v_;  // decode-thread-owned
     uint32_t shared_width_ = 0, shared_height_ = 0;
     uint32_t shared_y_stride_ = 0, shared_uv_stride_ = 0;
+    bool shared_nv12_ = false;
 
-    // Video pipeline FPS diagnostics
-    struct FpsCounter {
-        std::atomic<uint32_t> count{0};
-        std::chrono::steady_clock::time_point last_log{std::chrono::steady_clock::now()};
-        void tick() { count.fetch_add(1, std::memory_order_relaxed); }
-        // Returns FPS and resets if >= 2 seconds elapsed, else returns 0
-        float check() {
-            auto now = std::chrono::steady_clock::now();
-            auto elapsed = std::chrono::duration<float>(now - last_log).count();
-            if (elapsed >= 2.0f) {
-                float fps = count.exchange(0, std::memory_order_relaxed) / elapsed;
-                last_log = now;
-                return fps;
-            }
-            return 0;
-        }
-    };
-    FpsCounter fps_encode_, fps_recv_, fps_decode_, fps_display_;
+    // FPS counter
+    uint32_t fps_frame_count_ = 0;
+    std::chrono::steady_clock::time_point fps_last_update_{std::chrono::steady_clock::now()};
 
     // UI document
     Rml::ElementDocument* doc_ = nullptr;
