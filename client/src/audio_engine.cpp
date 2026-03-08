@@ -1,4 +1,5 @@
 #include <client/audio_engine.h>
+#include <client/stream_audio_player.h>
 #include <parties/profiler.h>
 #include <client/voice_mixer.h>
 
@@ -45,16 +46,22 @@ bool AudioEngine::init() {
 
     capture_ids_.clear();
     capture_names_.clear();
+    default_capture_ = 0;
     for (ma_uint32 i = 0; i < capture_count; i++) {
         capture_ids_.push_back(capture_infos[i].id);
         capture_names_.push_back(capture_infos[i].name);
+        if (capture_infos[i].isDefault)
+            default_capture_ = static_cast<int>(i);
     }
 
     playback_ids_.clear();
     playback_names_.clear();
+    default_playback_ = 0;
     for (ma_uint32 i = 0; i < playback_count; i++) {
         playback_ids_.push_back(playback_infos[i].id);
         playback_names_.push_back(playback_infos[i].name);
+        if (playback_infos[i].isDefault)
+            default_playback_ = static_cast<int>(i);
     }
 
     // Initialize RNNoise
@@ -118,10 +125,10 @@ bool AudioEngine::init_devices() {
     }
     capture_initialized_ = true;
 
-    // --- Playback device ---
+    // --- Playback device (stereo: voice mono→upmix + stream stereo) ---
     ma_device_config play_config = ma_device_config_init(ma_device_type_playback);
     play_config.playback.format = ma_format_f32;
-    play_config.playback.channels = audio::CHANNELS;
+    play_config.playback.channels = 2;
     play_config.sampleRate = audio::SAMPLE_RATE;
     play_config.dataCallback = AudioEngine::playback_callback;
     play_config.pUserData = this;
@@ -266,12 +273,12 @@ void AudioEngine::playback_callback(ma_device* device, void* output,
     auto* engine = static_cast<AudioEngine*>(device->pUserData);
     engine->process_playback(static_cast<float*>(output), frame_count);
 
-    // Store playback reference for AEC (extract mono from stereo, float→int16 into ring buffer)
+    // Store playback reference for AEC (extract left channel from stereo, float→int16 into ring buffer)
     if (engine->aec_enabled_ && engine->aec_) {
         auto* out_f = static_cast<const float*>(output);
         size_t cap = engine->aec_ref_buf_.size();
         for (ma_uint32 i = 0; i < frame_count; i++) {
-            float s = out_f[i];
+            float s = out_f[i * 2];  // left channel
             if (s > 1.0f) s = 1.0f;
             else if (s < -1.0f) s = -1.0f;
             engine->aec_ref_buf_[engine->aec_ref_write_ % cap] =
@@ -384,36 +391,57 @@ void AudioEngine::process_capture(const float* input, ma_uint32 frame_count) {
 
 void AudioEngine::process_playback(float* output, ma_uint32 frame_count) {
 	ZoneScopedN("AudioEngine::process_playback");
-    std::memset(output, 0, frame_count * sizeof(float));
+    // Output is stereo interleaved (2 floats per frame)
+    const ma_uint32 total_samples = frame_count * 2;
+    std::memset(output, 0, total_samples * sizeof(float));
 
-    // Mix voice audio (skip when deafened)
-    if (!deafened_ && mixer_)
-        mixer_->mix_output(output, static_cast<int>(frame_count));
+    // Mix voice audio into mono temp buffer, then upmix to stereo
+    if (!deafened_ && mixer_) {
+        // VoiceMixer outputs mono
+        float mono_buf[4096];
+        ma_uint32 remaining = frame_count;
+        ma_uint32 offset = 0;
+        while (remaining > 0) {
+            ma_uint32 chunk = remaining > 4096 ? 4096 : remaining;
+            std::memset(mono_buf, 0, chunk * sizeof(float));
+            mixer_->mix_output(mono_buf, static_cast<int>(chunk));
 
-    // Voice normalization
-    if (normalize_enabled_ && !deafened_) {
-        float sum = 0.0f;
-        for (ma_uint32 i = 0; i < frame_count; i++)
-            sum += output[i] * output[i];
-        float rms = std::sqrt(sum / frame_count);
+            // Voice normalization (per-chunk)
+            if (normalize_enabled_) {
+                float sum = 0.0f;
+                for (ma_uint32 i = 0; i < chunk; i++)
+                    sum += mono_buf[i] * mono_buf[i];
+                float rms = std::sqrt(sum / chunk);
 
-        if (rms > 0.001f) {
-            float target = normalize_target_.load();
-            float desired_gain = target / rms;
-            desired_gain = std::clamp(desired_gain, 0.1f, 10.0f);
+                if (rms > 0.001f) {
+                    float slider = normalize_target_.load();
+                    float target = slider * slider * slider; // Power curve for perceptual linearity
+                    float desired_gain = target / rms;
+                    desired_gain = std::clamp(desired_gain, 0.1f, 10.0f);
+                    float alpha = 0.05f;
+                    current_gain_ += alpha * (desired_gain - current_gain_);
 
-            // Exponential smoothing to avoid clicks
-            float alpha = 0.05f;
-            current_gain_ += alpha * (desired_gain - current_gain_);
-
-            for (ma_uint32 i = 0; i < frame_count; i++) {
-                output[i] *= current_gain_;
-                // Soft clip
-                if (output[i] > 1.0f) output[i] = 1.0f;
-                else if (output[i] < -1.0f) output[i] = -1.0f;
+                    for (ma_uint32 i = 0; i < chunk; i++) {
+                        mono_buf[i] *= current_gain_;
+                        if (mono_buf[i] > 1.0f) mono_buf[i] = 1.0f;
+                        else if (mono_buf[i] < -1.0f) mono_buf[i] = -1.0f;
+                    }
+                }
             }
+
+            // Upmix mono to stereo (duplicate to both channels)
+            for (ma_uint32 i = 0; i < chunk; i++) {
+                output[(offset + i) * 2 + 0] = mono_buf[i];
+                output[(offset + i) * 2 + 1] = mono_buf[i];
+            }
+            offset += chunk;
+            remaining -= chunk;
         }
     }
+
+    // Mix stream audio (already stereo, adds to existing output)
+    if (stream_player_)
+        stream_player_->mix_output(output, static_cast<int>(frame_count));
 }
 
 } // namespace parties::client

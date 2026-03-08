@@ -2,6 +2,7 @@
 
 #include <cstring>
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <parties/profiler.h>
 
@@ -126,9 +127,15 @@ void VoiceMixer::mix_output(float* output, int frame_count) {
                 user_buf_.assign(audio::OPUS_FRAME_SIZE, 0.0f);
                 if (decode_frame(stream, user_buf_.data(), audio::OPUS_FRAME_SIZE)) {
                     stream.pcm_buf = user_buf_;
+                    // Compute RMS for speaking detection
+                    float sum = 0.0f;
+                    for (int i = 0; i < audio::OPUS_FRAME_SIZE; i++)
+                        sum += user_buf_[i] * user_buf_[i];
+                    stream.level = std::sqrt(sum / audio::OPUS_FRAME_SIZE);
                 } else {
                     std::memset(stream.pcm_buf.data(), 0,
                                audio::OPUS_FRAME_SIZE * sizeof(float));
+                    stream.level = 0.0f;
                 }
                 stream.pcm_pos = 0;
             }
@@ -165,6 +172,14 @@ void VoiceMixer::set_user_volume(UserId user_id, float volume) {
     auto it = streams_.find(user_id);
     if (it != streams_.end())
         it->second.volume = std::clamp(volume, 0.0f, 1.0f);
+}
+
+std::unordered_map<UserId, float> VoiceMixer::get_user_levels() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::unordered_map<UserId, float> result;
+    for (auto& [uid, stream] : streams_)
+        result[uid] = stream.level;
+    return result;
 }
 
 } // namespace parties::client

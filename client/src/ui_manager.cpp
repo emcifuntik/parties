@@ -158,7 +158,6 @@ void UiManager::render_begin() {
 void UiManager::render_body() {
 	ZoneScopedN("UiManager::render_body");
     if (!render_interface_ || !*render_interface_ || minimized_) return;
-    if (render_interface_->IsFrameSkipped()) return;
     render_interface_->Clear();
     if (context_) context_->Render();
 }
@@ -166,7 +165,6 @@ void UiManager::render_body() {
 void UiManager::render_end() {
 	ZoneScopedN("UiManager::render_end");
     if (!render_interface_ || !*render_interface_ || minimized_) return;
-    if (render_interface_->IsFrameSkipped()) return;
     render_interface_->EndFrame();
 }
 

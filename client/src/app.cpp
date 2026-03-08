@@ -79,8 +79,16 @@ void App::setup_model_callbacks() {
         audio_.set_muted(muted);
         model_.is_muted = muted;
         model_.dirty("is_muted");
+        // Update own entry in channel user list
+        for (auto& ch : model_.channels) {
+            for (auto& u : ch.users) {
+                if (u.id == static_cast<int>(user_id_)) u.muted = muted;
+            }
+        }
+        model_.dirty("channels");
         sound_player_.play(muted ? SoundPlayer::Effect::Mute
                                  : SoundPlayer::Effect::Unmute);
+        send_voice_state();
     };
 
     model_.on_toggle_deafen = [this]() {
@@ -88,8 +96,16 @@ void App::setup_model_callbacks() {
         audio_.set_deafened(deafened);
         model_.is_deafened = deafened;
         model_.dirty("is_deafened");
+        // Update own entry in channel user list
+        for (auto& ch : model_.channels) {
+            for (auto& u : ch.users) {
+                if (u.id == static_cast<int>(user_id_)) u.deafened = deafened;
+            }
+        }
+        model_.dirty("channels");
         sound_player_.play(deafened ? SoundPlayer::Effect::Deafen
                                     : SoundPlayer::Effect::Undeafen);
+        send_voice_state();
     };
 
     model_.on_select_capture = [this](int index) {
@@ -118,7 +134,7 @@ void App::setup_model_callbacks() {
 
     model_.on_normalize_target_changed = [this](float target) {
         audio_.set_normalize_target(target);
-        settings_.set_pref("audio.normalize_target", std::to_string(target));
+        save_pref_debounced("audio.normalize_target", std::to_string(target));
     };
 
     model_.on_aec_changed = [this](bool enabled) {
@@ -133,7 +149,7 @@ void App::setup_model_callbacks() {
 
     model_.on_vad_threshold_changed = [this](float threshold) {
         audio_.set_vad_threshold(threshold);
-        settings_.set_pref("audio.vad_threshold", std::to_string(threshold));
+        save_pref_debounced("audio.vad_threshold", std::to_string(threshold));
     };
 
     model_.on_toggle_ptt = [this]() {
@@ -154,7 +170,7 @@ void App::setup_model_callbacks() {
     };
 
     model_.on_ptt_delay_changed = [this](float delay) {
-        settings_.set_pref("audio.ptt_delay", std::to_string(static_cast<int>(delay)));
+        save_pref_debounced("audio.ptt_delay", std::to_string(static_cast<int>(delay)));
     };
 
     model_.on_toggle_share = [this]() {
@@ -190,7 +206,7 @@ void App::setup_model_callbacks() {
 
     model_.on_stream_volume_changed = [this](float vol) {
         stream_audio_player_.set_volume(vol);
-        settings_.set_pref("audio.stream_volume", std::to_string(vol));
+        save_pref_debounced("audio.stream_volume", std::to_string(vol));
     };
 
     // Admin operations
@@ -766,6 +782,10 @@ bool App::init(HWND hwnd) {
     for (auto& d : playback_devs)
         model_.playback_devices.push_back({Rml::String(d.name), d.index});
 
+    // Highlight the system default devices initially
+    model_.selected_capture = audio_.default_capture_index();
+    model_.selected_playback = audio_.default_playback_index();
+
     // Load and apply saved audio preferences
     {
         auto pref = [&](const char* key) -> std::string {
@@ -856,7 +876,7 @@ bool App::init(HWND hwnd) {
     // UI sound effects (own playback device, always running)
     sound_player_.init();
 
-    // Stream audio playback (own device, for screen share audio)
+    // Stream audio decoder (mixed into AudioEngine's playback device)
     stream_audio_player_.init();
 
     // Load saved stream volume
@@ -879,6 +899,7 @@ bool App::init(HWND hwnd) {
 
     // Wire audio to network (QUIC TLS encrypts in transit)
     audio_.set_mixer(&mixer_);
+    audio_.set_stream_player(&stream_audio_player_);
     audio_.on_encoded_frame = [this](const uint8_t* data, size_t len) {
         if (!authenticated_ || current_channel_ == 0) return;
 
@@ -1027,6 +1048,7 @@ void App::shutdown() {
     audio_.shutdown();
     net_.disconnect();
     ui_.shutdown();
+    flush_pending_prefs(true);
     settings_.close();
 }
 
@@ -1139,8 +1161,14 @@ void App::update() {
         }
     }
 
+    // Flush debounced preference saves
+    flush_pending_prefs();
+
     // Update voice level meter
     update_voice_level();
+
+    // Update speaking indicators
+    update_speaking_state();
 
     // Update FPS counter in titlebar (once per second)
     fps_frame_count_++;
@@ -1170,6 +1198,76 @@ void App::update_voice_level() {
     float level = audio_.voice_level();
     level_meter_->SetLevel(level);
     level_meter_->SetThreshold(model_.vad_threshold);
+}
+
+void App::update_speaking_state() {
+    if (!model_.is_connected || current_channel_ == 0) return;
+
+    auto now = std::chrono::steady_clock::now();
+    auto levels = mixer_.get_user_levels();
+    bool changed = false;
+
+    // Local user: speaking if mic level is above threshold and not muted
+    bool self_active = !model_.is_muted && audio_.voice_level() > 0.001f;
+    if (self_active)
+        voice_last_active_[user_id_] = now;
+
+    for (auto& ch : model_.channels) {
+        for (auto& user : ch.users) {
+            bool was_speaking = user.speaking;
+            UserId uid = static_cast<UserId>(user.id);
+
+            bool active_now;
+            if (uid == user_id_) {
+                active_now = self_active;
+            } else {
+                auto it = levels.find(uid);
+                active_now = (it != levels.end() && it->second > 0.001f);
+            }
+
+            // Muted/deafened users never show as speaking
+            if (user.muted || user.deafened)
+                active_now = false;
+
+            if (active_now) {
+                voice_last_active_[uid] = now;
+                user.speaking = true;
+            } else {
+                // Hold for 200ms before clearing to prevent blinking
+                auto last_it = voice_last_active_.find(uid);
+                if (last_it != voice_last_active_.end()) {
+                    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_it->second).count();
+                    user.speaking = (elapsed < 200);
+                } else {
+                    user.speaking = false;
+                }
+            }
+
+            if (user.speaking != was_speaking)
+                changed = true;
+        }
+    }
+
+    if (changed)
+        model_.dirty("channels");
+}
+
+void App::save_pref_debounced(const std::string& key, std::string value) {
+    pending_prefs_[key] = {std::move(value), std::chrono::steady_clock::now()};
+}
+
+void App::flush_pending_prefs(bool force) {
+    if (pending_prefs_.empty()) return;
+    auto now = std::chrono::steady_clock::now();
+    for (auto it = pending_prefs_.begin(); it != pending_prefs_.end(); ) {
+        auto age = std::chrono::duration_cast<std::chrono::milliseconds>(now - it->second.updated).count();
+        if (force || age >= 500) {
+            settings_.set_pref(it->first, it->second.value);
+            it = pending_prefs_.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1287,6 +1385,9 @@ void App::send_auth_identity() {
 void App::join_channel(ChannelId id) {
     if (!authenticated_ || id == current_channel_) return;
 
+    awaiting_channel_join_ = true;
+    pending_channel_id_ = id;
+
     BinaryWriter writer;
     writer.write_u32(id);
     net_.send_message(protocol::ControlMessageType::CHANNEL_JOIN,
@@ -1314,6 +1415,19 @@ void App::leave_channel() {
     model_.dirty("is_sharing");
 
     net_.send_message(protocol::ControlMessageType::CHANNEL_LEAVE, nullptr, 0);
+
+    // Remove ourselves from the channel we're leaving
+    for (auto& ch : model_.channels) {
+        if (ch.id == static_cast<int>(current_channel_)) {
+            auto& u = ch.users;
+            u.erase(std::remove_if(u.begin(), u.end(),
+                [this](const ChannelUser& cu) { return cu.id == static_cast<int>(user_id_); }),
+                u.end());
+            ch.user_count = static_cast<int>(u.size());
+            break;
+        }
+    }
+
     current_channel_ = 0;
     channel_key_ = {};
     sound_player_.play(SoundPlayer::Effect::LeaveChannel);
@@ -1324,12 +1438,6 @@ void App::leave_channel() {
     model_.current_channel_name.clear();
     model_.dirty("current_channel");
     model_.dirty("current_channel_name");
-
-    // Clear users from all channels in the model
-    for (auto& ch : model_.channels) {
-        ch.users.clear();
-        ch.user_count = 0;
-    }
     model_.dirty("channels");
 }
 
@@ -1359,6 +1467,9 @@ void App::process_server_messages() {
             break;
         case protocol::ControlMessageType::USER_ROLE_CHANGED:
             on_user_role_changed(msg.payload.data(), msg.payload.size());
+            break;
+        case protocol::ControlMessageType::USER_VOICE_STATE:
+            on_user_voice_state(msg.payload.data(), msg.payload.size());
             break;
         case protocol::ControlMessageType::CHANNEL_KEY:
             on_channel_key(msg.payload.data(), msg.payload.size());
@@ -1435,6 +1546,11 @@ void App::on_channel_list(const uint8_t* data, size_t len) {
     uint32_t count = reader.read_u32();
     if (reader.error()) return;
 
+    // Save existing user lists so we can preserve them
+    std::unordered_map<int, Rml::Vector<ChannelUser>> old_users;
+    for (auto& ch : model_.channels)
+        old_users[ch.id] = std::move(ch.users);
+
     model_.channels.clear();
 
     for (uint32_t i = 0; i < count; i++) {
@@ -1452,6 +1568,14 @@ void App::on_channel_list(const uint8_t* data, size_t len) {
         ch.name = Rml::String(name);
         ch.max_users = static_cast<int>(max_users);
         ch.user_count = static_cast<int>(user_count);
+
+        // Restore previous user list if available
+        auto it = old_users.find(ch.id);
+        if (it != old_users.end()) {
+            ch.users = std::move(it->second);
+            ch.user_count = static_cast<int>(ch.users.size());
+        }
+
         model_.channels.push_back(std::move(ch));
     }
 
@@ -1464,48 +1588,67 @@ void App::on_channel_user_list(const uint8_t* data, size_t len) {
     uint32_t count = reader.read_u32();
     if (reader.error()) return;
 
-    current_channel_ = channel_id;
-    model_.current_channel = static_cast<int>(channel_id);
+    // Parse users
+    std::vector<ChannelUser> users;
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t uid = reader.read_u32();
+        std::string uname = reader.read_string();
+        uint8_t urole = reader.read_u8();
+        uint8_t muted = reader.read_u8();
+        uint8_t deafened = reader.read_u8();
+        if (reader.error()) break;
 
-    // Clear users from all channels (we only get user lists for our channel)
-    for (auto& ch : model_.channels) {
-        ch.users.clear();
-        ch.user_count = 0;
+        ChannelUser user;
+        user.id = static_cast<int>(uid);
+        user.name = Rml::String(uname);
+        user.role = urole;
+        user.muted = muted != 0;
+        user.deafened = deafened != 0;
+        users.push_back(std::move(user));
     }
 
-    // Find the channel and populate its users
+    // Populate the channel's user list
     for (auto& ch : model_.channels) {
         if (ch.id == static_cast<int>(channel_id)) {
-            model_.current_channel_name = ch.name;
-
-            ch.users.clear();
-            for (uint32_t i = 0; i < count; i++) {
-                uint32_t uid = reader.read_u32();
-                std::string uname = reader.read_string();
-                uint8_t urole = reader.read_u8();
-                uint8_t muted = reader.read_u8();
-                uint8_t deafened = reader.read_u8();
-                if (reader.error()) break;
-
-                ChannelUser user;
-                user.id = static_cast<int>(uid);
-                user.name = Rml::String(uname);
-                user.role = urole;
-                user.muted = muted != 0;
-                user.deafened = deafened != 0;
-                ch.users.push_back(std::move(user));
-            }
+            ch.users = std::move(users);
             ch.user_count = static_cast<int>(ch.users.size());
             break;
         }
     }
 
-    model_.dirty("current_channel");
-    model_.dirty("current_channel_name");
-    model_.dirty("channels");
+    // If this is the channel we're joining, do the full join flow
+    if (awaiting_channel_join_ && pending_channel_id_ == channel_id) {
+        awaiting_channel_join_ = false;
 
-    audio_.start();
-    sound_player_.play(SoundPlayer::Effect::JoinChannel);
+        // Remove ourselves from the old channel's user list
+        if (current_channel_ != 0 && current_channel_ != channel_id) {
+            for (auto& ch : model_.channels) {
+                if (ch.id == static_cast<int>(current_channel_)) {
+                    auto& u = ch.users;
+                    u.erase(std::remove_if(u.begin(), u.end(),
+                        [this](const ChannelUser& cu) { return cu.id == static_cast<int>(user_id_); }),
+                        u.end());
+                    ch.user_count = static_cast<int>(u.size());
+                    break;
+                }
+            }
+        }
+
+        current_channel_ = channel_id;
+        model_.current_channel = static_cast<int>(channel_id);
+        for (auto& ch : model_.channels) {
+            if (ch.id == static_cast<int>(channel_id)) {
+                model_.current_channel_name = ch.name;
+                break;
+            }
+        }
+        model_.dirty("current_channel");
+        model_.dirty("current_channel_name");
+        audio_.start();
+        sound_player_.play(SoundPlayer::Effect::JoinChannel);
+    }
+
+    model_.dirty("channels");
 }
 
 void App::on_user_joined(const uint8_t* data, size_t len) {
@@ -1559,6 +1702,33 @@ void App::on_user_left(const uint8_t* data, size_t len) {
     if (channel_id == current_channel_)
         sound_player_.play(SoundPlayer::Effect::UserLeft);
 
+    model_.dirty("channels");
+}
+
+void App::send_voice_state() {
+    if (!authenticated_ || current_channel_ == 0) return;
+    BinaryWriter writer;
+    writer.write_u8(model_.is_muted ? 1 : 0);
+    writer.write_u8(model_.is_deafened ? 1 : 0);
+    net_.send_message(protocol::ControlMessageType::VOICE_STATE_UPDATE,
+                     writer.data().data(), writer.data().size());
+}
+
+void App::on_user_voice_state(const uint8_t* data, size_t len) {
+    BinaryReader reader(data, len);
+    uint32_t uid = reader.read_u32();
+    uint8_t muted = reader.read_u8();
+    uint8_t deafened = reader.read_u8();
+    if (reader.error()) return;
+
+    for (auto& ch : model_.channels) {
+        for (auto& user : ch.users) {
+            if (user.id == static_cast<int>(uid)) {
+                user.muted = (muted != 0);
+                user.deafened = (deafened != 0);
+            }
+        }
+    }
     model_.dirty("channels");
 }
 
@@ -1749,6 +1919,10 @@ void App::start_screen_share(int target_index) {
     capture_->on_frame = [this](ID3D11Texture2D* texture, uint32_t w, uint32_t h) {
         if (!encoder_ || !sharing_screen_) return;
 
+        // Skip if previous encode is still in progress (GPU busy with game)
+        if (encoding_busy_.load(std::memory_order_relaxed))
+            return;
+
         // Frame rate limiting: skip frames that arrive faster than target FPS
         LARGE_INTEGER now;
         QueryPerformanceCounter(&now);
@@ -1759,7 +1933,9 @@ void App::start_screen_share(int target_index) {
 
         // Timestamp in 100ns units relative to capture start
         int64_t ts = (now.QuadPart - capture_start_qpc_) * 10'000'000LL / qpc_frequency_;
+        encoding_busy_.store(true, std::memory_order_relaxed);
         encoder_->encode_frame(texture, ts);
+        encoding_busy_.store(false, std::memory_order_relaxed);
     };
 
     // Wire encoder -> network send (QUIC TLS encrypts in transit)

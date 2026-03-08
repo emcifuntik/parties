@@ -171,11 +171,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     // (only dispatched when the queue is empty, which rarely happens during drag).
     case WM_ENTERSIZEMOVE:
         s_in_sizemove = true;
-        if (ui) ui->dx12_renderer()->SetInSizeMove(true);
         return 0;
     case WM_EXITSIZEMOVE:
         s_in_sizemove = false;
-        if (ui) ui->dx12_renderer()->SetInSizeMove(false);
         return 0;
     case WM_MOVING:
     case WM_SIZING:

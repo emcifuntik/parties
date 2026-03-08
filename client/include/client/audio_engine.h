@@ -17,6 +17,7 @@
 namespace parties::client {
 
 class VoiceMixer;
+class StreamAudioPlayer;
 
 struct DeviceInfo {
     std::string name;
@@ -35,6 +36,7 @@ public:
     void stop();
 
     void set_mixer(VoiceMixer* mixer) { mixer_ = mixer; }
+    void set_stream_player(StreamAudioPlayer* player) { stream_player_ = player; }
 
     // Called when an encoded voice frame is ready to send
     std::function<void(const uint8_t*, size_t)> on_encoded_frame;
@@ -50,6 +52,8 @@ public:
     // Device enumeration
     std::vector<DeviceInfo> get_capture_devices() const;
     std::vector<DeviceInfo> get_playback_devices() const;
+    int default_capture_index() const { return default_capture_; }
+    int default_playback_index() const { return default_playback_; }
     void set_capture_device(int index);
     void set_playback_device(int index);
 
@@ -97,6 +101,8 @@ private:
     // Device selection (-1 = system default)
     int selected_capture_ = -1;
     int selected_playback_ = -1;
+    int default_capture_ = 0;
+    int default_playback_ = 0;
     std::vector<ma_device_id> capture_ids_;
     std::vector<ma_device_id> playback_ids_;
     std::vector<std::string> capture_names_;
@@ -125,13 +131,14 @@ private:
     uint8_t opus_buf_[audio::MAX_OPUS_PACKET];
 
     VoiceMixer* mixer_ = nullptr;
+    StreamAudioPlayer* stream_player_ = nullptr;
 
     std::atomic<bool> muted_{false};
     std::atomic<bool> deafened_{false};
     std::atomic<bool> denoise_enabled_{true};
     std::atomic<bool> aec_enabled_{false};
     std::atomic<bool> normalize_enabled_{false};
-    std::atomic<float> normalize_target_{0.5f};
+    std::atomic<float> normalize_target_{0.8f};
     std::atomic<bool> vad_enabled_{false};
     std::atomic<float> vad_threshold_{0.02f};
     std::atomic<float> voice_level_{0.0f};

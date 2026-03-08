@@ -2026,30 +2026,18 @@ void RenderInterface_DX12::SetViewport(int viewport_width, int viewport_height, 
 void RenderInterface_DX12::BeginFrame() {
 	ZoneScopedN("DX12::BeginFrame");
 
-	// Wait on frame latency waitable object (limits CPU queue depth).
-	// Skip during window move — DWM stalls the waitable while repositioning.
-	// The fence wait below still prevents overwriting in-flight frames.
-	if (!in_size_move_) {
+	// Wait on frame latency waitable object (limits CPU queue depth)
+	{
 		ZoneScopedN("DX12::WaitFrameLatency");
 		if (frame_latency_waitable_)
 			WaitForSingleObjectEx(frame_latency_waitable_, 1000, TRUE);
 	}
 
-	// Wait until the GPU has finished with this frame's command allocator.
-	// During window move, use a non-blocking check — DWM stalls the GPU pipeline.
+	// Wait until the GPU has finished with this frame's command allocator
 	{
 		ZoneScopedN("DX12::WaitFence");
-		if (in_size_move_) {
-			if (fence_->GetCompletedValue() < fence_values_[current_back_buffer_index_]) {
-				frame_skipped_ = true;
-				return;
-			}
-		} else {
-			WaitForFenceValue(fence_values_[current_back_buffer_index_]);
-		}
+		WaitForFenceValue(fence_values_[current_back_buffer_index_]);
 	}
-	frame_skipped_ = false;
-
 	// Reset per-frame upload heap for this back buffer
 	frame_upload_heaps_[current_back_buffer_index_].offset = 0;
 
@@ -2171,8 +2159,7 @@ void RenderInterface_DX12::EndFrame() {
 	}
 	fence_values_[current_back_buffer_index_] = signal_value;
 
-	// Present — skip vsync during window move (DWM stalls the present queue)
-	UINT sync_interval = (vsync_ && !in_size_move_) ? 1 : 0;
+	UINT sync_interval = vsync_ ? 1 : 0;
 	UINT present_flags = 0;
 	HRESULT present_hr;
 	{

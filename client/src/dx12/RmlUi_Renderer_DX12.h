@@ -66,10 +66,6 @@ public:
 	// Sets up DX12 states for taking rendering commands from RmlUi.
 	void BeginFrame();
 
-	// Skip frame latency wait (use during window move when DWM stalls the waitable).
-	void SetInSizeMove(bool in_size_move) { in_size_move_ = in_size_move; }
-	bool IsFrameSkipped() const { return frame_skipped_; }
-
 	// Optional, can be used to clear the active framebuffer.
 	void Clear();
 
@@ -221,8 +217,6 @@ private:
 	// --- State ---
 	bool valid_ = false;
 	bool vsync_ = true;
-	bool in_size_move_ = false;
-	bool frame_skipped_ = false;
 	int width_ = 0;
 	int height_ = 0;
 	HWND hwnd_ = nullptr;

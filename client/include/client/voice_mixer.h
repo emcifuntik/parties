@@ -33,6 +33,10 @@ public:
     // Set per-user volume (0.0 - 1.0)
     void set_user_volume(UserId user_id, float volume);
 
+    // Get per-user audio RMS level (0.0 - 1.0, updated each mix cycle)
+    // Returns map of user_id -> level for all active streams.
+    std::unordered_map<UserId, float> get_user_levels() const;
+
 private:
     struct JitterPacket {
         uint16_t seq;
@@ -52,6 +56,9 @@ private:
         // Decoded PCM buffer for partial reads
         std::vector<float> pcm_buf;
         size_t pcm_pos = 0;
+
+        // Audio level (RMS of last decoded frame, updated in mix_output)
+        float level = 0.0f;
     };
 
     UserStream& get_or_create_stream(UserId user_id);
@@ -60,7 +67,7 @@ private:
     // Returns true if audio was produced
     bool decode_frame(UserStream& stream, float* pcm_out, int frame_size);
 
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
     std::unordered_map<UserId, UserStream> streams_;
 
     // Temporary mix buffer (avoids allocation in audio callback)

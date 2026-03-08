@@ -7,11 +7,6 @@
 
 namespace parties::client {
 
-static void stream_playback_notification(const ma_device_notification* pNotification) {
-    if (pNotification->type == ma_device_notification_type_started)
-        TracySetThreadName("StreamAudioPlayback");
-}
-
 StreamAudioPlayer::StreamAudioPlayer() = default;
 
 StreamAudioPlayer::~StreamAudioPlayer() {
@@ -28,42 +23,10 @@ bool StreamAudioPlayer::init() {
     pcm_buf_.resize(kFrameSize * kChannels, 0.0f);
     pcm_pos_ = kFrameSize * kChannels;  // Force decode on first read
 
-    ma_device_config config = ma_device_config_init(ma_device_type_playback);
-    config.playback.format = ma_format_f32;
-    config.playback.channels = kChannels;
-    config.sampleRate = kSampleRate;
-    config.dataCallback = StreamAudioPlayer::data_callback;
-    config.pUserData = this;
-    config.periodSizeInMilliseconds = 10;
-    config.notificationCallback = stream_playback_notification;
-
-    if (ma_device_init(nullptr, &config, &device_) != MA_SUCCESS) {
-        std::fprintf(stderr, "[StreamAudio] Failed to init playback device\n");
-        return false;
-    }
-    device_initialized_ = true;
-
-    std::printf("[StreamAudio] Device: %s (%d Hz, %d ch)\n",
-                device_.playback.name,
-                device_.playback.internalSampleRate,
-                device_.playback.internalChannels);
-
-    if (ma_device_start(&device_) != MA_SUCCESS) {
-        std::fprintf(stderr, "[StreamAudio] Failed to start playback device\n");
-        ma_device_uninit(&device_);
-        device_initialized_ = false;
-        return false;
-    }
-
     return true;
 }
 
 void StreamAudioPlayer::shutdown() {
-    if (device_initialized_) {
-        ma_device_stop(&device_);
-        ma_device_uninit(&device_);
-        device_initialized_ = false;
-    }
     decoder_initialized_ = false;
 }
 
@@ -90,23 +53,15 @@ void StreamAudioPlayer::set_volume(float vol) {
     volume_.store(std::clamp(vol, 0.0f, 2.0f), std::memory_order_relaxed);
 }
 
-void StreamAudioPlayer::data_callback(ma_device* device, void* output,
-                                       const void* /*input*/, ma_uint32 frame_count) {
-    auto* self = static_cast<StreamAudioPlayer*>(device->pUserData);
-    self->process_playback(static_cast<float*>(output), frame_count);
-}
-
-void StreamAudioPlayer::process_playback(float* output, ma_uint32 frame_count) {
-	ZoneScopedN("StreamAudioPlayer::process_playback");
-    const int total_samples = frame_count * kChannels;
-    std::memset(output, 0, total_samples * sizeof(float));
+void StreamAudioPlayer::mix_output(float* output, int frame_count) {
+	ZoneScopedN("StreamAudioPlayer::mix_output");
 
     if (!decoder_initialized_) return;
 
     float vol = volume_.load(std::memory_order_relaxed);
     int written = 0;
 
-    while (written < static_cast<int>(frame_count)) {
+    while (written < frame_count) {
         // If current buffer exhausted, decode next frame
         if (pcm_pos_ >= static_cast<size_t>(kFrameSize * kChannels)) {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -117,14 +72,14 @@ void StreamAudioPlayer::process_playback(float* output, ma_uint32 frame_count) {
         }
 
         int available = (kFrameSize * kChannels - static_cast<int>(pcm_pos_)) / kChannels;
-        int needed = static_cast<int>(frame_count) - written;
+        int needed = frame_count - written;
         int chunk = std::min(available, needed);
 
         for (int i = 0; i < chunk * kChannels; i++) {
             float s = pcm_buf_[pcm_pos_ + i] * vol;
             if (s > 1.0f) s = 1.0f;
             else if (s < -1.0f) s = -1.0f;
-            output[written * kChannels + i] = s;
+            output[written * kChannels + i] += s;
         }
 
         pcm_pos_ += chunk * kChannels;

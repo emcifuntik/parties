@@ -95,6 +95,8 @@ private:
     void setup_model_callbacks();
     void setup_server_model_callbacks();
     void update_voice_level();
+    void send_voice_state();
+    void on_user_voice_state(const uint8_t* data, size_t len);
 
     HWND hwnd_ = nullptr;
     NetClient net_;
@@ -123,6 +125,8 @@ private:
 
     int connecting_server_id_ = 0;
     bool awaiting_connection_ = false;  // True while waiting for async QUIC connect
+    bool awaiting_channel_join_ = false;
+    ChannelId pending_channel_id_ = 0;
     uint16_t voice_seq_ = 0;          // Sequence number for outgoing voice packets
 
     // PTT release delay
@@ -145,6 +149,7 @@ private:
     int64_t capture_start_qpc_ = 0;
     int64_t last_capture_qpc_ = 0;
     int64_t capture_interval_qpc_ = 0;
+    std::atomic<bool> encoding_busy_{false};
 
     // Stream audio (capture for sharer, playback for viewer)
     std::unique_ptr<StreamAudioCapture> stream_audio_capture_;
@@ -160,6 +165,10 @@ private:
     std::unordered_map<UserId, SharerInfo> active_sharers_;
     UserId viewing_sharer_ = 0;
     bool awaiting_keyframe_ = false;  // skip non-keyframes until first keyframe after stream switch
+
+    // Voice activity tracking (for speaking indicators)
+    void update_speaking_state();
+    std::unordered_map<UserId, std::chrono::steady_clock::time_point> voice_last_active_;
 
     // Video decode thread
     struct DecodeWork {
@@ -187,6 +196,14 @@ private:
     uint32_t fps_frame_count_ = 0;
     std::chrono::steady_clock::time_point fps_last_update_{std::chrono::steady_clock::now()};
 
+    // Debounced preference saves (avoid SQLite writes on every slider tick)
+    struct PendingPref {
+        std::string value;
+        std::chrono::steady_clock::time_point updated;
+    };
+    std::unordered_map<std::string, PendingPref> pending_prefs_;
+    void save_pref_debounced(const std::string& key, std::string value);
+    void flush_pending_prefs(bool force = false);
 
     // UI document
     Rml::ElementDocument* doc_ = nullptr;

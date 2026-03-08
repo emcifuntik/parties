@@ -17,6 +17,7 @@ struct ChannelUser {
     int role = 0;
     bool muted = false;
     bool deafened = false;
+    bool speaking = false;
 };
 
 struct ChannelInfo {
@@ -74,7 +75,7 @@ public:
     int selected_playback = 0;
     bool denoise_enabled = true;
     bool normalize_enabled = false;
-    float normalize_target = 0.5f;
+    float normalize_target = 0.8f;
     bool aec_enabled = false;
     bool vad_enabled = false;
     float vad_threshold = 0.02f;

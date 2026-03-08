@@ -70,9 +70,14 @@
                     <span class="channel-count">({{ ch.user_count }})</span>
                 </div>
                 <div data-for="user : ch.users" class="channel-user-item"
+                     data-class-speaking="user.speaking"
+                     data-class-muted="user.muted"
+                     data-class-deafened="user.deafened"
                      data-event-mousedown="user_mousedown(user.id, user.name, user.role)">
                     <div class="user-dot"></div>
                     <span class="channel-username">{{ user.name }}</span>
+                    <svg class="user-state-icon icon-muted" src="icon-mute.svg" width="12" height="12" />
+                    <svg class="user-state-icon icon-deafened" src="icon-deafen.svg" width="12" height="12" />
                     <span class="role-badge" data-if="user.role == 0">OWNER</span>
                     <span class="role-badge role-admin" data-if="user.role == 1">ADMIN</span>
                     <span class="role-badge role-mod" data-if="user.role == 2">MOD</span>
@@ -312,13 +317,11 @@
             </div>
             <div class="share-picker-section">
                 <div class="settings-label">Windows</div>
-                <div class="share-target-list">
-                    <div data-for="target : share_targets">
-                        <div class="share-target-item"
-                             data-if="target.is_monitor == false"
-                             data-event-click="select_share_target(target.index)">
-                            {{ target.name }}
-                        </div>
+                <div data-for="target : share_targets">
+                    <div class="share-target-item"
+                         data-if="target.is_monitor == false"
+                         data-event-click="select_share_target(target.index)">
+                        {{ target.name }}
                     </div>
                 </div>
             </div>

@@ -89,3 +89,13 @@ target_link_libraries(parties_client
         dwmapi
 )
 
+# Copy client exe to additional test folders for multi-instance testing
+foreach(COPY_DIR client2 client3 client4)
+    add_custom_command(TARGET parties_client POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/${COPY_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:parties_client>"
+            "${CMAKE_BINARY_DIR}/${COPY_DIR}/parties_client.exe"
+    )
+endforeach()
+

@@ -24,6 +24,7 @@ bool LobbyModel::init(Rml::Context* context) {
         s.RegisterMember("role",     &ChannelUser::role);
         s.RegisterMember("muted",    &ChannelUser::muted);
         s.RegisterMember("deafened", &ChannelUser::deafened);
+        s.RegisterMember("speaking", &ChannelUser::speaking);
     }
     ctor.RegisterArray<Rml::Vector<ChannelUser>>();
 

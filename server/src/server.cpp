@@ -303,6 +303,35 @@ void Server::handle_message(const IncomingMessage& msg) {
         // Send channel list immediately after auth
         send_channel_list(msg.session_id);
 
+        // Send user lists for all channels so the client can see who's online
+        {
+            auto channels = db_.get_all_channels();
+            auto all_sessions = quic_.get_sessions();
+            for (auto& ch : channels) {
+                BinaryWriter list_writer;
+                list_writer.write_u32(ch.id);
+                uint32_t count = 0;
+                for (auto& s : all_sessions) {
+                    if (s->authenticated && s->channel_id == ch.id)
+                        count++;
+                }
+                list_writer.write_u32(count);
+                for (auto& s : all_sessions) {
+                    if (s->authenticated && s->channel_id == ch.id) {
+                        list_writer.write_u32(s->user_id);
+                        list_writer.write_string(s->username);
+                        list_writer.write_u8(static_cast<uint8_t>(s->role));
+                        list_writer.write_u8(s->muted ? 1 : 0);
+                        list_writer.write_u8(s->deafened ? 1 : 0);
+                    }
+                }
+                if (count > 0) {
+                    quic_.send_to(msg.session_id, protocol::ControlMessageType::CHANNEL_USER_LIST,
+                                 list_writer.data().data(), list_writer.data().size());
+                }
+            }
+        }
+
         std::printf("[Server] User '%s' (id=%u, role=%d) authenticated\n",
                     user->display_name.c_str(), user->id, user->role);
         break;
@@ -363,7 +392,7 @@ void Server::handle_message(const IncomingMessage& msg) {
             leave_writer.write_u32(old_channel);
             auto all = quic_.get_sessions();
             for (auto& s : all) {
-                if (s->authenticated && s->channel_id == old_channel)
+                if (s->id != msg.session_id && s->authenticated)
                     quic_.send_to(s->id, protocol::ControlMessageType::USER_LEFT_CHANNEL,
                                    leave_writer.data().data(), leave_writer.data().size());
             }
@@ -435,12 +464,38 @@ void Server::handle_message(const IncomingMessage& msg) {
 
             auto all = quic_.get_sessions();
             for (auto& s : all) {
-                if (s->id != msg.session_id &&
-                    s->authenticated &&
-                    s->channel_id == channel_id) {
+                if (s->id != msg.session_id && s->authenticated) {
                     quic_.send_to(s->id, protocol::ControlMessageType::USER_JOINED_CHANNEL,
                                    join_writer.data().data(), join_writer.data().size());
                 }
+            }
+        }
+        break;
+    }
+
+    // ── Voice state update (mute/deafen) ─────────────────────────────────
+    case protocol::ControlMessageType::VOICE_STATE_UPDATE: {
+        if (!session->authenticated || session->channel_id == 0) break;
+
+        BinaryReader reader(msg.payload.data(), msg.payload.size());
+        uint8_t muted = reader.read_u8();
+        uint8_t deafened = reader.read_u8();
+        if (reader.error()) break;
+
+        session->muted = (muted != 0);
+        session->deafened = (deafened != 0);
+
+        // Broadcast to others in channel: [user_id(4)][muted(1)][deafened(1)]
+        BinaryWriter writer;
+        writer.write_u32(session->user_id);
+        writer.write_u8(muted);
+        writer.write_u8(deafened);
+
+        auto all = quic_.get_sessions();
+        for (auto& s : all) {
+            if (s->id != msg.session_id && s->authenticated) {
+                quic_.send_to(s->id, protocol::ControlMessageType::USER_VOICE_STATE,
+                               writer.data().data(), writer.data().size());
             }
         }
         break;
@@ -461,7 +516,7 @@ void Server::handle_message(const IncomingMessage& msg) {
 
         auto all = quic_.get_sessions();
         for (auto& s : all) {
-            if (s->authenticated && s->channel_id == old_channel)
+            if (s->id != msg.session_id && s->authenticated)
                 quic_.send_to(s->id, protocol::ControlMessageType::USER_LEFT_CHANNEL,
                                writer.data().data(), writer.data().size());
         }
@@ -769,9 +824,7 @@ void Server::on_client_disconnect(uint32_t session_id) {
 
         auto all = quic_.get_sessions();
         for (auto& s : all) {
-            if (s->id != session_id &&
-                s->authenticated &&
-                s->channel_id == session->channel_id) {
+            if (s->id != session_id && s->authenticated) {
                 quic_.send_to(s->id, protocol::ControlMessageType::USER_LEFT_CHANNEL,
                                writer.data().data(), writer.data().size());
             }
