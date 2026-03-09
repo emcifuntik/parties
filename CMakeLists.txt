@@ -28,9 +28,11 @@ endif()
 
 if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     add_compile_options(-Wno-unused-command-line-argument -Wno-c23-extensions)
-    # Full LTO in Release
+    # Full LTO + PDB in Release
     add_compile_options($<$<CONFIG:Release>:-flto=full>)
+    add_compile_options($<$<CONFIG:Release>:/Zi>)
     add_link_options($<$<CONFIG:Release>:-flto=full>)
+    add_link_options($<$<CONFIG:Release>:/DEBUG:FULL>)
 endif()
 
 add_subdirectory(common)
