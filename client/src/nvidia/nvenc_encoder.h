@@ -23,8 +23,15 @@ public:
               parties::VideoCodecId preferred_codec);
     void shutdown();
 
-    // Encode a BGRA texture. NVENC handles BGRA→NV12 internally.
+    // Encode a BGRA texture (copies to internal staging first).
     bool encode_frame(ID3D11Texture2D* bgra_texture, int64_t timestamp_100ns);
+
+    // Zero-copy: register caller-owned textures, then encode directly from them.
+    // Returns slot index (0..N-1) or -1 on failure. Call after init().
+    static constexpr int MAX_EXTERNAL_INPUTS = 4;
+    int register_input(ID3D11Texture2D* texture);
+    void unregister_inputs();
+    bool encode_registered(int slot, int64_t timestamp_100ns);
 
     void force_keyframe();
     void set_bitrate(uint32_t bitrate);
@@ -36,18 +43,23 @@ public:
 
 private:
     bool try_codec(const GUID& codec_guid, parties::VideoCodecId id);
+    bool do_encode(NV_ENC_REGISTERED_PTR resource, int64_t timestamp_100ns);
 
     NV_ENCODE_API_FUNCTION_LIST funcs_{};
     void* encoder_ = nullptr;  // NV_ENC_HANDLE
 
-    // D3D11 staging texture (shared format with capture)
+    // D3D11 device (for internal staging copy path)
     Microsoft::WRL::ComPtr<ID3D11Device> device_;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> context_;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> staging_texture_;
 
     // NVENC resources
-    NV_ENC_REGISTERED_PTR registered_resource_ = nullptr;
+    NV_ENC_REGISTERED_PTR registered_resource_ = nullptr;  // internal staging
     NV_ENC_OUTPUT_PTR output_bitstream_ = nullptr;
+
+    // External registered inputs (zero-copy path)
+    NV_ENC_REGISTERED_PTR external_inputs_[MAX_EXTERNAL_INPUTS]{};
+    int num_external_inputs_ = 0;
 
     NV_ENC_INITIALIZE_PARAMS init_params_{};
     NV_ENC_CONFIG encode_config_{};

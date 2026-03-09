@@ -585,6 +585,25 @@ bool VideoEncoder::collect_output() {
     return collected > 0;
 }
 
+bool VideoEncoder::supports_registered_input() const {
+    return nvenc_ != nullptr;
+}
+
+int VideoEncoder::register_input(ID3D11Texture2D* texture) {
+    if (!nvenc_) return -1;
+    return nvenc_->register_input(texture);
+}
+
+void VideoEncoder::unregister_inputs() {
+    if (nvenc_) nvenc_->unregister_inputs();
+}
+
+bool VideoEncoder::encode_registered(int slot, int64_t timestamp_100ns) {
+    if (!initialized_ || !nvenc_) return false;
+    nvenc_->on_encoded = on_encoded;
+    return nvenc_->encode_registered(slot, timestamp_100ns);
+}
+
 void VideoEncoder::force_keyframe() {
     if (nvenc_) { nvenc_->force_keyframe(); return; }
     force_keyframe_ = true;

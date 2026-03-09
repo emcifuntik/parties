@@ -182,12 +182,6 @@ bool NvencEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
     }
     output_bitstream_ = bsb.bitstreamBuffer;
 
-    const char* codec_name = (codec_ == parties::VideoCodecId::AV1)  ? "AV1"
-                           : (codec_ == parties::VideoCodecId::H265) ? "H.265"
-                                                                      : "H.264";
-    std::fprintf(stderr, "[NVENC] Initialized %s encoder %ux%u @ %u fps, %u kbps\n",
-                 codec_name, width, height, fps, bitrate / 1000);
-
     initialized_ = true;
     return true;
 }
@@ -205,6 +199,8 @@ void NvencEncoder::shutdown() {
         funcs_.nvEncDestroyBitstreamBuffer(encoder_, output_bitstream_);
         output_bitstream_ = nullptr;
     }
+
+    unregister_inputs();
 
     if (registered_resource_) {
         funcs_.nvEncUnregisterResource(encoder_, registered_resource_);
@@ -268,20 +264,11 @@ bool NvencEncoder::try_codec(const GUID& codec_guid, parties::VideoCodecId id) {
     return true;
 }
 
-bool NvencEncoder::encode_frame(ID3D11Texture2D* bgra_texture, int64_t timestamp_100ns) {
-    ZoneScopedN("NvencEncoder::encode_frame");
-    if (!initialized_) return false;
-
-    // Copy capture texture to our staging texture
-    {
-        ZoneScopedN("nvenc::copy_texture");
-        context_->CopyResource(staging_texture_.Get(), bgra_texture);
-    }
-
-    // Map the registered resource
+// Shared encode path: map registered resource → encode → lock bitstream → callback
+bool NvencEncoder::do_encode(NV_ENC_REGISTERED_PTR resource, int64_t timestamp_100ns) {
     NV_ENC_MAP_INPUT_RESOURCE map{};
     map.version = NV_ENC_MAP_INPUT_RESOURCE_VER;
-    map.registeredResource = registered_resource_;
+    map.registeredResource = resource;
 
     NVENCSTATUS status = funcs_.nvEncMapInputResource(encoder_, &map);
     if (status != NV_ENC_SUCCESS) {
@@ -289,7 +276,6 @@ bool NvencEncoder::encode_frame(ID3D11Texture2D* bgra_texture, int64_t timestamp
         return false;
     }
 
-    // Encode
     NV_ENC_PIC_PARAMS pic{};
     pic.version = NV_ENC_PIC_PARAMS_VER;
     pic.pictureStruct = NV_ENC_PIC_STRUCT_FRAME;
@@ -310,7 +296,6 @@ bool NvencEncoder::encode_frame(ID3D11Texture2D* bgra_texture, int64_t timestamp
         status = funcs_.nvEncEncodePicture(encoder_, &pic);
     }
 
-    // Unmap regardless of encode result
     funcs_.nvEncUnmapInputResource(encoder_, map.mappedResource);
 
     if (status != NV_ENC_SUCCESS) {
@@ -318,12 +303,14 @@ bool NvencEncoder::encode_frame(ID3D11Texture2D* bgra_texture, int64_t timestamp
         return false;
     }
 
-    // Lock and read bitstream output
     NV_ENC_LOCK_BITSTREAM lock{};
     lock.version = NV_ENC_LOCK_BITSTREAM_VER;
     lock.outputBitstream = output_bitstream_;
 
-    status = funcs_.nvEncLockBitstream(encoder_, &lock);
+    {
+        ZoneScopedN("nvenc::lock_bitstream");
+        status = funcs_.nvEncLockBitstream(encoder_, &lock);
+    }
     if (status != NV_ENC_SUCCESS) {
         std::fprintf(stderr, "[NVENC] LockBitstream failed: %d\n", status);
         return false;
@@ -339,6 +326,60 @@ bool NvencEncoder::encode_frame(ID3D11Texture2D* bgra_texture, int64_t timestamp
 
     funcs_.nvEncUnlockBitstream(encoder_, output_bitstream_);
     return true;
+}
+
+bool NvencEncoder::encode_frame(ID3D11Texture2D* bgra_texture, int64_t timestamp_100ns) {
+    ZoneScopedN("NvencEncoder::encode_frame");
+    if (!initialized_) return false;
+
+    {
+        ZoneScopedN("nvenc::copy_texture");
+        context_->CopyResource(staging_texture_.Get(), bgra_texture);
+    }
+
+    return do_encode(registered_resource_, timestamp_100ns);
+}
+
+// ── Zero-copy external input registration ─────────────────────────────
+
+int NvencEncoder::register_input(ID3D11Texture2D* texture) {
+    if (!initialized_ || num_external_inputs_ >= MAX_EXTERNAL_INPUTS) return -1;
+
+    NV_ENC_REGISTER_RESOURCE reg{};
+    reg.version = NV_ENC_REGISTER_RESOURCE_VER;
+    reg.resourceType = NV_ENC_INPUT_RESOURCE_TYPE_DIRECTX;
+    reg.resourceToRegister = texture;
+    reg.width = width_;
+    reg.height = height_;
+    reg.bufferFormat = NV_ENC_BUFFER_FORMAT_ARGB;
+    reg.bufferUsage = NV_ENC_INPUT_IMAGE;
+
+    NVENCSTATUS status = funcs_.nvEncRegisterResource(encoder_, &reg);
+    if (status != NV_ENC_SUCCESS) {
+        std::fprintf(stderr, "[NVENC] RegisterResource (external %d) failed: %d\n",
+                     num_external_inputs_, status);
+        return -1;
+    }
+
+    int slot = num_external_inputs_++;
+    external_inputs_[slot] = reg.registeredResource;
+    return slot;
+}
+
+void NvencEncoder::unregister_inputs() {
+    for (int i = 0; i < num_external_inputs_; i++) {
+        if (external_inputs_[i]) {
+            funcs_.nvEncUnregisterResource(encoder_, external_inputs_[i]);
+            external_inputs_[i] = nullptr;
+        }
+    }
+    num_external_inputs_ = 0;
+}
+
+bool NvencEncoder::encode_registered(int slot, int64_t timestamp_100ns) {
+    ZoneScopedN("NvencEncoder::encode_registered");
+    if (!initialized_ || slot < 0 || slot >= num_external_inputs_) return false;
+    return do_encode(external_inputs_[slot], timestamp_100ns);
 }
 
 void NvencEncoder::force_keyframe() {

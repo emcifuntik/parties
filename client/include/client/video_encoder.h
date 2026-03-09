@@ -42,6 +42,13 @@ public:
     // Encode a BGRA texture. Calls on_encoded when output is ready.
     bool encode_frame(ID3D11Texture2D* bgra_texture, int64_t timestamp_100ns);
 
+    // Zero-copy NVENC path: register caller-owned textures, encode directly.
+    // Returns slot index or -1. Only works when NVENC is the active backend.
+    bool supports_registered_input() const;
+    int register_input(ID3D11Texture2D* texture);
+    void unregister_inputs();
+    bool encode_registered(int slot, int64_t timestamp_100ns);
+
     // Force next frame to be a keyframe
     void force_keyframe();
 
