@@ -1,9 +1,10 @@
-// NVDEC hardware decoder for AV1, using CUDA + CUVID parser.
-// Falls back gracefully — caller should try dav1d if init() returns false.
+// NVDEC hardware decoder for AV1/H.265/H.264, using CUDA + CUVID parser.
+// Falls back gracefully — caller should try software decoders if init() returns false.
 #pragma once
 
 #include "nvidia_loader.h"
 #include <client/video_decoder.h>
+#include <parties/video_common.h>
 
 #include <cstdint>
 #include <functional>
@@ -16,8 +17,8 @@ public:
     NvdecDecoder();
     ~NvdecDecoder();
 
-    // Initialize NVDEC for AV1. Returns false if hardware unavailable.
-    bool init(uint32_t width, uint32_t height);
+    // Initialize NVDEC for the given codec. Returns false if hardware unavailable.
+    bool init(parties::VideoCodecId codec, uint32_t width, uint32_t height);
     void shutdown();
 
     // Feed encoded AV1 data. Calls on_decoded when frames are ready.
@@ -51,6 +52,7 @@ private:
     CUvideoparser parser_ = nullptr;
     CUvideodecoder decoder_ = nullptr;
 
+    parties::VideoCodecId codec_ = parties::VideoCodecId::AV1;
     uint32_t width_ = 0;
     uint32_t height_ = 0;
     uint32_t bit_depth_ = 8;

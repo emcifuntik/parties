@@ -190,16 +190,18 @@ bool VideoDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height) {
     impl_->height = height;
     codec_ = codec;
 
-    if (codec == VideoCodecId::AV1) {
-        // Try NVDEC first for AV1
+    // Try NVDEC first for all codecs
+    {
         auto nvdec = std::make_unique<nvidia::NvdecDecoder>();
-        if (nvdec->init(width, height)) {
+        if (nvdec->init(codec, width, height)) {
             nvdec_ = std::move(nvdec);
             initialized_ = true;
             return true;
         }
+    }
 
-        // Fall back to dav1d
+    if (codec == VideoCodecId::AV1) {
+        // Fall back to dav1d for AV1
         Dav1dSettings settings;
         dav1d_default_settings(&settings);
         settings.n_threads = 4;

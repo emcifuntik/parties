@@ -30,13 +30,35 @@ NvdecDecoder::~NvdecDecoder() {
     shutdown();
 }
 
-bool NvdecDecoder::init(uint32_t width, uint32_t height) {
+// Map VideoCodecId to CUVID codec type
+static cudaVideoCodec to_cuvid_codec(parties::VideoCodecId id) {
+    switch (id) {
+    case parties::VideoCodecId::H264: return cudaVideoCodec_H264;
+    case parties::VideoCodecId::H265: return cudaVideoCodec_HEVC;
+    case parties::VideoCodecId::AV1:  return cudaVideoCodec_AV1;
+    default:                          return cudaVideoCodec_AV1;
+    }
+}
+
+static const char* codec_name(parties::VideoCodecId id) {
+    switch (id) {
+    case parties::VideoCodecId::H264: return "H.264";
+    case parties::VideoCodecId::H265: return "H.265";
+    case parties::VideoCodecId::AV1:  return "AV1";
+    default:                          return "unknown";
+    }
+}
+
+bool NvdecDecoder::init(parties::VideoCodecId codec, uint32_t width, uint32_t height) {
     ZoneScopedN("NvdecDecoder::init");
     if (initialized_) return false;
 
     // Load CUDA and CUVID
     if (!load_cuda(cuda_)) return false;
     if (!load_cuvid(cuvid_)) return false;
+
+    codec_ = codec;
+    cudaVideoCodec cuvid_codec = to_cuvid_codec(codec);
 
     // Create CUDA context on device 0 (required before any CUVID calls)
     CUdevice cu_device = 0;
@@ -52,16 +74,16 @@ bool NvdecDecoder::init(uint32_t width, uint32_t height) {
         return false;
     }
 
-    // Check AV1 decode capability (requires active CUDA context)
+    // Check decode capability (requires active CUDA context)
     CUVIDDECODECAPS caps{};
-    caps.eCodecType = cudaVideoCodec_AV1;
+    caps.eCodecType = cuvid_codec;
     caps.eChromaFormat = cudaVideoChromaFormat_420;
     caps.nBitDepthMinus8 = 0;  // 8-bit
 
     res = cuvid_.cuvidGetDecoderCaps(&caps);
     if (res != CUDA_SUCCESS || !caps.bIsSupported) {
-        std::fprintf(stderr, "[NVDEC] AV1 not supported (res=%d, supported=%d)\n",
-                     res, caps.bIsSupported);
+        std::fprintf(stderr, "[NVDEC] %s not supported (res=%d, supported=%d)\n",
+                     codec_name(codec), res, caps.bIsSupported);
         cuda_.cuCtxDestroy(cu_ctx_);
         cu_ctx_ = nullptr;
         return false;
@@ -80,7 +102,7 @@ bool NvdecDecoder::init(uint32_t width, uint32_t height) {
 
     // Create video parser (drives decode callbacks)
     CUVIDPARSERPARAMS parser_params{};
-    parser_params.CodecType = cudaVideoCodec_AV1;
+    parser_params.CodecType = cuvid_codec;
     parser_params.ulMaxNumDecodeSurfaces = 10;
     parser_params.ulMaxDisplayDelay = 1;  // Low latency
     parser_params.pUserData = this;
