@@ -784,6 +784,11 @@ bool App::init(HWND hwnd) {
         return false;
     }
 
+    // Apply saved per-user audio prefs when a mixer stream is first created
+    mixer_.on_stream_created = [this](UserId user_id) {
+        apply_user_audio_prefs(user_id);
+    };
+
     // Initialize audio
     if (!audio_.init()) {
         std::fprintf(stderr, "[App] Audio init failed (non-fatal)\n");

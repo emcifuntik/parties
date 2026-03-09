@@ -5,6 +5,7 @@
 #include <parties/audio_common.h>
 
 #include <cstdint>
+#include <functional>
 #include <vector>
 #include <mutex>
 #include <unordered_map>
@@ -29,6 +30,10 @@ public:
 
     // Remove all user streams
     void clear();
+
+    // Called (without mutex held) when a stream is created for a new user.
+    // Use this to apply saved per-user audio preferences.
+    std::function<void(UserId)> on_stream_created;
 
     // Set per-user volume (0.0 - 2.0)
     void set_user_volume(UserId user_id, float volume);
