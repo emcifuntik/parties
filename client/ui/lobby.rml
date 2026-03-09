@@ -285,17 +285,6 @@
             </div>
             <div class="share-picker-settings">
                 <div class="share-setting-group">
-                    <div class="settings-label">Codec</div>
-                    <div class="share-codec-buttons">
-                        <div class="share-codec-btn" data-class-active="share_codec == 0"
-                             data-event-click="select_share_codec(0)">Auto</div>
-                        <div class="share-codec-btn" data-class-active="share_codec == 1"
-                             data-event-click="select_share_codec(1)">H.265</div>
-                        <div class="share-codec-btn" data-class-active="share_codec == 2"
-                             data-event-click="select_share_codec(2)">H.264</div>
-                    </div>
-                </div>
-                <div class="share-setting-group">
                     <div class="settings-label">FPS</div>
                     <div class="share-codec-buttons">
                         <div class="share-codec-btn" data-class-active="share_fps == 0"

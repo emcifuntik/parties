@@ -174,7 +174,6 @@ private:
     int encode_active_slot_ = -1;  // slot currently being encoded (-1 = idle)
     int64_t encode_ready_ts_ = 0;  // timestamp of ready frame
 
-    VideoCodecId encode_preferred_codec_ = VideoCodecId::AV1;
     uint32_t encode_fps_ = 60;
     std::function<void(const uint8_t*, size_t, bool)> encode_on_encoded_;
 

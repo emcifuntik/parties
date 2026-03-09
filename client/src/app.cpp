@@ -904,10 +904,8 @@ bool App::init(HWND hwnd) {
         }
     }
 
-    // Load saved share settings (codec, bitrate, fps)
+    // Load saved share settings (bitrate, fps)
     {
-        auto codec_str = settings_.get_pref("video.share_codec");
-        if (codec_str) model_.share_codec = std::atoi(codec_str->c_str());
         auto bitrate_str = settings_.get_pref("video.share_bitrate");
         if (bitrate_str) model_.share_bitrate = std::strtof(bitrate_str->c_str(), nullptr);
         auto fps_str = settings_.get_pref("video.share_fps");
@@ -1945,11 +1943,6 @@ void App::start_screen_share(int target_index) {
         target_process_id = static_cast<uint32_t>(pid);
     }
 
-    // Map UI codec selection to VideoCodecId
-    VideoCodecId preferred_codec = VideoCodecId::AV1;  // Auto = try AV1 first
-    if (model_.share_codec == 1) preferred_codec = VideoCodecId::H265;
-    else if (model_.share_codec == 2) preferred_codec = VideoCodecId::H264;
-
     // Map FPS preset index to actual FPS
     constexpr uint32_t fps_presets[] = {15, 30, 60, 120};
     int fps_idx = (std::max)(0, (std::min)(model_.share_fps, 3));
@@ -1970,7 +1963,6 @@ void App::start_screen_share(int target_index) {
     capture_targets_.clear();
 
     // Save share settings
-    settings_.set_pref("video.share_codec", std::to_string(model_.share_codec));
     settings_.set_pref("video.share_bitrate", std::to_string(model_.share_bitrate));
     settings_.set_pref("video.share_fps", std::to_string(model_.share_fps));
 
@@ -2025,9 +2017,8 @@ void App::start_screen_share(int target_index) {
         }
     };
 
-    // Store callback and codec preference for encode thread
+    // Store callback for encode thread (codec auto-selects AV1 > H.265 > H.264)
     encode_on_encoded_ = on_encoded_cb;
-    encode_preferred_codec_ = preferred_codec;
 
     // Initialize triple-buffer slot state
     encode_write_slot_ = 0;
@@ -2165,10 +2156,10 @@ void App::start_screen_share(int target_index) {
     }
 
     // Send SCREEN_SHARE_START to server (don't set sharing_screen_ until confirmed)
-    // Encoder isn't created yet (lazy init on first frame), send preferred codec and 0x0 dims.
-    // Actual resolution is in each video frame header.
+    // Encoder isn't created yet (lazy init on first frame), send AV1 placeholder and 0x0 dims.
+    // Actual codec/resolution is in each video frame header.
     BinaryWriter writer;
-    writer.write_u8(static_cast<uint8_t>(preferred_codec));
+    writer.write_u8(static_cast<uint8_t>(VideoCodecId::AV1));
     writer.write_u16(0);
     writer.write_u16(0);
     net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_START,
@@ -2536,7 +2527,7 @@ void App::encode_loop() {
         uint32_t h = encode_tex_h_;
 
         if (!encoder_ || w != encoder_->width() || h != encoder_->height()) {
-            VideoCodecId codec = encoder_ ? encoder_->codec() : encode_preferred_codec_;
+            VideoCodecId codec = encoder_ ? encoder_->codec() : VideoCodecId::AV1;
             encoder_.reset();
             encode_registered_ = false;
             auto enc = std::make_unique<VideoEncoder>();

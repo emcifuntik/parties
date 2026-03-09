@@ -100,8 +100,7 @@ public:
     // Share picker
     bool show_share_picker = false;
     Rml::Vector<ShareTarget> share_targets;
-    int share_codec = 0;           // 0=Auto, 1=H.265, 2=H.264
-    float share_bitrate = 2.0f;    // Mbps (0.5 - 10.0)
+    float share_bitrate = 2.0f;    // Mbps (0.5 - 20.0)
     int share_fps = 2;             // 0=15, 1=30, 2=60, 3=120
 
     // Admin / permissions
