@@ -44,6 +44,9 @@ public:
     // (e.g., game launch causing device reset). Caller should reinitialize.
     bool context_lost() const;
 
+    // After a context_lost, call this before reinit to force software-only decoding.
+    void disable_hardware() { hardware_disabled_ = true; }
+
     // Callback with decoded I420 frame
     std::function<void(const DecodedFrame& frame)> on_decoded;
 
@@ -53,6 +56,7 @@ private:
     std::unique_ptr<nvidia::NvdecDecoder> nvdec_;
     VideoCodecId codec_ = VideoCodecId::AV1;
     bool initialized_ = false;
+    bool hardware_disabled_ = false;
 };
 
 } // namespace parties::client

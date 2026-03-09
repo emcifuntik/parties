@@ -2006,13 +2006,19 @@ void App::start_screen_share(int target_index) {
         net_.send_video(pkt.data(), pkt.size(), true);
 
         // Feed raw bitstream to local preview decoder (no encryption needed)
-        if (decoder_ && viewing_sharer_ == user_id_) {
+        if (decoder_ && viewing_sharer_ == user_id_ && encoder_) {
             if (awaiting_keyframe_) {
                 if (!keyframe) return;
                 awaiting_keyframe_ = false;
             }
+            DecodeWork work;
+            work.data.assign(data, data + len);
+            work.timestamp = 0;
+            work.codec = encoder_->codec();
+            work.width = static_cast<uint16_t>(encoder_->width());
+            work.height = static_cast<uint16_t>(encoder_->height());
             std::lock_guard<std::mutex> lock(decode_queue_mutex_);
-            decode_queue_.push({std::vector<uint8_t>(data, data + len), 0});
+            decode_queue_.push(std::move(work));
             decode_queue_cv_.notify_one();
         }
     };
@@ -2230,6 +2236,10 @@ void App::on_video_frame_received(uint32_t sender_id, const uint8_t* data, size_
     int64_t timestamp = static_cast<int64_t>(frame_number);
     uint8_t flags = data[8];
     bool is_keyframe = (flags & VIDEO_FLAG_KEYFRAME) != 0;
+    uint16_t width, height;
+    std::memcpy(&width, data + 9, 2);
+    std::memcpy(&height, data + 11, 2);
+    auto codec = static_cast<VideoCodecId>(data[13]);
 
     // Skip non-keyframes until the first keyframe after a stream switch
     if (awaiting_keyframe_) {
@@ -2244,6 +2254,9 @@ void App::on_video_frame_received(uint32_t sender_id, const uint8_t* data, size_
         DecodeWork work;
         work.data.assign(encoded, encoded + encoded_len);
         work.timestamp = timestamp;
+        work.codec = codec;
+        work.width = width;
+        work.height = height;
 
         {
             std::lock_guard<std::mutex> lock(decode_queue_mutex_);
@@ -2543,6 +2556,11 @@ void App::encode_loop() {
                 encode_cv_.notify_one();
                 continue;
             }
+            const char* codec_names[] = {"?", "AV1", "H.265", "H.264"};
+            uint8_t ci = static_cast<uint8_t>(enc->codec());
+            std::fprintf(stderr, "[App] Encoder initialized: %s %s at %ux%u %u fps\n",
+                         enc->supports_registered_input() ? "NVENC" : "MFT",
+                         ci <= 3 ? codec_names[ci] : "?", w, h, encode_fps_);
             enc->on_encoded = encode_on_encoded_;
             encoder_ = std::move(enc);
             video_frame_number_ = 0;
@@ -2563,10 +2581,15 @@ void App::encode_loop() {
         // Encode — zero-copy if NVENC registered, otherwise fallback to CopyResource path
         {
             ZoneScopedN("encode::frame");
+            bool ok;
             if (encode_registered_ && encode_nvenc_slots_[slot] >= 0) {
-                encoder_->encode_registered(encode_nvenc_slots_[slot], ts);
+                ok = encoder_->encode_registered(encode_nvenc_slots_[slot], ts);
             } else {
-                encoder_->encode_frame(encode_textures_[slot].Get(), ts);
+                ok = encoder_->encode_frame(encode_textures_[slot].Get(), ts);
+            }
+            if (!ok) {
+                std::fprintf(stderr, "[App] Encode failed (slot=%d, registered=%d)\n",
+                             slot, encode_registered_ ? 1 : 0);
             }
         }
 
@@ -2695,6 +2718,21 @@ void App::decode_loop() {
         while (!batch.empty()) {
             auto& work = batch.front();
             if (decoder_ && !work.data.empty()) {
+                // Reinit decoder if codec changed (encoder may have fallen back)
+                if (work.codec != decoder_->codec()) {
+                    std::fprintf(stderr, "[Video] Codec changed to %u, reinitializing decoder\n",
+                                 static_cast<unsigned>(work.codec));
+                    auto cb = decoder_->on_decoded;
+                    decoder_->shutdown();
+                    decoder_ = std::make_unique<VideoDecoder>();
+                    decoder_->init(work.codec, work.width, work.height);
+                    decoder_->on_decoded = cb;
+                    awaiting_keyframe_ = true;
+                    if (viewing_sharer_ != 0) send_pli(viewing_sharer_);
+                    while (!batch.empty()) batch.pop();
+                    break;
+                }
+
                 decoder_->decode(work.data.data(), work.data.size(), work.timestamp);
 
                 // GPU context lost (e.g., game launch) — reinitialize with software decoder
@@ -2703,7 +2741,8 @@ void App::decode_loop() {
                     auto codec = decoder_->codec();
                     auto cb = decoder_->on_decoded;
                     decoder_->shutdown();
-                    decoder_->init(codec, 0, 0);  // Reinit — will fall back to dav1d/MFT
+                    decoder_->disable_hardware();  // Don't retry NVDEC
+                    decoder_->init(codec, 0, 0);   // Reinit — will use dav1d/MFT
                     decoder_->on_decoded = cb;
                     // Request keyframe to restart clean
                     if (viewing_sharer_ != 0) send_pli(viewing_sharer_);

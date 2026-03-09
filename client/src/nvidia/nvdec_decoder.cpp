@@ -123,6 +123,8 @@ bool NvdecDecoder::init(parties::VideoCodecId codec, uint32_t width, uint32_t he
     CUcontext dummy;
     cuda_.cuCtxPopCurrent(&dummy);
 
+    std::fprintf(stderr, "[NVDEC] Initialized %s decoder (%ux%u)\n",
+                 codec_name(codec), width_, height_);
     initialized_ = true;
     return true;
 }
@@ -130,31 +132,22 @@ bool NvdecDecoder::init(parties::VideoCodecId codec, uint32_t width, uint32_t he
 void NvdecDecoder::shutdown() {
     if (!initialized_ && !context_lost_) return;
 
-    if (cu_ctx_ && !context_lost_) {
-        cuda_.cuCtxPushCurrent(cu_ctx_);
+    if (cu_ctx_) {
+        if (!context_lost_) {
+            cuda_.cuCtxPushCurrent(cu_ctx_);
 
-        if (parser_) {
-            cuvid_.cuvidDestroyVideoParser(parser_);
-            parser_ = nullptr;
+            if (parser_) cuvid_.cuvidDestroyVideoParser(parser_);
+            if (decoder_) cuvid_.cuvidDestroyDecoder(decoder_);
+            if (pinned_nv12_) cuda_.cuMemFreeHost(pinned_nv12_);
+
+            CUcontext dummy;
+            cuda_.cuCtxPopCurrent(&dummy);
         }
-
-        if (decoder_) {
-            cuvid_.cuvidDestroyDecoder(decoder_);
-            decoder_ = nullptr;
-        }
-
-        if (pinned_nv12_) {
-            cuda_.cuMemFreeHost(pinned_nv12_);
-            pinned_nv12_ = nullptr;
-            pinned_nv12_size_ = 0;
-        }
-
-        CUcontext dummy;
-        cuda_.cuCtxPopCurrent(&dummy);
+        // Always destroy the CUDA context to avoid VRAM leaks.
+        // If the context is truly dead this is a no-op or harmless failure.
         cuda_.cuCtxDestroy(cu_ctx_);
     }
 
-    // If context was lost, resources are already gone — just null the pointers
     cu_ctx_ = nullptr;
     parser_ = nullptr;
     decoder_ = nullptr;

@@ -190,8 +190,8 @@ bool VideoDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height) {
     impl_->height = height;
     codec_ = codec;
 
-    // Try NVDEC first for all codecs
-    {
+    // Try NVDEC first for all codecs (unless hardware was disabled after context loss)
+    if (!hardware_disabled_) {
         auto nvdec = std::make_unique<nvidia::NvdecDecoder>();
         if (nvdec->init(codec, width, height)) {
             nvdec_ = std::move(nvdec);

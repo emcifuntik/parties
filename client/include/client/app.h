@@ -200,6 +200,9 @@ private:
     struct DecodeWork {
         std::vector<uint8_t> data;
         int64_t timestamp;
+        VideoCodecId codec;
+        uint16_t width;
+        uint16_t height;
     };
     std::thread decode_thread_;
     std::atomic<bool> decode_running_{false};

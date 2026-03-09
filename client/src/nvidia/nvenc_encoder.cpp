@@ -73,6 +73,12 @@ bool NvencEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
         return false;
     }
 
+    const char* codec_name = (codec_ == parties::VideoCodecId::AV1)  ? "AV1"
+                           : (codec_ == parties::VideoCodecId::H265) ? "H.265"
+                                                                      : "H.264";
+    std::fprintf(stderr, "[NVENC] Selected codec: %s (%ux%u @ %u fps)\n",
+                 codec_name, width, height, fps);
+
     // Build codec GUID from try_codec result
     GUID encode_guid = (codec_ == parties::VideoCodecId::AV1)  ? NV_ENC_CODEC_AV1_GUID
                       : (codec_ == parties::VideoCodecId::H265) ? NV_ENC_CODEC_HEVC_GUID
