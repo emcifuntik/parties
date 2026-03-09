@@ -74,6 +74,7 @@ struct ScreenCapture::Impl {
     Direct3D11CaptureFramePool frame_pool{nullptr};
     GraphicsCaptureSession session{nullptr};
     event_token frame_arrived_token{};
+    event_token closed_token{};
 };
 
 // ─── ScreenCapture implementation ────────────────────────────────────────────
@@ -86,21 +87,57 @@ ScreenCapture::~ScreenCapture() {
 
 bool ScreenCapture::init() {
 	ZoneScopedN("ScreenCapture::init");
-    // Create D3D11 device with VIDEO_SUPPORT for sharing with encoder later
+
+    // Enumerate adapters to find the one driving the displays.
+    // Using the wrong adapter forces WGC to do cross-adapter copies (~50fps cap).
+    ComPtr<IDXGIFactory1> factory;
+    CreateDXGIFactory1(IID_PPV_ARGS(&factory));
+
+    ComPtr<IDXGIAdapter1> adapter;
+    ComPtr<IDXGIAdapter1> best_adapter;
+    for (UINT i = 0; factory && factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; i++) {
+        DXGI_ADAPTER_DESC1 desc{};
+        adapter->GetDesc1(&desc);
+
+        // Check if this adapter has any active outputs (monitors connected)
+        ComPtr<IDXGIOutput> output;
+        bool has_outputs = (adapter->EnumOutputs(0, &output) != DXGI_ERROR_NOT_FOUND);
+
+        if (has_outputs && !best_adapter)
+            best_adapter = adapter;
+
+        adapter.Reset();
+    }
+
+    // Create D3D11 device on the adapter with outputs (or default if none found)
     D3D_FEATURE_LEVEL feature_level;
     UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
-    HRESULT hr = D3D11CreateDevice(
-        nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags,
-        nullptr, 0, D3D11_SDK_VERSION,
-        &device_, &feature_level, &context_);
+    HRESULT hr;
 
-    if (FAILED(hr)) {
-        // Retry without VIDEO_SUPPORT
-        flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+    if (best_adapter) {
+        hr = D3D11CreateDevice(
+            best_adapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, flags,
+            nullptr, 0, D3D11_SDK_VERSION,
+            &device_, &feature_level, &context_);
+        if (FAILED(hr)) {
+            flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+            hr = D3D11CreateDevice(
+                best_adapter.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, flags,
+                nullptr, 0, D3D11_SDK_VERSION,
+                &device_, &feature_level, &context_);
+        }
+    } else {
         hr = D3D11CreateDevice(
             nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags,
             nullptr, 0, D3D11_SDK_VERSION,
             &device_, &feature_level, &context_);
+        if (FAILED(hr)) {
+            flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+            hr = D3D11CreateDevice(
+                nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags,
+                nullptr, 0, D3D11_SDK_VERSION,
+                &device_, &feature_level, &context_);
+        }
     }
 
     if (FAILED(hr)) {
@@ -213,9 +250,11 @@ std::vector<CaptureTarget> ScreenCapture::enumerate_monitors() {
     return results;
 }
 
-bool ScreenCapture::start(const CaptureTarget& target) {
+bool ScreenCapture::start(const CaptureTarget& target, uint32_t target_fps) {
 	ZoneScopedN("ScreenCapture::start");
     if (capturing_ || !impl_) return false;
+
+    frame_count_ = 0;
 
     try {
         // Create capture item
@@ -229,7 +268,15 @@ bool ScreenCapture::start(const CaptureTarget& target) {
         width_ = static_cast<uint32_t>(size.Width);
         height_ = static_cast<uint32_t>(size.Height);
 
-        // Create frame pool (3 buffers for triple-buffering, free-threaded delivery)
+        // Subscribe to item closed (window closed / monitor disconnected)
+        impl_->closed_token = impl_->item.Closed(
+            [this](GraphicsCaptureItem const&, winrt::Windows::Foundation::IInspectable const&) {
+                std::fprintf(stderr, "[ScreenCapture] Capture item closed\n");
+                capturing_ = false;
+                if (on_closed) on_closed();
+            });
+
+        // 3 buffers: compositor holds 1, callback holds 1, 1 spare.
         impl_->frame_pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
             impl_->winrt_device,
             DirectXPixelFormat::B8G8R8A8UIntNormalized,
@@ -240,8 +287,10 @@ bool ScreenCapture::start(const CaptureTarget& target) {
         impl_->frame_arrived_token = impl_->frame_pool.FrameArrived(
             [this](Direct3D11CaptureFramePool const& sender,
                    winrt::Windows::Foundation::IInspectable const&) {
+                ZoneScopedN("ScreenCapture::FrameArrived");
                 thread_local bool named = (TracySetThreadName("ScreenCapture"), true);
                 (void)named;
+
                 auto frame = sender.TryGetNextFrame();
                 if (!frame) return;
 
@@ -255,35 +304,47 @@ bool ScreenCapture::start(const CaptureTarget& target) {
                     ::Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess>();
 
                 ComPtr<ID3D11Texture2D> texture;
-                access->GetInterface(IID_PPV_ARGS(&texture));
+                HRESULT hr = access->GetInterface(IID_PPV_ARGS(&texture));
+                if (FAILED(hr) || !texture) { frame.Close(); return; }
 
-                // Update dimensions if changed
+                frame_count_++;
+
+                // Update dimensions if changed — recreate pool and skip this frame
                 if (w != width_ || h != height_) {
+                    std::fprintf(stderr, "[ScreenCapture] size changed: %ux%u -> %ux%u\n",
+                                 width_, height_, w, h);
                     width_ = w;
                     height_ = h;
-                    // Recreate pool for new size
+                    frame.Close();
                     impl_->frame_pool.Recreate(
                         impl_->winrt_device,
                         DirectXPixelFormat::B8G8R8A8UIntNormalized,
                         3,
                         content_size);
+                    return;
                 }
 
                 if (on_frame)
                     on_frame(texture.Get(), w, h);
 
+                // Close AFTER on_frame so the WGC pool texture stays valid
+                // during CopyResource (prevents D3D11 hazard shadow copies).
                 frame.Close();
             });
 
         // Create and start capture session
         impl_->session = impl_->frame_pool.CreateCaptureSession(impl_->item);
 
-        // Remove yellow border (Win10 2004+)
+        // Remove yellow border and disable cursor compositing (Win10 2004+)
         try {
             impl_->session.IsBorderRequired(false);
-        } catch (...) {
-            // Older Windows version — border will be shown
-        }
+        } catch (...) {}
+        try {
+            impl_->session.IsCursorCaptureEnabled(true);
+        } catch (...) {}
+        try {
+            impl_->session.MinUpdateInterval(std::chrono::milliseconds(1000 / target_fps));
+        } catch (...) {}
 
         impl_->session.StartCapture();
         capturing_ = true;
