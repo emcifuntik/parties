@@ -2086,7 +2086,7 @@ void App::start_screen_share(int target_index) {
         net_.send_video(pkt.data(), pkt.size(), true);
 
         // Feed raw bitstream to local preview decoder (no encryption needed)
-        if (decoder_ && viewing_sharer_ == user_id_ && encoder_) {
+        if (viewing_sharer_ == user_id_ && encoder_ && decode_running_) {
             if (awaiting_keyframe_) {
                 if (!keyframe) return;
                 awaiting_keyframe_ = false;
@@ -2241,13 +2241,14 @@ void App::start_screen_share(int target_index) {
         stream_audio_capture_.reset();
     }
 
-    // Send SCREEN_SHARE_START to server (don't set sharing_screen_ until confirmed)
-    // Encoder isn't created yet (lazy init on first frame), send AV1 placeholder and 0x0 dims.
-    // Actual codec/resolution is in each video frame header.
+    // Send SCREEN_SHARE_START to server (don't set sharing_screen_ until confirmed).
+    // Encoder isn't created yet (lazy init on first frame) — send zeroes as placeholder.
+    // Real codec/dimensions are in each video frame header; decoder is created lazily
+    // from the first frame's actual values.
     BinaryWriter writer;
-    writer.write_u8(static_cast<uint8_t>(VideoCodecId::AV1));
-    writer.write_u16(0);
-    writer.write_u16(0);
+    writer.write_u8(0);  // codec: 0 = pending (determined when encoder initializes)
+    writer.write_u16(0); // width: 0 = pending
+    writer.write_u16(0); // height: 0 = pending
     net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_START,
                       writer.data().data(), writer.data().size());
 }
@@ -2373,15 +2374,13 @@ void App::on_screen_share_started(const uint8_t* data, size_t len) {
         self_info.height = height;
         active_sharers_[user_id_] = std::move(self_info);
 
-        // Only start self-preview if not already watching someone else
+        // Only start self-preview if not already watching someone else.
+        // Decoder is created lazily in decode_loop from the first actual frame.
         if (viewing_sharer_ == 0) {
             viewing_sharer_ = user_id_;
-            decoder_ = std::make_unique<VideoDecoder>();
-            if (decoder_->init(codec, width, height)) {
-                awaiting_keyframe_ = true;
-                if (encoder_) encoder_->force_keyframe();
-                start_decode_thread();
-            }
+            awaiting_keyframe_ = true;
+            if (encoder_) encoder_->force_keyframe();
+            start_decode_thread();
         }
         sync_sharer_model();
         return;
@@ -2483,16 +2482,8 @@ void App::watch_sharer(UserId id) {
 
     viewing_sharer_ = id;
 
-    auto& info = it->second;
-    decoder_ = std::make_unique<VideoDecoder>();
-    if (!decoder_->init(info.codec, info.width, info.height)) {
-        std::fprintf(stderr, "[App] Video decoder init failed (codec=%u, %ux%u)\n",
-                     static_cast<unsigned>(info.codec), info.width, info.height);
-        decoder_.reset();
-        viewing_sharer_ = 0;
-        sync_sharer_model();
-        return;
-    }
+    // Decoder is created lazily in decode_loop from the first frame's
+    // actual codec/width/height — no stale placeholder values.
     start_decode_thread();
 
     if (id == user_id_ && sharing_screen_) {
@@ -2638,17 +2629,21 @@ void App::encode_loop() {
             }
             const char* codec_names[] = {"?", "AV1", "H.265", "H.264"};
             uint8_t ci = static_cast<uint8_t>(enc->codec());
-            const char* backend = "MFT";
-            if (enc->supports_registered_input()) {
-                // NVENC and AMF both support registered input; check which is active
-                // by testing if NVENC member is set (it's tried first)
-                backend = "HW";  // Generic — logged separately by NVENC/AMF init
-            }
             std::fprintf(stderr, "[App] Encoder initialized: %s %s at %ux%u %u fps\n",
-                         backend, ci <= 3 ? codec_names[ci] : "?", w, h, encode_fps_);
+                         enc->backend_name(), ci <= 3 ? codec_names[ci] : "?", w, h, encode_fps_);
             enc->on_encoded = encode_on_encoded_;
             encoder_ = std::move(enc);
             video_frame_number_ = 0;
+
+            // Notify server of actual codec/dimensions (replaces placeholder from SCREEN_SHARE_START)
+            if (sharing_screen_) {
+                BinaryWriter upd;
+                upd.write_u8(static_cast<uint8_t>(encoder_->codec()));
+                upd.write_u16(static_cast<uint16_t>(encoder_->width()));
+                upd.write_u16(static_cast<uint16_t>(encoder_->height()));
+                net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_UPDATE,
+                                  upd.data().data(), upd.data().size());
+            }
 
             // Register all staging textures for zero-copy NVENC encode
             if (encoder_->supports_registered_input()) {
@@ -2695,56 +2690,57 @@ void App::start_decode_thread() {
 	ZoneScopedN("App::start_decode_thread");
     if (decode_running_) return;
 
-    // Set up decoder callback: copy I420 planes into shared buffers.
-    // GPU does the YUV→RGB conversion in a pixel shader — zero CPU conversion.
-    decoder_->on_decoded = [this](const DecodedFrame& frame) {
-        ZoneScopedN("on_decoded::copy_planes");
-        uint32_t w = frame.width, h = frame.height;
-        uint32_t half_h = h / 2;
-
-        // Reuse staging buffers — resize is free after first frame (same size).
-        // memcpy from pinned GPU memory is the only real cost (~1ms for 4K NV12).
-        {
-            ZoneScopedN("copy_planes::Y");
-            size_t y_size = static_cast<size_t>(frame.y_stride) * h;
-            staging_y_.resize(y_size);
-            std::memcpy(staging_y_.data(), frame.y_plane, y_size);
-        }
-
-        size_t uv_size = static_cast<size_t>(frame.uv_stride) * half_h;
-        {
-            ZoneScopedN("copy_planes::U");
-            staging_u_.resize(uv_size);
-            std::memcpy(staging_u_.data(), frame.u_plane, uv_size);
-        }
-        
-
-        if (!frame.nv12 && frame.v_plane) {
-            ZoneScopedN("copy_planes::V");
-            staging_v_.resize(uv_size);
-            std::memcpy(staging_v_.data(), frame.v_plane, uv_size);
-        }
-
-        // Swap under lock — pointer exchanges only (~0 ns).
-        // Old shared_ buffers move into staging_, reused next frame.
-        {
-            ZoneScopedN("copy_planes::swap");
-            std::lock_guard<std::mutex> lock(frame_mutex_);
-            shared_y_.swap(staging_y_);
-            shared_u_.swap(staging_u_);
-            shared_v_.swap(staging_v_);
-            shared_width_ = w;
-            shared_height_ = h;
-            shared_y_stride_ = frame.y_stride;
-            shared_uv_stride_ = frame.uv_stride;
-            shared_nv12_ = frame.nv12;
-            new_frame_available_ = true;
-        }
-        
-    };
+    // Decoder is created lazily in decode_loop() from the first frame's
+    // codec/width/height — no need for decoder_ to exist here.
+    if (decoder_)
+        decoder_->on_decoded = [this](const DecodedFrame& f) { on_video_decoded(f); };
 
     decode_running_ = true;
     decode_thread_ = std::thread([this]() { decode_loop(); });
+}
+
+void App::on_video_decoded(const encdec::DecodedFrame& frame) {
+    ZoneScopedN("on_decoded::copy_planes");
+    uint32_t w = frame.width, h = frame.height;
+    uint32_t half_h = h / 2;
+
+    // Reuse staging buffers — resize is free after first frame (same size).
+    // memcpy from pinned GPU memory is the only real cost (~1ms for 4K NV12).
+    {
+        ZoneScopedN("copy_planes::Y");
+        size_t y_size = static_cast<size_t>(frame.y_stride) * h;
+        staging_y_.resize(y_size);
+        std::memcpy(staging_y_.data(), frame.y_plane, y_size);
+    }
+
+    size_t uv_size = static_cast<size_t>(frame.uv_stride) * half_h;
+    {
+        ZoneScopedN("copy_planes::U");
+        staging_u_.resize(uv_size);
+        std::memcpy(staging_u_.data(), frame.u_plane, uv_size);
+    }
+
+    if (!frame.nv12 && frame.v_plane) {
+        ZoneScopedN("copy_planes::V");
+        staging_v_.resize(uv_size);
+        std::memcpy(staging_v_.data(), frame.v_plane, uv_size);
+    }
+
+    // Swap under lock — pointer exchanges only (~0 ns).
+    // Old shared_ buffers move into staging_, reused next frame.
+    {
+        ZoneScopedN("copy_planes::swap");
+        std::lock_guard<std::mutex> lock(frame_mutex_);
+        shared_y_.swap(staging_y_);
+        shared_u_.swap(staging_u_);
+        shared_v_.swap(staging_v_);
+        shared_width_ = w;
+        shared_height_ = h;
+        shared_y_stride_ = frame.y_stride;
+        shared_uv_stride_ = frame.uv_stride;
+        shared_nv12_ = frame.nv12;
+        new_frame_available_ = true;
+    }
 }
 
 void App::stop_decode_thread() {
@@ -2802,16 +2798,32 @@ void App::decode_loop() {
         // only sees the latest decoded result.
         while (!batch.empty()) {
             auto& work = batch.front();
-            if (decoder_ && !work.data.empty()) {
-                // Reinit decoder if codec changed (encoder may have fallen back)
+
+            if (!work.data.empty()) {
+                // Lazy decoder creation: init from the first frame's actual
+                // codec/width/height instead of the placeholder in SCREEN_SHARE_STARTED.
+                if (!decoder_) {
+                    decoder_ = std::make_unique<VideoDecoder>();
+                    if (!decoder_->init(work.codec, work.width, work.height)) {
+                        std::fprintf(stderr, "[Video] Decoder init failed (codec=%u, %ux%u)\n",
+                                     static_cast<unsigned>(work.codec), work.width, work.height);
+                        decoder_.reset();
+                        batch.pop();
+                        continue;
+                    }
+                    decoder_->on_decoded = [this](const DecodedFrame& f) { on_video_decoded(f); };
+                    std::fprintf(stderr, "[Video] Decoder created: %s %ux%u\n",
+                                 decoder_->backend_name(), work.width, work.height);
+                }
+
+                // Reinit decoder if codec or dimensions changed
                 if (work.codec != decoder_->codec()) {
                     std::fprintf(stderr, "[Video] Codec changed to %u, reinitializing decoder\n",
                                  static_cast<unsigned>(work.codec));
-                    auto cb = decoder_->on_decoded;
                     decoder_->shutdown();
                     decoder_ = std::make_unique<VideoDecoder>();
                     decoder_->init(work.codec, work.width, work.height);
-                    decoder_->on_decoded = cb;
+                    decoder_->on_decoded = [this](const DecodedFrame& f) { on_video_decoded(f); };
                     awaiting_keyframe_ = true;
                     if (viewing_sharer_ != 0) send_pli(viewing_sharer_);
                     while (!batch.empty()) batch.pop();
@@ -2822,13 +2834,12 @@ void App::decode_loop() {
 
                 // GPU context lost (e.g., game launch) — reinitialize with software decoder
                 if (decoder_->context_lost()) {
-                    std::fprintf(stderr, "[App] NVDEC context lost, falling back to software decoder\n");
+                    std::fprintf(stderr, "[App] HW decoder context lost, falling back to software decoder\n");
                     auto codec = decoder_->codec();
-                    auto cb = decoder_->on_decoded;
                     decoder_->shutdown();
-                    decoder_->disable_hardware();  // Don't retry NVDEC
+                    decoder_->disable_hardware();  // Don't retry hardware
                     decoder_->init(codec, 0, 0);   // Reinit — will use dav1d/MFT
-                    decoder_->on_decoded = cb;
+                    decoder_->on_decoded = [this](const DecodedFrame& f) { on_video_decoded(f); };
                     // Request keyframe to restart clean
                     if (viewing_sharer_ != 0) send_pli(viewing_sharer_);
                     while (!batch.empty()) batch.pop();

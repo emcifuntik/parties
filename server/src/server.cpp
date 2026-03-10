@@ -754,6 +754,34 @@ void Server::handle_message(const IncomingMessage& msg) {
         break;
     }
 
+    // ── Screen share update (encoder initialized with real codec/dims) ──
+    case protocol::ControlMessageType::SCREEN_SHARE_UPDATE: {
+        if (!session->authenticated || session->channel_id == 0) break;
+
+        // Only accept from active sharers
+        {
+            std::lock_guard<std::mutex> lock(sharers_mutex_);
+            auto it = channel_screen_sharers_.find(session->channel_id);
+            if (it == channel_screen_sharers_.end() ||
+                it->second.count(session->user_id) == 0)
+                break;
+        }
+
+        BinaryReader reader(msg.payload.data(), msg.payload.size());
+        uint8_t codec_id = reader.read_u8();
+        uint16_t width = reader.read_u16();
+        uint16_t height = reader.read_u16();
+        if (reader.error()) break;
+
+        session->share_codec = codec_id;
+        session->share_width = width;
+        session->share_height = height;
+
+        std::printf("[Server] User '%s' encoder ready: codec=%u %ux%u\n",
+                    session->username.c_str(), codec_id, width, height);
+        break;
+    }
+
     // ── Screen share stop ────────────────────────────────────────────────
     case protocol::ControlMessageType::SCREEN_SHARE_STOP: {
         if (!session->authenticated || session->channel_id == 0) break;

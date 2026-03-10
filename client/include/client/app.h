@@ -14,6 +14,8 @@
 #include <parties/types.h>
 #include <parties/video_common.h>
 
+namespace parties::encdec { struct DecodedFrame; }
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -94,6 +96,7 @@ private:
     void start_decode_thread();
     void stop_decode_thread();
     void decode_loop();
+    void on_video_decoded(const encdec::DecodedFrame& frame);
 
     // Video encode thread (decouples capture from blocking GPU encode)
     void encode_loop();

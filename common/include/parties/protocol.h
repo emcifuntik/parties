@@ -16,6 +16,7 @@ enum class ControlMessageType : uint16_t {
     SCREEN_SHARE_START    = 0x0007,
     SCREEN_SHARE_STOP     = 0x0008,
     SCREEN_SHARE_VIEW     = 0x0009,   // Subscribe to a sharer's stream [target_user_id(4)], 0 = unsubscribe
+    SCREEN_SHARE_UPDATE   = 0x000A,   // Update share metadata: [codec(1)][width(2)][height(2)]
 
     // Server -> Client
     AUTH_RESPONSE         = 0x0101,
