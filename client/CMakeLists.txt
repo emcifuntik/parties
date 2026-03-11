@@ -29,6 +29,7 @@ add_executable(parties_client
     src/dx12/RmlUi_Renderer_DX12WL.cpp
     src/dx12/RmlUi_Platform_Win32.cpp
     src/dx12/offsetAllocator.cpp
+    src/vulkan/RmlUi_Renderer_VK.cpp
     src/screen_capture.cpp
     src/video_encoder.cpp
     src/video_decoder.cpp
@@ -61,6 +62,7 @@ target_include_directories(parties_client
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/src/dx12
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan
         ${MINIAUDIO_INCLUDE_DIRS}
         ${SPEEXDSP_INCLUDE_DIRS}
 )

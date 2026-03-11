@@ -429,6 +429,61 @@ float4 main(const PS_Input IN) : SV_TARGET
 };
 )";
 
+static constexpr const char pShaderSourceText_Pixel_YUV[] = R"(
+struct VS_INPUT
+{
+	float4 pos : SV_Position;
+	float4 color : COLOR;
+	float2 uv : TEXCOORD;
+};
+
+Texture2D g_TexY : register(t0);
+Texture2D g_TexU : register(t1);
+Texture2D g_TexV : register(t2);
+SamplerState g_SamplerLinear : register(s0);
+
+float4 main(const VS_INPUT IN) : SV_TARGET
+{
+	float y = g_TexY.Sample(g_SamplerLinear, IN.uv).r;
+	float u = g_TexU.Sample(g_SamplerLinear, IN.uv).r - 0.5;
+	float v = g_TexV.Sample(g_SamplerLinear, IN.uv).r - 0.5;
+	// BT.601 YUV to RGB conversion
+	float3 rgb = float3(
+		y + 1.402 * v,
+		y - 0.344136 * u - 0.714136 * v,
+		y + 1.772 * u
+	);
+	return float4(saturate(rgb), 1.0);
+}
+)";
+
+static constexpr const char pShaderSourceText_Pixel_NV12[] = R"(
+struct VS_INPUT
+{
+	float4 pos : SV_Position;
+	float4 color : COLOR;
+	float2 uv : TEXCOORD;
+};
+
+Texture2D g_TexY : register(t0);
+Texture2D g_TexUV : register(t1);
+SamplerState g_SamplerLinear : register(s0);
+
+float4 main(const VS_INPUT IN) : SV_TARGET
+{
+	float y = g_TexY.Sample(g_SamplerLinear, IN.uv).r;
+	float u = g_TexUV.Sample(g_SamplerLinear, IN.uv).r - 0.5;
+	float v = g_TexUV.Sample(g_SamplerLinear, IN.uv).g - 0.5;
+	// BT.601 YUV to RGB conversion
+	float3 rgb = float3(
+		y + 1.402 * v,
+		y - 0.344136 * u - 0.714136 * v,
+		y + 1.772 * u
+	);
+	return float4(saturate(rgb), 1.0);
+}
+)";
+
 // AlignUp(314, 256) = 512
 template <typename T>
 static T AlignUp(T val, T alignment)
@@ -661,6 +716,25 @@ struct CompiledShader {
 	Rml::Vector2f dimensions;
 };
 
+// YUV (I420) texture data: 3 separate R8 planes (Y full-res, U and V half-res).
+// TextureHandleType* pointers are heap-allocated and freed/recreated on Update,
+// matching the codebase's one-shot Destroy() semantics.
+struct DX12WL_YUVTextureData {
+	RenderInterface_DX12WL::TextureHandleType* y_tex = nullptr;
+	RenderInterface_DX12WL::TextureHandleType* u_tex = nullptr;
+	RenderInterface_DX12WL::TextureHandleType* v_tex = nullptr;
+	uint32_t width = 0;
+	uint32_t height = 0;
+};
+
+// NV12 texture data: R8 for Y (full-res), R8G8 for interleaved UV (half-res)
+struct DX12WL_NV12TextureData {
+	RenderInterface_DX12WL::TextureHandleType* y_tex = nullptr;
+	RenderInterface_DX12WL::TextureHandleType* uv_tex = nullptr;
+	uint32_t width = 0;
+	uint32_t height = 0;
+};
+
 // those programs that have postfix as _MSAA it means that it accepts render target with sample count >= 2 (thus it is called MSAA)
 enum class ProgramId : int {
 	None,
@@ -690,6 +764,8 @@ enum class ProgramId : int {
 	BlendMask,
 	Blur,
 	DropShadow,
+	YUV,
+	NV12,
 	Count
 };
 
@@ -1663,6 +1739,372 @@ void RenderInterface_DX12WL::UpdateGeometryVertices(
 void RenderInterface_DX12WL::UpdateTextureData(
 	Rml::TextureHandle /*texture_handle*/, Rml::Span<const Rml::byte> /*source_data*/, Rml::Vector2i /*source_dimensions*/) {
 	// Stub — not yet implemented for DX12WL renderer
+}
+
+// ---------------------------------------------------------------------------
+// YUV (I420) and NV12 -> RGB shader-based conversion
+// Each plane is uploaded as a separate texture (R8_UNORM for luma/chroma,
+// R8G8_UNORM for interleaved UV). The GPU pixel shader does the BT.601
+// color space conversion.
+// ---------------------------------------------------------------------------
+
+// Helper: create a texture with the given format/dimensions and upload tightly-packed data.
+// Source data is copied row-by-row to handle stride != width*bpp.
+// Returns nullptr on failure; on success the TextureHandleType is populated with resource + SRV.
+static void CreateAndUploadPlaneTexture(
+	RenderInterface_DX12WL::TextureMemoryManager& tex_mgr,
+	RenderInterface_DX12WL::TextureHandleType* p_tex,
+	const uint8_t* src_data, uint32_t src_stride,
+	uint32_t width, uint32_t height, DXGI_FORMAT format, uint32_t bytes_per_pixel)
+{
+	// Build a tightly-packed copy of the plane data (TextureMemoryManager::Upload
+	// computes RowPitch = width * BytesPerPixel, so the source must match that).
+	const size_t tight_row = static_cast<size_t>(width) * bytes_per_pixel;
+	const size_t tight_size = tight_row * height;
+	Rml::Vector<Rml::byte> tight_buf(tight_size);
+
+	for (uint32_t row = 0; row < height; ++row)
+		std::memcpy(tight_buf.data() + row * tight_row, src_data + row * src_stride, tight_row);
+
+	D3D12_RESOURCE_DESC desc{};
+	desc.MipLevels = 1;
+	desc.DepthOrArraySize = 1;
+	desc.Format = format;
+	desc.Width = width;
+	desc.Height = height;
+	desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	desc.SampleDesc.Count = 1;
+	desc.SampleDesc.Quality = 0;
+
+	tex_mgr.Alloc_Texture(desc, p_tex, tight_buf.data()
+#ifdef RMLUI_DX_DEBUG
+		, "yuv_plane"
+#endif
+	);
+}
+
+// --- YUV (I420) texture methods ---
+
+uintptr_t RenderInterface_DX12WL::GenerateYUVTexture(
+	const uint8_t* y_data, uint32_t y_stride,
+	const uint8_t* u_data, const uint8_t* v_data, uint32_t uv_stride,
+	uint32_t width, uint32_t height)
+{
+	RMLUI_ZoneScopedN("DirectX 12 - GenerateYUVTexture");
+	if (!y_data || !u_data || !v_data || width == 0 || height == 0)
+		return 0;
+
+	auto* yuv = new DX12WL_YUVTextureData();
+	yuv->width = width;
+	yuv->height = height;
+
+	const uint32_t half_w = width / 2;
+	const uint32_t half_h = height / 2;
+
+	yuv->y_tex = new TextureHandleType();
+	yuv->u_tex = new TextureHandleType();
+	yuv->v_tex = new TextureHandleType();
+
+	CreateAndUploadPlaneTexture(m_manager_texture, yuv->y_tex, y_data, y_stride, width, height, DXGI_FORMAT_R8_UNORM, 1);
+	CreateAndUploadPlaneTexture(m_manager_texture, yuv->u_tex, u_data, uv_stride, half_w, half_h, DXGI_FORMAT_R8_UNORM, 1);
+	CreateAndUploadPlaneTexture(m_manager_texture, yuv->v_tex, v_data, uv_stride, half_w, half_h, DXGI_FORMAT_R8_UNORM, 1);
+
+	if (!yuv->y_tex->Get_Resource() || !yuv->u_tex->Get_Resource() || !yuv->v_tex->Get_Resource())
+	{
+		if (yuv->y_tex->Get_Resource()) { m_manager_texture.Free_Texture(yuv->y_tex); }
+		if (yuv->u_tex->Get_Resource()) { m_manager_texture.Free_Texture(yuv->u_tex); }
+		if (yuv->v_tex->Get_Resource()) { m_manager_texture.Free_Texture(yuv->v_tex); }
+		delete yuv->y_tex;
+		delete yuv->u_tex;
+		delete yuv->v_tex;
+		delete yuv;
+		return 0;
+	}
+
+	return reinterpret_cast<uintptr_t>(yuv);
+}
+
+void RenderInterface_DX12WL::UpdateYUVTexture(uintptr_t handle,
+	const uint8_t* y_data, uint32_t y_stride,
+	const uint8_t* u_data, const uint8_t* v_data, uint32_t uv_stride,
+	uint32_t width, uint32_t height)
+{
+	RMLUI_ZoneScopedN("DirectX 12 - UpdateYUVTexture");
+	if (!handle)
+		return;
+
+	auto* yuv = reinterpret_cast<DX12WL_YUVTextureData*>(handle);
+
+	// Free the old plane textures and delete handles, then allocate fresh ones.
+	if (yuv->y_tex) { if (yuv->y_tex->Get_Resource()) { m_manager_texture.Free_Texture(yuv->y_tex); } delete yuv->y_tex; }
+	if (yuv->u_tex) { if (yuv->u_tex->Get_Resource()) { m_manager_texture.Free_Texture(yuv->u_tex); } delete yuv->u_tex; }
+	if (yuv->v_tex) { if (yuv->v_tex->Get_Resource()) { m_manager_texture.Free_Texture(yuv->v_tex); } delete yuv->v_tex; }
+
+	yuv->width = width;
+	yuv->height = height;
+
+	const uint32_t half_w = width / 2;
+	const uint32_t half_h = height / 2;
+
+	yuv->y_tex = new TextureHandleType();
+	yuv->u_tex = new TextureHandleType();
+	yuv->v_tex = new TextureHandleType();
+
+	CreateAndUploadPlaneTexture(m_manager_texture, yuv->y_tex, y_data, y_stride, width, height, DXGI_FORMAT_R8_UNORM, 1);
+	CreateAndUploadPlaneTexture(m_manager_texture, yuv->u_tex, u_data, uv_stride, half_w, half_h, DXGI_FORMAT_R8_UNORM, 1);
+	CreateAndUploadPlaneTexture(m_manager_texture, yuv->v_tex, v_data, uv_stride, half_w, half_h, DXGI_FORMAT_R8_UNORM, 1);
+}
+
+void RenderInterface_DX12WL::ReleaseYUVTexture(uintptr_t handle)
+{
+	RMLUI_ZoneScopedN("DirectX 12 - ReleaseYUVTexture");
+	if (!handle)
+		return;
+
+	auto* yuv = reinterpret_cast<DX12WL_YUVTextureData*>(handle);
+	if (yuv->y_tex) { if (yuv->y_tex->Get_Resource()) { m_manager_texture.Free_Texture(yuv->y_tex); } delete yuv->y_tex; }
+	if (yuv->u_tex) { if (yuv->u_tex->Get_Resource()) { m_manager_texture.Free_Texture(yuv->u_tex); } delete yuv->u_tex; }
+	if (yuv->v_tex) { if (yuv->v_tex->Get_Resource()) { m_manager_texture.Free_Texture(yuv->v_tex); } delete yuv->v_tex; }
+	delete yuv;
+}
+
+void RenderInterface_DX12WL::RenderYUVGeometry(Rml::CompiledGeometryHandle geometry,
+	Rml::Vector2f translation, uintptr_t yuv_handle)
+{
+	RMLUI_ZoneScopedN("DirectX 12 - RenderYUVGeometry");
+	RMLUI_DX_MARKER_BEGIN(m_p_command_graphics_list, "RenderYUVGeometry");
+
+	if (!geometry || !yuv_handle)
+	{
+		RMLUI_DX_MARKER_END(m_p_command_graphics_list);
+		return;
+	}
+
+	auto* yuv = reinterpret_cast<DX12WL_YUVTextureData*>(yuv_handle);
+	auto* p_handle_geometry = reinterpret_cast<GeometryHandleType*>(geometry);
+
+	UseProgram(ProgramId::YUV);
+
+	// Allocate and fill constant buffer with transform + translation
+	ConstantBufferType* p_constant_buffer = Get_ConstantBuffer(m_current_back_buffer_index);
+	SubmitTransformUniform(*p_constant_buffer, translation);
+
+	// Bind CBV at root param 0
+	auto* p_dx_cb = m_manager_buffer.Get_BufferByIndex(p_constant_buffer->m_alloc_info.buffer_index);
+	if (p_dx_cb)
+	{
+		auto* p_dx_resource = p_dx_cb->GetResource();
+		if (p_dx_resource)
+		{
+			D3D12_GPU_VIRTUAL_ADDRESS cbv_addr = p_dx_resource->GetGPUVirtualAddress() + p_constant_buffer->m_alloc_info.offset;
+			m_p_command_graphics_list->SetGraphicsRootConstantBufferView(0, cbv_addr);
+		}
+	}
+
+	// Bind Y, U, V textures at root params 1, 2, 3
+	BindTexture(yuv->y_tex, 1);
+	BindTexture(yuv->u_tex, 2);
+	BindTexture(yuv->v_tex, 3);
+
+	// Set scissor
+	if (!m_is_scissor_was_set)
+	{
+		D3D12_RECT scissor = {0, 0, static_cast<LONG>(m_width), static_cast<LONG>(m_height)};
+		m_p_command_graphics_list->RSSetScissorRects(1, &scissor);
+	}
+
+	// Bind vertex buffer
+	m_p_command_graphics_list->IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+	auto* p_dx_buffer_vertex = m_manager_buffer.Get_BufferByIndex(p_handle_geometry->Get_InfoVertex().buffer_index);
+	if (p_dx_buffer_vertex)
+	{
+		auto* p_vb_resource = p_dx_buffer_vertex->GetResource();
+		if (p_vb_resource)
+		{
+			D3D12_VERTEX_BUFFER_VIEW vbv = {};
+			vbv.BufferLocation = p_vb_resource->GetGPUVirtualAddress() + p_handle_geometry->Get_InfoVertex().offset;
+			vbv.StrideInBytes = sizeof(Rml::Vertex);
+			vbv.SizeInBytes = static_cast<UINT>(p_handle_geometry->Get_InfoVertex().size);
+			m_p_command_graphics_list->IASetVertexBuffers(0, 1, &vbv);
+		}
+	}
+
+	// Bind index buffer
+	auto* p_dx_buffer_index = m_manager_buffer.Get_BufferByIndex(p_handle_geometry->Get_InfoIndex().buffer_index);
+	if (p_dx_buffer_index)
+	{
+		auto* p_ib_resource = p_dx_buffer_index->GetResource();
+		if (p_ib_resource)
+		{
+			D3D12_INDEX_BUFFER_VIEW ibv = {};
+			ibv.BufferLocation = p_ib_resource->GetGPUVirtualAddress() + p_handle_geometry->Get_InfoIndex().offset;
+			ibv.Format = DXGI_FORMAT_R32_UINT;
+			ibv.SizeInBytes = static_cast<UINT>(p_handle_geometry->Get_InfoIndex().size);
+			m_p_command_graphics_list->IASetIndexBuffer(&ibv);
+		}
+	}
+
+	m_p_command_graphics_list->DrawIndexedInstanced(p_handle_geometry->Get_NumIndices(), 1, 0, 0, 0);
+
+	RMLUI_DX_MARKER_END(m_p_command_graphics_list);
+}
+
+// --- NV12 texture methods ---
+
+uintptr_t RenderInterface_DX12WL::GenerateNV12Texture(
+	const uint8_t* y_data, uint32_t y_stride,
+	const uint8_t* uv_data, uint32_t uv_stride,
+	uint32_t width, uint32_t height)
+{
+	RMLUI_ZoneScopedN("DirectX 12 - GenerateNV12Texture");
+	if (!y_data || !uv_data || width == 0 || height == 0)
+		return 0;
+
+	auto* nv12 = new DX12WL_NV12TextureData();
+	nv12->width = width;
+	nv12->height = height;
+
+	const uint32_t half_w = width / 2;
+	const uint32_t half_h = height / 2;
+
+	nv12->y_tex = new TextureHandleType();
+	nv12->uv_tex = new TextureHandleType();
+
+	CreateAndUploadPlaneTexture(m_manager_texture, nv12->y_tex, y_data, y_stride, width, height, DXGI_FORMAT_R8_UNORM, 1);
+	CreateAndUploadPlaneTexture(m_manager_texture, nv12->uv_tex, uv_data, uv_stride, half_w, half_h, DXGI_FORMAT_R8G8_UNORM, 2);
+
+	if (!nv12->y_tex->Get_Resource() || !nv12->uv_tex->Get_Resource())
+	{
+		if (nv12->y_tex->Get_Resource()) { m_manager_texture.Free_Texture(nv12->y_tex); }
+		if (nv12->uv_tex->Get_Resource()) { m_manager_texture.Free_Texture(nv12->uv_tex); }
+		delete nv12->y_tex;
+		delete nv12->uv_tex;
+		delete nv12;
+		return 0;
+	}
+
+	return reinterpret_cast<uintptr_t>(nv12);
+}
+
+void RenderInterface_DX12WL::UpdateNV12Texture(uintptr_t handle,
+	const uint8_t* y_data, uint32_t y_stride,
+	const uint8_t* uv_data, uint32_t uv_stride,
+	uint32_t width, uint32_t height)
+{
+	RMLUI_ZoneScopedN("DirectX 12 - UpdateNV12Texture");
+	if (!handle)
+		return;
+
+	// Free inner resources and recreate with new data (same pattern as UpdateYUVTexture).
+	auto* nv12 = reinterpret_cast<DX12WL_NV12TextureData*>(handle);
+	if (nv12->y_tex) { if (nv12->y_tex->Get_Resource()) { m_manager_texture.Free_Texture(nv12->y_tex); } delete nv12->y_tex; }
+	if (nv12->uv_tex) { if (nv12->uv_tex->Get_Resource()) { m_manager_texture.Free_Texture(nv12->uv_tex); } delete nv12->uv_tex; }
+
+	nv12->width = width;
+	nv12->height = height;
+
+	const uint32_t half_w = width / 2;
+	const uint32_t half_h = height / 2;
+
+	nv12->y_tex = new TextureHandleType();
+	nv12->uv_tex = new TextureHandleType();
+
+	CreateAndUploadPlaneTexture(m_manager_texture, nv12->y_tex, y_data, y_stride, width, height, DXGI_FORMAT_R8_UNORM, 1);
+	CreateAndUploadPlaneTexture(m_manager_texture, nv12->uv_tex, uv_data, uv_stride, half_w, half_h, DXGI_FORMAT_R8G8_UNORM, 2);
+}
+
+void RenderInterface_DX12WL::ReleaseNV12Texture(uintptr_t handle)
+{
+	RMLUI_ZoneScopedN("DirectX 12 - ReleaseNV12Texture");
+	if (!handle)
+		return;
+
+	auto* nv12 = reinterpret_cast<DX12WL_NV12TextureData*>(handle);
+	if (nv12->y_tex) { if (nv12->y_tex->Get_Resource()) { m_manager_texture.Free_Texture(nv12->y_tex); } delete nv12->y_tex; }
+	if (nv12->uv_tex) { if (nv12->uv_tex->Get_Resource()) { m_manager_texture.Free_Texture(nv12->uv_tex); } delete nv12->uv_tex; }
+	delete nv12;
+}
+
+void RenderInterface_DX12WL::RenderNV12Geometry(Rml::CompiledGeometryHandle geometry,
+	Rml::Vector2f translation, uintptr_t nv12_handle)
+{
+	RMLUI_ZoneScopedN("DirectX 12 - RenderNV12Geometry");
+	RMLUI_DX_MARKER_BEGIN(m_p_command_graphics_list, "RenderNV12Geometry");
+
+	if (!geometry || !nv12_handle)
+	{
+		RMLUI_DX_MARKER_END(m_p_command_graphics_list);
+		return;
+	}
+
+	auto* nv12 = reinterpret_cast<DX12WL_NV12TextureData*>(nv12_handle);
+	auto* p_handle_geometry = reinterpret_cast<GeometryHandleType*>(geometry);
+
+	UseProgram(ProgramId::NV12);
+
+	// Allocate and fill constant buffer with transform + translation
+	ConstantBufferType* p_constant_buffer = Get_ConstantBuffer(m_current_back_buffer_index);
+	SubmitTransformUniform(*p_constant_buffer, translation);
+
+	// Bind CBV at root param 0
+	auto* p_dx_cb = m_manager_buffer.Get_BufferByIndex(p_constant_buffer->m_alloc_info.buffer_index);
+	if (p_dx_cb)
+	{
+		auto* p_dx_resource = p_dx_cb->GetResource();
+		if (p_dx_resource)
+		{
+			D3D12_GPU_VIRTUAL_ADDRESS cbv_addr = p_dx_resource->GetGPUVirtualAddress() + p_constant_buffer->m_alloc_info.offset;
+			m_p_command_graphics_list->SetGraphicsRootConstantBufferView(0, cbv_addr);
+		}
+	}
+
+	// Bind Y, UV textures at root params 1, 2
+	BindTexture(nv12->y_tex, 1);
+	BindTexture(nv12->uv_tex, 2);
+
+	// Set scissor
+	if (!m_is_scissor_was_set)
+	{
+		D3D12_RECT scissor = {0, 0, static_cast<LONG>(m_width), static_cast<LONG>(m_height)};
+		m_p_command_graphics_list->RSSetScissorRects(1, &scissor);
+	}
+
+	// Bind vertex buffer
+	m_p_command_graphics_list->IASetPrimitiveTopology(D3D10_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+	auto* p_dx_buffer_vertex = m_manager_buffer.Get_BufferByIndex(p_handle_geometry->Get_InfoVertex().buffer_index);
+	if (p_dx_buffer_vertex)
+	{
+		auto* p_vb_resource = p_dx_buffer_vertex->GetResource();
+		if (p_vb_resource)
+		{
+			D3D12_VERTEX_BUFFER_VIEW vbv = {};
+			vbv.BufferLocation = p_vb_resource->GetGPUVirtualAddress() + p_handle_geometry->Get_InfoVertex().offset;
+			vbv.StrideInBytes = sizeof(Rml::Vertex);
+			vbv.SizeInBytes = static_cast<UINT>(p_handle_geometry->Get_InfoVertex().size);
+			m_p_command_graphics_list->IASetVertexBuffers(0, 1, &vbv);
+		}
+	}
+
+	// Bind index buffer
+	auto* p_dx_buffer_index = m_manager_buffer.Get_BufferByIndex(p_handle_geometry->Get_InfoIndex().buffer_index);
+	if (p_dx_buffer_index)
+	{
+		auto* p_ib_resource = p_dx_buffer_index->GetResource();
+		if (p_ib_resource)
+		{
+			D3D12_INDEX_BUFFER_VIEW ibv = {};
+			ibv.BufferLocation = p_ib_resource->GetGPUVirtualAddress() + p_handle_geometry->Get_InfoIndex().offset;
+			ibv.Format = DXGI_FORMAT_R32_UINT;
+			ibv.SizeInBytes = static_cast<UINT>(p_handle_geometry->Get_InfoIndex().size);
+			m_p_command_graphics_list->IASetIndexBuffer(&ibv);
+		}
+	}
+
+	m_p_command_graphics_list->DrawIndexedInstanced(p_handle_geometry->Get_NumIndices(), 1, 0, 0, 0);
+
+	RMLUI_DX_MARKER_END(m_p_command_graphics_list);
 }
 
 void RenderInterface_DX12WL::EnableScissorRegion(bool enable)
@@ -5175,6 +5617,8 @@ void RenderInterface_DX12WL::Create_Resource_Pipelines()
 	Create_Resource_Pipeline_Passthrough();
 	Create_Resource_Pipeline_Passthrough_NoBlend();
 	Create_Resource_Pipeline_Texture();
+	Create_Resource_Pipeline_YUV();
+	Create_Resource_Pipeline_NV12();
 }
 
 void RenderInterface_DX12WL::Create_Resource_Pipeline_Color()
@@ -7558,6 +8002,283 @@ void RenderInterface_DX12WL::Create_Resource_Pipeline_DropShadow()
 	}
 }
 
+void RenderInterface_DX12WL::Create_Resource_Pipeline_YUV()
+{
+	RMLUI_ZoneScopedN("DirectX 12 - Create_Resource_Pipeline_YUV");
+	RMLUI_ASSERTMSG(m_p_device, "must be valid when we call this method!");
+
+	if (m_p_device)
+	{
+		// Root signature: CBV (vertex) + 3 descriptor tables for Y(t0), U(t1), V(t2)
+		D3D12_DESCRIPTOR_RANGE range_t0[1];
+		range_t0[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+		range_t0[0].NumDescriptors = 1;
+		range_t0[0].BaseShaderRegister = 0;
+		range_t0[0].RegisterSpace = 0;
+		range_t0[0].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+		D3D12_ROOT_DESCRIPTOR_TABLE table_t0{};
+		table_t0.NumDescriptorRanges = 1;
+		table_t0.pDescriptorRanges = range_t0;
+
+		D3D12_DESCRIPTOR_RANGE range_t1[1];
+		range_t1[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+		range_t1[0].NumDescriptors = 1;
+		range_t1[0].BaseShaderRegister = 1;
+		range_t1[0].RegisterSpace = 0;
+		range_t1[0].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+		D3D12_ROOT_DESCRIPTOR_TABLE table_t1{};
+		table_t1.NumDescriptorRanges = 1;
+		table_t1.pDescriptorRanges = range_t1;
+
+		D3D12_DESCRIPTOR_RANGE range_t2[1];
+		range_t2[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+		range_t2[0].NumDescriptors = 1;
+		range_t2[0].BaseShaderRegister = 2;
+		range_t2[0].RegisterSpace = 0;
+		range_t2[0].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+		D3D12_ROOT_DESCRIPTOR_TABLE table_t2{};
+		table_t2.NumDescriptorRanges = 1;
+		table_t2.pDescriptorRanges = range_t2;
+
+		D3D12_ROOT_DESCRIPTOR descriptor_cbv{};
+		descriptor_cbv.ShaderRegister = 0;
+
+		D3D12_ROOT_PARAMETER parameters[4];
+		parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+		parameters[0].Descriptor = descriptor_cbv;
+		parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+		parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+		parameters[1].DescriptorTable = table_t0;
+		parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+		parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+		parameters[2].DescriptorTable = table_t1;
+		parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+		parameters[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+		parameters[3].DescriptorTable = table_t2;
+		parameters[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+		D3D12_STATIC_SAMPLER_DESC sampler = {};
+		sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+		sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+		sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+		sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+		sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+		sampler.BorderColor = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
+		sampler.MaxLOD = D3D12_FLOAT32_MAX;
+		sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+		D3D12_ROOT_SIGNATURE_DESC desc_rootsignature;
+		desc_rootsignature.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
+			D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS | D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
+			D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
+		desc_rootsignature.NumParameters = _countof(parameters);
+		desc_rootsignature.pParameters = parameters;
+		desc_rootsignature.NumStaticSamplers = 1;
+		desc_rootsignature.pStaticSamplers = &sampler;
+
+		ID3DBlob* p_signature{};
+		ID3DBlob* p_error{};
+		auto status = D3D12SerializeRootSignature(&desc_rootsignature, D3D_ROOT_SIGNATURE_VERSION_1, &p_signature, &p_error);
+#ifdef RMLUI_DX_DEBUG
+		if (FAILED(status))
+			Rml::Log::Message(Rml::Log::Type::LT_DEBUG, "[DirectX-12][ERROR] D3D12SerializeRootSignature (YUV): %s",
+				(char*)p_error->GetBufferPointer());
+#endif
+		RMLUI_DX_VERIFY_MSG(status, "failed to D3D12SerializeRootSignature (YUV)");
+		status = m_p_device->CreateRootSignature(0, p_signature->GetBufferPointer(), p_signature->GetBufferSize(),
+			IID_PPV_ARGS(&m_root_signatures[static_cast<int>(ProgramId::YUV)]));
+		RMLUI_DX_VERIFY_MSG(status, "failed to CreateRootSignature (YUV)");
+		if (p_signature) { p_signature->Release(); p_signature = nullptr; }
+		if (p_error) { p_error->Release(); p_error = nullptr; }
+
+		ID3DBlob* p_shader_vertex{};
+		ID3DBlob* p_shader_pixel{};
+		ID3DBlob* p_error_buff{};
+		const D3D_SHADER_MACRO macros[] = {NULL, NULL, NULL, NULL};
+
+		status = D3DCompile(pShaderSourceText_Vertex, sizeof(pShaderSourceText_Vertex), nullptr, macros, nullptr, "main", "vs_5_0",
+			m_default_shader_flags, 0, &p_shader_vertex, &p_error_buff);
+		RMLUI_DX_VERIFY_MSG(status, "failed to D3DCompile (YUV VS)");
+		if (p_error_buff) { p_error_buff->Release(); p_error_buff = nullptr; }
+
+		status = D3DCompile(pShaderSourceText_Pixel_YUV, sizeof(pShaderSourceText_Pixel_YUV), nullptr, nullptr, nullptr, "main", "ps_5_0",
+			m_default_shader_flags, 0, &p_shader_pixel, &p_error_buff);
+		RMLUI_DX_VERIFY_MSG(status, "failed to D3DCompile (YUV PS)");
+		if (p_error_buff) { p_error_buff->Release(); p_error_buff = nullptr; }
+
+		D3D12_INPUT_ELEMENT_DESC desc_input_layout_elements[] = {
+			{"POSITION", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+			{"COLOR", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 8, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+			{"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0}};
+
+		D3D12_BLEND_DESC desc_blend_state = {};
+		const D3D12_RENDER_TARGET_BLEND_DESC opaqueBlend = {
+			FALSE, FALSE,
+			D3D12_BLEND_ONE, D3D12_BLEND_ZERO, D3D12_BLEND_OP_ADD,
+			D3D12_BLEND_ONE, D3D12_BLEND_ZERO, D3D12_BLEND_OP_ADD,
+			D3D12_LOGIC_OP_NOOP, D3D12_COLOR_WRITE_ENABLE_ALL,
+		};
+		for (UINT i = 0; i < D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i)
+			desc_blend_state.RenderTarget[i] = opaqueBlend;
+
+		D3D12_GRAPHICS_PIPELINE_STATE_DESC desc_pipeline = {};
+		desc_pipeline.InputLayout = {desc_input_layout_elements, _countof(desc_input_layout_elements)};
+		desc_pipeline.pRootSignature = m_root_signatures[static_cast<int>(ProgramId::YUV)];
+		desc_pipeline.VS = {p_shader_vertex->GetBufferPointer(), p_shader_vertex->GetBufferSize()};
+		desc_pipeline.PS = {p_shader_pixel->GetBufferPointer(), p_shader_pixel->GetBufferSize()};
+		desc_pipeline.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+		desc_pipeline.RTVFormats[0] = RMLUI_RENDER_BACKEND_FIELD_COLOR_TEXTURE_FORMAT;
+		desc_pipeline.DSVFormat = RMLUI_RENDER_BACKEND_FIELD_DEPTHSTENCIL_TEXTURE_FORMAT;
+		desc_pipeline.SampleDesc = m_desc_sample;
+		desc_pipeline.SampleMask = 0xffffffff;
+		desc_pipeline.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+		desc_pipeline.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+		desc_pipeline.BlendState = desc_blend_state;
+		desc_pipeline.NumRenderTargets = 1;
+
+		status = m_p_device->CreateGraphicsPipelineState(&desc_pipeline, IID_PPV_ARGS(&m_pipelines[static_cast<int>(ProgramId::YUV)]));
+		RMLUI_DX_VERIFY_MSG(status, "failed to CreateGraphicsPipelineState (YUV)");
+		if (p_shader_vertex) p_shader_vertex->Release();
+		if (p_shader_pixel) p_shader_pixel->Release();
+
+#ifdef RMLUI_DX_DEBUG
+		m_root_signatures[static_cast<int>(ProgramId::YUV)]->SetName(TEXT("rs of YUV"));
+		m_pipelines[static_cast<int>(ProgramId::YUV)]->SetName(TEXT("pipeline YUV"));
+#endif
+	}
+}
+
+void RenderInterface_DX12WL::Create_Resource_Pipeline_NV12()
+{
+	RMLUI_ZoneScopedN("DirectX 12 - Create_Resource_Pipeline_NV12");
+	RMLUI_ASSERTMSG(m_p_device, "must be valid when we call this method!");
+
+	if (m_p_device)
+	{
+		D3D12_DESCRIPTOR_RANGE range_t0[1];
+		range_t0[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+		range_t0[0].NumDescriptors = 1;
+		range_t0[0].BaseShaderRegister = 0;
+		range_t0[0].RegisterSpace = 0;
+		range_t0[0].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+		D3D12_ROOT_DESCRIPTOR_TABLE table_t0{};
+		table_t0.NumDescriptorRanges = 1;
+		table_t0.pDescriptorRanges = range_t0;
+
+		D3D12_DESCRIPTOR_RANGE range_t1[1];
+		range_t1[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+		range_t1[0].NumDescriptors = 1;
+		range_t1[0].BaseShaderRegister = 1;
+		range_t1[0].RegisterSpace = 0;
+		range_t1[0].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+		D3D12_ROOT_DESCRIPTOR_TABLE table_t1{};
+		table_t1.NumDescriptorRanges = 1;
+		table_t1.pDescriptorRanges = range_t1;
+
+		D3D12_ROOT_DESCRIPTOR descriptor_cbv{};
+		descriptor_cbv.ShaderRegister = 0;
+		D3D12_ROOT_PARAMETER parameters[3];
+		parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+		parameters[0].Descriptor = descriptor_cbv;
+		parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+		parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+		parameters[1].DescriptorTable = table_t0;
+		parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+		parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+		parameters[2].DescriptorTable = table_t1;
+		parameters[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+		D3D12_STATIC_SAMPLER_DESC sampler = {};
+		sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+		sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+		sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+		sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+		sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+		sampler.BorderColor = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
+		sampler.MaxLOD = D3D12_FLOAT32_MAX;
+		sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+		D3D12_ROOT_SIGNATURE_DESC desc_rootsignature;
+		desc_rootsignature.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
+			D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS | D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
+			D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
+		desc_rootsignature.NumParameters = _countof(parameters);
+		desc_rootsignature.pParameters = parameters;
+		desc_rootsignature.NumStaticSamplers = 1;
+		desc_rootsignature.pStaticSamplers = &sampler;
+
+		ID3DBlob* p_signature{};
+		ID3DBlob* p_error{};
+		auto status = D3D12SerializeRootSignature(&desc_rootsignature, D3D_ROOT_SIGNATURE_VERSION_1, &p_signature, &p_error);
+#ifdef RMLUI_DX_DEBUG
+		if (FAILED(status))
+			Rml::Log::Message(Rml::Log::Type::LT_DEBUG, "[DirectX-12][ERROR] D3D12SerializeRootSignature (NV12): %s",
+				(char*)p_error->GetBufferPointer());
+#endif
+		RMLUI_DX_VERIFY_MSG(status, "failed to D3D12SerializeRootSignature (NV12)");
+		status = m_p_device->CreateRootSignature(0, p_signature->GetBufferPointer(), p_signature->GetBufferSize(),
+			IID_PPV_ARGS(&m_root_signatures[static_cast<int>(ProgramId::NV12)]));
+		RMLUI_DX_VERIFY_MSG(status, "failed to CreateRootSignature (NV12)");
+		if (p_signature) { p_signature->Release(); p_signature = nullptr; }
+		if (p_error) { p_error->Release(); p_error = nullptr; }
+
+		ID3DBlob* p_shader_vertex{};
+		ID3DBlob* p_shader_pixel{};
+		ID3DBlob* p_error_buff{};
+		const D3D_SHADER_MACRO macros[] = {NULL, NULL, NULL, NULL};
+
+		status = D3DCompile(pShaderSourceText_Vertex, sizeof(pShaderSourceText_Vertex), nullptr, macros, nullptr, "main", "vs_5_0",
+			m_default_shader_flags, 0, &p_shader_vertex, &p_error_buff);
+		RMLUI_DX_VERIFY_MSG(status, "failed to D3DCompile (NV12 VS)");
+		if (p_error_buff) { p_error_buff->Release(); p_error_buff = nullptr; }
+
+		status = D3DCompile(pShaderSourceText_Pixel_NV12, sizeof(pShaderSourceText_Pixel_NV12), nullptr, nullptr, nullptr, "main", "ps_5_0",
+			m_default_shader_flags, 0, &p_shader_pixel, &p_error_buff);
+		RMLUI_DX_VERIFY_MSG(status, "failed to D3DCompile (NV12 PS)");
+		if (p_error_buff) { p_error_buff->Release(); p_error_buff = nullptr; }
+
+		D3D12_INPUT_ELEMENT_DESC desc_input_layout_elements[] = {
+			{"POSITION", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+			{"COLOR", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 8, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+			{"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0}};
+
+		D3D12_BLEND_DESC desc_blend_state = {};
+		const D3D12_RENDER_TARGET_BLEND_DESC opaqueBlend = {
+			FALSE, FALSE,
+			D3D12_BLEND_ONE, D3D12_BLEND_ZERO, D3D12_BLEND_OP_ADD,
+			D3D12_BLEND_ONE, D3D12_BLEND_ZERO, D3D12_BLEND_OP_ADD,
+			D3D12_LOGIC_OP_NOOP, D3D12_COLOR_WRITE_ENABLE_ALL,
+		};
+		for (UINT i = 0; i < D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT; ++i)
+			desc_blend_state.RenderTarget[i] = opaqueBlend;
+
+		D3D12_GRAPHICS_PIPELINE_STATE_DESC desc_pipeline = {};
+		desc_pipeline.InputLayout = {desc_input_layout_elements, _countof(desc_input_layout_elements)};
+		desc_pipeline.pRootSignature = m_root_signatures[static_cast<int>(ProgramId::NV12)];
+		desc_pipeline.VS = {p_shader_vertex->GetBufferPointer(), p_shader_vertex->GetBufferSize()};
+		desc_pipeline.PS = {p_shader_pixel->GetBufferPointer(), p_shader_pixel->GetBufferSize()};
+		desc_pipeline.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+		desc_pipeline.RTVFormats[0] = RMLUI_RENDER_BACKEND_FIELD_COLOR_TEXTURE_FORMAT;
+		desc_pipeline.DSVFormat = RMLUI_RENDER_BACKEND_FIELD_DEPTHSTENCIL_TEXTURE_FORMAT;
+		desc_pipeline.SampleDesc = m_desc_sample;
+		desc_pipeline.SampleMask = 0xffffffff;
+		desc_pipeline.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+		desc_pipeline.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+		desc_pipeline.BlendState = desc_blend_state;
+		desc_pipeline.NumRenderTargets = 1;
+
+		status = m_p_device->CreateGraphicsPipelineState(&desc_pipeline, IID_PPV_ARGS(&m_pipelines[static_cast<int>(ProgramId::NV12)]));
+		RMLUI_DX_VERIFY_MSG(status, "failed to CreateGraphicsPipelineState (NV12)");
+		if (p_shader_vertex) p_shader_vertex->Release();
+		if (p_shader_pixel) p_shader_pixel->Release();
+
+#ifdef RMLUI_DX_DEBUG
+		m_root_signatures[static_cast<int>(ProgramId::NV12)]->SetName(TEXT("rs of NV12"));
+		m_pipelines[static_cast<int>(ProgramId::NV12)]->SetName(TEXT("pipeline NV12"));
+#endif
+	}
+}
+
 void RenderInterface_DX12WL::Destroy_Resource_Pipelines()
 {
 	RMLUI_ZoneScopedN("DirectX 12 - Destroy_Resource_Pipelines");
@@ -7868,6 +8589,8 @@ constexpr const char* translate_programId(ProgramId id)
 	case ProgramId::BlendMask: return "BlendMask";
 	case ProgramId::Blur: return "Blur";
 	case ProgramId::DropShadow: return "DropShadow";
+	case ProgramId::YUV: return "YUV";
+	case ProgramId::NV12: return "NV12";
 	case ProgramId::Count: return "Count";
 	default: return "UNKNOWN_PROGRAMID";
 	}

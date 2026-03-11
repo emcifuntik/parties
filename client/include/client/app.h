@@ -42,7 +42,7 @@ public:
     App();
     ~App();
 
-    // renderer_id: 0=DX12, 1=DX11, 2=DX12WL
+    // renderer_id: 0=DX12, 1=DX11, 2=DX12WL, 3=Vulkan
     bool init(HWND hwnd, int renderer_id = 0);
     void shutdown();
 

@@ -27,7 +27,7 @@ class RenderInterface_DX12WL : public ExtendedRenderInterface {
 private:
 	static constexpr uint32_t InvalidConstantBuffer_RootParameterIndex = std::numeric_limits<uint32_t>::max();
 	static constexpr uint8_t MaxConstantBuffersPerShader = 3;
-	static constexpr size_t NumPrograms = 23;
+	static constexpr size_t NumPrograms = 25;
 
 public:
 	struct GraphicsAllocationInfo {
@@ -449,17 +449,31 @@ public:
 	// Updates pixel data of an existing texture in-place (stub — not yet implemented).
 	void UpdateTextureData(Rml::TextureHandle texture_handle, Rml::Span<const Rml::byte> source_data, Rml::Vector2i source_dimensions) override;
 
-	// YUV texture support (stubs — not yet implemented)
-	uintptr_t GenerateYUVTexture(const uint8_t*, uint32_t, const uint8_t*, const uint8_t*, uint32_t, uint32_t, uint32_t) override { return 0; }
-	void UpdateYUVTexture(uintptr_t, const uint8_t*, uint32_t, const uint8_t*, const uint8_t*, uint32_t, uint32_t, uint32_t) override {}
-	void ReleaseYUVTexture(uintptr_t) override {}
-	void RenderYUVGeometry(Rml::CompiledGeometryHandle, Rml::Vector2f, uintptr_t) override {}
+	// YUV (I420) — shader-based YUV to RGB conversion (3 R8 textures)
+	uintptr_t GenerateYUVTexture(
+		const uint8_t* y_data, uint32_t y_stride,
+		const uint8_t* u_data, const uint8_t* v_data, uint32_t uv_stride,
+		uint32_t width, uint32_t height) override;
+	void UpdateYUVTexture(uintptr_t handle,
+		const uint8_t* y_data, uint32_t y_stride,
+		const uint8_t* u_data, const uint8_t* v_data, uint32_t uv_stride,
+		uint32_t width, uint32_t height) override;
+	void ReleaseYUVTexture(uintptr_t handle) override;
+	void RenderYUVGeometry(Rml::CompiledGeometryHandle geometry,
+		Rml::Vector2f translation, uintptr_t yuv_handle) override;
 
-	// NV12 texture support (stubs — not yet implemented)
-	uintptr_t GenerateNV12Texture(const uint8_t*, uint32_t, const uint8_t*, uint32_t, uint32_t, uint32_t) override { return 0; }
-	void UpdateNV12Texture(uintptr_t, const uint8_t*, uint32_t, const uint8_t*, uint32_t, uint32_t, uint32_t) override {}
-	void ReleaseNV12Texture(uintptr_t) override {}
-	void RenderNV12Geometry(Rml::CompiledGeometryHandle, Rml::Vector2f, uintptr_t) override {}
+	// NV12 — shader-based NV12 to RGB conversion (R8 Y + R8G8 UV textures)
+	uintptr_t GenerateNV12Texture(
+		const uint8_t* y_data, uint32_t y_stride,
+		const uint8_t* uv_data, uint32_t uv_stride,
+		uint32_t width, uint32_t height) override;
+	void UpdateNV12Texture(uintptr_t handle,
+		const uint8_t* y_data, uint32_t y_stride,
+		const uint8_t* uv_data, uint32_t uv_stride,
+		uint32_t width, uint32_t height) override;
+	void ReleaseNV12Texture(uintptr_t handle) override;
+	void RenderNV12Geometry(Rml::CompiledGeometryHandle geometry,
+		Rml::Vector2f translation, uintptr_t nv12_handle) override;
 
 	// -- Inherited from Rml::RenderInterface --
 
@@ -571,6 +585,8 @@ private:
 	void Create_Resource_Pipeline_BlendMask();
 	void Create_Resource_Pipeline_Blur();
 	void Create_Resource_Pipeline_DropShadow();
+	void Create_Resource_Pipeline_YUV();
+	void Create_Resource_Pipeline_NV12();
 
 	void Create_Resource_DepthStencil();
 	void Destroy_Resource_DepthStencil();

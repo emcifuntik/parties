@@ -5,6 +5,7 @@
 #include "dx12/RmlUi_Renderer_DX12.h"
 #include "dx12/RmlUi_Renderer_DX12WL.h"
 #include "dx11/RmlUi_Renderer_DX11.h"
+#include "vulkan/RmlUi_Renderer_VK.h"
 #include "RmlUi_Platform_Win32.h"
 
 #include <RmlUi/Debugger.h>
@@ -62,6 +63,11 @@ bool UiManager::init(HWND hwnd, int renderer_id) {
         render_interface_ = std::make_unique<RenderInterface_DX12WL>(
             static_cast<void*>(hwnd), settings);
         renderer_name = "DX12WL";
+        break;
+    case 3:  // Vulkan
+        render_interface_ = std::make_unique<RenderInterface_VK>(
+            static_cast<void*>(hwnd), settings);
+        renderer_name = "Vulkan";
         break;
     default: // DX12
         render_interface_ = std::make_unique<RenderInterface_DX12>(
