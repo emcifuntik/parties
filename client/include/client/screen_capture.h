@@ -7,6 +7,9 @@
 #include <vector>
 #include <mutex>
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <d3d11.h>
 #include <wrl/client.h>
 

@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.20)
-project(parties VERSION 0.1.0 LANGUAGES CXX C OBJCXX)
+project(parties VERSION 0.1.0 LANGUAGES CXX C)
+
+if(APPLE)
+    enable_language(OBJCXX)
+endif()
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

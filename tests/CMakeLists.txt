@@ -8,13 +8,14 @@ add_executable(parties_integration_test
     ../server/src/quic_server.cpp
     ../server/src/database.cpp
     ../server/src/config.cpp
-    ../client/src/net_client.cpp
+    ../client/src/net_client_msquic.cpp
 )
 
 target_include_directories(parties_integration_test
     PRIVATE
         ../server/include
         ../client/include
+        ../client/src
 )
 
 target_link_libraries(parties_integration_test

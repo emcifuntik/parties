@@ -52,7 +52,7 @@
         "CMAKE_OSX_ARCHITECTURES": "arm64",
         "CMAKE_OSX_DEPLOYMENT_TARGET": "13.0",
         "ENABLE_TRACY": "OFF",
-          "CMAKE_MAKE_PROGRAM": "/opt/homebrew/bin/ninja"
+        "CMAKE_MAKE_PROGRAM": "/opt/homebrew/bin/ninja"
       }
     },
     {
