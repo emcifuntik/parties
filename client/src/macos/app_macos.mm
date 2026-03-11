@@ -5,7 +5,7 @@
 
 #import "PartiesAppDelegate.h"
 #import "screen_capture_macos.h"
-#import "video_encoder_macos.h"
+#import <encdec/apple/video_encoder_macos.h>
 
 #import <AppKit/AppKit.h>
 #import <MetalKit/MetalKit.h>
@@ -44,8 +44,7 @@
 #include <client/rmlui_backend.h>
 #include <client/video_element.h>
 
-// iOS shared decoder (VideoToolbox, identical on macOS)
-#include "VideoDecoderIOS.h"
+#include <encdec/apple/VideoDecoderIOS.h>
 
 #include <atomic>
 #include <chrono>

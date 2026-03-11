@@ -3,7 +3,7 @@
 // Produces Annex-B H264 or H265 frames.  Keyframes include SPS/PPS/VPS
 // in the same output buffer so the server and receiver can parse them.
 
-#include "video_encoder_macos.h"
+#include <encdec/apple/video_encoder_macos.h>
 
 #import <Foundation/Foundation.h>
 

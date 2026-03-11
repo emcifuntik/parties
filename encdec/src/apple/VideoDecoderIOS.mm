@@ -1,4 +1,4 @@
-#include "VideoDecoderIOS.h"
+#include <encdec/apple/VideoDecoderIOS.h>
 
 #include <parties/video_common.h>
 

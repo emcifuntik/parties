@@ -3,7 +3,7 @@
 #import <AVFoundation/AVFoundation.h>
 #import <Security/Security.h>
 
-#import "VideoDecoderIOS.h"
+#include <encdec/apple/VideoDecoderIOS.h>
 #import "ScreenShareViewController.h"
 
 #include <unordered_map>

@@ -3,9 +3,6 @@ find_package(rnnoise CONFIG REQUIRED)
 find_package(RmlUi CONFIG REQUIRED)
 find_path(MINIAUDIO_INCLUDE_DIRS "miniaudio.h")
 
-if(APPLE)
-    find_package(dav1d CONFIG REQUIRED)
-endif()
 
 find_path(SPEEXDSP_INCLUDE_DIRS "speex/speex_echo.h")
 find_library(SPEEXDSP_LIBRARY speexdsp)
@@ -50,10 +47,6 @@ if(APPLE)
         ../client-ios/Backends/RmlUi_Renderer_Metal.mm
         ../client-ios/Backends/RmlUi_Platform_macOS.mm
         ../client-ios/Backends/RmlUi_Backend_macOS_Metal.mm
-
-        # Video — VideoToolbox (decoder shared with client-ios)
-        ../client-ios/App/VideoDecoderIOS.mm
-        src/macos/video_encoder_macos.mm
 
         # Screen capture — ScreenCaptureKit (macOS 12.3+)
         src/macos/screen_capture_macos.mm
@@ -133,7 +126,6 @@ target_include_directories(parties_client
         $<$<NOT:$<BOOL:${APPLE}>>:${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan>
         ${SPEEXDSP_INCLUDE_DIRS}
         $<$<BOOL:${APPLE}>:${CMAKE_CURRENT_SOURCE_DIR}/../client-ios/Backends>
-        $<$<BOOL:${APPLE}>:${CMAKE_CURRENT_SOURCE_DIR}/../client-ios/App>
 )
 
 # Release: hide console (WINDOWS subsystem), Debug: keep console
@@ -148,7 +140,7 @@ if(APPLE)
     target_link_libraries(parties_client
         PRIVATE
             parties_common
-            dav1d::dav1d
+            parties_encdec
             rnnoise::rnnoise
             unofficial::sqlite3::sqlite3
             RmlUi::RmlUi
@@ -164,9 +156,6 @@ if(APPLE)
             "-framework AVFoundation"
             "-framework AudioToolbox"
             "-framework CoreAudio"
-            "-framework VideoToolbox"
-            "-framework CoreMedia"
-            "-framework CoreVideo"
             "-framework ScreenCaptureKit"
             "-framework Security"
     )

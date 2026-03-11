@@ -50,6 +50,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # ── parties_common (protocol / crypto / codec / serialization) ───────────────
 add_subdirectory(../common common_build)
+add_subdirectory(../encdec encdec_build)
 
 # ── RmlUi — use the submodule from the parent rmlui-iphone repo ──────────────
 # Override with -DRMLUI_DIR=<path> to point elsewhere.
@@ -85,7 +86,6 @@ set(APP_SOURCES
     App/AppDelegate.mm
     App/PartiesViewController.mm
     App/app_model.mm
-    App/VideoDecoderIOS.mm
     App/ScreenShareViewController.mm
     App/sound_player_stub.cpp   # no-op; audio_engine null-checks before use
     Backends/RmlUi_Renderer_Metal.mm
@@ -97,7 +97,6 @@ set(APP_HEADERS
     App/AppDelegate.h
     App/PartiesViewController.h
     App/app_model.h
-    App/VideoDecoderIOS.h
     App/ScreenShareViewController.h
     Backends/RmlUi_Renderer_Metal.h
     Backends/RmlUi_Platform_iOS.h
@@ -148,6 +147,7 @@ target_include_directories(PartiesIOS PRIVATE
 
 target_link_libraries(PartiesIOS PRIVATE
     parties_common
+    parties_encdec
     rnnoise::rnnoise
     lunasvg::lunasvg
     RmlUi::Core
@@ -163,9 +163,6 @@ target_link_libraries(PartiesIOS PRIVATE
     "-framework AudioToolbox"
     "-framework CoreAudio"
     "-framework Security"
-    "-framework VideoToolbox"
-    "-framework CoreMedia"
-    "-framework CoreVideo"
 )
 
 set_target_properties(PartiesIOS PROPERTIES
