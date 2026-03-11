@@ -222,6 +222,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
 @implementation PartiesViewController {
     PartiesView*          _metalView;
+    id<MTLCommandQueue>   _commandQueue;
     Rml::Context*         _rmlContext;
     Rml::ElementDocument* _doc;
 
@@ -303,6 +304,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     id<MTLDevice> device = _metalView.device;
 
     // ── Metal + RmlUi ─────────────────────────────────────────────────────
+    _commandQueue = [device newCommandQueue];
     Backend::Initialize(device, _metalView);
 
     // Set file/system/render interfaces BEFORE Rml::Initialise().
@@ -457,8 +459,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     MTLRenderPassDescriptor* pass = view.currentRenderPassDescriptor;
     if (!pass) return;
 
-    id<MTLCommandQueue>  queue  = [view.device newCommandQueue];
-    id<MTLCommandBuffer> buffer = [queue commandBuffer];
+    id<MTLCommandBuffer> buffer = [_commandQueue commandBuffer];
 
     Backend::BeginFrame(buffer, pass);
     _rmlContext->Update();
