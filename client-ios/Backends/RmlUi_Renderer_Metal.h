@@ -36,7 +36,7 @@ public:
     void SetViewportTopOffset(int top);
 
     /// Call after context->Render() to commit all encoded draw commands.
-    void EndFrame();
+    void EndFrame() override;
 
     // ---- Rml::RenderInterface ----
 
