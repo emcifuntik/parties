@@ -216,6 +216,8 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 // ── PartiesViewController — drives render loop and app logic ──────────────────
 
 @interface PartiesViewController : NSViewController <MTKViewDelegate>
+// Called by the app delegate before quic_cleanup() to close all MsQuic handles.
+- (void)shutdown;
 @end
 
 @implementation PartiesViewController {
@@ -1717,6 +1719,18 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     };
 }
 
+- (void)shutdown
+{
+    // Disconnect the network client so that all MsQuic handles
+    // (connection, configuration, registration) are closed and fully
+    // drained before the caller invokes quic_cleanup() / MsQuicClose.
+    // RegistrationClose is synchronous — it blocks until all connections
+    // under it have shut down, satisfying MsQuicLibraryUninitialize's
+    // assertion that no registrations remain at close time.
+    _net.disconnect();
+    _audio.stop();
+}
+
 @end
 
 // ── PartiesAppDelegate ────────────────────────────────────────────────────────
@@ -1763,6 +1777,11 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
 - (void)applicationWillTerminate:(NSNotification*)notification
 {
+    // Shut down the net client first: closes the MsQuic registration and
+    // blocks until all connections drain. quic_cleanup() / MsQuicClose must
+    // be called only after all MsQuic handles are released, otherwise
+    // MsQuicLibraryUninitialize fires quic_bugcheck (SIGABRT).
+    [_viewController shutdown];
     Rml::Shutdown();
     Backend::Shutdown();
     parties::quic_cleanup();
