@@ -82,8 +82,11 @@ private:
     bool                        ready_    = false;
 
     // dav1d software fallback (AV1 on devices without VT AV1 support, e.g. M1).
-    Dav1dContext* dav1d_ctx_  = nullptr;
-    bool          use_dav1d_  = false;
+    Dav1dContext*        dav1d_ctx_  = nullptr;
+    bool                 use_dav1d_  = false;
+    // Pre-allocated pool of NV12 CVPixelBuffers to avoid per-frame IOSurface
+    // kernel-zone allocations (which exhaust system zone memory over time).
+    CVPixelBufferPoolRef dav1d_pool_ = nullptr;
 
     std::mutex mutex_;
 };

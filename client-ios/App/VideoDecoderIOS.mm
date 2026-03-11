@@ -68,6 +68,11 @@ void VideoDecoderIOS::shutdown()
         dav1d_ctx_ = nullptr;
     }
     use_dav1d_ = false;
+    if (dav1d_pool_) {
+        CVPixelBufferPoolFlush(dav1d_pool_, kCVPixelBufferPoolFlushExcessBuffers);
+        CFRelease(dav1d_pool_);
+        dav1d_pool_ = nullptr;
+    }
     ready_ = false;
 }
 
@@ -193,6 +198,33 @@ try_dav1d:
             use_dav1d_ = true;
             ready_     = true;
             fprintf(stderr, "[VideoDecoderIOS] AV1: using dav1d software decoder\n");
+
+            // Pre-allocate a CVPixelBufferPool so that decode_dav1d() reuses the same
+            // IOSurface-backed buffers every frame instead of creating new kernel objects
+            // at 30 fps (which exhausts the kernel zone allocator after a few minutes).
+            CFStringRef pb_keys[] = {
+                kCVPixelBufferWidthKey,
+                kCVPixelBufferHeightKey,
+                kCVPixelBufferPixelFormatTypeKey,
+                kCVPixelBufferMetalCompatibilityKey,
+            };
+            int w_val   = (int)width_;
+            int h_val   = (int)height_;
+            int fmt_val = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
+            CFNumberRef w_num   = CFNumberCreate(nullptr, kCFNumberIntType, &w_val);
+            CFNumberRef h_num   = CFNumberCreate(nullptr, kCFNumberIntType, &h_val);
+            CFNumberRef fmt_num = CFNumberCreate(nullptr, kCFNumberIntType, &fmt_val);
+            CFTypeRef pb_vals[] = { w_num, h_num, fmt_num, kCFBooleanTrue };
+            CFDictionaryRef pb_attrs = CFDictionaryCreate(
+                nullptr, (const void**)pb_keys, (const void**)pb_vals, 4,
+                &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+            CFRelease(w_num); CFRelease(h_num); CFRelease(fmt_num);
+
+            CVPixelBufferPoolCreate(kCFAllocatorDefault, nullptr, pb_attrs, &dav1d_pool_);
+            CFRelease(pb_attrs);
+            if (!dav1d_pool_)
+                fprintf(stderr, "[VideoDecoderIOS] CVPixelBufferPool creation failed; "
+                                "falling back to per-frame allocation\n");
             return true;
         }
         fprintf(stderr, "[VideoDecoderIOS] AV1: dav1d_open failed\n");
@@ -537,19 +569,28 @@ void VideoDecoderIOS::decode_dav1d(const uint8_t* data, size_t len)
                     ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange   // P010
                     : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;   // NV12
 
-                CFStringRef attrs_keys[1]   = { kCVPixelBufferMetalCompatibilityKey };
-                CFTypeRef   attrs_values[1] = { kCFBooleanTrue };
-                CFDictionaryRef attrs = CFDictionaryCreate(
-                    nullptr,
-                    (const void**)attrs_keys, (const void**)attrs_values, 1,
-                    &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-
+                // Acquire a pixel buffer: reuse from pool (8-bit NV12) to avoid
+                // creating a new IOSurface kernel object each frame, which would
+                // exhaust kernel zone memory over time at 30 fps.
                 CVPixelBufferRef cvbuf = nullptr;
-                CVReturn cv = CVPixelBufferCreate(
-                    kCFAllocatorDefault,
-                    (size_t)pic.p.w, (size_t)pic.p.h,
-                    pix_fmt, attrs, &cvbuf);
-                CFRelease(attrs);
+                CVReturn cv;
+                if (!is_10bit && dav1d_pool_ &&
+                    (uint32_t)pic.p.w == width_ && (uint32_t)pic.p.h == height_) {
+                    cv = CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault,
+                                                            dav1d_pool_, &cvbuf);
+                } else {
+                    // 10-bit or unexpected dimensions: fall back to direct allocation.
+                    CFStringRef attrs_keys[1]   = { kCVPixelBufferMetalCompatibilityKey };
+                    CFTypeRef   attrs_values[1] = { kCFBooleanTrue };
+                    CFDictionaryRef attrs = CFDictionaryCreate(
+                        nullptr,
+                        (const void**)attrs_keys, (const void**)attrs_values, 1,
+                        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+                    cv = CVPixelBufferCreate(kCFAllocatorDefault,
+                                            (size_t)pic.p.w, (size_t)pic.p.h,
+                                            pix_fmt, attrs, &cvbuf);
+                    CFRelease(attrs);
+                }
 
                 if (cv == kCVReturnSuccess && cvbuf) {
                     CVPixelBufferLockBaseAddress(cvbuf, 0);
