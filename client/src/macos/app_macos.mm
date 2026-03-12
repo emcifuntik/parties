@@ -36,6 +36,7 @@
 // Shared client code
 #include <parties/quic_common.h>
 #include <client/app_core.h>
+#include <client/sound_player.h>
 #include <client/rmlui_backend.h>
 #include <client/video_element.h>
 
@@ -229,6 +230,9 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     // AppCore — all shared connection/audio/model logic
     AppCore _core;
 
+    // Sound effects
+    SoundPlayer _soundPlayer;
+
     // Screen share — sender (macOS-specific)
     std::unique_ptr<ScreenCaptureMac> _capturer;
     std::unique_ptr<VideoEncoderMac>  _encoder;
@@ -299,6 +303,8 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     _encoderReady   = false;
     _needsKeyframe  = false;
 
+    _soundPlayer.init();
+
     // ── Settings path ─────────────────────────────────────────────────────
     NSString* appSupport = [NSSearchPathForDirectoriesInDomains(
         NSApplicationSupportDirectory, NSUserDomainMask, YES) firstObject];
@@ -320,7 +326,9 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         [[NSPasteboard generalPasteboard] setString:ns forType:NSPasteboardTypeString];
     };
 
-    bridge.play_sound = nullptr; // macOS sound player not yet wired; can hook SoundPlayer here
+    bridge.play_sound = [bself](SoundPlayer::Effect e) {
+        bself->_soundPlayer.play(e);
+    };
 
     bridge.show_channel_menu = nullptr; // TODO: macOS channel context menu
 
@@ -676,6 +684,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 - (void)shutdown
 {
     _core.shutdown();
+    _soundPlayer.shutdown();
 }
 
 @end

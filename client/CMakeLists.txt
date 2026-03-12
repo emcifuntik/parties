@@ -111,11 +111,9 @@ file(GLOB EMBED_SOUND_RESOURCES
 set_source_files_properties(src/rmlui_backend.cpp PROPERTIES
     OBJECT_DEPENDS "${EMBED_UI_RESOURCES}"
 )
-if(NOT APPLE)
-    set_source_files_properties(src/sound_player.cpp PROPERTIES
-        OBJECT_DEPENDS "${EMBED_SOUND_RESOURCES}"
-    )
-endif()
+set_source_files_properties(src/sound_player.cpp PROPERTIES
+    OBJECT_DEPENDS "${EMBED_SOUND_RESOURCES}"
+)
 
 target_include_directories(parties_client
     PRIVATE
