@@ -65,6 +65,7 @@ private:
     void show_share_picker();
     void start_screen_share(int target_index);
     void stop_screen_share();
+    void on_video_frame_received(uint32_t sender_id, const uint8_t* data, size_t len);
 
     void start_decode_thread();
     void stop_decode_thread();
@@ -94,6 +95,7 @@ private:
     std::unique_ptr<VideoElementInstancer> video_instancer_;
     std::unique_ptr<LevelMeterInstancer>   level_meter_instancer_;
     LevelMeterElement* level_meter_ = nullptr;  // owned by RmlUi document
+    bool sharing_screen_ = false;
     std::atomic<bool> capture_lost_{false};
 
     // Capture frame rate limiting (QPC-based)

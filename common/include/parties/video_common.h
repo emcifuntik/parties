@@ -25,16 +25,4 @@ constexpr uint32_t VIDEO_PLI_COOLDOWN_MS      =  500;  // Min time between PLI s
 // Nonce space: video counters have the high bit set to avoid collision with voice
 constexpr uint64_t VIDEO_NONCE_HIGH_BIT = 0x8000000000000000ULL;
 
-// Parsed video frame header — used by AppCore to deliver pre-parsed frames to platform
-struct ParsedVideoFrame {
-    uint32_t     frame_number;
-    uint32_t     timestamp;
-    bool         keyframe;
-    uint16_t     width;
-    uint16_t     height;
-    VideoCodecId codec;
-    const uint8_t* payload;      // points into original buffer (not owned)
-    size_t         payload_len;
-};
-
 } // namespace parties
