@@ -67,8 +67,7 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
             uint32_t sender_id;
             std::memcpy(&sender_id, data + 1, 4);
             if (sender_id == user_id_) return;
-            if (on_video_frame_received)
-                on_video_frame_received(sender_id, data + 5, len - 5);
+            parse_video_frame(sender_id, data + 5, len - 5);
         } else if (type == protocol::STREAM_AUDIO_PACKET_TYPE) {
             // [type(1)][sender_id(4)][opus(N)]
             if (len < 6) return;
@@ -399,6 +398,7 @@ void AppCore::send_auth_identity()
 void AppCore::on_disconnect_cleanup()
 {
     authenticated_ = false;
+    sharing_ = false;
     current_channel_ = 0;
     channel_key_ = {};
     viewing_sharer_ = 0;
@@ -463,12 +463,10 @@ void AppCore::leave_channel()
         model_.show_share_picker = false;
         model_.dirty("show_share_picker");
     }
-    if (model_.is_sharing && bridge_.stop_screen_share)
+    if (sharing_ && bridge_.stop_screen_share)
         bridge_.stop_screen_share();
 
     clear_all_sharers();
-    model_.is_sharing = false;
-    model_.dirty("is_sharing");
 
     net_.send_message(protocol::ControlMessageType::CHANNEL_LEAVE, nullptr, 0);
 
@@ -538,6 +536,107 @@ void AppCore::send_pli(UserId target)
     pkt[1] = protocol::VIDEO_CTL_PLI;
     std::memcpy(pkt.data() + 2, &target, 4);
     net_.send_video(pkt.data(), pkt.size(), true);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Video frame sending / parsing / share protocol
+// ─────────────────────────────────────────────────────────────────────────────
+
+void AppCore::send_video_frame(const uint8_t* encoded_data, size_t encoded_len,
+                               bool keyframe, uint16_t width, uint16_t height,
+                               VideoCodecId codec)
+{
+    if (!authenticated_) return;
+
+    uint32_t fn = video_frame_number_++;
+    uint32_t ts = fn;
+    uint8_t  flags = keyframe ? VIDEO_FLAG_KEYFRAME : 0;
+    uint8_t  codec_byte = static_cast<uint8_t>(codec);
+
+    constexpr size_t header_len = 1 + 4 + 4 + 1 + 2 + 2 + 1;
+    std::vector<uint8_t> pkt(header_len + encoded_len);
+    size_t off = 0;
+    pkt[off++] = protocol::VIDEO_FRAME_PACKET_TYPE;
+    std::memcpy(pkt.data() + off, &fn, 4);    off += 4;
+    std::memcpy(pkt.data() + off, &ts, 4);    off += 4;
+    pkt[off++] = flags;
+    std::memcpy(pkt.data() + off, &width, 2);  off += 2;
+    std::memcpy(pkt.data() + off, &height, 2); off += 2;
+    pkt[off++] = codec_byte;
+    std::memcpy(pkt.data() + off, encoded_data, encoded_len);
+
+    net_.send_video(pkt.data(), pkt.size(), true);
+    stream_frame_count_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void AppCore::parse_video_frame(uint32_t sender_id, const uint8_t* data, size_t len)
+{
+    // data = [fn(4)][ts(4)][flags(1)][w(2)][h(2)][codec(1)][encoded(N)]
+    if (len < 14) return;
+    if (sender_id != viewing_sharer_) return;
+
+    uint8_t flags = data[8];
+    bool is_keyframe = (flags & VIDEO_FLAG_KEYFRAME) != 0;
+
+    if (awaiting_keyframe_) {
+        if (!is_keyframe) return;
+        awaiting_keyframe_ = false;
+    }
+
+    ParsedVideoFrame frame;
+    std::memcpy(&frame.frame_number, data, 4);
+    std::memcpy(&frame.timestamp, data + 4, 4);
+    frame.keyframe = is_keyframe;
+    std::memcpy(&frame.width, data + 9, 2);
+    std::memcpy(&frame.height, data + 11, 2);
+    frame.codec = static_cast<VideoCodecId>(data[13]);
+    frame.payload = data + 14;
+    frame.payload_len = len - 14;
+
+    if (on_decoded_frame_ready && frame.payload_len > 0)
+        on_decoded_frame_ready(frame);
+}
+
+void AppCore::notify_share_started(VideoCodecId codec, uint16_t width, uint16_t height)
+{
+    if (!authenticated_ || current_channel_ == 0) return;
+    sharing_ = true;
+    video_frame_number_ = 0;
+    stream_frame_count_.store(0, std::memory_order_relaxed);
+
+    BinaryWriter writer;
+    writer.write_u8(static_cast<uint8_t>(codec));
+    writer.write_u16(width);
+    writer.write_u16(height);
+    net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_START,
+                      writer.data().data(), writer.data().size());
+
+    model_.is_sharing = true;
+    model_.dirty("is_sharing");
+}
+
+void AppCore::notify_share_stopped()
+{
+    if (!sharing_) return;
+    sharing_ = false;
+    video_frame_number_ = 0;
+
+    model_.is_sharing = false;
+    model_.dirty("is_sharing");
+
+    if (authenticated_ && current_channel_ != 0)
+        net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_STOP, nullptr, 0);
+}
+
+void AppCore::notify_share_updated(VideoCodecId codec, uint16_t width, uint16_t height)
+{
+    if (!authenticated_ || !sharing_) return;
+    BinaryWriter writer;
+    writer.write_u8(static_cast<uint8_t>(codec));
+    writer.write_u16(width);
+    writer.write_u16(height);
+    net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_UPDATE,
+                      writer.data().data(), writer.data().size());
 }
 
 void AppCore::clear_all_sharers()
@@ -1131,7 +1230,7 @@ void AppCore::setup_model_callbacks()
     };
 
     model_.on_toggle_share = [this]() {
-        if (model_.is_sharing) {
+        if (sharing_) {
             if (bridge_.stop_screen_share) bridge_.stop_screen_share();
         } else {
             if (bridge_.open_share_picker) bridge_.open_share_picker();

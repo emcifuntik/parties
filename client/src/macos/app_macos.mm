@@ -236,7 +236,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     // Screen share — sender (macOS-specific)
     std::unique_ptr<ScreenCaptureMac> _capturer;
     std::unique_ptr<VideoEncoderMac>  _encoder;
-    bool                              _sharing;
     bool                              _encoderReady;
     bool                              _needsKeyframe;
 
@@ -300,7 +299,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     Rml::LoadFontFace("ui/fonts/NotoSans-Bold.ttf");
 
     // ── App state ─────────────────────────────────────────────────────────
-    _sharing        = false;
     _encoderReady   = false;
     _needsKeyframe  = false;
 
@@ -354,6 +352,14 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         if (el) el->Clear();
     };
 
+    bridge.start_decode_thread = [bself]() {
+        bself->_decoder = std::make_unique<VideoDecoderIOS>();
+    };
+
+    bridge.stop_decode_thread = [bself]() {
+        bself->_decoder.reset();
+    };
+
     // ── Init AppCore ──────────────────────────────────────────────────────
     if (!_core.init(std::string(dbPath.UTF8String), std::move(bridge), _rmlContext)) {
         NSLog(@"[Parties] AppCore init failed");
@@ -363,9 +369,28 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     // ── Wire macOS-specific model callbacks on top of AppCore defaults ────
     [self installMacOSModelCallbacks];
 
-    // ── Wire video frame reception to local macOS decoder ─────────────────
-    _core.on_video_frame_received = [bself](uint32_t sender_id, const uint8_t* data, size_t len) {
-        [bself onVideoFrameData:sender_id data:data len:len];
+    // ── Wire parsed video frames to macOS VideoToolbox decoder ────────────
+    _core.on_decoded_frame_ready = [bself](const ParsedVideoFrame& frame) {
+        if (!bself->_decoder) return;
+
+        // Lazy decoder init on first frame
+        if (!bself->_decoder->on_decoded) {
+            auto codec = frame.codec;
+            if (!bself->_decoder->init(codec, frame.width, frame.height)) {
+                std::fprintf(stderr, "[Video] Decoder init failed (codec=%u, %ux%u)\n",
+                             static_cast<uint8_t>(codec), frame.width, frame.height);
+                bself->_decoder.reset();
+                return;
+            }
+            bself->_decoder->on_decoded = [bself](CVPixelBufferRef buf) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [bself onVideoDecoded:buf];
+                    CFRelease(buf);
+                });
+            };
+        }
+
+        bself->_decoder->decode(frame.payload, frame.payload_len, frame.keyframe);
     };
 
     // ── Load identity ─────────────────────────────────────────────────────
@@ -436,72 +461,19 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 {
     PartiesViewController* bself = self;
 
-    // Override on_toggle_share: macOS uses SCK native picker
-    _core.model_.on_toggle_share = [bself]() {
-        if (bself->_sharing)
-            [bself stopScreenShare];
-        else
-            [bself showSharePicker];
-    };
-
     // macOS-specific: start native share button in picker overlay
     _core.model_.on_start_native_share = [bself]() {
         [bself startNativeShare];
     };
 
-    // on_select_share_target is Windows-only; clear it if AppCore set it
+    // on_select_share_target is Windows-only (DXGI target list); not used on macOS
     _core.model_.on_select_share_target = nullptr;
 
-    // Override watch/stop watching to manage the local VideoDecoderIOS
-    _core.model_.on_watch_sharer = [bself](int id) {
-        [bself watchSharer:static_cast<UserId>(id)];
+    // on_cancel_share: also set use_native_picker for next open
+    _core.model_.on_cancel_share = [bself]() {
+        bself->_core.model_.show_share_picker = false;
+        bself->_core.model_.dirty("show_share_picker");
     };
-    _core.model_.on_select_sharer = [bself](int id) {
-        [bself watchSharer:static_cast<UserId>(id)];
-    };
-    _core.model_.on_stop_watching = [bself]() {
-        [bself stopWatching];
-    };
-}
-
-// ── Video frame routing (macOS VideoToolbox decoder) ─────────────────────────
-
-- (void)onVideoFrameData:(uint32_t)sender_id data:(const uint8_t*)data len:(size_t)len
-{
-    // data = [fn(4)][ts(4)][flags(1)][w(2)][h(2)][codec(1)][encoded(N)]
-    if (len < 14) return;
-    if (sender_id != _core.viewing_sharer_ || !_decoder) return;
-
-    uint8_t  flags = data[8];
-    uint16_t w, h;
-    std::memcpy(&w, data + 9,  2);
-    std::memcpy(&h, data + 11, 2);
-    uint8_t codec_id = data[13];
-
-    bool is_keyframe = (flags & VIDEO_FLAG_KEYFRAME) != 0;
-
-    if (_core.awaiting_keyframe_ && !is_keyframe) return;
-    _core.awaiting_keyframe_ = false;
-
-    // Lazy decoder init on first frame
-    if (!_decoder->on_decoded) {
-        auto codec = static_cast<VideoCodecId>(codec_id);
-        if (!_decoder->init(codec, w, h)) {
-            std::fprintf(stderr, "[Video] Decoder init failed (codec=%u, %ux%u)\n",
-                         codec_id, w, h);
-            _decoder.reset();
-            return;
-        }
-        PartiesViewController* bself = self;
-        _decoder->on_decoded = [bself](CVPixelBufferRef buf) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [bself onVideoDecoded:buf];
-                CFRelease(buf);
-            });
-        };
-    }
-
-    _decoder->decode(data + 14, len - 14, is_keyframe);
 }
 
 - (void)onVideoDecoded:(CVPixelBufferRef)buf
@@ -575,34 +547,14 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
             bself->_encoderReady = true;
 
             bself->_encoder->on_encoded = [bself](const uint8_t* data, size_t len, bool is_kf) {
-                if (!bself->_core.authenticated_) return;
-
-                uint32_t fn = bself->_core.video_frame_number_++;
-                uint32_t ts = 0;
-                uint8_t  flags = is_kf ? VIDEO_FLAG_KEYFRAME : 0;
+                if (!bself->_core.sharing_) return;
                 uint16_t fw = (uint16_t)bself->_capturer->width();
                 uint16_t fh = (uint16_t)bself->_capturer->height();
-                uint8_t  codec = static_cast<uint8_t>(VideoCodecId::H265);
-
-                std::vector<uint8_t> pkt(1 + 4 + 4 + 1 + 2 + 2 + 1 + len);
-                size_t off = 0;
-                pkt[off++] = VIDEO_FRAME_PACKET_TYPE;
-                std::memcpy(pkt.data() + off, &fn, 4);    off += 4;
-                std::memcpy(pkt.data() + off, &ts, 4);    off += 4;
-                pkt[off++] = flags;
-                std::memcpy(pkt.data() + off, &fw, 2);    off += 2;
-                std::memcpy(pkt.data() + off, &fh, 2);    off += 2;
-                pkt[off++] = codec;
-                std::memcpy(pkt.data() + off, data, len);
-                bself->_core.net_.send_video(pkt.data(), pkt.size(), true);
-                bself->_core.stream_frame_count_.fetch_add(1, std::memory_order_relaxed);
+                bself->_core.send_video_frame(data, len, is_kf, fw, fh, VideoCodecId::H265);
             };
 
             dispatch_async(dispatch_get_main_queue(), ^{
-                bself->_sharing = true;
-                bself->_core.model_.is_sharing = true;
-                bself->_core.model_.dirty("is_sharing");
-                bself->_core.net_.send_message(ControlMessageType::SCREEN_SHARE_START, nullptr, 0);
+                bself->_core.notify_share_started(VideoCodecId::H265, w, h);
             });
         }
 
@@ -621,64 +573,10 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     if (_capturer) _capturer->stop();
     _encoder.reset();
     _capturer.reset();
-    _sharing       = false;
     _encoderReady  = false;
     _needsKeyframe = false;
-    _core.video_frame_number_ = 0;
 
-    _core.model_.is_sharing = false;
-    _core.model_.dirty("is_sharing");
-
-    if (_core.authenticated_)
-        _core.net_.send_message(ControlMessageType::SCREEN_SHARE_STOP, nullptr, 0);
-}
-
-// ── Screen share — receiver (macOS) ──────────────────────────────────────────
-
-- (void)watchSharer:(UserId)sharerId
-{
-    _core.viewing_sharer_   = sharerId;
-    _core.awaiting_keyframe_ = true;
-    _decoder = std::make_unique<VideoDecoderIOS>();
-    // on_decoded is wired lazily in onVideoFrameData on first frame
-
-    [self sendPLI:sharerId];
-
-    uint32_t id32 = static_cast<uint32_t>(sharerId);
-    _core.net_.send_message(ControlMessageType::SCREEN_SHARE_VIEW,
-                             (const uint8_t*)&id32, sizeof(id32));
-
-    _core.model_.viewing_sharer_id = static_cast<int>(sharerId);
-    _core.model_.dirty("viewing_sharer_id");
-}
-
-- (void)stopWatching
-{
-    _core.viewing_sharer_   = 0;
-    _decoder.reset();
-    _core.awaiting_keyframe_ = false;
-
-    uint32_t zero = 0;
-    _core.net_.send_message(ControlMessageType::SCREEN_SHARE_VIEW,
-                             (const uint8_t*)&zero, sizeof(zero));
-
-    _core.model_.viewing_sharer_id = 0;
-    _core.model_.dirty("viewing_sharer_id");
-
-    if (_doc) {
-        auto* el = dynamic_cast<VideoElement*>(_doc->GetElementById("screen-share"));
-        if (el) el->Clear();
-    }
-}
-
-- (void)sendPLI:(UserId)targetId
-{
-    uint32_t id32 = static_cast<uint32_t>(targetId);
-    std::vector<uint8_t> pkt(6);
-    pkt[0] = VIDEO_CONTROL_TYPE;
-    pkt[1] = VIDEO_CTL_PLI;
-    std::memcpy(pkt.data() + 2, &id32, 4);
-    _core.net_.send_video(pkt.data(), pkt.size(), true);
+    _core.notify_share_stopped();
 }
 
 // ── Shutdown ──────────────────────────────────────────────────────────────────

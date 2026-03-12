@@ -45,8 +45,17 @@ public:
     void tick();
     void load_saved_prefs();
 
-    // Platform-provided video frame handler (platform owns decoder)
-    std::function<void(uint32_t sender_id, const uint8_t* data, size_t len)> on_video_frame_received;
+    // Platform callback: receives pre-parsed video frame (platform feeds to decoder)
+    std::function<void(const ParsedVideoFrame& frame)> on_decoded_frame_ready;
+
+    // Screen share protocol helpers (called by platform after capture starts/stops)
+    void send_video_frame(const uint8_t* encoded_data, size_t encoded_len,
+                          bool keyframe, uint16_t width, uint16_t height,
+                          VideoCodecId codec);
+    void notify_share_started(VideoCodecId codec, uint16_t width, uint16_t height);
+    void notify_share_stopped();
+    void notify_share_updated(VideoCodecId codec, uint16_t width, uint16_t height);
+    bool sharing_ = false;
 
     // Public subsystems
     NetClient         net_;
@@ -143,6 +152,7 @@ private:
     void on_admin_result(const uint8_t* data, size_t len);
     void on_server_error(const uint8_t* data, size_t len);
 
+    void parse_video_frame(uint32_t sender_id, const uint8_t* data, size_t len);
     void update_speaking_state();
     void generate_identity();
 };

@@ -162,9 +162,21 @@ bool App::init(HWND hwnd, int renderer_id) {
     if (!core_.init("parties_client.db", std::move(bridge), ui_.context()))
         return false;
 
-    // Wire video frame reception to local on_video_frame_received
-    core_.on_video_frame_received = [this](uint32_t sender_id, const uint8_t* data, size_t len) {
-        on_video_frame_received(sender_id, data, len);
+    // Wire parsed video frames to decode queue
+    core_.on_decoded_frame_ready = [this](const ParsedVideoFrame& frame) {
+        if (decode_running_ && frame.payload_len > 0) {
+            DecodeWork work;
+            work.data.assign(frame.payload, frame.payload + frame.payload_len);
+            work.timestamp = static_cast<int64_t>(frame.frame_number);
+            work.codec  = frame.codec;
+            work.width  = frame.width;
+            work.height = frame.height;
+            {
+                std::lock_guard<std::mutex> lock(decode_queue_mutex_);
+                decode_queue_.push(std::move(work));
+            }
+            decode_queue_cv_.notify_one();
+        }
     };
 
     // Windows-only: select share target from DXGI list
@@ -437,7 +449,7 @@ void App::update_voice_level() {
 
 void App::show_share_picker() {
     ZoneScopedN("App::show_share_picker");
-    if (sharing_screen_ || !core_.authenticated_ || core_.current_channel_ == 0) return;
+    if (core_.sharing_ || !core_.authenticated_ || core_.current_channel_ == 0) return;
 
     capture_ = std::make_unique<ScreenCapture>();
     if (!capture_->init()) {
@@ -469,7 +481,7 @@ void App::show_share_picker() {
 
 void App::start_screen_share(int target_index) {
     ZoneScopedN("App::start_screen_share");
-    if (sharing_screen_ || !core_.authenticated_ || core_.current_channel_ == 0) return;
+    if (core_.sharing_ || !core_.authenticated_ || core_.current_channel_ == 0) return;
 
     if (target_index < 0 || target_index >= static_cast<int>(capture_targets_.size())) {
         capture_targets_.clear();
@@ -503,8 +515,6 @@ void App::start_screen_share(int target_index) {
     core_.settings_.set_pref("video.share_bitrate", std::to_string(core_.model_.share_bitrate));
     core_.settings_.set_pref("video.share_fps",     std::to_string(core_.model_.share_fps));
 
-    core_.video_frame_number_ = 0;
-
     LARGE_INTEGER freq, now;
     QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&now);
@@ -513,31 +523,11 @@ void App::start_screen_share(int target_index) {
     last_capture_qpc_   = 0;
     capture_interval_qpc_ = freq.QuadPart / encode_fps_;
 
-    core_.stream_frame_count_.store(0, std::memory_order_relaxed);
-
     auto on_encoded_cb = [this](const uint8_t* data, size_t len, bool keyframe) {
-        if (!sharing_screen_ || !core_.authenticated_ || !encoder_) return;
-        core_.stream_frame_count_.fetch_add(1, std::memory_order_relaxed);
-
-        uint32_t fn = core_.video_frame_number_++;
-        uint32_t ts = fn;
-        uint8_t  flags = keyframe ? VIDEO_FLAG_KEYFRAME : 0;
+        if (!core_.sharing_ || !core_.authenticated_ || !encoder_) return;
         uint16_t w = static_cast<uint16_t>(encoder_->width());
         uint16_t h = static_cast<uint16_t>(encoder_->height());
-        uint8_t  codec = static_cast<uint8_t>(encoder_->codec());
-
-        size_t header_len = 1 + 4 + 4 + 1 + 2 + 2 + 1;
-        std::vector<uint8_t> pkt(header_len + len);
-        size_t off = 0;
-        pkt[off++] = protocol::VIDEO_FRAME_PACKET_TYPE;
-        std::memcpy(pkt.data() + off, &fn, 4);    off += 4;
-        std::memcpy(pkt.data() + off, &ts, 4);    off += 4;
-        pkt[off++] = flags;
-        std::memcpy(pkt.data() + off, &w, 2);     off += 2;
-        std::memcpy(pkt.data() + off, &h, 2);     off += 2;
-        pkt[off++] = codec;
-        std::memcpy(pkt.data() + off, data, len);
-        core_.net_.send_video(pkt.data(), pkt.size(), true);
+        core_.send_video_frame(data, len, keyframe, w, h, encoder_->codec());
 
         // Local self-preview feed
         if (core_.viewing_sharer_ == core_.user_id_ && encoder_ && decode_running_) {
@@ -546,8 +536,8 @@ void App::start_screen_share(int target_index) {
             work.data.assign(data, data + len);
             work.timestamp = 0;
             work.codec  = encoder_->codec();
-            work.width  = static_cast<uint16_t>(encoder_->width());
-            work.height = static_cast<uint16_t>(encoder_->height());
+            work.width  = w;
+            work.height = h;
             std::lock_guard<std::mutex> lock(decode_queue_mutex_);
             decode_queue_.push(std::move(work));
             decode_queue_cv_.notify_one();
@@ -564,7 +554,7 @@ void App::start_screen_share(int target_index) {
 
     capture_->on_frame = [this](ID3D11Texture2D* texture, uint32_t w, uint32_t h) {
         ZoneScopedN("capture::on_frame");
-        if (!sharing_screen_) return;
+        if (!core_.sharing_) return;
         D3D11_TEXTURE2D_DESC desc{};
         texture->GetDesc(&desc);
         if (desc.Width < 64 || desc.Height < 64) return;
@@ -620,7 +610,7 @@ void App::start_screen_share(int target_index) {
     stream_audio_capture_ = std::make_unique<StreamAudioCapture>();
     if (stream_audio_capture_->init(target_process_id)) {
         stream_audio_capture_->on_encoded_frame = [this](const uint8_t* data, size_t len) {
-            if (!sharing_screen_ || !core_.authenticated_) return;
+            if (!core_.sharing_ || !core_.authenticated_) return;
             std::vector<uint8_t> pkt(1 + len);
             pkt[0] = protocol::STREAM_AUDIO_PACKET_TYPE;
             std::memcpy(pkt.data() + 1, data, len);
@@ -632,16 +622,13 @@ void App::start_screen_share(int target_index) {
         stream_audio_capture_.reset();
     }
 
-    BinaryWriter writer;
-    writer.write_u8(0); writer.write_u16(0); writer.write_u16(0);
-    core_.net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_START,
-                            writer.data().data(), writer.data().size());
+    // Codec/dimensions not known until encoder init — send placeholder, encode_loop sends UPDATE
+    core_.notify_share_started(VideoCodecId::AV1, 0, 0);
 }
 
 void App::stop_screen_share() {
     ZoneScopedN("App::stop_screen_share");
-    if (!sharing_screen_) return;
-    sharing_screen_ = false;
+    if (!core_.sharing_) return;
 
     if (core_.viewing_sharer_ == core_.user_id_) {
         stop_decode_thread();
@@ -668,51 +655,8 @@ void App::stop_screen_share() {
     encode_on_encoded_ = nullptr;
 
     if (encoder_) { encoder_->shutdown(); encoder_.reset(); }
-    core_.video_frame_number_ = 0;
 
-    core_.model_.is_sharing = false;
-    core_.model_.dirty("is_sharing");
-
-    if (core_.authenticated_ && core_.current_channel_ != 0)
-        core_.net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_STOP, nullptr, 0);
-}
-
-void App::on_video_frame_received(uint32_t sender_id, const uint8_t* data, size_t len) {
-    ZoneScopedN("App::on_video_frame_received");
-    // data = [fn(4)][ts(4)][flags(1)][w(2)][h(2)][codec(1)][encoded(N)]
-    if (len < 14) return;
-    if (sender_id != core_.viewing_sharer_) return;
-
-    uint8_t flags = data[8];
-    bool is_keyframe = (flags & VIDEO_FLAG_KEYFRAME) != 0;
-    uint16_t width, height;
-    std::memcpy(&width,  data + 9,  2);
-    std::memcpy(&height, data + 11, 2);
-    auto codec = static_cast<VideoCodecId>(data[13]);
-
-    if (core_.awaiting_keyframe_) {
-        if (!is_keyframe) return;
-        core_.awaiting_keyframe_ = false;
-    }
-
-    const uint8_t* encoded     = data + 14;
-    size_t         encoded_len = len  - 14;
-
-    if (decode_running_ && encoded_len > 0) {
-        uint32_t frame_number;
-        std::memcpy(&frame_number, data, 4);
-        DecodeWork work;
-        work.data.assign(encoded, encoded + encoded_len);
-        work.timestamp = static_cast<int64_t>(frame_number);
-        work.codec  = codec;
-        work.width  = width;
-        work.height = height;
-        {
-            std::lock_guard<std::mutex> lock(decode_queue_mutex_);
-            decode_queue_.push(std::move(work));
-        }
-        decode_queue_cv_.notify_one();
-    }
+    core_.notify_share_stopped();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -757,14 +701,9 @@ void App::encode_loop() {
             encoder_ = std::move(enc);
             core_.video_frame_number_ = 0;
 
-            if (sharing_screen_) {
-                BinaryWriter upd;
-                upd.write_u8(static_cast<uint8_t>(encoder_->codec()));
-                upd.write_u16(static_cast<uint16_t>(encoder_->width()));
-                upd.write_u16(static_cast<uint16_t>(encoder_->height()));
-                core_.net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_UPDATE,
-                                        upd.data().data(), upd.data().size());
-            }
+            core_.notify_share_updated(encoder_->codec(),
+                                       static_cast<uint16_t>(encoder_->width()),
+                                       static_cast<uint16_t>(encoder_->height()));
 
             if (encoder_->supports_registered_input()) {
                 bool ok = true;
