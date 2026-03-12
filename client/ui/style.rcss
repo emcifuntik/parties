@@ -1082,6 +1082,12 @@ scrollbarvertical sliderarrowinc {
     border-radius: 6dp;
 }
 
+.settings-sublabel {
+    display: block;
+    color: #8b8da0;
+    font-size: 13dp;
+}
+
 .share-setting-group {
     display: flex;
     flex-direction: column;

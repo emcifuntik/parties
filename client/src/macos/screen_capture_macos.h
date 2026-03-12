@@ -1,14 +1,13 @@
 #pragma once
 
 // macOS screen capture using ScreenCaptureKit (macOS 12.3+).
+// On macOS 14+ uses SCContentSharingPicker for system-native target selection.
 // Delivers frames as CVPixelBufferRef (BGRA, Metal-compatible) on a
-// background queue.  Interface mirrors the Windows ScreenCapture class
-// closely enough that app_macos.mm can treat them the same way.
+// background queue.
 
 #include <cstdint>
 #include <functional>
 #include <string>
-#include <vector>
 
 #ifdef __OBJC__
 #import <Foundation/Foundation.h>
@@ -19,24 +18,16 @@
 
 namespace parties::client {
 
-struct CaptureTargetMac {
-    enum class Type { Window, Display };
-    Type        type;
-    std::string name;
-    uint32_t    id = 0;   // SCWindow.windowID or SCDisplay.displayID
-};
-
 class ScreenCaptureMac {
 public:
     ScreenCaptureMac();
     ~ScreenCaptureMac();
 
-    // Asynchronously enumerates shareable content and calls back on the main
-    // queue.  Must be called before start().
-    void enumerate(std::function<void(std::vector<CaptureTargetMac>)> callback);
-
-    // Start capturing `target` at up to `target_fps` frames/second.
-    bool start(const CaptureTargetMac& target, uint32_t target_fps = 60);
+    // Show the system SCContentSharingPicker (macOS 14+) and start capturing.
+    // Falls back to capturing the main display on macOS 12-13.
+    // Calls on_started(true) on success, on_started(false) if user cancels or error.
+    void pick_and_start(uint32_t target_fps,
+                        std::function<void(bool success)> on_started);
     void stop();
 
     bool     is_capturing() const { return capturing_; }

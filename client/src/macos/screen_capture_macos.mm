@@ -1,9 +1,7 @@
 // macOS screen capture — ScreenCaptureKit backend.
 //
-// ScreenCaptureKit requires macOS 12.3+.
-// Privacy: the app must have the Screen Recording entitlement (or prompt the
-// user at runtime via SCShareableContent which triggers the permission dialog
-// automatically).
+// macOS 14+: uses SCContentSharingPicker for system-native target selection.
+// macOS 12.3-13: falls back to capturing the main display.
 
 #include "screen_capture_macos.h"
 
@@ -49,14 +47,49 @@
 
 @end
 
+// ── SCContentSharingPicker observer (macOS 14+) ─────────────────────────────
+
+API_AVAILABLE(macos(14.0))
+@interface PartiesPickerObserver : NSObject <SCContentSharingPickerObserver>
+@property (nonatomic, copy) void (^onFilterSelected)(SCContentFilter* filter);
+@property (nonatomic, copy) void (^onCancelled)(void);
+@end
+
+@implementation PartiesPickerObserver
+
+- (void)contentSharingPicker:(SCContentSharingPicker*)picker
+        didUpdateWithFilter:(SCContentFilter*)filter
+                  forStream:(SCStream*)stream
+{
+    if (self.onFilterSelected)
+        self.onFilterSelected(filter);
+}
+
+- (void)contentSharingPicker:(SCContentSharingPicker*)picker
+          didCancelForStream:(SCStream*)stream
+{
+    if (self.onCancelled)
+        self.onCancelled();
+}
+
+- (void)contentSharingPickerStartDidFailWithError:(NSError*)error
+{
+    NSLog(@"[ScreenCaptureMac] Picker failed: %@", error.localizedDescription);
+    if (self.onCancelled)
+        self.onCancelled();
+}
+
+@end
+
 // ── Impl ─────────────────────────────────────────────────────────────────────
 
 namespace parties::client {
 
 struct ScreenCaptureMac::Impl {
-    SCStream*             stream  = nullptr;
-    PartiesCaptureOutput* output  = nullptr;
-    dispatch_queue_t      queue   = nullptr;
+    SCStream*             stream   = nullptr;
+    PartiesCaptureOutput* output   = nullptr;
+    dispatch_queue_t      queue    = nullptr;
+    id                    observer = nil;  // PartiesPickerObserver (macOS 14+)
 };
 
 ScreenCaptureMac::ScreenCaptureMac()
@@ -70,6 +103,13 @@ ScreenCaptureMac::ScreenCaptureMac()
 ScreenCaptureMac::~ScreenCaptureMac()
 {
     stop();
+    if (@available(macOS 14.0, *)) {
+        if (impl_->observer) {
+            auto* picker = [SCContentSharingPicker sharedPicker];
+            [picker removeObserver:(PartiesPickerObserver*)impl_->observer];
+            impl_->observer = nil;
+        }
+    }
     if (impl_->queue) {
         dispatch_release(impl_->queue);
         impl_->queue = nullptr;
@@ -77,168 +117,130 @@ ScreenCaptureMac::~ScreenCaptureMac()
     delete impl_;
 }
 
-// ── enumerate ─────────────────────────────────────────────────────────────────
+// ── Helper: start capture with a given filter ────────────────────────────────
 
-void ScreenCaptureMac::enumerate(
-    std::function<void(std::vector<CaptureTargetMac>)> callback)
+static bool StartWithFilter(ScreenCaptureMac* cap,
+                             ScreenCaptureMac::Impl* impl,
+                             SCContentFilter* filter,
+                             uint32_t target_fps)
 {
-    [SCShareableContent
-        getShareableContentWithCompletionHandler:
-        ^(SCShareableContent* content, NSError* error) {
-            if (error) {
-                NSLog(@"[ScreenCaptureMac] getShareableContent error: %@",
-                      error.localizedDescription);
-                callback({});
-                return;
-            }
-
-            std::vector<CaptureTargetMac> targets;
-
-            // Displays first
-            for (SCDisplay* d in content.displays) {
-                CaptureTargetMac t;
-                t.type = CaptureTargetMac::Type::Display;
-                t.name = [NSString stringWithFormat:@"Display %u",
-                          (unsigned)d.displayID].UTF8String;
-                t.id   = d.displayID;
-                targets.push_back(std::move(t));
-            }
-
-            // Visible, on-screen windows
-            for (SCWindow* w in content.windows) {
-                if (!w.onScreen || w.frame.size.width < 100) continue;
-                CaptureTargetMac t;
-                t.type = CaptureTargetMac::Type::Window;
-                t.name = w.title ? w.title.UTF8String
-                                 : (w.owningApplication.applicationName
-                                        ? w.owningApplication.applicationName.UTF8String
-                                        : "Untitled");
-                t.id   = w.windowID;
-                targets.push_back(std::move(t));
-            }
-
-            dispatch_async(dispatch_get_main_queue(), ^{
-                callback(std::move(targets));
-            });
-        }];
-}
-
-// ── start ─────────────────────────────────────────────────────────────────────
-
-bool ScreenCaptureMac::start(const CaptureTargetMac& target, uint32_t target_fps)
-{
-    if (capturing_) stop();
-
     // Wire callbacks into the delegate.
-    // Plain pointer capture — C++ lambdas do not support __block.
-    ScreenCaptureMac* cap = this;
-    impl_->output.onFrame = [cap](CVPixelBufferRef buf, uint32_t w, uint32_t h) {
+    impl->output.onFrame = [cap](CVPixelBufferRef buf, uint32_t w, uint32_t h) {
         cap->width_  = w;
         cap->height_ = h;
         if (cap->on_frame) cap->on_frame(buf, w, h);
         CFRelease(buf);
     };
-    impl_->output.onClosed = [cap]() {
+    impl->output.onClosed = [cap]() {
         cap->capturing_ = false;
         if (cap->on_closed) cap->on_closed();
     };
 
-    // We need SCShareableContent to build the filter.
-    // Capture synchronously via a semaphore so start() has a clear success/fail return.
+    SCStreamConfiguration* cfg = [[SCStreamConfiguration alloc] init];
+    cfg.minimumFrameInterval =
+        CMTimeMake(1, (int32_t)(target_fps > 0 ? target_fps : 60));
+    cfg.pixelFormat          = kCVPixelFormatType_32BGRA;
+    cfg.colorSpaceName       = kCGColorSpaceSRGB;
+    cfg.showsCursor          = NO;
+
+    SCStream* stream = [[SCStream alloc] initWithFilter:filter
+                                          configuration:cfg
+                                               delegate:impl->output];
+
+    NSError* addErr = nil;
+    [stream addStreamOutput:impl->output
+                       type:SCStreamOutputTypeScreen
+         sampleHandlerQueue:impl->queue
+                      error:&addErr];
+    if (addErr) {
+        NSLog(@"[ScreenCaptureMac] addStreamOutput: %@", addErr.localizedDescription);
+        return false;
+    }
+
     __block bool success = false;
     dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-    uint32_t target_id = target.id;
-    bool     is_display = (target.type == CaptureTargetMac::Type::Display);
 
-    [SCShareableContent
-        getShareableContentWithCompletionHandler:
-        ^(SCShareableContent* content, NSError* error) {
-            if (error) {
-                NSLog(@"[ScreenCaptureMac] getShareableContent: %@",
-                      error.localizedDescription);
-                dispatch_semaphore_signal(sem);
-                return;
-            }
-
-            SCContentFilter* filter = nil;
-
-            if (is_display) {
-                for (SCDisplay* d in content.displays) {
-                    if (d.displayID == target_id) {
-                        filter = [[SCContentFilter alloc]
-                                    initWithDisplay:d
-                                  excludingWindows:@[]];
-                        break;
-                    }
-                }
-            } else {
-                for (SCWindow* w in content.windows) {
-                    if (w.windowID == target_id) {
-                        filter = [[SCContentFilter alloc]
-                                    initWithDesktopIndependentWindow:w];
-                        break;
-                    }
-                }
-            }
-
-            if (!filter) {
-                NSLog(@"[ScreenCaptureMac] Target %u not found in shareable content",
-                      target_id);
-                dispatch_semaphore_signal(sem);
-                return;
-            }
-
-            // Stream configuration
-            SCStreamConfiguration* cfg = [[SCStreamConfiguration alloc] init];
-            cfg.minimumFrameInterval =
-                CMTimeMake(1, (int32_t)(target_fps > 0 ? target_fps : 60));
-            cfg.pixelFormat          = kCVPixelFormatType_32BGRA;
-            cfg.colorSpaceName       = kCGColorSpaceSRGB;
-            cfg.showsCursor          = NO;
-
-            // Start with the display/window's natural resolution.
-            // The encoder will decide the actual encode resolution.
-            if (is_display) {
-                for (SCDisplay* d in content.displays) {
-                    if (d.displayID == target_id) {
-                        cfg.width  = (size_t)d.width;
-                        cfg.height = (size_t)d.height;
-                        break;
-                    }
-                }
-            }
-
-            SCStream* stream = [[SCStream alloc] initWithFilter:filter
-                                                  configuration:cfg
-                                                       delegate:cap->impl_->output];
-
-            NSError* addErr = nil;
-            [stream addStreamOutput:cap->impl_->output
-                               type:SCStreamOutputTypeScreen
-                 sampleHandlerQueue:cap->impl_->queue
-                              error:&addErr];
-            if (addErr) {
-                NSLog(@"[ScreenCaptureMac] addStreamOutput: %@",
-                      addErr.localizedDescription);
-                dispatch_semaphore_signal(sem);
-                return;
-            }
-
-            [stream startCaptureWithCompletionHandler:^(NSError* startErr) {
-                if (startErr) {
-                    NSLog(@"[ScreenCaptureMac] startCapture: %@",
-                          startErr.localizedDescription);
-                } else {
-                    cap->impl_->stream = stream;
-                    cap->capturing_    = true;
-                    success             = true;
-                }
-                dispatch_semaphore_signal(sem);
-            }];
-        }];
+    [stream startCaptureWithCompletionHandler:^(NSError* startErr) {
+        if (startErr) {
+            NSLog(@"[ScreenCaptureMac] startCapture: %@", startErr.localizedDescription);
+        } else {
+            impl->stream    = stream;
+            cap->capturing_ = true;
+            success          = true;
+        }
+        dispatch_semaphore_signal(sem);
+    }];
 
     dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
     return success;
+}
+
+// ── pick_and_start ───────────────────────────────────────────────────────────
+
+void ScreenCaptureMac::pick_and_start(uint32_t target_fps,
+                                       std::function<void(bool)> on_started)
+{
+    if (capturing_) stop();
+
+    ScreenCaptureMac* cap = this;
+
+    if (@available(macOS 14.0, *)) {
+        // Use system SCContentSharingPicker
+        auto* picker = [SCContentSharingPicker sharedPicker];
+
+        SCContentSharingPickerConfiguration* config =
+            [[SCContentSharingPickerConfiguration alloc] init];
+        config.allowedPickerModes =
+            SCContentSharingPickerModeSingleWindow |
+            SCContentSharingPickerModeSingleDisplay;
+        picker.defaultConfiguration = config;
+
+        auto* observer = [[PartiesPickerObserver alloc] init];
+        impl_->observer = observer;
+
+        observer.onFilterSelected = ^(SCContentFilter* filter) {
+            // Remove observer (one-shot)
+            [picker removeObserver:observer];
+            cap->impl_->observer = nil;
+            picker.active = NO;
+
+            bool ok = StartWithFilter(cap, cap->impl_, filter, target_fps);
+            if (on_started) on_started(ok);
+        };
+
+        observer.onCancelled = ^{
+            [picker removeObserver:observer];
+            cap->impl_->observer = nil;
+            picker.active = NO;
+
+            if (on_started) on_started(false);
+        };
+
+        [picker addObserver:observer];
+        picker.active = YES;
+        [picker present];
+
+    } else {
+        // Fallback (macOS 12.3-13): capture main display
+        [SCShareableContent
+            getShareableContentWithCompletionHandler:
+            ^(SCShareableContent* content, NSError* error) {
+                if (error || content.displays.count == 0) {
+                    NSLog(@"[ScreenCaptureMac] Fallback: no displays available");
+                    if (on_started) on_started(false);
+                    return;
+                }
+
+                SCDisplay* mainDisplay = content.displays.firstObject;
+                SCContentFilter* filter = [[SCContentFilter alloc]
+                    initWithDisplay:mainDisplay excludingWindows:@[]];
+
+                bool ok = StartWithFilter(cap, cap->impl_, filter, target_fps);
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (on_started) on_started(ok);
+                });
+            }];
+    }
 }
 
 // ── stop ──────────────────────────────────────────────────────────────────────

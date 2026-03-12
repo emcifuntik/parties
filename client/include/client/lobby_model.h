@@ -107,6 +107,7 @@ public:
 
     // Share picker
     bool show_share_picker = false;
+    bool use_native_picker = false;  // true on macOS (native picker, no target list)
     Rml::Vector<ShareTarget> share_targets;
     float share_bitrate = 2.0f;    // Mbps (0.5 - 20.0)
     int share_fps = 2;             // 0=15, 1=30, 2=60, 3=120
@@ -165,6 +166,7 @@ public:
     std::function<void()>      on_toggle_share;
     std::function<void(int)>   on_select_share_target;
     std::function<void()>      on_cancel_share;
+    std::function<void()>      on_start_native_share;  // macOS: trigger native picker
     std::function<void(int)>   on_watch_sharer;
     std::function<void(int)>   on_select_sharer;
     std::function<void()>      on_stop_watching;

@@ -261,7 +261,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     // Screen share — sender
     std::unique_ptr<ScreenCaptureMac>  _capturer;
     std::unique_ptr<VideoEncoderMac>   _encoder;
-    std::vector<CaptureTargetMac>      _captureTargets;
     uint32_t                           _videoFrameNumber;
     bool                               _sharing;
     bool                               _encoderReady;
@@ -1120,30 +1119,38 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
 - (void)showSharePicker
 {
+    // Show the share picker overlay (macOS uses native picker button)
+    _lobbyModel.use_native_picker = true;
+    _lobbyModel.show_share_picker = true;
+    _lobbyModel.dirty("use_native_picker");
+    _lobbyModel.dirty("show_share_picker");
+}
+
+- (void)startNativeShare
+{
+    // Hide overlay and launch native macOS picker
+    _lobbyModel.show_share_picker = false;
+    _lobbyModel.dirty("show_share_picker");
+
     _capturer = std::make_unique<ScreenCaptureMac>();
     PartiesViewController* bself = self;
 
-    _capturer->enumerate([bself](std::vector<CaptureTargetMac> targets) {
-        bself->_captureTargets = std::move(targets);
-        bself->_lobbyModel.share_targets.clear();
+    static const uint32_t fps_table[] = { 15, 30, 60, 120 };
+    uint32_t capture_fps = fps_table[std::min(_lobbyModel.share_fps, 3)];
 
-        for (size_t i = 0; i < bself->_captureTargets.size(); i++) {
-            ShareTarget t;
-            t.name       = Rml::String(bself->_captureTargets[i].name);
-            t.index      = static_cast<int>(i);
-            t.is_monitor = (bself->_captureTargets[i].type == CaptureTargetMac::Type::Display);
-            bself->_lobbyModel.share_targets.push_back(t);
-        }
-        bself->_lobbyModel.show_share_picker = true;
-        bself->_lobbyModel.dirty("share_targets");
-        bself->_lobbyModel.dirty("show_share_picker");
+    _capturer->pick_and_start(capture_fps, [bself](bool success) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!success) {
+                bself->_capturer.reset();
+                return;
+            }
+            [bself onCaptureStarted];
+        });
     });
 }
 
-- (void)startScreenShareAtIndex:(int)idx
+- (void)onCaptureStarted
 {
-    if (idx < 0 || idx >= (int)_captureTargets.size()) return;
-
     _encoder      = std::make_unique<VideoEncoderMac>();
     _encoderReady = false;
 
@@ -1202,12 +1209,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
             [bself stopScreenShare];
         });
     };
-
-    static const uint32_t fps_table[] = { 15, 30, 60, 120 };
-    uint32_t capture_fps = fps_table[std::min(_lobbyModel.share_fps, 3)];
-    _capturer->start(_captureTargets[idx], capture_fps);
-    _lobbyModel.show_share_picker = false;
-    _lobbyModel.dirty("show_share_picker");
 }
 
 - (void)stopScreenShare
@@ -1568,13 +1569,13 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         }
     };
 
-    _lobbyModel.on_select_share_target = [bself](int index) {
-        [bself startScreenShareAtIndex:index];
-    };
-
     _lobbyModel.on_cancel_share = [bself]() {
         bself->_lobbyModel.show_share_picker = false;
         bself->_lobbyModel.dirty("show_share_picker");
+    };
+
+    _lobbyModel.on_start_native_share = [bself]() {
+        [bself startNativeShare];
     };
 
     _lobbyModel.on_watch_sharer = [bself](int sharer_id) {

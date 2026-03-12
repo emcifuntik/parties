@@ -258,6 +258,33 @@
                 </div>
             </div>
 
+            <!-- Screen sharing settings -->
+            <div class="settings-section">
+                <div class="settings-label">Screen Sharing</div>
+                <div class="share-setting-group">
+                    <div class="settings-sublabel">FPS</div>
+                    <div class="share-codec-buttons">
+                        <div class="share-codec-btn" data-class-active="share_fps == 0"
+                             data-event-click="select_share_fps(0)">15</div>
+                        <div class="share-codec-btn" data-class-active="share_fps == 1"
+                             data-event-click="select_share_fps(1)">30</div>
+                        <div class="share-codec-btn" data-class-active="share_fps == 2"
+                             data-event-click="select_share_fps(2)">60</div>
+                        <div class="share-codec-btn" data-class-active="share_fps == 3"
+                             data-event-click="select_share_fps(3)">120</div>
+                    </div>
+                </div>
+                <div class="share-setting-group">
+                    <div class="settings-sublabel">Bitrate</div>
+                    <div class="share-bitrate-row">
+                        <input type="range" class="share-bitrate-slider" min="0.5" max="20" step="0.5"
+                               data-value="share_bitrate"
+                               data-event-change="share_bitrate_changed" />
+                        <div class="share-bitrate-value">{{ share_bitrate }} Mbps</div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Identity backup/import -->
             <div class="settings-section">
                 <div class="settings-label">Identity</div>
@@ -328,25 +355,32 @@
                     </div>
                 </div>
             </div>
-            <div class="share-picker-section">
-                <div class="settings-label">Monitors</div>
-                <div data-for="target : share_targets">
-                    <div class="share-target-item"
-                         data-if="target.is_monitor"
-                         data-event-click="select_share_target(target.index)">
-                        {{ target.name }}
+            <!-- Windows: enumerate targets -->
+            <div data-if="use_native_picker == false">
+                <div class="share-picker-section">
+                    <div class="settings-label">Monitors</div>
+                    <div data-for="target : share_targets">
+                        <div class="share-target-item"
+                             data-if="target.is_monitor"
+                             data-event-click="select_share_target(target.index)">
+                            {{ target.name }}
+                        </div>
+                    </div>
+                </div>
+                <div class="share-picker-section">
+                    <div class="settings-label">Windows</div>
+                    <div data-for="target : share_targets">
+                        <div class="share-target-item"
+                             data-if="target.is_monitor == false"
+                             data-event-click="select_share_target(target.index)">
+                            {{ target.name }}
+                        </div>
                     </div>
                 </div>
             </div>
-            <div class="share-picker-section">
-                <div class="settings-label">Windows</div>
-                <div data-for="target : share_targets">
-                    <div class="share-target-item"
-                         data-if="target.is_monitor == false"
-                         data-event-click="select_share_target(target.index)">
-                        {{ target.name }}
-                    </div>
-                </div>
+            <!-- macOS: native picker button -->
+            <div class="share-picker-section" data-if="use_native_picker">
+                <div class="btn" data-event-click="start_native_share">Select target...</div>
             </div>
         </div>
 

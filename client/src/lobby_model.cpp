@@ -102,6 +102,7 @@ bool LobbyModel::init(Rml::Context* context) {
 
     // Share picker
     ctor.Bind("show_share_picker", &show_share_picker);
+    ctor.Bind("use_native_picker", &use_native_picker);
     ctor.Bind("share_targets",     &share_targets);
     ctor.Bind("share_bitrate",     &share_bitrate);
     ctor.Bind("share_fps",         &share_fps);
@@ -255,6 +256,16 @@ bool LobbyModel::init(Rml::Context* context) {
                 on_select_share_target(args[0].Get<int>());
         });
 
+    ctor.BindEventCallback("cancel_share",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            if (on_cancel_share) on_cancel_share();
+        });
+
+    ctor.BindEventCallback("start_native_share",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            if (on_start_native_share) on_start_native_share();
+        });
+
     ctor.BindEventCallback("select_share_fps",
         [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList& args) {
             if (!args.empty()) {
@@ -266,11 +277,6 @@ bool LobbyModel::init(Rml::Context* context) {
     ctor.BindEventCallback("share_bitrate_changed",
         [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
             // share_bitrate already updated by data binding
-        });
-
-    ctor.BindEventCallback("cancel_share",
-        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
-            if (on_cancel_share) on_cancel_share();
         });
 
     ctor.BindEventCallback("watch_sharer",
@@ -476,6 +482,7 @@ void LobbyModel::dirty_all() {
     dirty("stream_fullscreen");
     dirty("stream_fps");
     dirty("show_share_picker");
+    dirty("use_native_picker");
     dirty("share_targets");
     dirty("share_bitrate");
     dirty("share_fps");

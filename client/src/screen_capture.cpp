@@ -355,7 +355,7 @@ bool ScreenCapture::start(const CaptureTarget& target, uint32_t target_fps) {
                 impl_->session.IsBorderRequired(false);
             } catch (...) {}
         }
-        
+
         if (winrt::Windows::Foundation::Metadata::ApiInformation::IsPropertyPresent(L"Windows.Graphics.Capture.GraphicsCaptureSession", L"IsCursorCaptureEnabled"))
         {
             try {
