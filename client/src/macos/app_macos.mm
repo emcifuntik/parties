@@ -257,6 +257,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     _metalView.colorPixelFormat        = MTLPixelFormatBGRA8Unorm;
     _metalView.depthStencilPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
     _metalView.clearColor              = MTLClearColorMake(0.1, 0.1, 0.1, 1.0);
+    _metalView.preferredFramesPerSecond = 60;
     _metalView.paused                  = NO;
     _metalView.enableSetNeedsDisplay   = NO;
     self.view = _metalView;

@@ -56,6 +56,24 @@
       }
     },
     {
+      "name": "macos-arm64-release",
+      "displayName": "macOS ARM64 Release",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-macos-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/vendor/ports",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vendor/triplets",
+        "VCPKG_TARGET_TRIPLET": "arm64-osx-release",
+        "VCPKG_MANIFEST_FEATURES": "client-macos",
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "13.0",
+        "ENABLE_TRACY": "OFF",
+        "CMAKE_MAKE_PROGRAM": "/opt/homebrew/bin/ninja"
+      }
+    },
+    {
       "name": "linux-release",
       "displayName": "Linux Release (server only)",
       "generator": "Ninja",
@@ -89,6 +107,10 @@
     {
       "name": "macos-arm64-debug",
       "configurePreset": "macos-arm64-debug"
+    },
+    {
+      "name": "macos-arm64-release",
+      "configurePreset": "macos-arm64-release"
     },
     {
       "name": "linux-release",
