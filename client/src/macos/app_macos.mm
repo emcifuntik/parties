@@ -179,8 +179,8 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 {
     if (!_rmlContext) return;
     _rmlContext->ProcessMouseWheel(
-        Rml::Vector2f(-(float)event.scrollingDeltaX,
-                      -(float)event.scrollingDeltaY),
+        Rml::Vector2f(-(float)event.scrollingDeltaX/100.f,
+                      -(float)event.scrollingDeltaY/100.f),
         macos_modifiers_to_rml(event.modifierFlags));
 }
 
