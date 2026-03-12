@@ -39,6 +39,10 @@ public:
     // Caller must CFRetain/CFRelease if it needs to hold the buffer.
     std::function<void(CVPixelBufferRef, uint32_t width, uint32_t height)> on_frame;
 
+    // Called on an internal queue with interleaved float32 stereo PCM at 48 kHz.
+    // frame_count is the number of stereo sample pairs.
+    std::function<void(const float* samples, uint32_t frame_count)> on_audio;
+
     // Called when the captured window/display is removed.
     std::function<void()> on_closed;
 

@@ -29,6 +29,7 @@
 #include <parties/types.h>
 #include <parties/serialization.h>
 #include <parties/audio_common.h>
+#include <parties/codec.h>
 #include <parties/crypto.h>
 #include <parties/permissions.h>
 #include <parties/video_common.h>
@@ -239,6 +240,13 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     bool                              _sharing;
     bool                              _encoderReady;
     bool                              _needsKeyframe;
+
+    // Stream audio — Opus encoder for screen share audio
+    parties::OpusCodec                _streamAudioEncoder;
+    bool                              _streamAudioReady;
+    std::vector<float>                _audioBuf;    // accumulation buffer
+    size_t                            _audioPos;
+    uint8_t                           _opusBuf[parties::audio::MAX_OPUS_PACKET];
 
     // Screen share — receiver (macOS-specific VideoToolbox decoder)
     std::unique_ptr<VideoDecoderIOS>  _decoder;
@@ -531,6 +539,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
 - (void)showSharePicker
 {
+    NSLog(@"[ScreenShare] showSharePicker");
     _core.model_.use_native_picker  = true;
     _core.model_.show_share_picker  = true;
     _core.model_.dirty("use_native_picker");
@@ -539,6 +548,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
 - (void)startNativeShare
 {
+    NSLog(@"[ScreenShare] startNativeShare");
     _core.model_.show_share_picker = false;
     _core.model_.dirty("show_share_picker");
 
@@ -549,8 +559,9 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     uint32_t capture_fps = fps_table[std::min(_core.model_.share_fps, 3)];
 
     _capturer->pick_and_start(capture_fps, [bself](bool success) {
+        NSLog(@"[ScreenShare] pick_and_start callback: success=%d", success);
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (!success) { bself->_capturer.reset(); return; }
+            if (!success) { NSLog(@"[ScreenShare] capture failed, resetting"); bself->_capturer.reset(); return; }
             [bself onCaptureStarted];
         });
     });
@@ -558,6 +569,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
 - (void)onCaptureStarted
 {
+    NSLog(@"[ScreenShare] onCaptureStarted");
     _encoder      = std::make_unique<VideoEncoderMac>();
     _encoderReady = false;
 
@@ -596,13 +608,24 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
                 std::memcpy(pkt.data() + off, data, len);
                 bself->_core.net_.send_video(pkt.data(), pkt.size(), true);
                 bself->_core.stream_frame_count_.fetch_add(1, std::memory_order_relaxed);
+
+                // Self-preview: feed encoded frame back to local decoder
+                if (bself->_core.viewing_sharer_ == bself->_core.user_id_ && bself->_decoder) {
+                    // onVideoFrameData expects [fn(4)][ts(4)][flags(1)][w(2)][h(2)][codec(1)][data(N)]
+                    [bself onVideoFrameData:bself->_core.user_id_
+                                       data:pkt.data() + 1
+                                        len:pkt.size() - 1];
+                }
             };
 
             dispatch_async(dispatch_get_main_queue(), ^{
                 bself->_sharing = true;
                 bself->_core.model_.is_sharing = true;
                 bself->_core.model_.dirty("is_sharing");
-                bself->_core.net_.send_message(ControlMessageType::SCREEN_SHARE_START, nullptr, 0);
+                // Server expects codec(1) + width(2) + height(2); placeholder values
+                // are updated by SCREEN_SHARE_UPDATE once the encoder produces real dims.
+                uint8_t payload[5] = {};
+                bself->_core.net_.send_message(ControlMessageType::SCREEN_SHARE_START, payload, sizeof(payload));
             });
         }
 
@@ -610,6 +633,47 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         bself->_needsKeyframe = false;
         bself->_encoder->encode(buf, forceKF);
     };
+
+    // Stream audio: init Opus encoder and accumulation buffer (48 kHz, stereo, 20 ms frames)
+    static constexpr int kAudioFrameSize = 960;  // 20ms at 48kHz
+    static constexpr int kAudioChannels  = 2;
+    _streamAudioReady = _streamAudioEncoder.init_encoder(48000, kAudioChannels, 64000);
+    _audioBuf.resize(kAudioFrameSize * kAudioChannels, 0.0f);
+    _audioPos = 0;
+
+    if (_streamAudioReady) {
+        _capturer->on_audio = [bself](const float* samples, uint32_t frame_count) {
+            if (!bself->_sharing || !bself->_core.authenticated_ || !bself->_streamAudioReady)
+                return;
+
+            const size_t samples_per_opus_frame = kAudioFrameSize * kAudioChannels;
+            size_t input_pos = 0;
+            size_t total_samples = (size_t)frame_count * kAudioChannels;
+
+            while (input_pos < total_samples) {
+                size_t space = samples_per_opus_frame - bself->_audioPos;
+                size_t copy  = std::min(space, total_samples - input_pos);
+                std::memcpy(bself->_audioBuf.data() + bself->_audioPos,
+                            samples + input_pos, copy * sizeof(float));
+                bself->_audioPos += copy;
+                input_pos += copy;
+
+                if (bself->_audioPos >= samples_per_opus_frame) {
+                    int encoded = bself->_streamAudioEncoder.encode(
+                        bself->_audioBuf.data(), kAudioFrameSize,
+                        bself->_opusBuf, parties::audio::MAX_OPUS_PACKET);
+                    if (encoded > 0) {
+                        std::vector<uint8_t> pkt(1 + encoded);
+                        pkt[0] = STREAM_AUDIO_PACKET_TYPE;
+                        std::memcpy(pkt.data() + 1, bself->_opusBuf, encoded);
+                        bself->_core.net_.send_data(pkt.data(), pkt.size());
+                    }
+                    bself->_audioPos = 0;
+                }
+            }
+        };
+        NSLog(@"[ScreenShare] Stream audio capture enabled (48kHz stereo Opus)");
+    }
 
     _capturer->on_closed = [bself]() {
         dispatch_async(dispatch_get_main_queue(), ^{ [bself stopScreenShare]; });
@@ -624,6 +688,8 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     _sharing       = false;
     _encoderReady  = false;
     _needsKeyframe = false;
+    _streamAudioReady = false;
+    _audioPos = 0;
     _core.video_frame_number_ = 0;
 
     _core.model_.is_sharing = false;
