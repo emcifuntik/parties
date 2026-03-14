@@ -77,8 +77,8 @@ public:
     bool normalize_enabled = false;
     float normalize_target = 0.8f;
     bool aec_enabled = false;
-    bool vad_enabled = false;
-    float vad_threshold = 0.02f;
+    bool vad_enabled = true;
+    float vad_threshold = 0.43f;
     float voice_level = 0.0f;
 
     // Push-to-talk

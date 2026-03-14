@@ -139,8 +139,8 @@ private:
     std::atomic<bool> aec_enabled_{false};
     std::atomic<bool> normalize_enabled_{false};
     std::atomic<float> normalize_target_{0.8f};
-    std::atomic<bool> vad_enabled_{false};
-    std::atomic<float> vad_threshold_{0.02f};
+    std::atomic<bool> vad_enabled_{true};
+    std::atomic<float> vad_threshold_{0.43f};
     std::atomic<float> voice_level_{0.0f};
 
     // Normalization gain smoothing (used in audio callback)

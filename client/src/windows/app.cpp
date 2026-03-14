@@ -262,7 +262,6 @@ void App::shutdown() {
     encode_registered_ = false;
     if (encoder_) { encoder_->shutdown(); encoder_.reset(); }
     stop_decode_thread();
-    if (decoder_) { decoder_->shutdown(); decoder_.reset(); }
     core_.shutdown();
     ui_.shutdown();
 }
@@ -380,6 +379,11 @@ void App::update() {
             }
         }
         if (!y.empty() && w > 0 && h > 0) {
+            // Reveal video area on first frame (deferred from watch_sharer)
+            if (!stream_revealed_) {
+                stream_revealed_ = true;
+                core_.model_.dirty("viewing_sharer_id");
+            }
             core_.stream_frame_count_.fetch_add(1, std::memory_order_relaxed);
             auto* elem = doc_->GetElementById("screen-share");
             if (elem) {
@@ -426,7 +430,7 @@ void App::update() {
 void App::update_voice_level() {
     ZoneScopedN("App::update_voice_level");
     if (!level_meter_ || !core_.model_.is_connected) return;
-    float level = core_.audio_.voice_level();
+    float level = audio::rms_to_perceptual(core_.audio_.voice_level());
     level_meter_->SetLevel(level);
     level_meter_->SetThreshold(core_.model_.vad_threshold);
 }
@@ -522,6 +526,9 @@ void App::start_screen_share(int target_index) {
         uint32_t fn = core_.video_frame_number_++;
         uint32_t ts = fn;
         uint8_t  flags = keyframe ? VIDEO_FLAG_KEYFRAME : 0;
+
+        if (keyframe)
+            std::fprintf(stderr, "[Encode] keyframe fn=%u size=%zu\n", fn, len);
         uint16_t w = static_cast<uint16_t>(encoder_->width());
         uint16_t h = static_cast<uint16_t>(encoder_->height());
         uint8_t  codec = static_cast<uint8_t>(encoder_->codec());
@@ -632,6 +639,10 @@ void App::start_screen_share(int target_index) {
         stream_audio_capture_.reset();
     }
 
+    sharing_screen_ = true;
+    core_.model_.is_sharing = true;
+    core_.model_.dirty("is_sharing");
+
     BinaryWriter writer;
     writer.write_u8(0); writer.write_u16(0); writer.write_u16(0);
     core_.net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_START,
@@ -643,15 +654,8 @@ void App::stop_screen_share() {
     if (!sharing_screen_) return;
     sharing_screen_ = false;
 
-    if (core_.viewing_sharer_ == core_.user_id_) {
-        stop_decode_thread();
-        if (decoder_) { decoder_->shutdown(); decoder_.reset(); }
-        if (doc_) {
-            auto* elem = doc_->GetElementById("screen-share");
-            if (elem) static_cast<VideoElement*>(elem)->Clear();
-        }
-        core_.viewing_sharer_ = 0;
-    }
+    if (core_.viewing_sharer_ == core_.user_id_)
+        core_.stop_watching();
 
     if (stream_audio_capture_) { stream_audio_capture_->stop(); stream_audio_capture_.reset(); }
     if (capture_) { capture_->stop(); capture_->shutdown(); capture_.reset(); }
@@ -812,6 +816,9 @@ void App::stop_decode_thread() {
     decode_running_ = false;
     decode_queue_cv_.notify_all();
     if (decode_thread_.joinable()) decode_thread_.join();
+    if (decoder_) { decoder_->shutdown(); decoder_.reset(); }
+    new_frame_available_ = false;
+    stream_revealed_ = false;
     std::lock_guard<std::mutex> lock(decode_queue_mutex_);
     while (!decode_queue_.empty()) decode_queue_.pop();
 }
@@ -866,8 +873,7 @@ void App::decode_loop() {
 
         while (!batch.empty()) {
             auto& work = batch.front();
-            if (!decoder_ || decoder_->codec() != work.codec ||
-                decoder_->width() != work.width || decoder_->height() != work.height) {
+            if (!decoder_ || decoder_->context_lost() || decoder_->codec() != work.codec) {
                 if (decoder_) decoder_->shutdown();
                 decoder_ = std::make_unique<VideoDecoder>();
                 if (!decoder_->init(work.codec, work.width, work.height)) {

@@ -356,9 +356,9 @@ void AudioEngine::process_capture(const float* input, ma_uint32 frame_count) {
             float rms = std::sqrt(sum / audio::FRAME_SIZE);
             voice_level_ = rms;
 
-            // VAD check
+            // VAD check (threshold is in perceptual/dB-normalized space)
             if (vad_enabled_) {
-                float threshold = vad_threshold_.load();
+                float threshold = audio::perceptual_to_rms(vad_threshold_.load());
                 if (rms >= threshold) {
                     vad_hold_frames_ = VAD_HOLD_COUNT;
                 } else if (vad_hold_frames_ > 0) {
