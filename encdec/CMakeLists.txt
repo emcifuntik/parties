@@ -22,6 +22,10 @@ if(WIN32)
         src/openh264/openh264_decoder.cpp
         src/libhevc/libhevc_decoder.cpp
     )
+elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    set(ENCDEC_PLATFORM_SOURCES
+        src/apple/VideoDecoderIOS.mm
+    )
 elseif(APPLE)
     set(ENCDEC_PLATFORM_SOURCES
         src/apple/VideoDecoderIOS.mm
@@ -32,6 +36,7 @@ endif()
 add_library(parties_encdec STATIC
     ${ENCDEC_PLATFORM_SOURCES}
 )
+set_target_properties(parties_encdec PROPERTIES XCODE_ATTRIBUTE_SKIP_INSTALL "YES")
 
 target_include_directories(parties_encdec
     PUBLIC

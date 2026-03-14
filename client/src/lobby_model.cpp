@@ -91,6 +91,9 @@ bool LobbyModel::init(Rml::Context* context) {
     ctor.Bind("deafen_key_name",  &deafen_key_name);
     ctor.Bind("deafen_binding",   &deafen_binding);
 
+    // Mobile navigation
+    ctor.Bind("mobile_show_content", &mobile_show_content);
+
     // Screen sharing
     ctor.Bind("is_sharing",          &is_sharing);
     ctor.Bind("someone_sharing",     &someone_sharing);
@@ -139,13 +142,18 @@ bool LobbyModel::init(Rml::Context* context) {
     // Event callbacks
     ctor.BindEventCallback("join_channel",
         [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList& args) {
-            if (!args.empty() && on_join_channel)
+            if (!args.empty() && on_join_channel) {
                 on_join_channel(args[0].Get<int>());
+                mobile_show_content = true;
+                dirty("mobile_show_content");
+            }
         });
 
     ctor.BindEventCallback("leave_channel",
         [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
             if (on_leave_channel) on_leave_channel();
+            mobile_show_content = false;
+            dirty("mobile_show_content");
         });
 
     ctor.BindEventCallback("toggle_mute",
@@ -161,7 +169,9 @@ bool LobbyModel::init(Rml::Context* context) {
     ctor.BindEventCallback("toggle_settings",
         [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
             show_settings = !show_settings;
+            mobile_show_content = show_settings;
             dirty("show_settings");
+            dirty("mobile_show_content");
         });
 
     ctor.BindEventCallback("select_capture",
@@ -281,8 +291,11 @@ bool LobbyModel::init(Rml::Context* context) {
 
     ctor.BindEventCallback("watch_sharer",
         [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList& args) {
-            if (!args.empty() && on_watch_sharer)
+            if (!args.empty() && on_watch_sharer) {
                 on_watch_sharer(args[0].Get<int>());
+                mobile_show_content = true;
+                dirty("mobile_show_content");
+            }
         });
 
     ctor.BindEventCallback("select_sharer",
@@ -293,6 +306,17 @@ bool LobbyModel::init(Rml::Context* context) {
 
     ctor.BindEventCallback("stop_watching",
         [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            if (on_stop_watching) on_stop_watching();
+            mobile_show_content = false;
+            dirty("mobile_show_content");
+        });
+
+    ctor.BindEventCallback("mobile_back",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            mobile_show_content = false;
+            show_settings = false;
+            dirty("mobile_show_content");
+            dirty("show_settings");
             if (on_stop_watching) on_stop_watching();
         });
 
@@ -332,8 +356,11 @@ bool LobbyModel::init(Rml::Context* context) {
             int button = ev.GetParameter<int>("button", 0);
             if (button == 0) {
                 // Left click → join channel
-                if (!args.empty() && on_join_channel)
+                if (!args.empty() && on_join_channel) {
                     on_join_channel(args[0].Get<int>());
+                    mobile_show_content = true;
+                    dirty("mobile_show_content");
+                }
             } else if (button == 1) {
                 // Right click → channel context menu
                 if (args.size() >= 2 && on_show_channel_menu)
@@ -474,6 +501,7 @@ void LobbyModel::dirty_all() {
     dirty("deafen_key");
     dirty("deafen_key_name");
     dirty("deafen_binding");
+    dirty("mobile_show_content");
     dirty("is_sharing");
     dirty("someone_sharing");
     dirty("sharers");

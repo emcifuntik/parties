@@ -133,6 +133,82 @@ body {
     gap: 8dp;
 }
 
+/* ── iOS: hide desktop chrome, full-width layout ──────────────────────
+   The body gets class "platform-ios" at runtime on iOS.
+   No titlebar, no share picker send controls, no context menus. */
+
+.platform-ios .titlebar              { display: none; }
+.platform-ios .share-picker-overlay  { display: none; }
+
+/* iOS: server strip narrower */
+.platform-ios .server-strip          { width: 56dp; }
+.platform-ios .server-icon           { width: 40dp; height: 40dp; }
+.platform-ios .server-initials       { font-size: 14dp; }
+
+/* iOS: sidebar fills remaining width (no fixed 250dp) */
+.platform-ios .sidebar               { width: auto; flex: 1; }
+
+/* iOS: hide main-content by default (sidebar-first navigation) */
+.platform-ios .main-content          { display: none; }
+
+/* iOS: when mobile-content is active, swap panels */
+.platform-ios .mobile-content .server-strip  { display: none; }
+.platform-ios .mobile-content .sidebar       { display: none; }
+.platform-ios .mobile-content .main-content  { display: flex; }
+
+/* iOS: mobile back bar (hidden on desktop) */
+.mobile-back-bar { display: none; }
+
+.platform-ios .mobile-back-bar {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    padding: 10dp 12dp;
+    gap: 6dp;
+    background-color: #181924;
+    border-bottom: 1dp #2a2b3d;
+    cursor: pointer;
+}
+
+.platform-ios .mobile-back-bar:hover {
+    background-color: #1f2030;
+}
+
+.mobile-back-arrow {
+    color: #e8a43a;
+    font-size: 18dp;
+    font-weight: bold;
+}
+
+.mobile-back-label {
+    color: #e8a43a;
+    font-size: 14dp;
+}
+
+/* iOS: hide desktop-only elements */
+.platform-ios .user-menu-backdrop    { display: none; }
+.platform-ios .keybind-row           { display: none; }
+.platform-ios .ptt-settings          { display: none; }
+
+/* Larger touch targets for range sliders on iOS */
+.platform-ios input.range slidertrack {
+    height: 12dp;
+    border-radius: 4dp;
+}
+.platform-ios input.range sliderbar {
+    width: 18dp;
+    height: 18dp;
+    border-radius: 12dp;
+    margin-top: -3dp;
+}
+
+.platform-ios input.range sliderbar:hover {
+    width: 18dp;
+    height: 18dp;
+    border-radius: 12dp;
+    margin-top: -3dp;
+}
+
 /* ── Titlebar button icons (CSS-drawn) ───────────── */
 
 .tb-icon-minimize {

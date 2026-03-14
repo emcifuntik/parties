@@ -248,7 +248,11 @@ void AppCore::load_or_generate_identity(const std::string& username_hint)
         public_key_  = identity->public_key;
         has_identity_ = true;
     } else {
-        generate_identity();
+        // No saved identity — show onboarding modal instead of auto-generating.
+        // The user will generate or restore via the UI.
+        has_identity_ = false;
+        server_model_.show_onboarding = true;
+        server_model_.dirty("show_onboarding");
     }
 
     if (!username_hint.empty())

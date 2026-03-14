@@ -46,6 +46,8 @@ public:
                         Rml::Vector2f translation,
                         Rml::TextureHandle texture) override;
     void ReleaseGeometry(Rml::CompiledGeometryHandle handle) override;
+    void UpdateGeometryVertices(Rml::CompiledGeometryHandle geometry,
+                                Rml::Span<const Rml::Vertex> vertices) override;
 
     Rml::TextureHandle LoadTexture(Rml::Vector2i& texture_dimensions,
                                    const Rml::String& source) override;

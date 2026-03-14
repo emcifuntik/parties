@@ -35,7 +35,8 @@
     </div>
 
     <!-- App content area (below titlebar) -->
-    <div class="app-content">
+    <div class="app-content" data-model="lobby"
+         data-class-mobile-content="mobile_show_content">
 
     <!-- Server icon strip (far left, always visible) -->
     <div class="server-strip" data-model="serverlist">
@@ -131,6 +132,12 @@
 
     <!-- Main content -->
     <div class="main-content" data-model="lobby">
+        <!-- Mobile back button (iOS only, shown via CSS) -->
+        <div class="mobile-back-bar" data-event-click="mobile_back">
+            <span class="mobile-back-arrow">&lt;</span>
+            <span class="mobile-back-label">Channels</span>
+        </div>
+
         <!-- Not connected: empty state -->
         <div class="no-server-state" data-if="is_connected == false">
             <span class="text-muted-msg">Select a server to get started</span>

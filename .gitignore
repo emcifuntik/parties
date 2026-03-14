@@ -1,6 +1,7 @@
 /build/
-/build-release/
-/build-linux/
+/build-*/
+/.*/
 out/
 vcpkg_installed/
 CMakeUserPresets.json
+.DS_Store

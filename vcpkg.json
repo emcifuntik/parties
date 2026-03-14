@@ -45,6 +45,19 @@
         "rnnoise",
         "speexdsp"
       ]
+    },
+    "client-ios": {
+      "description": "Client GUI dependencies (iOS)",
+      "dependencies": [
+        "dav1d",
+        "miniaudio",
+        {
+          "name": "rmlui",
+          "features": ["svg"]
+        },
+        "rnnoise",
+        "speexdsp"
+      ]
     }
   }
 }

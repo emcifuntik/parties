@@ -5,7 +5,7 @@
   "description": "Cross-platform, C implementation of the IETF QUIC protocol (static build, wolfSSL TLS backend)",
   "homepage": "https://github.com/microsoft/msquic",
   "license": "MIT",
-  "supports": "(windows & !uwp) | linux | osx",
+  "supports": "(windows & !uwp) | linux | osx | ios",
   "dependencies": [
     {
       "name": "vcpkg-cmake",

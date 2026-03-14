@@ -548,6 +548,16 @@ void RenderInterface_Metal::ReleaseGeometry(Rml::CompiledGeometryHandle handle)
     delete geo;
 }
 
+void RenderInterface_Metal::UpdateGeometryVertices(Rml::CompiledGeometryHandle handle,
+                                                    Rml::Span<const Rml::Vertex> vertices)
+{
+    if (!handle) return;
+    auto* geo = reinterpret_cast<MetalGeometry*>(handle);
+    size_t byte_size = vertices.size() * sizeof(Rml::Vertex);
+    if (byte_size <= geo->vertex_buffer.length)
+        memcpy(geo->vertex_buffer.contents, vertices.data(), byte_size);
+}
+
 // ---- Textures --------------------------------------------------------------------
 
 Rml::TextureHandle RenderInterface_Metal::LoadTexture(Rml::Vector2i& texture_dimensions,
