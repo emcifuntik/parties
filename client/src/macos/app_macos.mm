@@ -43,6 +43,11 @@
 #include <client/level_meter_element.h>
 #include <client/gradient_circle_element.h>
 
+#ifdef SENTRY_COCOA_ENABLED
+#import <Sentry/Sentry.h>
+#import <Sentry/Sentry-Swift.h>
+#endif
+
 #include <encdec/apple/VideoDecoderIOS.h>
 
 #include <atomic>
@@ -793,6 +798,23 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
 - (void)applicationDidFinishLaunching:(NSNotification*)notification
 {
+#ifdef SENTRY_COCOA_ENABLED
+#ifdef SENTRY_DSN_VALUE
+    [SentrySDK startWithConfigureOptions:^(SentryOptions *options) {
+        options.dsn = @SENTRY_DSN_VALUE;
+#ifdef PARTIES_RETAIL
+        options.environment = @"production";
+#else
+        options.environment = @"development";
+#endif
+        options.enableCrashHandler = YES;
+        options.enableAppHangTracking = YES;
+        options.sendDefaultPii = YES;
+        options.tracesSampleRate = @1.0;
+    }];
+#endif
+#endif
+
     if (!parties::quic_init()) {
         NSLog(@"[Parties] Failed to initialize MsQuic");
     }

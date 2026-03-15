@@ -249,6 +249,60 @@ if(ENABLE_SENTRY AND NOT SENTRY_DSN_CLIENT STREQUAL "")
     target_compile_definitions(parties_client PRIVATE "SENTRY_DSN_VALUE=\"${SENTRY_DSN_CLIENT}\"")
 endif()
 
+# ── Sentry Cocoa SDK for Apple platforms ──────────────────────────────────────
+# Use sentry-cocoa xcframework on iOS and macOS instead of sentry-native.
+if(APPLE AND ENABLE_SENTRY)
+    include(FetchContent)
+    set(SENTRY_COCOA_VERSION "9.7.0")
+    FetchContent_Declare(sentry_cocoa
+        URL "https://github.com/getsentry/sentry-cocoa/releases/download/${SENTRY_COCOA_VERSION}/Sentry.xcframework.zip"
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+    FetchContent_MakeAvailable(sentry_cocoa)
+
+    # The zip extracts Sentry.xcframework/ contents directly into SOURCE_DIR
+    if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        set(SENTRY_FW "${sentry_cocoa_SOURCE_DIR}/ios-arm64_arm64e/Sentry.framework")
+    else()
+        set(SENTRY_FW "${sentry_cocoa_SOURCE_DIR}/macos-arm64_arm64e_x86_64/Sentry.framework")
+    endif()
+
+    add_library(SentryCocoa STATIC IMPORTED)
+    get_filename_component(SENTRY_FW_DIR "${SENTRY_FW}" DIRECTORY)
+    set_target_properties(SentryCocoa PROPERTIES
+        IMPORTED_LOCATION "${SENTRY_FW}/Sentry"
+    )
+
+    target_link_libraries(parties_client PRIVATE SentryCocoa)
+    # Use -F for framework-style imports: #import <Sentry/Sentry.h>
+    target_compile_options(parties_client PRIVATE "-F${SENTRY_FW_DIR}")
+    target_compile_definitions(parties_client PRIVATE SENTRY_COCOA_ENABLED)
+
+    # Sentry Cocoa contains Swift code — link Swift runtime libraries
+    execute_process(
+        COMMAND xcrun --show-sdk-path
+        OUTPUT_VARIABLE _SWIFT_SDK_PATH
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    execute_process(
+        COMMAND xcrun --find swiftc
+        OUTPUT_VARIABLE _SWIFTC_PATH
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    get_filename_component(_SWIFT_TOOLCHAIN "${_SWIFTC_PATH}" DIRECTORY)
+    get_filename_component(_SWIFT_TOOLCHAIN "${_SWIFT_TOOLCHAIN}" DIRECTORY)
+    if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        set(_SWIFT_PLATFORM "iphoneos")
+    else()
+        set(_SWIFT_PLATFORM "macosx")
+    endif()
+    target_link_directories(parties_client PRIVATE
+        "${_SWIFT_TOOLCHAIN}/lib/swift/${_SWIFT_PLATFORM}"
+        "${_SWIFT_SDK_PATH}/usr/lib/swift"
+    )
+    target_link_libraries(parties_client PRIVATE "-lswiftCore")
+endif()
+
 # Copy client exe to additional test folders for multi-instance testing (Windows only)
 if(NOT APPLE)
     foreach(COPY_DIR client2 client3 client4)

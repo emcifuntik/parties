@@ -27,7 +27,8 @@ if(ENABLE_TRACY)
 endif()
 
 # Sentry (optional — enabled when ENABLE_SENTRY is ON)
-if(ENABLE_SENTRY)
+# iOS uses sentry-cocoa (xcframework linked in client/CMakeLists.txt), not sentry-native.
+if(ENABLE_SENTRY AND NOT APPLE)
     find_package(sentry CONFIG REQUIRED)
     set(_SENTRY_LIB sentry::sentry)
 else()
@@ -51,7 +52,7 @@ target_compile_definitions(parties_common PUBLIC
     $<$<NOT:$<CONFIG:Debug>>:SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_INFO>
 )
 
-if(ENABLE_SENTRY)
+if(ENABLE_SENTRY AND NOT APPLE)
     target_compile_definitions(parties_common PUBLIC SENTRY_ENABLED)
 endif()
 

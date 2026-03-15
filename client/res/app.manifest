@@ -6,7 +6,7 @@
       version="0.1.0.0"
       processorArchitecture="amd64"/>
 
-  <description>Parties Client</description>
+  <description>Parties</description>
 
   <!-- Common Controls v6 (visual styles) -->
   <dependency>

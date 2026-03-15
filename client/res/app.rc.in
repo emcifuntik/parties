@@ -22,12 +22,12 @@ BEGIN
         BLOCK "040904B0"
         BEGIN
             VALUE "CompanyName",      "Open Source"
-            VALUE "FileDescription",  "Parties Client"
+            VALUE "FileDescription",  "Parties"
             VALUE "FileVersion",      "@RC_VERSION_STR@"
             VALUE "InternalName",     "parties_client"
             VALUE "LegalCopyright",   "MIT License"
             VALUE "OriginalFilename", "parties_client.exe"
-            VALUE "ProductName",      "Parties Client"
+            VALUE "ProductName",      "Parties"
             VALUE "ProductVersion",   "@RC_VERSION_STR@"
         END
     END

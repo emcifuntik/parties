@@ -5,7 +5,10 @@
     "msquic",
     "openssl",
     "opus",
-    "sentry-native",
+    {
+      "name": "sentry-native",
+      "platform": "linux | (windows & !uwp & !arm)"
+    },
     {
       "name": "spdlog",
       "default-features": false
