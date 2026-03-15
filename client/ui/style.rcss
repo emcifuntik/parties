@@ -1759,15 +1759,15 @@ video_frame {
     height: 16dp;
 }
 
-input.stream-volume-slider slidertrack {
+input.range.stream-volume-slider slidertrack {
     margin-top: 6dp;
 }
 
-input.stream-volume-slider sliderbar {
+input.range.stream-volume-slider sliderbar {
     margin-top: 0dp;
 }
 
-input.stream-volume-slider sliderbar:hover {
+input.range.stream-volume-slider sliderbar:hover {
     margin-top: -1dp;
 }
 
