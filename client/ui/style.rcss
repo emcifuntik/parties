@@ -318,7 +318,7 @@ gradient_circle.party-card-gradient {
 .party-card-initials {
     display: block;
     position: relative;
-    color: #0B0D14;
+    color: #FFFFFF;
     font-size: 18dp;
     font-weight: bold;
     text-align: center;
@@ -429,7 +429,7 @@ gradient_circle.party-card-gradient {
 }
 
 .server-icon.active .server-initials {
-    color: #0B0D14;
+    color: #FFFFFF;
 }
 
 .server-icon-add {
@@ -495,7 +495,7 @@ gradient_circle.server-header-gradient {
 .server-header-initials {
     display: block;
     position: relative;
-    color: #0B0D14;
+    color: #FFFFFF;
     font-size: 11dp;
     font-weight: bold;
     text-align: center;
@@ -609,6 +609,67 @@ gradient_circle.server-header-gradient {
     background-color: #162B27;
     padding: 2dp 8dp;
     border-radius: 100dp;
+}
+
+/* ── Sidebar separator ────────────────────────────── */
+
+.sidebar-separator {
+    display: block;
+    flex: none;
+    height: 1dp;
+    background-color: #1F2438;
+    margin: 8dp 16dp;
+}
+
+/* ── Chat items ──────────────────────────────────── */
+
+.chat-item {
+    display: flex;
+    align-items: center;
+    gap: 8dp;
+    padding: 8dp 12dp;
+    color: #A0A8C0;
+    cursor: pointer;
+    margin: 1dp 8dp;
+    border-radius: 6dp;
+}
+
+.chat-item:hover {
+    background-color: #1F2438;
+    color: #F0F2F8;
+}
+
+.chat-item.active {
+    background-color: #232840;
+    color: #F0F2F8;
+}
+
+.chat-icon {
+    display: block;
+    flex: none;
+    image-color: #6B7394;
+}
+
+.chat-item.active .chat-icon {
+    image-color: #6EECD4;
+}
+
+.chat-item-name {
+    display: block;
+    flex: 1;
+    font-size: 14dp;
+}
+
+.chat-item-time {
+    display: block;
+    font-size: 11dp;
+    color: #5C6280;
+}
+
+.chat-spaceholder {
+    display: block;
+    flex: none;
+    height: 20dp;
 }
 
 /* ── Channel users (under channel) ────────────────── */

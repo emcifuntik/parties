@@ -31,19 +31,16 @@ if(NOT msquic_LIBRARY_RELEASE AND NOT msquic_LIBRARY_DEBUG)
     message(FATAL_ERROR "msquic library not found")
 endif()
 
-# wolfSSL TLS backend + platform dependencies
-find_package(wolfssl CONFIG REQUIRED)
-
+# Platform-specific link dependencies
+# quictls is statically linked into libmsquic.a on all platforms
 if(WIN32)
     set_property(TARGET msquic::msquic APPEND PROPERTY
         INTERFACE_LINK_LIBRARIES
-        wolfssl::wolfssl
         ntdll wbemuuid winmm secur32 onecore crypt32)
 else()
     find_package(Threads REQUIRED)
     set_property(TARGET msquic::msquic APPEND PROPERTY
         INTERFACE_LINK_LIBRARIES
-        wolfssl::wolfssl
         Threads::Threads
         ${CMAKE_DL_LIBS})
 endif()

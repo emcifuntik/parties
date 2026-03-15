@@ -1,8 +1,8 @@
 {
   "name": "msquic",
   "version": "2.5.6",
-  "port-version": 108,
-  "description": "Cross-platform, C implementation of the IETF QUIC protocol (static build, wolfSSL TLS backend)",
+  "port-version": 110,
+  "description": "Cross-platform, C implementation of the IETF QUIC protocol (static build, quictls TLS backend)",
   "homepage": "https://github.com/microsoft/msquic",
   "license": "MIT",
   "supports": "(windows & !uwp) | linux | osx",
@@ -14,10 +14,6 @@
     {
       "name": "vcpkg-cmake-config",
       "host": true
-    },
-    {
-      "name": "wolfssl",
-      "features": ["quic"]
     }
   ]
 }

@@ -7,7 +7,7 @@
 
 namespace parties {
 
-// Initialize/cleanup wolfCrypt globally (call once)
+// Initialize/cleanup crypto globally (call once)
 bool crypto_init();
 void crypto_cleanup();
 

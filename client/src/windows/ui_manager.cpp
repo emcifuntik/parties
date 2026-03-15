@@ -115,10 +115,10 @@ bool UiManager::init(HWND hwnd, int renderer_id) {
     dpi_scale_ = static_cast<float>(dpi) / 96.0f;
     context_->SetDensityIndependentPixelRatio(dpi_scale_);
 
-    // Load fonts
-    if (!Rml::LoadFontFace("ui/fonts/NotoSans-Regular.ttf"))
-        Rml::LoadFontFace("C:/Windows/Fonts/segoeui.ttf");
-    Rml::LoadFontFace("ui/fonts/NotoSans-Bold.ttf", true);
+    // Load fonts (Inter — Regular, Medium, Bold)
+    Rml::LoadFontFace("ui/fonts/Inter-Regular.ttf");
+    Rml::LoadFontFace("ui/fonts/Inter-Medium.ttf");
+    Rml::LoadFontFace("ui/fonts/Inter-Bold.ttf", true);
 
     // Text input method editor for IME support
     text_input_editor_ = std::make_unique<TextInputMethodEditor_Win32>();

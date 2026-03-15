@@ -1,5 +1,5 @@
 find_package(Opus CONFIG REQUIRED)
-find_package(wolfssl CONFIG REQUIRED)
+find_package(OpenSSL REQUIRED)
 
 find_package(msquic CONFIG REQUIRED)
 
@@ -19,26 +19,6 @@ target_include_directories(parties_common
         ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-# wolfssl overlay port passes these via CFLAGS but they're not in options.h.
-# WOLFSSL_CUSTOM_OID affects the Cert struct layout — without it our app sees
-# a smaller struct than the library, causing heap overflow in wc_InitCert and
-# wrong field offsets.
-target_compile_definitions(parties_common
-    PUBLIC
-        WOLFSSL_CUSTOM_OID
-        HAVE_OID_ENCODING
-        WOLFSSL_ASN_TEMPLATE
-        WOLFSSL_PEM_TO_DER
-        WOLFSSL_EARLY_DATA
-        WOLFSSL_KEY_GEN
-        WOLFSSL_CERT_GEN
-        HAVE_ED25519
-        HAVE_ED25519_SIGN
-        HAVE_ED25519_VERIFY
-        HAVE_ED25519_KEY_IMPORT
-        HAVE_ED25519_KEY_EXPORT
-)
-
 if(ENABLE_TRACY)
     find_package(Tracy CONFIG REQUIRED)
 endif()
@@ -46,7 +26,7 @@ endif()
 target_link_libraries(parties_common
     PUBLIC
         Opus::opus
-        wolfssl::wolfssl
+        OpenSSL::Crypto
         msquic::msquic
         $<$<BOOL:${ENABLE_TRACY}>:Tracy::TracyClient>
 )

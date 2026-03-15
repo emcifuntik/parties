@@ -3,16 +3,13 @@
   "version-string": "0.1.0",
   "dependencies": [
     "msquic",
+    "openssl",
     "opus",
     "sqlite3",
     "toml11",
     {
       "name": "tracy",
       "features": ["on-demand"]
-    },
-    {
-      "name": "wolfssl",
-      "features": ["quic", "ed25519"]
     }
   ],
   "features": {

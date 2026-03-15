@@ -122,6 +122,36 @@
                     <span class="role-badge role-mod" data-if="user.role == 2">MOD</span>
                 </div>
             </div>
+
+            <div class="sidebar-separator"></div>
+
+            <div class="channel-category-row">
+                <span class="channel-category">Chats</span>
+                <span class="channel-add-btn" data-if="can_manage_channels"
+                      data-event-click="show_create_chat_form">+</span>
+            </div>
+            <div class="chat-item active">
+                <svg class="chat-icon" src="icon-chat.svg" width="16" height="16" />
+                <span class="chat-item-name">Alice</span>
+                <span class="chat-item-time">2m</span>
+            </div>
+            <div class="chat-item">
+                <svg class="chat-icon" src="icon-chat.svg" width="16" height="16" />
+                <span class="chat-item-name">Bob</span>
+                <span class="chat-item-time">15m</span>
+            </div>
+            <div class="chat-item">
+                <svg class="chat-icon" src="icon-chat.svg" width="16" height="16" />
+                <span class="chat-item-name">Charlie</span>
+                <span class="chat-item-time">1h</span>
+            </div>
+            <div class="chat-item">
+                <svg class="chat-icon" src="icon-chat.svg" width="16" height="16" />
+                <span class="chat-item-name">Team Chat</span>
+                <span class="chat-item-time">3h</span>
+            </div>
+
+            <div class="chat-spaceholder"></div>
         </div>
 
         <div class="sidebar-bottom">

@@ -1,68 +1,47 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
     <defs>
-        <!-- Background Dark Gradient for the App Icon -->
-        <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#191924"/>
-            <stop offset="100%" stop-color="#0C0C12"/>
+        <!-- Background Premium Gradient -->
+        <radialGradient id="bgGrad" cx="50%" cy="50%" r="75%">
+            <stop offset="0%" stop-color="#161824" />
+            <stop offset="100%" stop-color="#0B0C10" />
+        </radialGradient>
+
+        <!-- Brand Icon Vibrant Gradient -->
+        <linearGradient id="brandGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#FF2A5F" />
+            <stop offset="50%" stop-color="#A133FF" />
+            <stop offset="100%" stop-color="#00F0FF" />
         </linearGradient>
 
-        <!-- Vibrant Party Neon Gradient for the Chat Bubble -->
-        <linearGradient id="partyGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stop-color="#7000FF"/>
-            <stop offset="50%" stop-color="#FF007A"/>
-            <stop offset="100%" stop-color="#FF9000"/>
-        </linearGradient>
-
-        <!-- Glow Filter for the Neumorphic/Neon Lighting Effect -->
-        <filter id="neonGlow" x="-20%" y="-20%" width="140%" height="140%">
-            <feGaussianBlur stdDeviation="22" result="blur" />
+        <!-- Ambient Glow Filter -->
+        <filter id="glowBlur" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="48" result="blur" />
         </filter>
-
-        <!-- Mask to Cut Out the 'p' and Sparkles from the Chat Bubble -->
-        <mask id="cutoutMask">
-            <!-- 1. Keep the entire bubble area visible by default -->
-            <rect width="512" height="512" fill="white"/>
-
-            <!-- 2. Cut out the stem of the lowercase 'p' (Black = Hidden) -->
-            <rect x="160" y="135" width="60" height="225" rx="30" fill="black" />
-
-            <!-- 3. Cut out the main loop of the 'p' (Black = Hidden) -->
-            <circle cx="270" cy="210" r="75" fill="black" />
-
-            <!-- 4. Cut out smaller secondary floating party sparkles (Confetti effect) -->
-            <!-- Bottom Right Sparkle -->
-            <path d="M 370 300 Q 370 330 400 330 Q 370 330 370 360 Q 370 330 340 330 Q 370 330 370 300 Z" fill="black" />
-            <!-- Top Left Sparkle -->
-            <path d="M 130 135 Q 130 150 145 150 Q 130 150 130 165 Q 130 150 115 150 Q 130 150 130 135 Z" fill="black" />
-
-            <!-- 5. Restore the gradient INSIDE the 'p' loop to create a negative space Sparkle -->
-            <!-- This white shape sits inside the black circle, letting the vivid gradient shine through -->
-            <path d="M 270 160 Q 270 210 320 210 Q 270 210 270 260 Q 270 210 220 210 Q 270 210 270 160 Z" fill="white" />
-        </mask>
-
-        <!-- Unified Seamless Chat Bubble Path (with precise Arc geometry) -->
-        <path id="chatBubblePath" d="
-            M 180 100
-            L 332 100
-            A 100 100 0 0 1 432 200
-            L 432 310
-            A 100 100 0 0 1 332 410
-            L 200 410
-            L 100 475
-            A 15 15 0 0 1 85 455
-            L 110 381.42
-            A 100 100 0 0 1 80 310
-            L 80 200
-            A 100 100 0 0 1 180 100 Z" />
     </defs>
 
-    <!-- App Icon Base Squircle -->
-    <rect width="512" height="512" rx="115" fill="url(#bgGrad)" />
+    <!-- App Store Required: Perfect Solid Square Background (No transparency, no rounded corners) -->
+    <rect width="512" height="512" fill="url(#bgGrad)" />
 
-    <!-- Ambient Neon Glow Behind Bubble -->
-    <use href="#chatBubblePath" fill="url(#partyGrad)" filter="url(#neonGlow)" opacity="0.45" />
+    <!-- Ambient Icon Glow -->
+    <circle cx="256" cy="256" r="150" fill="#A133FF" opacity="0.35" filter="url(#glowBlur)" />
 
-    <!-- Main Chat Bubble with the Complex Cutout Mask -->
-    <use href="#chatBubblePath" fill="url(#partyGrad)" mask="url(#cutoutMask)" />
-
+    <!-- 
+      The P-Tongue / Smile Shape
+      - Top straight line goes completely across the canvas.
+      - The U-shape (tongue/bowl) connects perfectly underneath it.
+      - Designed in one unified path so the neon gradient flows flawlessly.
+      - Perfectly centered vertically and horizontally on the 512x512 canvas.
+    -->
+    <path d="M -20,156 
+             L 532,156 
+             M 136,156 
+             L 136,236 
+             A 120,120 0 0 0 376,236 
+             L 376,156" 
+          fill="none" 
+          stroke="url(#brandGrad)" 
+          stroke-width="56" 
+          stroke-linecap="round" 
+          stroke-linejoin="round" />
+        
 </svg>

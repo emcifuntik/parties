@@ -66,6 +66,10 @@ static constexpr unsigned char embed_icon_room[] = {
     #embed "../ui/icon-room.svg"
 };
 
+static constexpr unsigned char embed_icon_chat[] = {
+    #embed "../ui/icon-chat.svg"
+};
+
 static constexpr unsigned char embed_font_regular[] = {
     #embed "../ui/fonts/Inter-Regular.ttf"
 };
@@ -106,6 +110,7 @@ EmbeddedFileInterface::EmbeddedFileInterface() {
     entries_["ui/icon-volume.svg"] = { embed_icon_volume, sizeof(embed_icon_volume) };
     entries_["ui/icon-disconnect.svg"] = { embed_icon_disconnect, sizeof(embed_icon_disconnect) };
     entries_["ui/icon-room.svg"] = { embed_icon_room, sizeof(embed_icon_room) };
+    entries_["ui/icon-chat.svg"] = { embed_icon_chat, sizeof(embed_icon_chat) };
     entries_["ui/fonts/Inter-Regular.ttf"] = { embed_font_regular, sizeof(embed_font_regular) };
     entries_["ui/fonts/Inter-Medium.ttf"] = { embed_font_medium, sizeof(embed_font_medium) };
     entries_["ui/fonts/Inter-Bold.ttf"] = { embed_font_bold, sizeof(embed_font_bold) };

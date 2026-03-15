@@ -94,8 +94,9 @@ bool AmfEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
         encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_USAGE,
             static_cast<amf_int64>(AMF_VIDEO_ENCODER_AV1_USAGE_LOW_LATENCY));
         encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD,
-            static_cast<amf_int64>(AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_CBR));
+            static_cast<amf_int64>(AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR));
         encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_TARGET_BITRATE, static_cast<amf_int64>(bitrate));
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_PEAK_BITRATE, static_cast<amf_int64>(bitrate * 5));
         encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_FRAMERATE, AMFConstructRate(fps, 1));
         encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_GOP_SIZE,
             static_cast<amf_int64>(fps * (VIDEO_KEYFRAME_INTERVAL_MS / 1000)));
@@ -105,8 +106,9 @@ bool AmfEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
         encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_USAGE,
             static_cast<amf_int64>(AMF_VIDEO_ENCODER_HEVC_USAGE_LOW_LATENCY));
         encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD,
-            static_cast<amf_int64>(AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_CBR));
+            static_cast<amf_int64>(AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR));
         encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_TARGET_BITRATE, static_cast<amf_int64>(bitrate));
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_PEAK_BITRATE, static_cast<amf_int64>(bitrate * 5));
         encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_FRAMERATE, AMFConstructRate(fps, 1));
         encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_GOP_SIZE,
             static_cast<amf_int64>(fps * (VIDEO_KEYFRAME_INTERVAL_MS / 1000)));
@@ -116,8 +118,9 @@ bool AmfEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
         encoder_->SetProperty(AMF_VIDEO_ENCODER_USAGE,
             static_cast<amf_int64>(AMF_VIDEO_ENCODER_USAGE_LOW_LATENCY));
         encoder_->SetProperty(AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD,
-            static_cast<amf_int64>(AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_CBR));
+            static_cast<amf_int64>(AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR));
         encoder_->SetProperty(AMF_VIDEO_ENCODER_TARGET_BITRATE, static_cast<amf_int64>(bitrate));
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_PEAK_BITRATE, static_cast<amf_int64>(bitrate * 5));
         encoder_->SetProperty(AMF_VIDEO_ENCODER_FRAMERATE, AMFConstructRate(fps, 1));
         encoder_->SetProperty(AMF_VIDEO_ENCODER_IDR_PERIOD,
             static_cast<amf_int64>(fps * (VIDEO_KEYFRAME_INTERVAL_MS / 1000)));

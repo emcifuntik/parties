@@ -81,7 +81,7 @@ if(VCPKG_TARGET_IS_WINDOWS)
     # Disable /analyze for clang-cl (MSVC is TRUE for clang-cl but /analyze is MSVC-only)
     vcpkg_replace_string("${QUIC_SOURCE_PATH}/src/platform/CMakeLists.txt"
     [[if (MSVC AND (QUIC_TLS_LIB STREQUAL "quictls" OR QUIC_TLS_LIB STREQUAL "schannel") AND NOT QUIC_ENABLE_SANITIZERS)]]
-    [[if (MSVC AND NOT (CMAKE_C_COMPILER_ID STREQUAL "Clang") AND (QUIC_TLS_LIB STREQUAL "wolfssl" OR QUIC_TLS_LIB STREQUAL "quictls" OR QUIC_TLS_LIB STREQUAL "schannel") AND NOT QUIC_ENABLE_SANITIZERS)]]
+    [[if (MSVC AND NOT (CMAKE_C_COMPILER_ID STREQUAL "Clang") AND (QUIC_TLS_LIB STREQUAL "quictls" OR QUIC_TLS_LIB STREQUAL "schannel") AND NOT QUIC_ENABLE_SANITIZERS)]]
     )
     vcpkg_replace_string("${QUIC_SOURCE_PATH}/src/core/CMakeLists.txt"
     [[if (MSVC AND NOT QUIC_ENABLE_SANITIZERS)]]
@@ -90,181 +90,50 @@ if(VCPKG_TARGET_IS_WINDOWS)
 
 endif() # VCPKG_TARGET_IS_WINDOWS
 
-# ── Cross-platform: wolfSSL TLS backend ───────────────────────
-#
-# Instead of building QuicTLS (OpenSSL fork), we use wolfSSL with OPENSSLALL
-# as MsQuic's TLS provider. wolfSSL provides OpenSSL-compatible QUIC API
-# (SSL_CTX_set_quic_method, SSL_provide_quic_data, etc.) via its compat layer.
-#
-# Strategy:
-#   - Use tls_quictls.c compiled against wolfSSL's OpenSSL-compat headers
-#   - crypt_wolfssl.c for all crypto (native wolfcrypt API, both platforms)
-#   - Windows: cert_capi.c + selfsign_capi.c (Windows CNG/CAPI)
-#   - Linux: certificates_posix.c
-#   - wolfssl_compat.h for TLS-only stubs (OpenSSL 3.x APIs not in wolfSSL)
-
-# Install our custom files into MsQuic's source
-file(INSTALL "${CMAKE_CURRENT_LIST_DIR}/wolfssl_compat.h"
-     DESTINATION "${QUIC_SOURCE_PATH}/src/platform")
-file(INSTALL "${CMAKE_CURRENT_LIST_DIR}/crypt_wolfssl.c"
-     DESTINATION "${QUIC_SOURCE_PATH}/src/platform")
-
-# -- Patch top-level CMakeLists.txt: add wolfssl TLS backend option --
-
-# Add wolfssl option alongside quictls (after the quictls FetchContent block)
-vcpkg_replace_string("${QUIC_SOURCE_PATH}/CMakeLists.txt"
-[[if(QUIC_TLS_LIB STREQUAL "quictls")
-    add_library(OpenSSL INTERFACE)
-
-    include(FetchContent)
-
-    FetchContent_Declare(
-        OpenSSLQuic
-        SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/submodules
-        CMAKE_ARGS "-DQUIC_USE_SYSTEM_LIBCRYPTO=${QUIC_USE_SYSTEM_LIBCRYPTO}"
-    )
-    FetchContent_MakeAvailable(OpenSSLQuic)
-
-    target_link_libraries(OpenSSL
-        INTERFACE
-        OpenSSLQuic::OpenSSLQuic
-    )
-endif()]]
-[[if(QUIC_TLS_LIB STREQUAL "wolfssl")
-    add_library(OpenSSL INTERFACE)
-    find_package(wolfssl CONFIG REQUIRED)
-    get_target_property(_wolfssl_inc wolfssl::wolfssl INTERFACE_INCLUDE_DIRECTORIES)
-    # wolfSSL OpenSSL-compat headers live under wolfssl/openssl/ —
-    # add wolfssl/ subdir so #include "openssl/ssl.h" resolves
-    target_include_directories(OpenSSL INTERFACE ${_wolfssl_inc}/wolfssl)
-    target_link_libraries(OpenSSL INTERFACE wolfssl::wolfssl)
-elseif(QUIC_TLS_LIB STREQUAL "quictls")
-    add_library(OpenSSL INTERFACE)
-
-    include(FetchContent)
-
-    FetchContent_Declare(
-        OpenSSLQuic
-        SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/submodules
-        CMAKE_ARGS "-DQUIC_USE_SYSTEM_LIBCRYPTO=${QUIC_USE_SYSTEM_LIBCRYPTO}"
-    )
-    FetchContent_MakeAvailable(OpenSSLQuic)
-
-    target_link_libraries(OpenSSL
-        INTERFACE
-        OpenSSLQuic::OpenSSLQuic
-    )
-endif()]]
+# ── Cross-platform: quictls (OpenSSL fork with QUIC API) ─────────
+# MsQuic's FetchContent expects quictls source in submodules/openssl/
+vcpkg_from_github(
+    OUT_SOURCE_PATH QUICTLS_SOURCE
+    REPO quictls/openssl
+    REF openssl-3.1.7+quic
+    SHA512 152824320d988c87bc6848b558a2fd472ce8d564d36373ad3e9f7a1f862f74bd48e052d5934ea9d9732158aa534fe21825fdb1572569622373a457a8c0c78c36
+    HEAD_REF openssl-3.1.7+quic
 )
 
-# Add wolfssl test config defines (skip PFX/0-RTT tests like schannel)
-vcpkg_replace_string("${QUIC_SOURCE_PATH}/CMakeLists.txt"
-[[if(QUIC_TLS_LIB STREQUAL "quictls")
-    message(STATUS "Enabling quictls/openssl configuration tests")]]
-[[if(QUIC_TLS_LIB STREQUAL "wolfssl")
-    message(STATUS "Enabling wolfSSL configuration tests")
-    list(APPEND QUIC_COMMON_DEFINES QUIC_TEST_OPENSSL_FLAGS=1)
-elseif(QUIC_TLS_LIB STREQUAL "quictls")
-    message(STATUS "Enabling quictls/openssl configuration tests")]]
-)
+file(REMOVE_RECURSE "${QUIC_SOURCE_PATH}/submodules/quictls")
+file(RENAME "${QUICTLS_SOURCE}" "${QUIC_SOURCE_PATH}/submodules/quictls")
 
-# -- Patch platform CMakeLists.txt: add wolfssl source/link rules --
-# Platform-conditional: Windows uses bcrypt/capi, Linux uses openssl-based files
-
-vcpkg_replace_string("${QUIC_SOURCE_PATH}/src/platform/CMakeLists.txt"
-[[if (QUIC_TLS_LIB STREQUAL "schannel")
-    message(STATUS "Configuring for Schannel")
-    set(SOURCES ${SOURCES} cert_capi.c crypt_bcrypt.c selfsign_capi.c tls_schannel.c)
-elseif(QUIC_TLS_LIB STREQUAL "quictls")]]
-[[if (QUIC_TLS_LIB STREQUAL "wolfssl")
-    message(STATUS "Configuring for wolfSSL")
-    if(WIN32)
-        set(SOURCES ${SOURCES} tls_quictls.c crypt_wolfssl.c certificates_capi.c cert_capi.c selfsign_capi.c)
-    else()
-        set(SOURCES ${SOURCES} tls_quictls.c crypt_wolfssl.c certificates_posix.c)
-    endif()
-    add_compile_definitions(WOLFSSL_NO_OPTIONS_H WOLFSSL_EARLY_DATA)
-elseif(QUIC_TLS_LIB STREQUAL "schannel")
-    message(STATUS "Configuring for Schannel")
-    set(SOURCES ${SOURCES} cert_capi.c crypt_bcrypt.c selfsign_capi.c tls_schannel.c)
-elseif(QUIC_TLS_LIB STREQUAL "quictls")]]
-)
-
-# Add wolfssl link rule (platform-conditional)
-vcpkg_replace_string("${QUIC_SOURCE_PATH}/src/platform/CMakeLists.txt"
-[[if(QUIC_TLS_LIB STREQUAL "quictls")
-    target_link_libraries(msquic_platform PUBLIC OpenSSL)]]
-[[if(QUIC_TLS_LIB STREQUAL "wolfssl")
-    target_link_libraries(msquic_platform PUBLIC OpenSSL)
-    if(WIN32)
-        target_link_libraries(msquic_platform PUBLIC secur32 onecore)
-    endif()
-elseif(QUIC_TLS_LIB STREQUAL "quictls")
-    target_link_libraries(msquic_platform PUBLIC OpenSSL)]]
-)
-
-# -- Patch tls_quictls.c: add wolfSSL compatibility --
-
-# Include wolfssl_compat.h at the top (after platform_internal.h include)
-vcpkg_replace_string("${QUIC_SOURCE_PATH}/src/platform/tls_quictls.c"
-[=[#include "platform_internal.h"
-
-#include "openssl/opensslv.h"
-
-#ifdef _WIN32
-#pragma warning(push)
-#pragma warning(disable:4100) // Unreferenced parameter errcode in inline function
-#endif
-#include "openssl/bio.h"
-#include "openssl/core_names.h"
-#include "openssl/err.h"
-#include "openssl/kdf.h"
-#include "openssl/pem.h"
-#include "openssl/pkcs12.h"
-#include "openssl/pkcs7.h"
-#include "openssl/rsa.h"
-#include "openssl/ssl.h"
-#include "openssl/x509.h"
-#ifdef _WIN32
-#pragma warning(pop)
-#endif]=]
-[=[#include "platform_internal.h"
-
-#ifdef _WIN32
-#pragma warning(push)
-#pragma warning(disable:4100) // Unreferenced parameter errcode in inline function
-#endif
-#include "openssl/bio.h"
-#include "openssl/err.h"
-#include "openssl/pem.h"
-#include "openssl/pkcs12.h"
-#include "openssl/rsa.h"
-#include "openssl/ssl.h"
-#include "openssl/x509.h"
-#ifdef _WIN32
-#pragma warning(pop)
-#endif
-
-/* wolfSSL compat shim — stubs for OpenSSL 3.x APIs not in wolfSSL */
-#include "wolfssl_compat.h"]=]
-)
-
-# crypt_wolfssl.c defines CXPLAT_AES_256_CBC_ALG_HANDLE on both platforms,
-# so tls_quictls.c's extern declaration is correct as-is.
-
-# -- Patch static library merge: exclude system libraries --
-# MsQuic's flatten_link_dependencies walks transitive deps and tries to merge
-# every .a it finds into the monolithic libmsquic.a via `ar -M`. wolfSSL links
-# to system libs like -lm which get mangled into "m.a" (doesn't exist).
+# MsQuic's flatten_link_dependencies tries to merge system libs like -lm
+# into the monolithic archive. Exclude them.
 vcpkg_replace_string("${QUIC_SOURCE_PATH}/src/bin/CMakeLists.txt"
     [[set(EXCLUDE_LIST "inc")]]
     [[set(EXCLUDE_LIST "inc" "m" "pthread" "rt" "atomic")]]
 )
 
+# quictls build requires Perl and NASM (called via cmd.exe from ninja custom commands).
+# vcpkg isolates the build environment and strips PATH, so we must explicitly inject them.
+if(VCPKG_TARGET_IS_WINDOWS)
+    find_program(PERL_EXECUTABLE perl
+        PATHS "C:/Strawberry/perl/bin" ENV PATH
+        NO_DEFAULT_PATH
+    )
+    if(NOT PERL_EXECUTABLE)
+        find_program(PERL_EXECUTABLE perl)
+    endif()
+    if(PERL_EXECUTABLE)
+        cmake_path(GET PERL_EXECUTABLE PARENT_PATH _perl_dir)
+    else()
+        set(_perl_dir "C:/Strawberry/perl/bin")
+    endif()
+    vcpkg_host_path_list(PREPEND ENV{PATH} "${_perl_dir}")
+    # NASM for OpenSSL assembly optimizations
+    vcpkg_host_path_list(PREPEND ENV{PATH} "${CMAKE_CURRENT_LIST_DIR}/../../../vendor/nasm")
+endif()
+
 vcpkg_cmake_configure(
     SOURCE_PATH "${QUIC_SOURCE_PATH}"
     OPTIONS
-        -DQUIC_TLS_LIB=wolfssl
+        -DQUIC_TLS_LIB=quictls
         -DQUIC_BUILD_SHARED=OFF
         -DQUIC_SOURCE_LINK=OFF
         -DQUIC_BUILD_PERF=OFF

@@ -108,7 +108,7 @@ bool NvdecDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height) {
     CUVIDPARSERPARAMS parser_params{};
     parser_params.CodecType = cuvid_codec;
     parser_params.ulMaxNumDecodeSurfaces = 10;
-    parser_params.ulMaxDisplayDelay = 1;
+    parser_params.ulMaxDisplayDelay = 0;  // No B-frames in our stream, display immediately
     parser_params.pUserData = this;
     parser_params.pfnSequenceCallback = handle_sequence;
     parser_params.pfnDecodePicture = handle_decode;
@@ -203,15 +203,40 @@ int NvdecDecoder::on_sequence(CUVIDEOFORMAT* fmt) {
         return 1;
     }
 
+    // Compute the actual output dimensions (may differ from coded_width/height
+    // if the stream specifies a display/crop area).
+    uint32_t target_w = fmt->coded_width;
+    uint32_t target_h = fmt->coded_height;
+    if (fmt->display_area.right > fmt->display_area.left &&
+        fmt->display_area.bottom > fmt->display_area.top) {
+        target_w = fmt->display_area.right - fmt->display_area.left;
+        target_h = fmt->display_area.bottom - fmt->display_area.top;
+    }
+
+    // If the format hasn't changed, reuse the existing decoder.
+    // Recreating on every keyframe's sequence header is expensive (GPU alloc)
+    // and drops any frame buffered in the parser's display pipeline.
+    if (decoder_ &&
+        target_w == width_ && target_h == height_ &&
+        fmt->bit_depth_luma_minus8 + 8 == bit_depth_ &&
+        fmt->min_num_decode_surfaces + 4 <= num_decode_surfaces_) {
+        return num_decode_surfaces_;
+    }
+
+    std::fprintf(stderr, "[NVDEC] on_sequence: recreating decoder (%ux%u bd=%u surfaces=%u -> %ux%u bd=%u surfaces=%u)\n",
+                 width_, height_, bit_depth_, num_decode_surfaces_,
+                 target_w, target_h, fmt->bit_depth_luma_minus8 + 8,
+                 fmt->min_num_decode_surfaces + 4);
+
     if (decoder_) {
         cuvid_.cuvidDestroyDecoder(decoder_);
         decoder_ = nullptr;
     }
 
-    width_ = fmt->coded_width;
-    height_ = fmt->coded_height;
     bit_depth_ = fmt->bit_depth_luma_minus8 + 8;
     num_decode_surfaces_ = fmt->min_num_decode_surfaces + 4;
+    width_ = target_w;
+    height_ = target_h;
 
     bool is_10bit = fmt->bit_depth_luma_minus8 > 0;
     auto output_fmt = is_10bit ? cudaVideoSurfaceFormat_P016
@@ -227,8 +252,8 @@ int NvdecDecoder::on_sequence(CUVIDEOFORMAT* fmt) {
     create_info.bitDepthMinus8 = fmt->bit_depth_luma_minus8;
     create_info.OutputFormat = output_fmt;
     create_info.DeinterlaceMode = cudaVideoDeinterlaceMode_Weave;
-    create_info.ulTargetWidth = fmt->coded_width;
-    create_info.ulTargetHeight = fmt->coded_height;
+    create_info.ulTargetWidth = target_w;
+    create_info.ulTargetHeight = target_h;
     create_info.ulNumOutputSurfaces = 2;
 
     if (fmt->display_area.right > fmt->display_area.left &&
@@ -237,10 +262,6 @@ int NvdecDecoder::on_sequence(CUVIDEOFORMAT* fmt) {
         create_info.display_area.top = static_cast<short>(fmt->display_area.top);
         create_info.display_area.right = static_cast<short>(fmt->display_area.right);
         create_info.display_area.bottom = static_cast<short>(fmt->display_area.bottom);
-        create_info.ulTargetWidth = fmt->display_area.right - fmt->display_area.left;
-        create_info.ulTargetHeight = fmt->display_area.bottom - fmt->display_area.top;
-        width_ = create_info.ulTargetWidth;
-        height_ = create_info.ulTargetHeight;
     }
 
     CUresult res = cuvid_.cuvidCreateDecoder(&decoder_, &create_info);

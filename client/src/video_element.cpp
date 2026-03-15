@@ -31,6 +31,7 @@ void VideoElement::UpdateYUVFrame(
     frame_height_ = height;
     has_frame_ = true;
     yuv_mode_ = true;
+    nv12_mode_ = false;
 
     // Store plane data — uploaded to GPU in OnRender (must happen on render thread)
     uint32_t half_w = width / 2;

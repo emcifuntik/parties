@@ -51,11 +51,4 @@ See [docs/protocol.md](docs/protocol.md) for the full protocol specification.
 
 This project is licensed under the [MIT License](LICENSE).
 
-### wolfSSL Commercial Notice
-
-Parties uses [wolfSSL](https://www.wolfssl.com/) as its TLS backend, which is dual-licensed under GPLv2 and a commercial license. For **non-commercial and open-source usage**, the GPLv2 license applies and is compatible with this project's MIT license.
-
-For **commercial use**, you must either:
-
-1. **Purchase a wolfSSL commercial license** (~$8,000) from [wolfssl.com](https://www.wolfssl.com/license/) to use wolfSSL in proprietary/closed-source products, or
-2. **Replace wolfSSL with OpenSSL** (Apache 2.0 licensed), which has no such restriction for commercial use
+All dependencies (OpenSSL, MsQuic, Opus, RNNoise, etc.) use MIT/Apache/BSD-compatible licenses.

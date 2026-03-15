@@ -236,13 +236,18 @@ bool MftEncoder::configure_encoder(uint32_t width, uint32_t height,
 
         VariantInit(&var);
         var.vt = VT_UI4;
-        var.ulVal = eAVEncCommonRateControlMode_CBR;
+        var.ulVal = eAVEncCommonRateControlMode_PeakConstrainedVBR;
         codec_api->SetValue(&CODECAPI_AVEncCommonRateControlMode, &var);
 
         VariantInit(&var);
         var.vt = VT_UI4;
         var.ulVal = bitrate;
         codec_api->SetValue(&CODECAPI_AVEncCommonMeanBitRate, &var);
+
+        VariantInit(&var);
+        var.vt = VT_UI4;
+        var.ulVal = bitrate * 5;
+        codec_api->SetValue(&CODECAPI_AVEncCommonMaxBitRate, &var);
 
         VariantInit(&var);
         var.vt = VT_UI4;
