@@ -9,13 +9,13 @@
     <div class="titlebar" id="titlebar-drag">
         <!-- Windows: logo + name on left -->
         <div class="titlebar-left">
-            <svg class="titlebar-logo" src="logo.svg" width="20" height="20" />
-            <span class="titlebar-title">Parties</span>
+            <svg class="titlebar-logo" src="logo.svg" width="18" height="18" />
+            <span class="titlebar-title">parties</span>
         </div>
         <!-- macOS: logo + name centred (traffic-light buttons live on the left natively) -->
         <div class="titlebar-center">
-            <svg class="titlebar-logo" src="logo.svg" width="20" height="20" />
-            <span class="titlebar-title">Parties</span>
+            <svg class="titlebar-logo" src="logo.svg" width="18" height="18" />
+            <span class="titlebar-title">parties</span>
         </div>
         <span class="titlebar-fps" id="titlebar-fps"></span>
         <div class="titlebar-buttons">
@@ -37,33 +37,62 @@
     <!-- App content area (below titlebar) -->
     <div class="app-content">
 
-    <!-- Server icon strip (far left, always visible) -->
-    <div class="server-strip" data-model="serverlist">
-        <div class="server-strip-list">
-            <div data-for="srv : servers">
-                <div class="server-icon"
-                     data-class-active="srv.id == connected_server_id"
-                     data-event-mousedown="server_mousedown(srv.id)">
-                    <span class="server-initials">{{ srv.initials }}</span>
+    <!-- ============================================================
+         HOME SCREEN — full-screen party tiles (when not connected)
+         ============================================================ -->
+    <div class="home-screen" data-model="lobby" data-if="is_connected == false">
+        <div class="home-inner" data-model="serverlist">
+            <!-- Party grid content -->
+            <div class="home-content">
+                <div class="home-greeting">
+                    <span class="home-title">Your Parties</span>
+                    <span class="home-subtitle">{{ party_count_text }}</span>
                 </div>
-            </div>
-        </div>
-        <div class="server-strip-bottom">
-            <div class="server-icon server-icon-add" data-event-click="add_server">
-                <span class="server-initials">+</span>
+
+                <div class="home-grid">
+                    <div data-for="srv : servers">
+                        <div class="party-card"
+                             data-event-click="server_mousedown(srv.id)">
+                            <div class="party-card-icon-wrap">
+                                <gradient_circle class="party-card-gradient" data-attr-seed="srv.name" />
+                                <span class="party-card-initials">{{ srv.initials }}</span>
+                            </div>
+                            <span class="party-card-name">{{ srv.name }}</span>
+                        </div>
+                    </div>
+                    <!-- Add party card -->
+                    <div class="party-card party-card-add" data-event-click="add_server">
+                        <div class="party-card-icon party-card-icon-add">
+                            <span class="party-card-plus">+</span>
+                        </div>
+                        <span class="party-card-name">Create or Join</span>
+                        <span class="party-card-add-label">Start a new party or join with an invite</span>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
 
+    <!-- ============================================================
+         PARTY VIEW — sidebar + main content (when connected)
+         ============================================================ -->
+
     <!-- Sidebar (only when connected) -->
     <div class="sidebar" data-model="lobby" data-if="is_connected">
         <div class="server-header">
+            <div class="server-header-icon-wrap">
+                <gradient_circle class="server-header-gradient" data-attr-seed="server_name" />
+                <span class="server-header-initials">{{ server_initials }}</span>
+            </div>
             <span class="server-title">{{ server_name }}</span>
+            <div class="server-disconnect-btn" data-event-click="disconnect_server">
+                <svg src="icon-disconnect.svg" width="16" height="16" />
+            </div>
         </div>
 
         <div class="channel-section">
             <div class="channel-category-row">
-                <span class="channel-category">Voice Channels</span>
+                <span class="channel-category">Rooms</span>
                 <span class="channel-add-btn" data-if="can_manage_channels"
                       data-event-click="show_create_channel_form">+</span>
             </div>
@@ -73,15 +102,19 @@
                      data-event-mousedown="channel_mousedown(ch.id, ch.name)">
                     <span class="channel-hash">#</span>
                     <span class="channel-name">{{ ch.name }}</span>
-                    <span class="channel-count">({{ ch.user_count }})</span>
+                    <span class="channel-count" data-if="ch.user_count > 0">{{ ch.user_count }}</span>
                 </div>
                 <div data-for="user : ch.users" class="channel-user-item"
                      data-class-speaking="user.speaking"
+                     data-class-streaming="user.streaming"
                      data-class-muted="user.muted"
                      data-class-deafened="user.deafened"
                      data-event-mousedown="user_mousedown(user.id, user.name, user.role)">
-                    <div class="user-dot"></div>
+                    <div class="user-dot-wrap">
+                        <gradient_circle class="user-dot" data-attr-seed="user.name" />
+                    </div>
                     <span class="channel-username">{{ user.name }}</span>
+                    <svg class="user-state-icon icon-streaming" src="icon-sharing.svg" width="12" height="12" />
                     <svg class="user-state-icon icon-muted" src="icon-mute.svg" width="12" height="12" />
                     <svg class="user-state-icon icon-deafened" src="icon-deafen.svg" width="12" height="12" />
                     <span class="role-badge" data-if="user.role == 0">OWNER</span>
@@ -92,52 +125,48 @@
         </div>
 
         <div class="sidebar-bottom">
-            <!-- Voice controls (visible when in a channel) -->
-            <div class="voice-panel" data-if="current_channel > 0">
-                <div class="voice-btn-row">
+            <div class="user-island">
+                <!-- User info row -->
+                <div class="user-island-top">
+                    <gradient_circle class="user-avatar" data-attr-seed="username" />
+                    <div class="user-island-info">
+                        <span class="user-name">{{ username }}</span>
+                        <span class="user-fingerprint" data-model="serverlist" data-if="fingerprint != ''" data-event-click="copy_fingerprint">{{ fingerprint }}</span>
+                    </div>
+                    <div class="settings-btn" data-event-click="toggle_settings">
+                        <svg src="icon-settings.svg" width="16" height="16" />
+                    </div>
+                </div>
+                <!-- Voice controls (visible when in a channel) -->
+                <div class="voice-btn-row" data-if="current_channel > 0">
                     <div class="voice-btn" data-class-active="is_muted"
                          data-event-click="toggle_mute">
-                        <svg class="voice-icon" src="icon-unmute.svg" width="20" height="20" data-if="is_muted == false" />
-                        <svg class="voice-icon" src="icon-mute.svg" width="20" height="20" data-if="is_muted" />
+                        <svg class="voice-icon" src="icon-unmute.svg" width="18" height="18" data-if="is_muted == false" />
+                        <svg class="voice-icon" src="icon-mute.svg" width="18" height="18" data-if="is_muted" />
                     </div>
                     <div class="voice-btn" data-class-active="is_deafened"
                          data-event-click="toggle_deafen">
-                        <svg class="voice-icon" src="icon-undeafen.svg" width="20" height="20" data-if="is_deafened == false" />
-                        <svg class="voice-icon" src="icon-deafen.svg" width="20" height="20" data-if="is_deafened" />
+                        <svg class="voice-icon" src="icon-undeafen.svg" width="18" height="18" data-if="is_deafened == false" />
+                        <svg class="voice-icon" src="icon-deafen.svg" width="18" height="18" data-if="is_deafened" />
                     </div>
                     <div class="voice-btn" data-class-active="is_sharing"
                          data-event-click="toggle_share">
-                        <svg class="voice-icon" src="icon-share.svg" width="20" height="20" data-if="is_sharing == false" />
-                        <svg class="voice-icon" src="icon-sharing.svg" width="20" height="20" data-if="is_sharing" />
+                        <svg class="voice-icon" src="icon-share.svg" width="18" height="18" data-if="is_sharing == false" />
+                        <svg class="voice-icon" src="icon-sharing.svg" width="18" height="18" data-if="is_sharing" />
                     </div>
                     <div class="voice-btn btn-disconnect"
                          data-event-click="leave_channel">
-                        <svg class="voice-icon" src="icon-leave.svg" width="20" height="20" />
+                        <svg class="voice-icon" src="icon-leave.svg" width="18" height="18" />
                     </div>
-                </div>
-            </div>
-
-            <div class="user-panel">
-                <div class="user-panel-left">
-                    <span class="user-name">{{ username }}</span>
-                    <span class="user-fingerprint" data-model="serverlist" data-if="fingerprint != ''" data-event-click="copy_fingerprint">{{ fingerprint }}</span>
-                </div>
-                <div class="settings-btn" data-event-click="toggle_settings">
-                    <svg src="icon-settings.svg" width="20" height="20" />
                 </div>
             </div>
         </div>
     </div>
 
     <!-- Main content -->
-    <div class="main-content" data-model="lobby">
-        <!-- Not connected: empty state -->
-        <div class="no-server-state" data-if="is_connected == false">
-            <span class="text-muted-msg">Select a server to get started</span>
-        </div>
-
+    <div class="main-content" data-model="lobby" data-if="is_connected">
         <!-- Settings overlay -->
-        <div class="settings-overlay" data-if="is_connected && show_settings == true && show_share_picker == false">
+        <div class="settings-overlay" data-if="show_settings == true && show_share_picker == false">
             <div class="settings-header">
                 <h2>Settings</h2>
                 <div class="close-icon" data-event-click="toggle_settings">
@@ -329,7 +358,7 @@
         </div>
 
         <!-- Share target picker -->
-        <div class="share-picker-overlay" data-if="is_connected && show_share_picker">
+        <div class="share-picker-overlay" data-if="show_share_picker">
             <div class="share-picker-header">
                 <h2>Share Screen</h2>
                 <div class="close-icon" data-event-click="cancel_share">
@@ -391,7 +420,7 @@
         </div>
 
         <!-- Channel content -->
-        <div class="channel-content" data-if="is_connected && show_settings == false && show_share_picker == false">
+        <div class="channel-content" data-if="show_settings == false && show_share_picker == false">
             <div class="channel-header" data-if="current_channel > 0">
                 <span class="channel-title"># {{ current_channel_name }}</span>
             </div>
@@ -540,6 +569,7 @@
 
                 <div class="seed-phrase-card" data-if="seed_phrase != ''">
                     <span class="seed-phrase-text">{{ seed_phrase }}</span>
+                    <div class="btn btn-secondary btn-small" data-event-click="copy_seed">Copy</div>
                 </div>
 
                 <div class="btn" data-if="seed_phrase == ''" data-event-click="generate_identity">Generate Seed Phrase</div>
@@ -579,7 +609,7 @@
     <!-- Add server modal -->
     <div class="modal-backdrop" data-model="serverlist" data-if="show_add_form">
         <div class="modal-box">
-            <h1>Add Server</h1>
+            <h1>Add Party</h1>
 
             <div class="label">Host</div>
             <input type="text" data-value="edit_host" />

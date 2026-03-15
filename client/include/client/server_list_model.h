@@ -15,7 +15,8 @@ struct ServerEntry {
     Rml::String host;
     int port = 7800;
     Rml::String last_username;
-    Rml::String initials;  // first 2 chars of name, computed by App
+    Rml::String initials;   // first 2 chars of name, computed by App
+    int color_index = 0;    // 0-4, derived from name hash for icon color
 };
 
 class ServerListModel {
@@ -29,6 +30,7 @@ public:
 
     // --- Bound state ---
     Rml::Vector<ServerEntry> servers;
+    Rml::String party_count_text;  // e.g. "2 parties"
 
     // Add server form
     bool show_add_form = false;
@@ -72,6 +74,7 @@ public:
     std::function<void()>     on_show_key_import;
     std::function<void()>     on_import_key;
     std::function<void()>     on_copy_fingerprint;
+    std::function<void()>     on_copy_seed;
     std::function<void(int)>  on_show_server_menu;  // server_id
     std::function<void()>     on_tofu_accept;       // trust new certificate
     std::function<void()>     on_tofu_reject;       // cancel connection

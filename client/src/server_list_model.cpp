@@ -22,11 +22,13 @@ bool ServerListModel::init(Rml::Context* context) {
         s.RegisterMember("port",          &ServerEntry::port);
         s.RegisterMember("last_username", &ServerEntry::last_username);
         s.RegisterMember("initials",      &ServerEntry::initials);
+        s.RegisterMember("color_index",   &ServerEntry::color_index);
     }
     ctor.RegisterArray<Rml::Vector<ServerEntry>>();
 
     // Bind variables
     ctor.Bind("servers",          &servers);
+    ctor.Bind("party_count_text", &party_count_text);
     ctor.Bind("show_add_form",    &show_add_form);
     ctor.Bind("edit_host",        &edit_host);
     ctor.Bind("edit_port",        &edit_port);
@@ -138,6 +140,11 @@ bool ServerListModel::init(Rml::Context* context) {
     ctor.BindEventCallback("copy_fingerprint",
         [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
             if (on_copy_fingerprint) on_copy_fingerprint();
+        });
+
+    ctor.BindEventCallback("copy_seed",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            if (on_copy_seed) on_copy_seed();
         });
 
     ctor.BindEventCallback("tofu_accept",

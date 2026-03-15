@@ -21,7 +21,7 @@ div, h1, h2, h3, p, form, hr {
 }
 
 body {
-    font-family: Noto Sans;
+    font-family: Inter;
     font-size: 14dp;
     color: #F0F2F8;
 }
@@ -187,6 +187,198 @@ body {
     flex: 1;
 }
 
+/* ── Home screen (party tiles, not connected) ──────── */
+
+.home-screen {
+    display: flex;
+    flex: 1;
+    background-color: #0F1117;
+}
+
+.home-inner {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    padding: 24dp 32dp;
+}
+
+.home-topbar {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    flex: none;
+    margin-bottom: 28dp;
+}
+
+.home-topbar-left {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 10dp;
+}
+
+.home-topbar-right {
+    display: flex;
+    align-items: center;
+}
+
+.home-logo {
+    display: block;
+    width: 28dp;
+    height: 28dp;
+}
+
+.home-logo-text {
+    font-size: 16dp;
+    font-weight: bold;
+    color: #6B7394;
+}
+
+.home-settings-icon {
+    display: block;
+    cursor: pointer;
+    opacity: 0.5;
+}
+
+.home-settings-icon:hover {
+    opacity: 1;
+}
+
+.home-content {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+}
+
+.home-greeting {
+    display: flex;
+    flex-direction: column;
+    margin-bottom: 20dp;
+}
+
+.home-title {
+    font-size: 24dp;
+    font-weight: bold;
+    color: #F0F2F8;
+}
+
+.home-subtitle {
+    font-size: 13dp;
+    color: #5C6280;
+    margin-top: 4dp;
+}
+
+.home-grid {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 16dp;
+}
+
+.party-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 120dp;
+    height: 120dp;
+    flex: none;
+    padding: 20dp 14dp 16dp 14dp;
+    background-color: #181B25;
+    border: 1dp #FFFFFF0F;
+    border-radius: 14dp;
+    cursor: pointer;
+    overflow: hidden;
+}
+
+.party-card:hover {
+    background-color: #232840;
+    border-color: #6EECD4;
+}
+
+.party-card-icon-wrap {
+    display: block;
+    width: 52dp;
+    height: 52dp;
+    border-radius: 14dp;
+    overflow: hidden;
+    margin-bottom: 14dp;
+    position: relative;
+}
+
+gradient_circle.party-card-gradient {
+    display: block;
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 52dp;
+    height: 52dp;
+}
+
+.party-card-initials {
+    display: block;
+    position: relative;
+    color: #0B0D14;
+    font-size: 18dp;
+    font-weight: bold;
+    text-align: center;
+    line-height: 52dp;
+}
+
+.party-card-name {
+    display: block;
+    color: #F0F2F8;
+    font-size: 13dp;
+    font-weight: bold;
+    text-align: center;
+}
+
+.party-card-add {
+    background-color: #14171F;
+    border: 1dp #2A3050;
+}
+
+.party-card-add:hover {
+    border-color: #6EECD4;
+    background-color: #1C2033;
+}
+
+.party-card-icon {
+    display: flex;
+    width: 52dp;
+    height: 52dp;
+    align-items: center;
+    justify-content: center;
+    border-radius: 14dp;
+    margin-bottom: 14dp;
+}
+
+.party-card-icon-add {
+    background-color: #232840;
+}
+
+.party-card-add:hover .party-card-icon-add {
+    background-color: #2A3050;
+}
+
+.party-card-plus {
+    display: block;
+    color: #5C6280;
+    font-size: 22dp;
+}
+
+.party-card-add:hover .party-card-plus {
+    color: #6EECD4;
+}
+
+.party-card-add-label {
+    display: block;
+    color: #4A5170;
+    font-size: 10dp;
+    text-align: center;
+    margin-top: 4dp;
+}
+
 /* ── Server icon strip ────────────────────────────── */
 
 .server-strip {
@@ -277,16 +469,58 @@ body {
     display: flex;
     flex: none;
     align-items: center;
+    gap: 10dp;
     padding: 0dp 16dp;
     height: 56dp;
-    border-bottom: 1dp #1F2438;
+}
+
+.server-header-icon-wrap {
+    display: block;
+    width: 28dp;
+    height: 28dp;
+    border-radius: 8dp;
+    overflow: hidden;
+    position: relative;
+}
+
+gradient_circle.server-header-gradient {
+    display: block;
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 28dp;
+    height: 28dp;
+}
+
+.server-header-initials {
+    display: block;
+    position: relative;
+    color: #0B0D14;
+    font-size: 11dp;
+    font-weight: bold;
+    text-align: center;
+    line-height: 28dp;
 }
 
 .server-header .server-title {
     display: block;
+    flex: 1;
     font-weight: bold;
     color: #F0F2F8;
     font-size: 15dp;
+}
+
+.server-disconnect-btn {
+    display: block;
+    cursor: pointer;
+    padding: 6dp;
+    border-radius: 6dp;
+    opacity: 0.5;
+}
+
+.server-disconnect-btn:hover {
+    background-color: #1F2438;
+    opacity: 1;
 }
 
 /* ── Channel list ──────────────────────────────────── */
@@ -363,18 +597,15 @@ body {
 }
 
 .channel-name {
-    flex: 1;
     font-size: 14dp;
 }
 
 .channel-count {
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    display: block;
     color: #6EECD4;
     font-size: 11dp;
     font-weight: bold;
-    background-color: #00D4AA20;
+    background-color: #162B27;
     padding: 2dp 8dp;
     border-radius: 100dp;
 }
@@ -396,12 +627,24 @@ body {
     background-color: #1F2438;
 }
 
-.channel-user-item .user-dot {
+.user-dot-wrap {
+    display: flex;
+    width: 26dp;
+    height: 26dp;
+    align-items: center;
+    justify-content: center;
+    border-radius: 13dp;
+    border: 2dp transparent;
+}
+
+.channel-user-item.speaking .user-dot-wrap {
+    border-color: #6EECD4;
+}
+
+gradient_circle.user-dot {
     display: block;
-    width: 22dp;
-    height: 22dp;
-    border-radius: 11dp;
-    background-color: #5C6280;
+    width: 20dp;
+    height: 20dp;
 }
 
 .channel-user-item .channel-username {
@@ -409,34 +652,35 @@ body {
     flex: 1;
 }
 
-.channel-user-item.speaking .user-dot {
-    background-color: #6EECD4;
-}
-
 .channel-user-item.speaking .channel-username {
     color: #F0F2F8;
 }
 
 .channel-user-item.muted .user-dot {
-    background-color: #EF4444;
+    opacity: 0.5;
 }
 
 .channel-user-item.deafened .user-dot {
-    background-color: #EF4444;
+    opacity: 0.3;
 }
 
 .user-state-icon {
     display: none;
     margin-left: 2dp;
-    opacity: 0.6;
+    opacity: 0.5;
 }
 
 .channel-user-item.muted .icon-muted {
-    display: inline;
+    display: block;
 }
 
 .channel-user-item.deafened .icon-deafened {
-    display: inline;
+    display: block;
+}
+
+.channel-user-item.streaming .icon-streaming {
+    display: block;
+    opacity: 1;
 }
 
 .role-badge {
@@ -460,29 +704,71 @@ body {
     background-color: #7CC4FA20;
 }
 
-/* ── Voice controls (user island) ─────────────────── */
+/* ── User island (bottom of sidebar, single card) ──── */
 
-.voice-panel {
+.user-island {
     display: flex;
     flex-direction: column;
-    padding: 8dp;
+    margin: 0dp 8dp 10dp 8dp;
+    padding: 10dp;
+    background-color: #181B25;
+    border: 1dp #FFFFFF0F;
+    border-radius: 14dp;
+    gap: 8dp;
+}
+
+.user-island-top {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 8dp;
+}
+
+gradient_circle.user-avatar {
+    display: block;
+    width: 28dp;
+    height: 28dp;
+    flex: none;
+}
+
+.user-island-info {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    overflow: hidden;
+}
+
+.user-name {
+    color: #F0F2F8;
+    font-size: 12dp;
+    font-weight: bold;
+}
+
+.settings-btn {
+    display: block;
+    cursor: pointer;
+    padding: 4dp;
+    opacity: 0.5;
+}
+
+.settings-btn:hover {
+    opacity: 1;
 }
 
 .voice-btn-row {
     display: flex;
     flex-direction: row;
     gap: 4dp;
-    justify-content: center;
 }
 
 .voice-btn {
     display: flex;
     flex: 1;
-    height: 36dp;
+    height: 32dp;
     align-items: center;
     justify-content: center;
     background-color: #222738;
-    border-radius: 10dp;
+    border-radius: 8dp;
     cursor: pointer;
 }
 
@@ -506,44 +792,6 @@ body {
     display: block;
     width: 18dp;
     height: 18dp;
-}
-
-/* ── User panel (bottom of sidebar, island style) ──── */
-
-.user-panel {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 10dp;
-    margin: 0dp 8dp 10dp 8dp;
-    background-color: #181B25;
-    border: 1dp #FFFFFF0F;
-    border-radius: 14dp;
-    gap: 8dp;
-}
-
-.user-panel .user-name {
-    color: #F0F2F8;
-    font-size: 12dp;
-    font-weight: bold;
-}
-
-.user-panel .settings-btn {
-    display: block;
-    cursor: pointer;
-    padding: 4dp;
-    opacity: 0.5;
-}
-
-.user-panel .settings-btn:hover {
-    opacity: 1;
-}
-
-.user-panel-left {
-    display: flex;
-    flex-direction: column;
-    flex: 1;
-    overflow: hidden;
 }
 
 .user-fingerprint {

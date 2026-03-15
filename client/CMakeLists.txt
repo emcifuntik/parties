@@ -30,6 +30,7 @@ set(CLIENT_COMMON_SOURCES
     src/RmlUI_Backend.cpp
     src/video_element.cpp
     src/level_meter_element.cpp
+    src/gradient_circle_element.cpp
     src/stream_audio_player.cpp
     src/app_core.cpp
     src/sound_player.cpp

@@ -24,7 +24,9 @@ bool LobbyModel::init(Rml::Context* context) {
         s.RegisterMember("role",     &ChannelUser::role);
         s.RegisterMember("muted",    &ChannelUser::muted);
         s.RegisterMember("deafened", &ChannelUser::deafened);
-        s.RegisterMember("speaking", &ChannelUser::speaking);
+        s.RegisterMember("speaking",    &ChannelUser::speaking);
+        s.RegisterMember("streaming",   &ChannelUser::streaming);
+        s.RegisterMember("color_index", &ChannelUser::color_index);
     }
     ctor.RegisterArray<Rml::Vector<ChannelUser>>();
 
@@ -59,7 +61,10 @@ bool LobbyModel::init(Rml::Context* context) {
     // Bind variables
     ctor.Bind("is_connected",   &is_connected);
     ctor.Bind("server_name",    &server_name);
+    ctor.Bind("server_initials",&server_initials);
+    ctor.Bind("server_color_index", &server_color_index);
     ctor.Bind("username",       &username);
+    ctor.Bind("my_color_index", &my_color_index);
     ctor.Bind("error_text",     &error_text);
     ctor.Bind("channels",       &channels);
     ctor.Bind("current_channel",     &current_channel);
@@ -137,6 +142,11 @@ bool LobbyModel::init(Rml::Context* context) {
     ctor.Bind("identity_private_key",   &identity_private_key);
 
     // Event callbacks
+    ctor.BindEventCallback("disconnect_server",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            if (on_disconnect_server) on_disconnect_server();
+        });
+
     ctor.BindEventCallback("join_channel",
         [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList& args) {
             if (!args.empty() && on_join_channel)

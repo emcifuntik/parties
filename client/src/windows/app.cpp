@@ -236,8 +236,10 @@ bool App::init(HWND hwnd, int renderer_id) {
     // Register custom elements before loading document
     video_instancer_       = std::make_unique<VideoElementInstancer>();
     level_meter_instancer_ = std::make_unique<LevelMeterInstancer>();
+    gradient_circle_instancer_ = std::make_unique<GradientCircleInstancer>();
     Rml::Factory::RegisterElementInstancer("video_frame", video_instancer_.get());
     Rml::Factory::RegisterElementInstancer("level_meter", level_meter_instancer_.get());
+    Rml::Factory::RegisterElementInstancer("gradient_circle", gradient_circle_instancer_.get());
 
     doc_ = ui_.load_document("ui/lobby.rml");
     if (doc_) {

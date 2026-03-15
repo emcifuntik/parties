@@ -18,6 +18,8 @@ struct ChannelUser {
     bool muted = false;
     bool deafened = false;
     bool speaking = false;
+    bool streaming = false;
+    int color_index = 0;  // 0-11, generated from name hash for avatar color
 };
 
 struct ChannelInfo {
@@ -57,7 +59,10 @@ public:
     // --- Bound state (public for App to update directly) ---
     bool is_connected = false;
     Rml::String server_name;
+    Rml::String server_initials;
+    int server_color_index = 0;
     Rml::String username;
+    int my_color_index = 0;   // user's avatar color (0-11), from fingerprint hash
     Rml::String error_text;
 
     Rml::Vector<ChannelInfo> channels;
@@ -146,6 +151,7 @@ public:
     Rml::String identity_private_key;  // hex-encoded 32-byte Ed25519 seed
 
     // --- Callbacks (set by App before init) ---
+    std::function<void()>      on_disconnect_server;
     std::function<void(int)>   on_join_channel;
     std::function<void()>      on_leave_channel;
     std::function<void()>      on_toggle_mute;

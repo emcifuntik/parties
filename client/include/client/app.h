@@ -4,6 +4,7 @@
 #include <client/ui_manager.h>
 #include <client/screen_capture.h>
 #include <client/sound_player.h>
+#include <client/gradient_circle_element.h>
 #include <client/stream_audio_capture.h>
 #include <parties/types.h>
 #include <parties/video_common.h>
@@ -94,8 +95,10 @@ private:
     std::unique_ptr<VideoDecoder> decoder_;
     std::unique_ptr<VideoElementInstancer> video_instancer_;
     std::unique_ptr<LevelMeterInstancer>   level_meter_instancer_;
+    std::unique_ptr<GradientCircleInstancer> gradient_circle_instancer_;
     LevelMeterElement* level_meter_ = nullptr;  // owned by RmlUi document
     bool sharing_screen_ = false;
+    bool stream_revealed_ = false;  // first decoded frame shown to UI
     std::atomic<bool> capture_lost_{false};
 
     // Capture frame rate limiting (QPC-based)

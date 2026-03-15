@@ -58,12 +58,20 @@ static constexpr unsigned char embed_icon_volume[] = {
     #embed "../ui/icon-volume.svg"
 };
 
+static constexpr unsigned char embed_icon_disconnect[] = {
+    #embed "../ui/icon-disconnect.svg"
+};
+
 static constexpr unsigned char embed_font_regular[] = {
-    #embed "../ui/fonts/NotoSans-Regular.ttf"
+    #embed "../ui/fonts/Inter-Regular.ttf"
+};
+
+static constexpr unsigned char embed_font_medium[] = {
+    #embed "../ui/fonts/Inter-Medium.ttf"
 };
 
 static constexpr unsigned char embed_font_bold[] = {
-    #embed "../ui/fonts/NotoSans-Bold.ttf"
+    #embed "../ui/fonts/Inter-Bold.ttf"
 };
 
 namespace {
@@ -92,8 +100,10 @@ EmbeddedFileInterface::EmbeddedFileInterface() {
     entries_["ui/icon-leave.svg"] = { embed_icon_leave, sizeof(embed_icon_leave) };
     entries_["ui/icon-settings.svg"] = { embed_icon_settings, sizeof(embed_icon_settings) };
     entries_["ui/icon-volume.svg"] = { embed_icon_volume, sizeof(embed_icon_volume) };
-    entries_["ui/fonts/NotoSans-Regular.ttf"] = { embed_font_regular, sizeof(embed_font_regular) };
-    entries_["ui/fonts/NotoSans-Bold.ttf"] = { embed_font_bold, sizeof(embed_font_bold) };
+    entries_["ui/icon-disconnect.svg"] = { embed_icon_disconnect, sizeof(embed_icon_disconnect) };
+    entries_["ui/fonts/Inter-Regular.ttf"] = { embed_font_regular, sizeof(embed_font_regular) };
+    entries_["ui/fonts/Inter-Medium.ttf"] = { embed_font_medium, sizeof(embed_font_medium) };
+    entries_["ui/fonts/Inter-Bold.ttf"] = { embed_font_bold, sizeof(embed_font_bold) };
     std::printf("[UI] Embedded resources: %zu files\n", entries_.size());
 }
 

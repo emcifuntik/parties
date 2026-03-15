@@ -40,6 +40,7 @@
 #include <client/sound_player.h>
 #include <client/rmlui_backend.h>
 #include <client/video_element.h>
+#include <client/gradient_circle_element.h>
 
 #include <encdec/apple/VideoDecoderIOS.h>
 
@@ -227,6 +228,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
     // Video element instancer
     VideoElementInstancer _videoInstancer;
+    GradientCircleInstancer _gradientCircleInstancer;
 
     // AppCore — all shared connection/audio/model logic
     AppCore _core;
@@ -250,6 +252,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
     // Screen share — receiver (macOS-specific VideoToolbox decoder)
     std::unique_ptr<VideoDecoderIOS>  _decoder;
+    bool                              _streamRevealed;
 }
 
 // ── View setup ────────────────────────────────────────────────────────────────
@@ -288,6 +291,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     Rml::Initialise();
 
     Rml::Factory::RegisterElementInstancer("video_frame", &_videoInstancer);
+    Rml::Factory::RegisterElementInstancer("gradient_circle", &_gradientCircleInstancer);
 
     CGSize physical = _metalView.drawableSize;
     float  dpRatio  = (float)[[NSScreen mainScreen] backingScaleFactor];
@@ -304,12 +308,14 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 #endif
 
     // ── Fonts ─────────────────────────────────────────────────────────────
-    Rml::LoadFontFace("ui/fonts/NotoSans-Regular.ttf");
-    Rml::LoadFontFace("ui/fonts/NotoSans-Bold.ttf");
+    Rml::LoadFontFace("ui/fonts/Inter-Regular.ttf");
+    Rml::LoadFontFace("ui/fonts/Inter-Medium.ttf");
+    Rml::LoadFontFace("ui/fonts/Inter-Bold.ttf");
 
     // ── App state ─────────────────────────────────────────────────────────
-    _sharing        = false;
-    _encoderReady   = false;
+    _sharing         = false;
+    _encoderReady    = false;
+    _streamRevealed  = false;
     _needsKeyframe  = false;
 
     _soundPlayer.init();
@@ -514,6 +520,11 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
 - (void)onVideoDecoded:(CVPixelBufferRef)buf
 {
+    // Reveal video area on first frame (deferred from watch_sharer)
+    if (!_streamRevealed) {
+        _streamRevealed = true;
+        _core.model_.dirty("viewing_sharer_id");
+    }
     _core.stream_frame_count_.fetch_add(1, std::memory_order_relaxed);
 
     if (!_doc) return;
@@ -715,7 +726,8 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
                              (const uint8_t*)&id32, sizeof(id32));
 
     _core.model_.viewing_sharer_id = static_cast<int>(sharerId);
-    _core.model_.dirty("viewing_sharer_id");
+    _streamRevealed = false;
+    // Don't dirty yet — onVideoDecoded dirties on first frame to avoid black flash
 }
 
 - (void)stopWatching
@@ -723,6 +735,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     _core.viewing_sharer_   = 0;
     _decoder.reset();
     _core.awaiting_keyframe_ = false;
+    _streamRevealed = false;
 
     uint32_t zero = 0;
     _core.net_.send_message(ControlMessageType::SCREEN_SHARE_VIEW,

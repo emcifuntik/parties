@@ -289,9 +289,17 @@ void AppCore::refresh_server_list()
             entry.initials = Rml::String(s.name.substr(0, 1));
         else
             entry.initials = "?";
+        // Color index from simple name hash (0-4)
+        uint32_t hash = 0;
+        for (char c : s.name) hash = hash * 31 + static_cast<uint8_t>(c);
+        entry.color_index = static_cast<int>(hash % 5);
         server_model_.servers.push_back(std::move(entry));
     }
+    size_t n = server_model_.servers.size();
+    server_model_.party_count_text = Rml::String(
+        std::to_string(n) + (n == 1 ? " party" : " parties"));
     server_model_.dirty("servers");
+    server_model_.dirty("party_count_text");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -638,14 +646,30 @@ void AppCore::on_auth_response(const uint8_t* data, size_t len)
     if (bridge_.on_authenticated) bridge_.on_authenticated();
 
     model_.server_name          = Rml::String(server_name);
+    // Compute server initials and color
+    if (server_name.size() >= 2)
+        model_.server_initials = Rml::String(server_name.substr(0, 2));
+    else if (!server_name.empty())
+        model_.server_initials = Rml::String(server_name.substr(0, 1));
+    else
+        model_.server_initials = "?";
+    {
+        uint32_t h = 0;
+        for (char c : server_name) h = h * 31 + static_cast<uint8_t>(c);
+        model_.server_color_index = static_cast<int>(h % 5);
+    }
     model_.username             = Rml::String(username_);
+    { uint32_t h = 0; for (char c : username_) h = h * 31 + static_cast<uint8_t>(c); model_.my_color_index = static_cast<int>(h % 12); }
     model_.is_connected         = true;
     model_.my_role              = role_;
     model_.can_manage_channels  = (role_ <= static_cast<int>(parties::Role::Moderator));
     model_.can_kick             = (role_ <= static_cast<int>(parties::Role::Moderator));
     model_.can_manage_roles     = (role_ <= static_cast<int>(parties::Role::Admin));
     model_.dirty("server_name");
+    model_.dirty("server_initials");
+    model_.dirty("server_color_index");
     model_.dirty("username");
+    model_.dirty("my_color_index");
     model_.dirty("is_connected");
     model_.dirty("my_role");
     model_.dirty("can_manage_channels");
@@ -735,6 +759,7 @@ void AppCore::on_channel_user_list(const uint8_t* data, size_t len)
         u.role     = urole;
         u.muted    = (muted != 0);
         u.deafened = (deaf  != 0);
+        { uint32_t h = 0; for (char c : uname) h = h * 31 + static_cast<uint8_t>(c); u.color_index = static_cast<int>(h % 12); }
         users.push_back(u);
     }
 
@@ -805,6 +830,7 @@ void AppCore::on_user_joined(const uint8_t* data, size_t len)
             u.id   = static_cast<int>(uid);
             u.name = Rml::String(uname);
             u.role = urole;
+            { uint32_t h = 0; for (char c : uname) h = h * 31 + static_cast<uint8_t>(c); u.color_index = static_cast<int>(h % 12); }
             ch.users.push_back(u);
             ch.user_count = static_cast<int>(ch.users.size());
             break;
@@ -915,8 +941,15 @@ void AppCore::on_screen_share_started(const uint8_t* data, size_t len)
     model_.sharers.erase(it, model_.sharers.end());
     model_.sharers.push_back(s);
     model_.someone_sharing = !model_.sharers.empty();
+
+    // Mark user as streaming in channel user list
+    for (auto& ch : model_.channels)
+        for (auto& u : ch.users)
+            if (u.id == static_cast<int>(sharer_id)) u.streaming = true;
+
     model_.dirty("sharers");
     model_.dirty("someone_sharing");
+    model_.dirty("channels");
 }
 
 void AppCore::on_screen_share_stopped(const uint8_t* data, size_t len)
@@ -929,8 +962,15 @@ void AppCore::on_screen_share_stopped(const uint8_t* data, size_t len)
         [sharer_id](const ActiveSharer& a) { return a.id == static_cast<int>(sharer_id); });
     model_.sharers.erase(it, model_.sharers.end());
     model_.someone_sharing = !model_.sharers.empty();
+
+    // Clear streaming flag on user
+    for (auto& ch : model_.channels)
+        for (auto& u : ch.users)
+            if (u.id == static_cast<int>(sharer_id)) u.streaming = false;
+
     model_.dirty("sharers");
     model_.dirty("someone_sharing");
+    model_.dirty("channels");
 
     if (viewing_sharer_ == sharer_id)
         stop_watching();
@@ -1071,6 +1111,7 @@ void AppCore::flush_pending_prefs(bool force)
 
 void AppCore::setup_model_callbacks()
 {
+    model_.on_disconnect_server = [this]() { net_.disconnect(); };
     model_.on_join_channel  = [this](int id) { join_channel(static_cast<ChannelId>(id)); };
     model_.on_leave_channel = [this]()       { leave_channel(); };
 
@@ -1506,6 +1547,11 @@ void AppCore::setup_server_model_callbacks()
     server_model_.on_copy_fingerprint = [this]() {
         if (bridge_.copy_to_clipboard)
             bridge_.copy_to_clipboard(std::string(server_model_.fingerprint));
+    };
+
+    server_model_.on_copy_seed = [this]() {
+        if (bridge_.copy_to_clipboard)
+            bridge_.copy_to_clipboard(std::string(server_model_.seed_phrase));
     };
 
     server_model_.on_tofu_accept = [this]() {
