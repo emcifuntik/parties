@@ -1,8 +1,8 @@
 vcpkg_from_github(
     OUT_SOURCE_PATH QUIC_SOURCE_PATH
     REPO microsoft/msquic
-    REF "v${VERSION}"
-    SHA512 a16ec3de6a0a68256a4688586d6205ef9ddc4ea22a3ea2b208d4b953faf4369a0dd573b9e27bb933344f37dbfb421fa6f819a70e87a7d02a0b4971adde60dfdb
+    REF 7bd862e49d9fcee754cf97397b1c69ff613afcee
+    SHA512 5d803f30d0e0f530974f12259aa387a9d8e59c6e98fc71131c2bff6bbc3b3a83a92232e90338bce58363ca73cc7ab92dd6b9eaa65e8574466d4e82086f8eb86c
     HEAD_REF main
 )
 
@@ -15,9 +15,9 @@ if(VCPKG_TARGET_IS_WINDOWS)
     vcpkg_from_github(
         OUT_SOURCE_PATH XDP_WINDOWS
         REPO microsoft/xdp-for-windows
-        REF v1.1.3
-        SHA512 8bf38182bf3c2da490e6e4df9420bacc3839e19d7cea6ca1c1420d1fd349e87a1f80992b52524eaab70a84ff1ac4e1681974211871117847fba92334350dcf13
-        HEAD_REF main
+        REF 793dc2a0d7e6f8a86dae06c84de7d8fd6eacd205
+        SHA512 28a6ab43602998991dcf0485f34100ae5f031ec5219ba7d78fc2bc652730697a829fc12bd7ed2281b42ff8f91c006b4f947d3b0cc69c8caabc030ecc1ce9a00c
+        HEAD_REF release/1.1
     )
 
     # Place XDP headers where MsQuic expects them
@@ -64,10 +64,10 @@ if(VCPKG_TARGET_IS_WINDOWS)
 
     # clang-cl: /Qspectre and /guard:cf are MSVC-only.
     vcpkg_replace_string("${QUIC_SOURCE_PATH}/CMakeLists.txt"
-    [[    if(NOT QUIC_ENABLE_SANITIZERS)
+    [[    if(NOT QUIC_SANITIZER_ACTIVE)
         check_c_compiler_flag(/Qspectre HAS_SPECTRE)
     endif()]]
-    [[    if(NOT QUIC_ENABLE_SANITIZERS AND NOT (CMAKE_C_COMPILER_ID STREQUAL "Clang"))
+    [[    if(NOT QUIC_SANITIZER_ACTIVE AND NOT (CMAKE_C_COMPILER_ID STREQUAL "Clang"))
         check_c_compiler_flag(/Qspectre HAS_SPECTRE)
     endif()]]
     )
@@ -80,60 +80,28 @@ if(VCPKG_TARGET_IS_WINDOWS)
 
     # Disable /analyze for clang-cl (MSVC is TRUE for clang-cl but /analyze is MSVC-only)
     vcpkg_replace_string("${QUIC_SOURCE_PATH}/src/platform/CMakeLists.txt"
-    [[if (MSVC AND (QUIC_TLS_LIB STREQUAL "quictls" OR QUIC_TLS_LIB STREQUAL "schannel") AND NOT QUIC_ENABLE_SANITIZERS)]]
-    [[if (MSVC AND NOT (CMAKE_C_COMPILER_ID STREQUAL "Clang") AND (QUIC_TLS_LIB STREQUAL "quictls" OR QUIC_TLS_LIB STREQUAL "schannel") AND NOT QUIC_ENABLE_SANITIZERS)]]
+    [[if (MSVC AND (QUIC_TLS_LIB STREQUAL "quictls" OR QUIC_TLS_LIB STREQUAL "schannel") AND NOT QUIC_SANITIZER_ACTIVE)]]
+    [[if (MSVC AND NOT (CMAKE_C_COMPILER_ID STREQUAL "Clang") AND (QUIC_TLS_LIB STREQUAL "quictls" OR QUIC_TLS_LIB STREQUAL "schannel" OR QUIC_TLS_LIB STREQUAL "openssl") AND NOT QUIC_SANITIZER_ACTIVE)]]
     )
     vcpkg_replace_string("${QUIC_SOURCE_PATH}/src/core/CMakeLists.txt"
-    [[if (MSVC AND NOT QUIC_ENABLE_SANITIZERS)]]
-    [[if (MSVC AND NOT (CMAKE_C_COMPILER_ID STREQUAL "Clang") AND NOT QUIC_ENABLE_SANITIZERS)]]
+    [[if (MSVC AND NOT QUIC_SANITIZER_ACTIVE)]]
+    [[if (MSVC AND NOT (CMAKE_C_COMPILER_ID STREQUAL "Clang") AND NOT QUIC_SANITIZER_ACTIVE)]]
     )
 
 endif() # VCPKG_TARGET_IS_WINDOWS
 
-# ── Cross-platform: quictls (OpenSSL fork with QUIC API) ─────────
-# MsQuic's FetchContent expects quictls source in submodules/openssl/
-vcpkg_from_github(
-    OUT_SOURCE_PATH QUICTLS_SOURCE
-    REPO quictls/openssl
-    REF openssl-3.1.7+quic
-    SHA512 152824320d988c87bc6848b558a2fd472ce8d564d36373ad3e9f7a1f862f74bd48e052d5934ea9d9732158aa534fe21825fdb1572569622373a457a8c0c78c36
-    HEAD_REF openssl-3.1.7+quic
-)
-
-file(REMOVE_RECURSE "${QUIC_SOURCE_PATH}/submodules/quictls")
-file(RENAME "${QUICTLS_SOURCE}" "${QUIC_SOURCE_PATH}/submodules/quictls")
-
-# MsQuic's flatten_link_dependencies tries to merge system libs like -lm
-# into the monolithic archive. Exclude them.
+# MsQuic's flatten_link_dependencies tries to merge system libs into the
+# monolithic archive. Exclude them.
 vcpkg_replace_string("${QUIC_SOURCE_PATH}/src/bin/CMakeLists.txt"
     [[set(EXCLUDE_LIST "inc")]]
-    [[set(EXCLUDE_LIST "inc" "m" "pthread" "rt" "atomic")]]
+    [[set(EXCLUDE_LIST "inc" "m" "pthread" "rt" "atomic" "OpenSSL::SSL" "OpenSSL::Crypto")]]
 )
-
-# quictls build requires Perl and NASM (called via cmd.exe from ninja custom commands).
-# vcpkg isolates the build environment and strips PATH, so we must explicitly inject them.
-if(VCPKG_TARGET_IS_WINDOWS)
-    find_program(PERL_EXECUTABLE perl
-        PATHS "C:/Strawberry/perl/bin" ENV PATH
-        NO_DEFAULT_PATH
-    )
-    if(NOT PERL_EXECUTABLE)
-        find_program(PERL_EXECUTABLE perl)
-    endif()
-    if(PERL_EXECUTABLE)
-        cmake_path(GET PERL_EXECUTABLE PARENT_PATH _perl_dir)
-    else()
-        set(_perl_dir "C:/Strawberry/perl/bin")
-    endif()
-    vcpkg_host_path_list(PREPEND ENV{PATH} "${_perl_dir}")
-    # NASM for OpenSSL assembly optimizations
-    vcpkg_host_path_list(PREPEND ENV{PATH} "${CMAKE_CURRENT_LIST_DIR}/../../../vendor/nasm")
-endif()
 
 vcpkg_cmake_configure(
     SOURCE_PATH "${QUIC_SOURCE_PATH}"
     OPTIONS
-        -DQUIC_TLS_LIB=quictls
+        -DQUIC_TLS_LIB=openssl
+        -DQUIC_USE_EXTERNAL_OPENSSL=ON
         -DQUIC_BUILD_SHARED=OFF
         -DQUIC_SOURCE_LINK=OFF
         -DQUIC_BUILD_PERF=OFF

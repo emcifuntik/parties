@@ -1,5 +1,7 @@
 # ── Builder stage ──────────────────────────────────────────────
-FROM debian:bookworm AS builder
+# Debian trixie ships gcc 14 which has full std::format support
+# (needed by spdlog with SPDLOG_USE_STD_FORMAT / default-features=false)
+FROM debian:trixie AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake ninja-build pkg-config \
@@ -27,7 +29,10 @@ RUN ln -s /opt/vcpkg /src/vcpkg
 ARG SENTRY_DSN_SERVER=""
 
 # Configure (vcpkg install + cmake generate)
+# Override CMAKE_MAKE_PROGRAM: the preset points at vendor/ninja/ninja-linux
+# which loses its execute bit during COPY; use the system ninja instead.
 RUN cmake --preset linux-release \
+    -DCMAKE_MAKE_PROGRAM=/usr/bin/ninja \
     -DENABLE_SENTRY=$([ -n "$SENTRY_DSN_SERVER" ] && echo "ON" || echo "OFF") \
     -DSENTRY_DSN_SERVER="$SENTRY_DSN_SERVER"
 
@@ -35,7 +40,7 @@ RUN cmake --preset linux-release \
 RUN cmake --build build-linux --config Release
 
 # ── Runtime stage ─────────────────────────────────────────────
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \

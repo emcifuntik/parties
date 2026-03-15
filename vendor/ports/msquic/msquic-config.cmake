@@ -32,15 +32,19 @@ if(NOT msquic_LIBRARY_RELEASE AND NOT msquic_LIBRARY_DEBUG)
 endif()
 
 # Platform-specific link dependencies
-# quictls is statically linked into libmsquic.a on all platforms
+# MsQuic uses external OpenSSL for TLS on all platforms
+find_package(OpenSSL REQUIRED)
+
 if(WIN32)
     set_property(TARGET msquic::msquic APPEND PROPERTY
         INTERFACE_LINK_LIBRARIES
-        ntdll wbemuuid winmm secur32 onecore crypt32)
+        OpenSSL::SSL OpenSSL::Crypto
+        ntdll wbemuuid winmm iphlpapi)
 else()
     find_package(Threads REQUIRED)
     set_property(TARGET msquic::msquic APPEND PROPERTY
         INTERFACE_LINK_LIBRARIES
+        OpenSSL::SSL OpenSSL::Crypto
         Threads::Threads
         ${CMAKE_DL_LIBS})
 endif()

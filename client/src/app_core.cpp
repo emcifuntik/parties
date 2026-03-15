@@ -354,21 +354,27 @@ void AppCore::poll_connecting()
 void AppCore::finish_connect()
 {
     std::string fp = net_.get_server_fingerprint();
-    auto result = settings_.check_fingerprint(server_host_, server_port_, fp);
 
-    if (result == Settings::TofuResult::Mismatch) {
-        tofu_pending_fingerprint_ = fp;
-        tofu_pending_ = true;
-        server_model_.tofu_fingerprint  = Rml::String(fp);
-        server_model_.show_tofu_warning = true;
-        server_model_.show_login        = false;
-        server_model_.dirty("tofu_fingerprint");
-        server_model_.dirty("show_tofu_warning");
-        server_model_.dirty("show_login");
-        return;
+    // On TLS 1.3 session resumption (0-RTT), no certificate is exchanged
+    // (PSK authentication), so the fingerprint is empty. The server accepted
+    // our session ticket, confirming it's the same server — skip TOFU check.
+    if (!fp.empty()) {
+        auto result = settings_.check_fingerprint(server_host_, server_port_, fp);
+
+        if (result == Settings::TofuResult::Mismatch) {
+            tofu_pending_fingerprint_ = fp;
+            tofu_pending_ = true;
+            server_model_.tofu_fingerprint  = Rml::String(fp);
+            server_model_.show_tofu_warning = true;
+            server_model_.show_login        = false;
+            server_model_.dirty("tofu_fingerprint");
+            server_model_.dirty("show_tofu_warning");
+            server_model_.dirty("show_login");
+            return;
+        }
+        if (result == Settings::TofuResult::Unknown)
+            settings_.trust_fingerprint(server_host_, server_port_, fp);
     }
-    if (result == Settings::TofuResult::Unknown)
-        settings_.trust_fingerprint(server_host_, server_port_, fp);
 
     server_model_.login_status = "Authenticating...";
     server_model_.dirty("login_status");

@@ -10,11 +10,8 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
-
 jobs:
-  # ── Windows (clang-cl + LLVM 20) ────────────────────────────────────────────
+  # ── Windows (clang-cl + LLVM 22) ────────────────────────────────────────────
   windows:
     runs-on: windows-latest
     strategy:
@@ -26,21 +23,18 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Export GitHub Actions cache variables
-        uses: actions/github-script@v7
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@v4
         with:
-          script: |
-            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+          path: ~/.cache/vcpkg/archives
+          key: vcpkg-win-${{ matrix.preset }}-${{ hashFiles('vcpkg.json', 'vendor/ports/**') }}
+          restore-keys: vcpkg-win-${{ matrix.preset }}-
 
-      - name: Install LLVM 20
+      - name: Install LLVM 22
         run: |
           choco install llvm --version=22.1.0 -y
           echo "LLVMInstallDir=C:\Program Files\LLVM" >> $env:GITHUB_ENV
           echo "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
-
-      - name: Install Strawberry Perl
-        run: choco install strawberryperl -y
 
       - name: Install Ninja
         run: choco install ninja -y
@@ -77,12 +71,12 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Export GitHub Actions cache variables
-        uses: actions/github-script@v7
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@v4
         with:
-          script: |
-            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+          path: ~/.cache/vcpkg/archives
+          key: vcpkg-macos-${{ matrix.preset }}-${{ hashFiles('vcpkg.json', 'vendor/ports/**') }}
+          restore-keys: vcpkg-macos-${{ matrix.preset }}-
 
       - name: Install Ninja
         run: brew install ninja
@@ -108,12 +102,12 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Export GitHub Actions cache variables
-        uses: actions/github-script@v7
+      - name: Cache vcpkg binary packages
+        uses: actions/cache@v4
         with:
-          script: |
-            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+          path: ~/.cache/vcpkg/archives
+          key: vcpkg-linux-${{ hashFiles('vcpkg.json', 'vendor/ports/**') }}
+          restore-keys: vcpkg-linux-
 
       - name: Install dependencies
         run: |

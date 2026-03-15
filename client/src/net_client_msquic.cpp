@@ -150,7 +150,8 @@ struct NetClient::Impl {
 
         { std::lock_guard lock(buffer_mutex);       recv_buffer.clear(); }
         { std::lock_guard lock(video_buffer_mutex); video_recv_buffer.clear(); }
-        server_fingerprint.clear();
+        // Keep server_fingerprint — on 0-RTT resumption PEER_CERTIFICATE_RECEIVED
+        // won't fire, so we reuse the fingerprint from the previous connection.
     }
 
     // ── send ─────────────────────────────────────────────────────────────

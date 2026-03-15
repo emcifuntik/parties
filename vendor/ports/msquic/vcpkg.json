@@ -1,12 +1,13 @@
 {
   "name": "msquic",
-  "version": "2.5.6",
-  "port-version": 110,
-  "description": "Cross-platform, C implementation of the IETF QUIC protocol (static build, quictls TLS backend)",
+  "version-date": "2025-03-15",
+  "port-version": 0,
+  "description": "Cross-platform, C implementation of the IETF QUIC protocol (static build, external OpenSSL TLS backend)",
   "homepage": "https://github.com/microsoft/msquic",
   "license": "MIT",
   "supports": "(windows & !uwp) | linux | osx",
   "dependencies": [
+    "openssl",
     {
       "name": "vcpkg-cmake",
       "host": true

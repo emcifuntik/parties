@@ -22,5 +22,5 @@
 #define FrameMarkEnd(name)
 #define TracyPlot(name, val)
 #define TracyMessageL(msg)
-#define TracySetThreadName(name)
+#define TracySetThreadName(name) ((void)0)
 #endif
