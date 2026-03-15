@@ -195,7 +195,7 @@
     </div>
 
     <!-- Main content -->
-    <div class="main-content" data-model="lobby">
+    <div class="main-content" data-if="is_connected" data-model="lobby">
         <!-- Mobile back button (iOS only, shown via CSS) -->
         <div class="mobile-back-bar" data-event-click="mobile_back">
             <span class="mobile-back-arrow">&lt;</span>
@@ -241,6 +241,17 @@
                         {{ dev.name }}
                     </div>
                 </div>
+            </div>
+
+            <!-- Notification volume -->
+            <div class="settings-section">
+                <div class="slider-row">
+                    <span class="slider-label">Notification Volume</span>
+                    <input type="range" class="slider" min="0" max="2" step="0.01"
+                           data-value="notification_volume"
+                           data-event-change="notification_volume_changed" />
+                </div>
+                <div class="btn btn-secondary btn-small" data-event-click="test_notification_sound">Play Sound</div>
             </div>
 
             <!-- Noise cancellation toggle -->
@@ -365,16 +376,6 @@
             <!-- Identity backup/import -->
             <div class="settings-section">
                 <div class="settings-label">Identity</div>
-
-                <div class="btn btn-secondary btn-small" data-event-click="toggle_seed_phrase">
-                    <span data-if="show_seed_phrase == false">Show Seed Phrase</span>
-                    <span data-if="show_seed_phrase">Hide Seed Phrase</span>
-                </div>
-
-                <div class="seed-phrase-display" data-if="show_seed_phrase">
-                    <div class="seed-phrase-text">{{ identity_seed_phrase }}</div>
-                    <div class="btn btn-secondary btn-small" data-event-click="copy_seed_phrase">Copy</div>
-                </div>
 
                 <div class="btn btn-secondary btn-small" data-event-click="toggle_private_key">
                     <span data-if="show_private_key == false">Show Private Key</span>

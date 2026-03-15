@@ -80,11 +80,14 @@ public:
     int selected_playback = 0;
     bool denoise_enabled = true;
     bool normalize_enabled = false;
-    float normalize_target = 0.8f;
+    float normalize_target = 0.5f;
     bool aec_enabled = false;
     bool vad_enabled = true;
-    float vad_threshold = 0.43f;
+    float vad_threshold = 0.10f;
     float voice_level = 0.0f;
+
+    // Notification sounds
+    float notification_volume = 1.0f;   // 0.0 - 2.0
 
     // Push-to-talk
     bool ptt_enabled = false;
@@ -167,6 +170,8 @@ public:
     std::function<void(bool)>  on_aec_changed;
     std::function<void(bool)>  on_vad_changed;
     std::function<void(float)> on_vad_threshold_changed;
+    std::function<void(float)> on_notification_volume_changed;
+    std::function<void()>      on_test_notification_sound;
     std::function<void()>      on_toggle_ptt;
     std::function<void()>      on_ptt_bind;
     std::function<void(float)> on_ptt_delay_changed;

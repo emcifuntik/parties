@@ -205,6 +205,9 @@ void AppCore::load_saved_prefs()
     v = pref("audio.stream_volume");
     if (!v.empty()) { float vol = std::strtof(v.c_str(), nullptr); stream_audio_player_.set_volume(vol); model_.stream_volume = vol; }
 
+    v = pref("audio.notification_volume");
+    if (!v.empty()) { float vol = std::strtof(v.c_str(), nullptr); if (bridge_.set_notification_volume) bridge_.set_notification_volume(vol); model_.notification_volume = vol; }
+
     v = pref("video.share_bitrate");
     if (!v.empty()) model_.share_bitrate = std::strtof(v.c_str(), nullptr);
 
@@ -1213,6 +1216,15 @@ void AppCore::setup_model_callbacks()
     model_.on_stream_volume_changed = [this](float v) {
         stream_audio_player_.set_volume(v);
         save_pref_debounced("audio.stream_volume", std::to_string(v));
+    };
+
+    model_.on_notification_volume_changed = [this](float v) {
+        if (bridge_.set_notification_volume) bridge_.set_notification_volume(v);
+        save_pref_debounced("audio.notification_volume", std::to_string(v));
+    };
+
+    model_.on_test_notification_sound = [this]() {
+        if (bridge_.play_sound) bridge_.play_sound(SoundPlayer::Effect::UserJoined);
     };
 
     // Admin operations

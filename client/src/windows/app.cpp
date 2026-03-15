@@ -110,6 +110,9 @@ bool App::init(HWND hwnd, int renderer_id) {
     bridge.play_sound = [this](SoundPlayer::Effect e) {
         sound_player_.play(e);
     };
+    bridge.set_notification_volume = [this](float v) {
+        sound_player_.set_volume(v);
+    };
 
     bridge.show_channel_menu = [this](int channel_id, std::string name) {
         constexpr int ID_DELETE = 1;

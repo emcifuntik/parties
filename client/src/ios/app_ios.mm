@@ -242,6 +242,9 @@ using namespace parties::protocol;
     bridge.play_sound = [bself](SoundPlayer::Effect e) {
         bself->_soundPlayer.play(e);
     };
+    bridge.set_notification_volume = [bself](float v) {
+        bself->_soundPlayer.set_volume(v);
+    };
 
     bridge.show_channel_menu = nullptr;  // no right-click on iOS
     bridge.show_server_menu  = nullptr;

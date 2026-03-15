@@ -84,6 +84,7 @@ bool LobbyModel::init(Rml::Context* context) {
     ctor.Bind("vad_enabled",      &vad_enabled);
     ctor.Bind("vad_threshold",    &vad_threshold);
     ctor.Bind("voice_level",      &voice_level);
+    ctor.Bind("notification_volume", &notification_volume);
     ctor.Bind("ptt_enabled",      &ptt_enabled);
     ctor.Bind("ptt_key",          &ptt_key);
     ctor.Bind("ptt_key_name",     &ptt_key_name);
@@ -238,6 +239,16 @@ bool LobbyModel::init(Rml::Context* context) {
     ctor.BindEventCallback("vad_threshold_changed",
         [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
             if (on_vad_threshold_changed) on_vad_threshold_changed(vad_threshold);
+        });
+
+    ctor.BindEventCallback("notification_volume_changed",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            if (on_notification_volume_changed) on_notification_volume_changed(notification_volume);
+        });
+
+    ctor.BindEventCallback("test_notification_sound",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            if (on_test_notification_sound) on_test_notification_sound();
         });
 
     ctor.BindEventCallback("toggle_ptt",
@@ -500,6 +511,7 @@ void LobbyModel::dirty_all() {
     dirty("vad_enabled");
     dirty("vad_threshold");
     dirty("voice_level");
+    dirty("notification_volume");
     dirty("ptt_enabled");
     dirty("ptt_key");
     dirty("ptt_key_name");

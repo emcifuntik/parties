@@ -24,6 +24,7 @@ namespace parties::client {
 struct PlatformBridge {
     std::function<void(const std::string&)>                    copy_to_clipboard;
     std::function<void(SoundPlayer::Effect)>                   play_sound;
+    std::function<void(float)>                                 set_notification_volume;
     std::function<void(int channel_id, const std::string& name)> show_channel_menu;
     std::function<void(int server_id)>                         show_server_menu;
     std::function<void()>                                      open_share_picker;

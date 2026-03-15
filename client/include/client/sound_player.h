@@ -33,6 +33,10 @@ public:
     // Queue a sound to play (call from any thread)
     void play(Effect effect);
 
+    // Set master volume for all notification sounds (0.0 - 2.0, default 1.0)
+    void set_volume(float v) { volume_.store(v, std::memory_order_relaxed); }
+    float get_volume() const { return volume_.load(std::memory_order_relaxed); }
+
 private:
     static constexpr int kSampleRate = 48000;
     static constexpr int kMaxPlaying = 8;
@@ -52,6 +56,7 @@ private:
     };
 
     std::array<PlayingSound, kMaxPlaying> playing_;
+    std::atomic<float> volume_{1.0f};
 
     ma_device device_{};
     bool device_initialized_ = false;

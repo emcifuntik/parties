@@ -145,6 +145,8 @@ void SoundPlayer::data_callback(ma_device* device, void* output,
     auto* out = static_cast<float*>(output);
     std::memset(out, 0, frame_count * sizeof(float));
 
+    float vol = self->volume_.load(std::memory_order_relaxed);
+
     for (auto& slot : self->playing_) {
         int fx = slot.effect.load(std::memory_order_acquire);
         if (fx < 0) continue;
@@ -155,7 +157,7 @@ void SoundPlayer::data_callback(ma_device* device, void* output,
         size_t to_mix = std::min(static_cast<size_t>(frame_count), remaining);
 
         for (size_t i = 0; i < to_mix; i++)
-            out[i] += pcm[pos + i];
+            out[i] += pcm[pos + i] * vol;
 
         pos += to_mix;
         if (pos >= pcm.size()) {
