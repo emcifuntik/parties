@@ -100,7 +100,7 @@
                 <div class="channel-item"
                      data-class-active="ch.id == current_channel"
                      data-event-mousedown="channel_mousedown(ch.id, ch.name)">
-                    <span class="channel-hash">#</span>
+                    <svg class="channel-icon" src="icon-room.svg" width="18" height="18" />
                     <span class="channel-name">{{ ch.name }}</span>
                     <span class="channel-count" data-if="ch.user_count > 0">{{ ch.user_count }}</span>
                 </div>

@@ -587,13 +587,14 @@ gradient_circle.server-header-gradient {
     color: #F0F2F8;
 }
 
-.channel-item.active .channel-hash {
-    color: #6EECD4;
+.channel-icon {
+    display: block;
+    flex: none;
+    image-color: #6B7394;
 }
 
-.channel-hash {
-    color: #6B7394;
-    font-size: 16dp;
+.channel-item.active .channel-icon {
+    image-color: #6EECD4;
 }
 
 .channel-name {
