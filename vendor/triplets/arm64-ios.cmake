@@ -4,7 +4,7 @@ set(VCPKG_LIBRARY_LINKAGE static)
 
 set(VCPKG_CMAKE_SYSTEM_NAME iOS)
 set(VCPKG_OSX_ARCHITECTURES arm64)
-set(VCPKG_OSX_DEPLOYMENT_TARGET "16.0")
+set(VCPKG_OSX_DEPLOYMENT_TARGET "16.3")
 
 # Ensure SDK headers are found during vcpkg port builds
 execute_process(COMMAND xcrun --sdk iphoneos --show-sdk-path

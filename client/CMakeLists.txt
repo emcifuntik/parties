@@ -52,12 +52,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
         src/ios/RmlUi_Backend_iOS_Metal.mm
         src/ios/RmlUi_Platform_iOS.mm
     )
-    # miniaudio CoreAudio backend requires Objective-C++
-    set_source_files_properties(
-        src/audio_engine.cpp
-        src/miniaudio_impl.cpp
-        PROPERTIES LANGUAGE OBJCXX
-    )
 elseif(APPLE)
     set(CLIENT_PLATFORM_SOURCES
         # Entry point & window (AppKit / Metal)
@@ -71,14 +65,6 @@ elseif(APPLE)
 
         # Screen capture — ScreenCaptureKit (macOS 12.3+)
         src/macos/screen_capture_macos.mm
-
-        # Sound player — pure miniaudio, same as Windows
-    )
-    # miniaudio CoreAudio backend requires Objective-C++
-    set_source_files_properties(
-        src/audio_engine.cpp
-        src/miniaudio_impl.cpp
-        PROPERTIES LANGUAGE OBJCXX
     )
 else()
     set(CLIENT_PLATFORM_SOURCES
@@ -109,8 +95,16 @@ else()
     )
 endif()
 
+# miniaudio CoreAudio backend requires Objective-C++ on Apple platforms
+if(APPLE)
+    set_source_files_properties(
+        src/audio_engine.cpp
+        src/miniaudio_impl.cpp
+        PROPERTIES LANGUAGE OBJCXX
+    )
+endif()
+
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
-    # ── iOS bundle resources ──────────────────────────────────────────────
     set(IOS_ASSET_CATALOG "${CMAKE_CURRENT_SOURCE_DIR}/src/ios/Assets.xcassets")
     set(IOS_PRIVACY_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/src/ios/PrivacyInfo.xcprivacy")
 
@@ -125,26 +119,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
         MACOSX_PACKAGE_LOCATION Resources)
     set_source_files_properties(${IOS_PRIVACY_MANIFEST} PROPERTIES
         MACOSX_PACKAGE_LOCATION Resources)
-
-    set_target_properties(parties_client PROPERTIES
-        MACOSX_BUNDLE_GUI_IDENTIFIER      "com.parties.ios"
-        MACOSX_BUNDLE_BUNDLE_VERSION      "1"
-        MACOSX_BUNDLE_SHORT_VERSION_STRING "0.1"
-        MACOSX_BUNDLE_INFO_PLIST          "${CMAKE_CURRENT_SOURCE_DIR}/src/ios/Info.plist"
-        XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.parties.ios"
-        XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY    "1"    # iPhone only
-        XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "16.0"
-        XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY         "Apple Development"
-        XCODE_ATTRIBUTE_CODE_SIGN_STYLE            "Automatic"
-        XCODE_ATTRIBUTE_DEVELOPMENT_TEAM           "${APPLE_DEVELOPMENT_TEAM}"
-        XCODE_ATTRIBUTE_ENABLE_BITCODE             "NO"
-        XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME "AppIcon"
-        XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS     "${CMAKE_CURRENT_SOURCE_DIR}/src/ios/Parties.entitlements"
-        XCODE_ATTRIBUTE_GENERATE_INFOPLIST_FILE    "NO"
-        # Archive must be "iOS App Archive" (not Generic) for TestFlight
-        XCODE_ATTRIBUTE_SKIP_INSTALL               "NO"
-        XCODE_ATTRIBUTE_INSTALL_PATH               "$(LOCAL_APPS_DIR)"
-    )
 else()
     add_executable(parties_client
         ${CLIENT_COMMON_SOURCES}
@@ -191,31 +165,59 @@ if(NOT APPLE AND BUILD_IN_RETAIL)
     target_link_options(parties_client PRIVATE /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup)
 endif()
 
+# ── Apple bundle properties (shared + platform-specific) ─────────────────────
 if(APPLE)
     set_target_properties(parties_client PROPERTIES
         MACOSX_BUNDLE TRUE
-        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/res/Info.plist.in"
-        MACOSX_BUNDLE_BUNDLE_NAME "Parties Client"
+        MACOSX_BUNDLE_BUNDLE_NAME "Parties"
         MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
         MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
-        MACOSX_BUNDLE_GUI_IDENTIFIER "org.parties.client"
         MACOSX_BUNDLE_COPYRIGHT "MIT License"
+        XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "Apple Development"
+        XCODE_ATTRIBUTE_CODE_SIGN_STYLE "Automatic"
+        XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "${APPLE_DEVELOPMENT_TEAM}"
+        XCODE_ATTRIBUTE_ENABLE_BITCODE "NO"
+        XCODE_ATTRIBUTE_GENERATE_INFOPLIST_FILE "NO"
     )
+
+    if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        set_target_properties(parties_client PROPERTIES
+            MACOSX_BUNDLE_GUI_IDENTIFIER "com.parties.ios"
+            MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/src/ios/Info.plist"
+            XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.parties.ios"
+            XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1"    # iPhone only
+            XCODE_ATTRIBUTE_IPHONEOS_DEPLOYMENT_TARGET "16.3"
+            XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME "AppIcon"
+            XCODE_ATTRIBUTE_CODE_SIGN_ENTITLEMENTS "${CMAKE_CURRENT_SOURCE_DIR}/src/ios/Parties.entitlements"
+            XCODE_ATTRIBUTE_SKIP_INSTALL "NO"
+            XCODE_ATTRIBUTE_INSTALL_PATH "$(LOCAL_APPS_DIR)"
+        )
+    else()
+        set_target_properties(parties_client PROPERTIES
+            MACOSX_BUNDLE_GUI_IDENTIFIER "org.parties.client"
+            MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/res/Info.plist.in"
+            XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "org.parties.client"
+        )
+    endif()
 endif()
 
-if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+target_link_libraries(parties_client
+    PRIVATE
+        parties_common
+        parties_encdec
+        rnnoise::rnnoise
+        unofficial::sqlite3::sqlite3
+        RmlUi::RmlUi
+        $<$<NOT:$<BOOL:${BUILD_IN_RETAIL}>>:RmlUi::Debugger>
+        ${SPEEXDSP_LIBRARY}
+)
+
+if(APPLE)
+    # Shared Apple frameworks
     target_link_libraries(parties_client
         PRIVATE
-            parties_common
-            parties_encdec
-            rnnoise::rnnoise
-            unofficial::sqlite3::sqlite3
-            RmlUi::RmlUi
-            RmlUi::Debugger
-            ${SPEEXDSP_LIBRARY}
             "-framework Metal"
             "-framework MetalKit"
-            "-framework UIKit"
             "-framework Foundation"
             "-framework QuartzCore"
             "-framework CoreGraphics"
@@ -225,40 +227,18 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
             "-framework CoreAudio"
             "-framework Security"
     )
-elseif(APPLE)
-    target_link_libraries(parties_client
-        PRIVATE
-            parties_common
-            parties_encdec
-            rnnoise::rnnoise
-            unofficial::sqlite3::sqlite3
-            RmlUi::RmlUi
-            $<$<NOT:$<BOOL:${BUILD_IN_RETAIL}>>:RmlUi::Debugger>
-            ${SPEEXDSP_LIBRARY}
-            "-framework Metal"
-            "-framework MetalKit"
+    if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        target_link_libraries(parties_client PRIVATE "-framework UIKit")
+    else()
+        target_link_libraries(parties_client PRIVATE
             "-framework AppKit"
-            "-framework Foundation"
-            "-framework QuartzCore"
-            "-framework CoreGraphics"
-            "-framework CoreText"
-            "-framework AVFoundation"
-            "-framework AudioToolbox"
-            "-framework CoreAudio"
             "-framework ScreenCaptureKit"
-            "-framework Security"
-    )
+        )
+    endif()
 else()
     target_link_libraries(parties_client
         PRIVATE
-            parties_common
-            parties_encdec
-            rnnoise::rnnoise
-            unofficial::sqlite3::sqlite3
-            RmlUi::RmlUi
-            $<$<NOT:$<BOOL:${BUILD_IN_RETAIL}>>:RmlUi::Debugger>
             GPUOpen::D3D12MemoryAllocator
-            ${SPEEXDSP_LIBRARY}
             d3d11 d3d12 dxgi d3dcompiler
             windowsapp
             dwmapi
