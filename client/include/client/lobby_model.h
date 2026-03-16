@@ -58,6 +58,7 @@ public:
 
     // --- Bound state (public for App to update directly) ---
     bool is_connected = false;
+    int ping_ms = 0;
     Rml::String server_name;
     Rml::String server_initials;
     int server_color_index = 0;

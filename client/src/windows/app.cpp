@@ -419,7 +419,7 @@ void App::update() {
     // Update voice level meter
     update_voice_level();
 
-    // Update FPS counter in titlebar (once per second)
+    // Update FPS + ping in titlebar (once per second)
     fps_frame_count_++;
     auto now_fps = std::chrono::steady_clock::now();
     float elapsed_fps = std::chrono::duration<float>(now_fps - fps_last_update_).count();
@@ -430,6 +430,12 @@ void App::update() {
         if (doc_) {
             if (auto* elem = doc_->GetElementById("titlebar-fps"))
                 elem->SetInnerRML(Rml::String(std::to_string(fps) + " fps"));
+            if (auto* elem = doc_->GetElementById("titlebar-ping")) {
+                if (core_.model_.is_connected)
+                    elem->SetInnerRML(Rml::String(std::to_string(core_.model_.ping_ms) + " ms"));
+                else
+                    elem->SetInnerRML("");
+            }
         }
     }
 

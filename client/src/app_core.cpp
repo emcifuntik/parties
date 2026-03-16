@@ -131,6 +131,18 @@ void AppCore::tick()
     update_speaking_state();
     flush_pending_prefs();
 
+    // Send keepalive ping every 2 seconds while connected
+    if (authenticated_) {
+        auto now = std::chrono::steady_clock::now();
+        auto since_last = std::chrono::duration_cast<std::chrono::milliseconds>(now - ping_last_send_).count();
+        if (since_last >= 2000) {
+            ping_sent_at_ = now;
+            ping_pending_ = true;
+            ping_last_send_ = now;
+            net_.send_message(protocol::ControlMessageType::KEEPALIVE_PING, nullptr, 0);
+        }
+    }
+
     // Stream FPS counter (updated once per second)
     auto now = std::chrono::steady_clock::now();
     float elapsed = std::chrono::duration<float>(now - stream_fps_last_update_).count();
@@ -443,6 +455,8 @@ void AppCore::on_disconnect_cleanup()
     voice_last_active_.clear();
 
     model_.is_connected = false;
+    model_.ping_ms = 0;
+    ping_pending_ = false;
     model_.current_channel = 0;
     model_.current_channel_name.clear();
     model_.channels.clear();
@@ -641,6 +655,15 @@ void AppCore::handle_server_message(protocol::ControlMessageType type,
         on_admin_result(data, len); break;
     case protocol::ControlMessageType::SERVER_ERROR:
         on_server_error(data, len); break;
+    case protocol::ControlMessageType::KEEPALIVE_PONG:
+        if (ping_pending_) {
+            ping_pending_ = false;
+            auto rtt = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - ping_sent_at_).count();
+            model_.ping_ms = static_cast<int>(rtt);
+            model_.dirty("ping_ms");
+        }
+        break;
     default: break;
     }
 }

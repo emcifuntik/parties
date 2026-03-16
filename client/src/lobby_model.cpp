@@ -60,6 +60,7 @@ bool LobbyModel::init(Rml::Context* context) {
 
     // Bind variables
     ctor.Bind("is_connected",   &is_connected);
+    ctor.Bind("ping_ms",        &ping_ms);
     ctor.Bind("server_name",    &server_name);
     ctor.Bind("server_initials",&server_initials);
     ctor.Bind("server_color_index", &server_color_index);

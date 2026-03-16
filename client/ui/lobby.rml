@@ -17,7 +17,10 @@
             <svg class="titlebar-logo" src="logo.svg" width="18" height="18" />
             <span class="titlebar-title">parties</span>
         </div>
-        <span class="titlebar-fps" id="titlebar-fps"></span>
+        <div class="titlebar-stats">
+            <span class="titlebar-ping" id="titlebar-ping"></span>
+            <span class="titlebar-fps" id="titlebar-fps"></span>
+        </div>
         <div class="titlebar-buttons">
             <div class="titlebar-btn" id="titlebar-minimize">
                 <div class="tb-icon-minimize"></div>

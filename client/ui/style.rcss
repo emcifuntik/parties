@@ -72,10 +72,25 @@ body {
     font-weight: bold;
 }
 
-.titlebar-fps {
+.titlebar-stats {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    margin-left: auto;
+    margin-right: 8dp;
+    gap: 12dp;
+}
+
+.titlebar-ping {
+    display: block;
     color: #4A5170;
     font-size: 11dp;
-    margin-right: 8dp;
+}
+
+.titlebar-fps {
+    display: block;
+    color: #4A5170;
+    font-size: 11dp;
 }
 
 .titlebar-buttons {

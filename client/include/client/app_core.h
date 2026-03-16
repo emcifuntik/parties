@@ -129,6 +129,9 @@ private:
     std::unordered_map<std::string, PendingPref> pending_prefs_;
 
     std::chrono::steady_clock::time_point stream_fps_last_update_{std::chrono::steady_clock::now()};
+    std::chrono::steady_clock::time_point ping_sent_at_{};
+    std::chrono::steady_clock::time_point ping_last_send_{};
+    bool ping_pending_ = false;
 
     void on_auth_response(const uint8_t* data, size_t len);
     void on_channel_list(const uint8_t* data, size_t len);
