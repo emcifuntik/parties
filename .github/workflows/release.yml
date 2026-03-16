@@ -211,11 +211,14 @@ jobs:
           name: release-macos
           path: dist/macos-client
 
+      - name: Restore macOS executable permissions
+        run: chmod +x dist/macos-client/Parties.app/Contents/MacOS/parties_client
+
       - name: Package release archives
         run: |
           cd dist/windows-client && zip -r ../../parties-client-windows-${{ github.ref_name }}.zip . && cd ../..
           cd dist/windows-server && zip -r ../../parties-server-windows-${{ github.ref_name }}.zip . && cd ../..
-          cd dist/macos-client && zip -ry ../../parties-client-macos-${{ github.ref_name }}.zip Parties.app && cd ../..
+          tar -czf parties-client-macos-${{ github.ref_name }}.tar.gz -C dist/macos-client Parties.app
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -224,4 +227,4 @@ jobs:
           files: |
             parties-client-windows-${{ github.ref_name }}.zip
             parties-server-windows-${{ github.ref_name }}.zip
-            parties-client-macos-${{ github.ref_name }}.zip
+            parties-client-macos-${{ github.ref_name }}.tar.gz
