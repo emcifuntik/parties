@@ -313,6 +313,20 @@ bool Database::delete_channel(ChannelId id) {
     return ok;
 }
 
+bool Database::rename_channel(ChannelId id, const std::string& new_name) {
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "UPDATE channels SET name = ? WHERE id = ?";
+
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
+        return false;
+
+    sqlite3_bind_text(stmt, 1, new_name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, static_cast<int>(id));
+    bool ok = sqlite3_step(stmt) == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+    return ok;
+}
+
 // --- Channel permissions ---
 
 bool Database::set_channel_permission(ChannelId channel_id, Role role, uint32_t permissions) {

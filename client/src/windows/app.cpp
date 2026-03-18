@@ -115,11 +115,22 @@ bool App::init(HWND hwnd, int renderer_id) {
     };
 
     bridge.show_channel_menu = [this](int channel_id, std::string name) {
-        constexpr int ID_DELETE = 1;
+        constexpr int ID_RENAME = 1;
+        constexpr int ID_DELETE = 2;
         std::vector<ContextMenu::Item> items;
+        items.push_back({L"Rename Channel", ID_RENAME, false});
         items.push_back({L"Delete Channel", ID_DELETE, true});
         int cmd = ContextMenu::show(hwnd_, items);
-        if (cmd == ID_DELETE) {
+        if (cmd == ID_RENAME) {
+            core_.model_.rename_channel_id = channel_id;
+            core_.model_.rename_channel_name = name;
+            core_.model_.new_rename_channel_name = name;
+            core_.model_.show_rename_channel = true;
+            core_.model_.dirty("rename_channel_id");
+            core_.model_.dirty("rename_channel_name");
+            core_.model_.dirty("new_rename_channel_name");
+            core_.model_.dirty("show_rename_channel");
+        } else if (cmd == ID_DELETE) {
             BinaryWriter writer;
             writer.write_u32(static_cast<uint32_t>(channel_id));
             core_.net_.send_message(protocol::ControlMessageType::ADMIN_DELETE_CHANNEL,

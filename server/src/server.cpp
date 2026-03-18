@@ -639,6 +639,43 @@ void Server::handle_message(const IncomingMessage& msg) {
         break;
     }
 
+    // ── Admin: rename channel ───────────────────────────────────────────
+    case protocol::ControlMessageType::ADMIN_RENAME_CHANNEL: {
+        if (!session->authenticated) break;
+
+        Role user_role = static_cast<Role>(session->role);
+        if (!has_permission(user_role, Permission::CreateChannel)) {
+            send_error(msg.session_id, "Permission denied");
+            break;
+        }
+
+        BinaryReader reader(msg.payload.data(), msg.payload.size());
+        ChannelId channel_id = reader.read_u32();
+        std::string new_name = reader.read_string();
+        if (reader.error() || new_name.empty()) break;
+
+        if (!db_.rename_channel(channel_id, new_name)) {
+            send_error(msg.session_id, "Failed to rename channel");
+            break;
+        }
+
+        LOG_INFO("Channel {} renamed to '{}' by '{}'", channel_id, new_name, session->username);
+
+        // Broadcast updated channel list to all authenticated clients
+        auto all = quic_.get_sessions();
+        for (auto& s : all) {
+            if (s->authenticated)
+                send_channel_list(s->id);
+        }
+
+        BinaryWriter writer;
+        writer.write_u8(1);
+        writer.write_string("Channel renamed");
+        quic_.send_to(msg.session_id, protocol::ControlMessageType::ADMIN_RESULT,
+                     writer.data().data(), writer.data().size());
+        break;
+    }
+
     // ── Admin: set role ─────────────────────────────────────────────────
     case protocol::ControlMessageType::ADMIN_SET_ROLE: {
         if (!session->authenticated) break;

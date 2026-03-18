@@ -54,6 +54,7 @@ public:
     std::optional<ChannelRow> get_channel(ChannelId id);
     std::vector<ChannelRow> get_all_channels();
     bool delete_channel(ChannelId id);
+    bool rename_channel(ChannelId id, const std::string& new_name);
 
     // --- Channel permissions ---
     bool set_channel_permission(ChannelId channel_id, Role role, uint32_t permissions);

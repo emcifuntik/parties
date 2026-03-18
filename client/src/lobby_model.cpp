@@ -124,6 +124,10 @@ bool LobbyModel::init(Rml::Context* context) {
     ctor.Bind("can_manage_roles",     &can_manage_roles);
     ctor.Bind("show_create_channel",  &show_create_channel);
     ctor.Bind("new_channel_name",     &new_channel_name);
+    ctor.Bind("show_rename_channel",      &show_rename_channel);
+    ctor.Bind("rename_channel_id",        &rename_channel_id);
+    ctor.Bind("rename_channel_name",      &rename_channel_name);
+    ctor.Bind("new_rename_channel_name",  &new_rename_channel_name);
     ctor.Bind("admin_message",        &admin_message);
 
     // User context menu
@@ -378,6 +382,17 @@ bool LobbyModel::init(Rml::Context* context) {
             if (on_create_channel) on_create_channel();
         });
 
+    ctor.BindEventCallback("cancel_rename_channel",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            show_rename_channel = false;
+            dirty("show_rename_channel");
+        });
+
+    ctor.BindEventCallback("rename_channel",
+        [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
+            if (on_rename_channel) on_rename_channel();
+        });
+
     ctor.BindEventCallback("channel_mousedown",
         [this](Rml::DataModelHandle, Rml::Event& ev, const Rml::VariantList& args) {
             int button = ev.GetParameter<int>("button", 0);
@@ -547,6 +562,9 @@ void LobbyModel::dirty_all() {
     dirty("can_kick");
     dirty("can_manage_roles");
     dirty("show_create_channel");
+    dirty("show_rename_channel");
+    dirty("rename_channel_name");
+    dirty("new_rename_channel_name");
     dirty("admin_message");
     dirty("show_user_menu");
     dirty("menu_user_id");

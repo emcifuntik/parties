@@ -145,6 +145,12 @@ public:
     bool show_create_channel = false;
     Rml::String new_channel_name;
 
+    // Rename channel form
+    bool show_rename_channel = false;
+    int rename_channel_id = 0;
+    Rml::String rename_channel_name;      // current name (display only)
+    Rml::String new_rename_channel_name;  // input field
+
     // Admin feedback
     Rml::String admin_message;
 
@@ -201,6 +207,7 @@ public:
     // Admin
     std::function<void()>      on_create_channel;
     std::function<void(int)>   on_delete_channel;
+    std::function<void()>      on_rename_channel;
     std::function<void(int, std::string, int)> on_show_user_menu;    // (user_id, name, role)
     std::function<void(int, std::string)>      on_show_channel_menu; // (channel_id, name)
 

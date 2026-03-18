@@ -1294,6 +1294,19 @@ void AppCore::setup_model_callbacks()
                           w.data().data(), w.data().size());
     };
 
+    model_.on_rename_channel = [this]() {
+        if (!authenticated_) return;
+        std::string new_name(model_.new_rename_channel_name);
+        if (new_name.empty()) return;
+        BinaryWriter w;
+        w.write_u32(static_cast<uint32_t>(model_.rename_channel_id));
+        w.write_string(new_name);
+        net_.send_message(protocol::ControlMessageType::ADMIN_RENAME_CHANNEL,
+                          w.data().data(), w.data().size());
+        model_.show_rename_channel = false;
+        model_.dirty("show_rename_channel");
+    };
+
     model_.on_show_user_menu = [this](int user_id, std::string name, int user_role) {
         if (!authenticated_ || static_cast<uint32_t>(user_id) == user_id_) return;
         apply_user_audio_prefs(static_cast<UserId>(user_id));

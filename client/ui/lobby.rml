@@ -687,6 +687,19 @@
         </div>
     </div>
 
+    <!-- Rename channel modal -->
+    <div class="modal-backdrop" data-model="lobby" data-if="show_rename_channel">
+        <div class="modal-box">
+            <h1>Rename Channel</h1>
+
+            <div class="label">New Name</div>
+            <input type="text" data-value="new_rename_channel_name" />
+
+            <div class="btn" data-event-click="rename_channel">Rename</div>
+            <div class="btn btn-secondary" data-event-click="cancel_rename_channel">Cancel</div>
+        </div>
+    </div>
+
 
 </body>
 </rml>

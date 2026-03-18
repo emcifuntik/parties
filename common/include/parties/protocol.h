@@ -42,6 +42,7 @@ enum class ControlMessageType : uint16_t {
     ADMIN_DELETE_CHANNEL  = 0x0202,
     ADMIN_SET_ROLE        = 0x0203,
     ADMIN_KICK_USER       = 0x0204,
+    ADMIN_RENAME_CHANNEL  = 0x0205,
 
     // Server -> Client admin responses
     ADMIN_RESULT          = 0x0301,
