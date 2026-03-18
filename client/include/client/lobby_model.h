@@ -93,15 +93,21 @@ public:
     // Push-to-talk
     bool ptt_enabled = false;
     int ptt_key = 0;                // Win32 virtual key code (0 = not set)
+    int ptt_key2 = 0;               // optional second regular key held in combo (0 = none)
+    int ptt_mods = 0;               // modifier bitmask: 1=Ctrl 2=Shift 4=Alt
     Rml::String ptt_key_name;       // display name for UI
     bool ptt_binding = false;        // true when waiting for key press
     float ptt_delay = 0.0f;         // release delay in ms (0-1000, step 50)
 
     // Global hotkeys
     int mute_key = 0;               // Toggle mute hotkey (0 = not set)
+    int mute_key2 = 0;
+    int mute_mods = 0;
     Rml::String mute_key_name;
     bool mute_binding = false;
     int deafen_key = 0;             // Toggle deafen hotkey (0 = not set)
+    int deafen_key2 = 0;
+    int deafen_mods = 0;
     Rml::String deafen_key_name;
     bool deafen_binding = false;
 

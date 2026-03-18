@@ -88,6 +88,12 @@ private:
     bool mute_key_held_   = false;
     bool deafen_key_held_ = false;
 
+    // Keybind capture — accumulates peak simultaneous keys, finalizes on release
+    int  capture_peak_key_  = 0;
+    int  capture_peak_key2_ = 0;
+    int  capture_peak_mods_ = 0;
+    bool capture_had_input_ = false;
+
     // Screen sharing state
     std::vector<CaptureTarget> capture_targets_;
     std::unique_ptr<ScreenCapture> capture_;

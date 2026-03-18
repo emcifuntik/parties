@@ -60,25 +60,33 @@ static std::string vk_to_name(int vk) {
     }
 }
 
-// Helper: scan for key press during keybind capture
-static bool capture_keybind(int& out_key, Rml::String& out_name, bool& binding,
-                             const std::string& pref_key,
-                             parties::client::Settings& settings) {
-    for (int vk = 1; vk < 256; vk++) {
-        if (vk == VK_ESCAPE) {
-            if (GetAsyncKeyState(vk) & 0x8000) { binding = false; return true; }
-            continue;
-        }
-        if (GetAsyncKeyState(vk) & 0x8000) {
-            out_key  = vk;
-            out_name = Rml::String(vk_to_name(vk).c_str());
-            binding  = false;
-            settings.set_pref(pref_key, std::to_string(vk));
-            return true;
-        }
-    }
-    return false;
+// Modifier bitmask: 1=Ctrl  2=Shift  4=Alt
+static bool is_modifier_vk(int vk) {
+    return vk == VK_SHIFT   || vk == VK_CONTROL  || vk == VK_MENU    ||
+           vk == VK_LSHIFT  || vk == VK_RSHIFT   ||
+           vk == VK_LCONTROL|| vk == VK_RCONTROL ||
+           vk == VK_LMENU   || vk == VK_RMENU;
 }
+
+static int current_mods() {
+    int m = 0;
+    if (GetAsyncKeyState(VK_CONTROL) & 0x8000) m |= 1;
+    if (GetAsyncKeyState(VK_SHIFT)   & 0x8000) m |= 2;
+    if (GetAsyncKeyState(VK_MENU)    & 0x8000) m |= 4;
+    return m;
+}
+
+// key2=0 means no second key; modifiers prefix; key2 (if set) shown before main key
+static std::string combo_name(int key, int key2, int mods) {
+    std::string name;
+    if (mods & 1) name += "Ctrl+";
+    if (mods & 2) name += "Shift+";
+    if (mods & 4) name += "Alt+";
+    if (key2 != 0) { name += vk_to_name(key2); name += "+"; }
+    name += vk_to_name(key);
+    return name;
+}
+
 
 // ═══════════════════════════════════════════════════════════════════════
 // App — Windows platform wrapper around AppCore
@@ -226,22 +234,24 @@ bool App::init(HWND hwnd, int renderer_id) {
             auto v = core_.settings_.get_pref(key);
             return v.value_or("");
         };
-        std::string val;
-        val = pref("audio.ptt_key");
-        if (!val.empty()) {
-            core_.model_.ptt_key      = std::stoi(val);
-            core_.model_.ptt_key_name = Rml::String(vk_to_name(core_.model_.ptt_key).c_str());
-        }
-        val = pref("audio.mute_key");
-        if (!val.empty()) {
-            core_.model_.mute_key      = std::stoi(val);
-            core_.model_.mute_key_name = Rml::String(vk_to_name(core_.model_.mute_key).c_str());
-        }
-        val = pref("audio.deafen_key");
-        if (!val.empty()) {
-            core_.model_.deafen_key      = std::stoi(val);
-            core_.model_.deafen_key_name = Rml::String(vk_to_name(core_.model_.deafen_key).c_str());
-        }
+        auto load_hotkey = [&](int& key, int& key2, int& mods, Rml::String& name,
+                                const char* kKey, const char* kKey2, const char* kMods) {
+            std::string v = pref(kKey);
+            if (v.empty()) return;
+            key  = std::stoi(v);
+            std::string v2 = pref(kKey2); key2 = v2.empty() ? 0 : std::stoi(v2);
+            std::string vm = pref(kMods); mods = vm.empty() ? 0 : std::stoi(vm);
+            name = Rml::String(combo_name(key, key2, mods).c_str());
+        };
+        load_hotkey(core_.model_.ptt_key,    core_.model_.ptt_key2,    core_.model_.ptt_mods,
+                    core_.model_.ptt_key_name,
+                    "audio.ptt_key",    "audio.ptt_key2",    "audio.ptt_mods");
+        load_hotkey(core_.model_.mute_key,   core_.model_.mute_key2,   core_.model_.mute_mods,
+                    core_.model_.mute_key_name,
+                    "audio.mute_key",   "audio.mute_key2",   "audio.mute_mods");
+        load_hotkey(core_.model_.deafen_key, core_.model_.deafen_key2, core_.model_.deafen_mods,
+                    core_.model_.deafen_key_name,
+                    "audio.deafen_key", "audio.deafen_key2", "audio.deafen_mods");
     }
 
     // Sound player (separate device, always running)
@@ -293,37 +303,87 @@ void App::shutdown() {
 }
 
 void App::poll_hotkeys() {
-    // Keybind capture (scan for any key press)
-    if (core_.model_.ptt_binding) {
-        if (capture_keybind(core_.model_.ptt_key, core_.model_.ptt_key_name,
-                            core_.model_.ptt_binding, "audio.ptt_key", core_.settings_)) {
-            core_.model_.dirty("ptt_key");
-            core_.model_.dirty("ptt_key_name");
-            core_.model_.dirty("ptt_binding");
+    // Keybind capture — peak-combo approach:
+    //   1. Track the maximum simultaneous keys pressed (including Ctrl/Shift/Alt).
+    //   2. Finalize only when ALL keys are released after at least one input.
+    //   This lets the user press G+M together and have both recorded.
+    bool any_binding = core_.model_.ptt_binding || core_.model_.mute_binding || core_.model_.deafen_binding;
+    if (any_binding) {
+        if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) {
+            core_.model_.ptt_binding = core_.model_.mute_binding = core_.model_.deafen_binding = false;
+            core_.model_.dirty("ptt_binding"); core_.model_.dirty("mute_binding"); core_.model_.dirty("deafen_binding");
+            capture_peak_key_ = capture_peak_key2_ = capture_peak_mods_ = 0;
+            capture_had_input_ = false;
+        } else {
+            // Collect currently pressed non-modifier keys (up to 2)
+            int pressed[2] = {0, 0};
+            int count = 0;
+            for (int vk = 1; vk < 256 && count < 2; vk++) {
+                if (is_modifier_vk(vk)) continue;
+                if (GetAsyncKeyState(vk) & 0x8000) pressed[count++] = vk;
+            }
+            int mods = current_mods();
+
+            if (count > 0) {
+                // Update peak: prefer the combination with more regular keys
+                int peak_count = (capture_peak_key2_ != 0) ? 2 : (capture_peak_key_ != 0 ? 1 : 0);
+                if (count > peak_count) {
+                    capture_peak_key2_ = (count >= 2) ? pressed[0] : 0;
+                    capture_peak_key_  = (count >= 2) ? pressed[1] : pressed[0];
+                    capture_peak_mods_ = mods;
+                }
+                capture_had_input_ = true;
+            } else if (capture_had_input_ && capture_peak_key_ != 0) {
+                // All keys released — finalize
+                auto finalize = [&](int& key, int& key2, int& out_mods, Rml::String& name,
+                                    bool& binding,
+                                    const char* pk, const char* pk2, const char* pm,
+                                    const char* dirty_key, const char* dirty_name, const char* dirty_bind) {
+                    key     = capture_peak_key_;
+                    key2    = capture_peak_key2_;
+                    out_mods= capture_peak_mods_;
+                    name    = Rml::String(combo_name(key, key2, out_mods).c_str());
+                    binding = false;
+                    core_.settings_.set_pref(pk,  std::to_string(key));
+                    core_.settings_.set_pref(pk2, std::to_string(key2));
+                    core_.settings_.set_pref(pm,  std::to_string(out_mods));
+                    core_.model_.dirty(dirty_key);
+                    core_.model_.dirty(dirty_name);
+                    core_.model_.dirty(dirty_bind);
+                };
+                if (core_.model_.ptt_binding)
+                    finalize(core_.model_.ptt_key, core_.model_.ptt_key2, core_.model_.ptt_mods,
+                             core_.model_.ptt_key_name, core_.model_.ptt_binding,
+                             "audio.ptt_key", "audio.ptt_key2", "audio.ptt_mods",
+                             "ptt_key", "ptt_key_name", "ptt_binding");
+                if (core_.model_.mute_binding)
+                    finalize(core_.model_.mute_key, core_.model_.mute_key2, core_.model_.mute_mods,
+                             core_.model_.mute_key_name, core_.model_.mute_binding,
+                             "audio.mute_key", "audio.mute_key2", "audio.mute_mods",
+                             "mute_key", "mute_key_name", "mute_binding");
+                if (core_.model_.deafen_binding)
+                    finalize(core_.model_.deafen_key, core_.model_.deafen_key2, core_.model_.deafen_mods,
+                             core_.model_.deafen_key_name, core_.model_.deafen_binding,
+                             "audio.deafen_key", "audio.deafen_key2", "audio.deafen_mods",
+                             "deafen_key", "deafen_key_name", "deafen_binding");
+                capture_peak_key_ = capture_peak_key2_ = capture_peak_mods_ = 0;
+                capture_had_input_ = false;
+            }
         }
     }
-    if (core_.model_.mute_binding) {
-        if (capture_keybind(core_.model_.mute_key, core_.model_.mute_key_name,
-                            core_.model_.mute_binding, "audio.mute_key", core_.settings_)) {
-            core_.model_.dirty("mute_key");
-            core_.model_.dirty("mute_key_name");
-            core_.model_.dirty("mute_binding");
-        }
-    }
-    if (core_.model_.deafen_binding) {
-        if (capture_keybind(core_.model_.deafen_key, core_.model_.deafen_key_name,
-                            core_.model_.deafen_binding, "audio.deafen_key", core_.settings_)) {
-            core_.model_.dirty("deafen_key");
-            core_.model_.dirty("deafen_key_name");
-            core_.model_.dirty("deafen_binding");
-        }
-    }
+
+    // Returns true when the full hotkey combo (key + optional key2 + mods) is held
+    auto combo_held = [](int key, int key2, int mods) -> bool {
+        if (!(GetAsyncKeyState(key) & 0x8000)) return false;
+        if (key2 != 0 && !(GetAsyncKeyState(key2) & 0x8000)) return false;
+        return current_mods() == mods;
+    };
 
     // PTT polling — only controls audio mute, does not touch model_.is_muted
     // PTT is blocked when manually muted or deafened
     if (core_.model_.ptt_enabled && core_.model_.ptt_key != 0 && core_.current_channel_ != 0) {
         bool blocked = core_.model_.is_muted || core_.model_.is_deafened;
-        bool held = (GetAsyncKeyState(core_.model_.ptt_key) & 0x8000) != 0;
+        bool held = combo_held(core_.model_.ptt_key, core_.model_.ptt_key2, core_.model_.ptt_mods);
         auto now = std::chrono::steady_clock::now();
         if (held && !blocked) {
             ptt_held_ = true;
@@ -345,7 +405,7 @@ void App::poll_hotkeys() {
 
     // Mute toggle hotkey (edge-triggered)
     if (core_.model_.mute_key != 0 && core_.current_channel_ != 0) {
-        bool held = (GetAsyncKeyState(core_.model_.mute_key) & 0x8000) != 0;
+        bool held = combo_held(core_.model_.mute_key, core_.model_.mute_key2, core_.model_.mute_mods);
         if (held && !mute_key_held_) {
             if (core_.model_.on_toggle_mute) core_.model_.on_toggle_mute();
         }
@@ -354,7 +414,7 @@ void App::poll_hotkeys() {
 
     // Deafen toggle hotkey (edge-triggered)
     if (core_.model_.deafen_key != 0 && core_.current_channel_ != 0) {
-        bool held = (GetAsyncKeyState(core_.model_.deafen_key) & 0x8000) != 0;
+        bool held = combo_held(core_.model_.deafen_key, core_.model_.deafen_key2, core_.model_.deafen_mods);
         if (held && !deafen_key_held_) {
             if (core_.model_.on_toggle_deafen) core_.model_.on_toggle_deafen();
         }
