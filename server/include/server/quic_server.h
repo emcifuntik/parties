@@ -32,6 +32,19 @@ struct DataPacket {
     std::vector<uint8_t> data;
 };
 
+// File transfer events (pushed from QUIC thread, polled by server main loop)
+struct FileUploadEvent {
+    uint32_t session_id;
+    uint64_t attachment_id;
+    std::vector<uint8_t> data;
+};
+
+struct FileDownloadRequest {
+    uint32_t session_id;
+    uint64_t attachment_id;
+    HQUIC stream;  // Send file data back on this stream
+};
+
 class QuicServer {
 public:
     QuicServer();
@@ -102,6 +115,14 @@ public:
     bool send_to_on_channel(uint32_t session_id, uint8_t channel,
                             const uint8_t* data, size_t len, uint32_t flags);
 
+    // ── File transfer ──
+
+    ThreadQueue<FileUploadEvent>& file_uploads() { return file_uploads_; }
+    ThreadQueue<FileDownloadRequest>& file_downloads() { return file_downloads_; }
+
+    // Send raw data on a file stream and close it with FIN
+    bool send_file_on_stream(HQUIC stream, const uint8_t* data, size_t len);
+
 private:
     // MsQuic callback functions (static, forward to member via context)
     static QUIC_STATUS QUIC_API listener_callback(HQUIC listener, void* context,
@@ -111,12 +132,18 @@ private:
     static QUIC_STATUS QUIC_API stream_callback(HQUIC stream, void* context,
                                                  QUIC_STREAM_EVENT* event);
 
+    struct FileStreamContext;
+    static QUIC_STATUS QUIC_API file_stream_callback(HQUIC stream, void* context,
+                                                      QUIC_STREAM_EVENT* event);
+
     // Internal event handlers
     QUIC_STATUS on_new_connection(HQUIC listener, QUIC_LISTENER_EVENT* event);
     QUIC_STATUS on_connection_event(HQUIC connection, uint32_t session_id,
                                     QUIC_CONNECTION_EVENT* event);
     QUIC_STATUS on_stream_event(HQUIC stream, uint32_t session_id,
                                 QUIC_STREAM_EVENT* event);
+    QUIC_STATUS on_file_stream_event(HQUIC stream, FileStreamContext* ctx,
+                                      QUIC_STREAM_EVENT* event);
 
     // Send length-prefixed control message on a session's control stream
     bool send_control_on_stream(HQUIC stream, protocol::ControlMessageType type,
@@ -145,6 +172,8 @@ private:
 
     ThreadQueue<IncomingMessage> control_incoming_;
     ThreadQueue<DataPacket> data_incoming_;
+    ThreadQueue<FileUploadEvent> file_uploads_;
+    ThreadQueue<FileDownloadRequest> file_downloads_;
 };
 
 } // namespace parties::server

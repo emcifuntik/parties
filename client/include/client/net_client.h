@@ -63,6 +63,10 @@ public:
     // deferred until after auth to ensure correct QUIC stream ID ordering.
     void open_av_streams();
 
+    // File transfer — open ephemeral QUIC streams
+    bool upload_file(uint64_t attachment_id, const uint8_t* data, size_t len);
+    bool download_file(uint64_t attachment_id);
+
     // Parsed control messages pushed by the transport layer.
     ThreadQueue<ServerMessage>& incoming() { return incoming_; }
 
@@ -70,6 +74,9 @@ public:
     std::function<void(const uint8_t* data, size_t len)>   on_data_received;
     std::function<void()>                                   on_disconnected;
     std::function<void(const uint8_t* ticket, size_t len)> on_resumption_ticket;
+
+    // File transfer callbacks
+    std::function<void(uint64_t attachment_id, std::vector<uint8_t> data)> on_file_downloaded;
 
 private:
     struct Impl;

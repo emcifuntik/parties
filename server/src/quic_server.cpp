@@ -14,6 +14,16 @@ struct ConnectionContext {
     uint32_t session_id;
 };
 
+// Context for file transfer streams (ephemeral, one per file upload/download)
+struct QuicServer::FileStreamContext {
+    QuicServer* server;
+    uint32_t session_id;
+    std::vector<uint8_t> buffer;   // accumulated received data
+    bool header_parsed;
+    uint8_t stream_type;           // STREAM_TYPE_FILE_UPLOAD or STREAM_TYPE_FILE_DOWNLOAD
+    uint64_t attachment_id;
+};
+
 QuicServer::QuicServer() = default;
 
 QuicServer::~QuicServer() {
@@ -43,7 +53,7 @@ bool QuicServer::start(const std::string& listen_ip, uint16_t port, size_t max_c
     QUIC_SETTINGS settings = {};
     settings.IdleTimeoutMs = 60000;
     settings.IsSet.IdleTimeoutMs = TRUE;
-    settings.PeerBidiStreamCount = 2;  // Control stream + video stream
+    settings.PeerBidiStreamCount = 10;  // Control + video + up to 8 file transfers
     settings.IsSet.PeerBidiStreamCount = TRUE;
     settings.DatagramReceiveEnabled = TRUE;
     settings.IsSet.DatagramReceiveEnabled = TRUE;
@@ -363,23 +373,30 @@ QUIC_STATUS QuicServer::on_connection_event(HQUIC connection, uint32_t session_i
         // Client opened a bidirectional stream
         HQUIC stream = event->PEER_STREAM_STARTED.Stream;
 
-        auto* ctx = new ConnectionContext{ this, session_id };
-        api_->SetCallbackHandler(stream, (void*)stream_callback, ctx);
-
+        bool is_file_stream = false;
         {
             std::lock_guard<std::mutex> lock(sessions_mutex_);
             auto it = sessions_.find(session_id);
             if (it != sessions_.end()) {
                 if (!it->second->quic_control_stream) {
-                    // First stream = control
                     it->second->quic_control_stream = stream;
                     LOG_INFO("Session {} opened control stream", session_id);
-                } else {
-                    // Second stream = video
+                } else if (!it->second->quic_video_stream) {
                     it->second->quic_video_stream = stream;
                     LOG_INFO("Session {} opened video stream", session_id);
+                } else {
+                    is_file_stream = true;
                 }
             }
+        }
+
+        if (is_file_stream) {
+            auto* fctx = new FileStreamContext{ this, session_id, {}, false, 0, 0 };
+            api_->SetCallbackHandler(stream, (void*)file_stream_callback, fctx);
+            LOG_INFO("Session {} opened file transfer stream", session_id);
+        } else {
+            auto* ctx = new ConnectionContext{ this, session_id };
+            api_->SetCallbackHandler(stream, (void*)stream_callback, ctx);
         }
         break;
     }
@@ -639,6 +656,99 @@ void QuicServer::process_video_stream_data(uint32_t session_id,
             data_incoming_.push(std::move(pkt));
         }
     }
+}
+
+// ── File transfer streams ──
+
+QUIC_STATUS QUIC_API QuicServer::file_stream_callback(
+    HQUIC stream, void* context, QUIC_STREAM_EVENT* event) {
+    auto* ctx = static_cast<FileStreamContext*>(context);
+    auto status = ctx->server->on_file_stream_event(stream, ctx, event);
+    if (event->Type == QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE) {
+        ctx->server->api_->StreamClose(stream);
+        delete ctx;
+    }
+    return status;
+}
+
+QUIC_STATUS QuicServer::on_file_stream_event(HQUIC stream, FileStreamContext* ctx,
+                                              QUIC_STREAM_EVENT* event) {
+    switch (event->Type) {
+    case QUIC_STREAM_EVENT_RECEIVE: {
+        for (uint32_t i = 0; i < event->RECEIVE.BufferCount; i++) {
+            auto& buf = event->RECEIVE.Buffers[i];
+            ctx->buffer.insert(ctx->buffer.end(), buf.Buffer, buf.Buffer + buf.Length);
+        }
+
+        // Parse header: [type(1)][attachment_id(8)] = 9 bytes
+        if (!ctx->header_parsed && ctx->buffer.size() >= 9) {
+            ctx->stream_type = ctx->buffer[0];
+            std::memcpy(&ctx->attachment_id, ctx->buffer.data() + 1, 8);
+            ctx->header_parsed = true;
+            ctx->buffer.erase(ctx->buffer.begin(), ctx->buffer.begin() + 9);
+        }
+        break;
+    }
+
+    case QUIC_STREAM_EVENT_PEER_SEND_SHUTDOWN: {
+        if (!ctx->header_parsed) break;
+
+        if (ctx->stream_type == protocol::STREAM_TYPE_FILE_UPLOAD) {
+            // Upload complete — push event for server main loop
+            FileUploadEvent ev;
+            ev.session_id = ctx->session_id;
+            ev.attachment_id = ctx->attachment_id;
+            ev.data = std::move(ctx->buffer);
+            file_uploads_.push(std::move(ev));
+        } else if (ctx->stream_type == protocol::STREAM_TYPE_FILE_DOWNLOAD) {
+            // Download request — push for server main loop to handle
+            FileDownloadRequest req;
+            req.session_id = ctx->session_id;
+            req.attachment_id = ctx->attachment_id;
+            req.stream = stream;
+            file_downloads_.push(std::move(req));
+        }
+        break;
+    }
+
+    case QUIC_STREAM_EVENT_SEND_COMPLETE: {
+        auto* qb = static_cast<QUIC_BUFFER*>(event->SEND_COMPLETE.ClientContext);
+        if (qb) {
+            delete[] qb->Buffer;
+            delete qb;
+        }
+        break;
+    }
+
+    case QUIC_STREAM_EVENT_PEER_SEND_ABORTED:
+    case QUIC_STREAM_EVENT_PEER_RECEIVE_ABORTED:
+        api_->StreamShutdown(stream, QUIC_STREAM_SHUTDOWN_FLAG_ABORT, 0);
+        break;
+
+    case QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE:
+        // Cleanup handled in file_stream_callback after this returns
+        break;
+
+    default:
+        break;
+    }
+
+    return QUIC_STATUS_SUCCESS;
+}
+
+bool QuicServer::send_file_on_stream(HQUIC stream, const uint8_t* data, size_t len) {
+    auto* buf_data = new uint8_t[len];
+    std::memcpy(buf_data, data, len);
+
+    auto* quic_buf = new QUIC_BUFFER{ static_cast<uint32_t>(len), buf_data };
+    QUIC_STATUS status = api_->StreamSend(stream, quic_buf, 1,
+                                           QUIC_SEND_FLAG_FIN, quic_buf);
+    if (QUIC_FAILED(status)) {
+        delete[] buf_data;
+        delete quic_buf;
+        return false;
+    }
+    return true;
 }
 
 } // namespace parties::server

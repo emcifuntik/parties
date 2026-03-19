@@ -5,6 +5,7 @@
 #include <client/voice_mixer.h>
 #include <client/settings.h>
 #include <client/lobby_model.h>
+#include <client/chat_model.h>
 #include <client/server_list_model.h>
 #include <client/sound_player.h>
 #include <client/stream_audio_player.h>
@@ -15,6 +16,7 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 
@@ -56,6 +58,7 @@ public:
     VoiceMixer        mixer_;
     Settings          settings_;
     LobbyModel        model_;
+    ChatModel         chat_model_;
     ServerListModel   server_model_;
     StreamAudioPlayer stream_audio_player_;
 
@@ -110,6 +113,7 @@ public:
 
     // Model callbacks (called from init())
     void setup_model_callbacks();
+    void setup_chat_model_callbacks();
     void setup_server_model_callbacks();
 
     // Channel operations (public so platform can call join_channel if needed)
@@ -139,6 +143,21 @@ private:
     std::unique_ptr<class AutoUpdater> updater_;
 #endif
 
+    // Pending file uploads: file data cached until CHAT_MESSAGE assigns attachment IDs
+    struct PendingUpload {
+        std::string path;
+        std::vector<uint8_t> data;
+    };
+    std::vector<PendingUpload> pending_uploads_;
+
+    // Pending file downloads: received from QUIC thread, processed on main thread
+    struct CompletedDownload {
+        uint64_t attachment_id;
+        std::vector<uint8_t> data;
+    };
+    std::mutex downloads_mutex_;
+    std::vector<CompletedDownload> completed_downloads_;
+
     void on_auth_response(const uint8_t* data, size_t len);
     void on_channel_list(const uint8_t* data, size_t len);
     void on_channel_user_list(const uint8_t* data, size_t len);
@@ -152,6 +171,13 @@ private:
     void on_screen_share_denied(const uint8_t* data, size_t len);
     void on_admin_result(const uint8_t* data, size_t len);
     void on_server_error(const uint8_t* data, size_t len);
+    void on_chat_channel_list(const uint8_t* data, size_t len);
+    void on_chat_message(const uint8_t* data, size_t len);
+    void on_chat_history_resp(const uint8_t* data, size_t len);
+    void on_chat_message_deleted(const uint8_t* data, size_t len);
+    void on_chat_search_resp(const uint8_t* data, size_t len);
+    void on_chat_pinned_resp(const uint8_t* data, size_t len);
+    void on_chat_file_ready(const uint8_t* data, size_t len);
 
     void update_speaking_state();
     void generate_identity();

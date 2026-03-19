@@ -371,6 +371,58 @@ private:
     }
 };
 
+// ── File transfer stream context ──────────────────────────────────────────────
+
+struct FileStreamCtx {
+    NetClient* parent;
+    const QUIC_API_TABLE* api;
+    uint64_t attachment_id;
+    bool is_upload;
+    std::vector<uint8_t> recv_data;
+};
+
+static QUIC_STATUS QUIC_API s_file_stream_cb(HQUIC stream, void* ctx,
+                                              QUIC_STREAM_EVENT* ev)
+{
+    auto* fctx = static_cast<FileStreamCtx*>(ctx);
+    switch (ev->Type) {
+    case QUIC_STREAM_EVENT_RECEIVE:
+        for (uint32_t i = 0; i < ev->RECEIVE.BufferCount; i++) {
+            auto& b = ev->RECEIVE.Buffers[i];
+            fctx->recv_data.insert(fctx->recv_data.end(), b.Buffer, b.Buffer + b.Length);
+        }
+        break;
+
+    case QUIC_STREAM_EVENT_PEER_SEND_SHUTDOWN:
+        // Download complete — server finished sending file data
+        if (!fctx->is_upload && fctx->parent->on_file_downloaded) {
+            fctx->parent->on_file_downloaded(fctx->attachment_id,
+                                              std::move(fctx->recv_data));
+        }
+        break;
+
+    case QUIC_STREAM_EVENT_SEND_COMPLETE: {
+        auto* qb = static_cast<QUIC_BUFFER*>(ev->SEND_COMPLETE.ClientContext);
+        if (qb) { delete[] qb->Buffer; delete qb; }
+        break;
+    }
+
+    case QUIC_STREAM_EVENT_PEER_SEND_ABORTED:
+    case QUIC_STREAM_EVENT_PEER_RECEIVE_ABORTED:
+        fctx->api->StreamShutdown(stream, QUIC_STREAM_SHUTDOWN_FLAG_ABORT, 0);
+        break;
+
+    case QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE:
+        fctx->api->StreamClose(stream);
+        delete fctx;
+        break;
+
+    default:
+        break;
+    }
+    return QUIC_STATUS_SUCCESS;
+}
+
 // ── NetClient method bodies ───────────────────────────────────────────────────
 
 NetClient::NetClient()  : impl_(std::make_unique<Impl>(*this)) {}
@@ -406,5 +458,70 @@ bool NetClient::send_video(const uint8_t* data, size_t len, bool reliable)
 
 // MsQuic opens both streams automatically on QUIC_CONNECTION_EVENT_CONNECTED.
 void NetClient::open_av_streams() {}
+
+bool NetClient::upload_file(uint64_t attachment_id, const uint8_t* data, size_t len)
+{
+    if (!impl_->connected || !impl_->connection) return false;
+
+    auto* fctx = new FileStreamCtx{ this, impl_->api, attachment_id, true, {} };
+    HQUIC stream = nullptr;
+
+    if (QUIC_FAILED(impl_->api->StreamOpen(impl_->connection,
+            QUIC_STREAM_OPEN_FLAG_NONE, s_file_stream_cb, fctx, &stream))) {
+        delete fctx;
+        return false;
+    }
+    if (QUIC_FAILED(impl_->api->StreamStart(stream, QUIC_STREAM_START_FLAG_IMMEDIATE))) {
+        impl_->api->StreamClose(stream);
+        delete fctx;
+        return false;
+    }
+
+    // Send: [STREAM_TYPE_FILE_UPLOAD(1)][attachment_id(8)][file_data]
+    size_t total = 1 + 8 + len;
+    auto* buf = new uint8_t[total];
+    buf[0] = protocol::STREAM_TYPE_FILE_UPLOAD;
+    std::memcpy(buf + 1, &attachment_id, 8);
+    std::memcpy(buf + 9, data, len);
+
+    auto* qb = new QUIC_BUFFER{ static_cast<uint32_t>(total), buf };
+    if (QUIC_FAILED(impl_->api->StreamSend(stream, qb, 1, QUIC_SEND_FLAG_FIN, qb))) {
+        delete[] buf; delete qb;
+        return false;
+    }
+    return true;
+}
+
+bool NetClient::download_file(uint64_t attachment_id)
+{
+    if (!impl_->connected || !impl_->connection) return false;
+
+    auto* fctx = new FileStreamCtx{ this, impl_->api, attachment_id, false, {} };
+    HQUIC stream = nullptr;
+
+    if (QUIC_FAILED(impl_->api->StreamOpen(impl_->connection,
+            QUIC_STREAM_OPEN_FLAG_NONE, s_file_stream_cb, fctx, &stream))) {
+        delete fctx;
+        return false;
+    }
+    if (QUIC_FAILED(impl_->api->StreamStart(stream, QUIC_STREAM_START_FLAG_IMMEDIATE))) {
+        impl_->api->StreamClose(stream);
+        delete fctx;
+        return false;
+    }
+
+    // Send: [STREAM_TYPE_FILE_DOWNLOAD(1)][attachment_id(8)] with FIN
+    size_t total = 9;
+    auto* buf = new uint8_t[total];
+    buf[0] = protocol::STREAM_TYPE_FILE_DOWNLOAD;
+    std::memcpy(buf + 1, &attachment_id, 8);
+
+    auto* qb = new QUIC_BUFFER{ static_cast<uint32_t>(total), buf };
+    if (QUIC_FAILED(impl_->api->StreamSend(stream, qb, 1, QUIC_SEND_FLAG_FIN, qb))) {
+        delete[] buf; delete qb;
+        return false;
+    }
+    return true;
+}
 
 } // namespace parties::client

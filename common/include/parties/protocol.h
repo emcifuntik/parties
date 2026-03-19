@@ -46,6 +46,33 @@ enum class ControlMessageType : uint16_t {
 
     // Server -> Client admin responses
     ADMIN_RESULT          = 0x0301,
+
+    // ── Text chat ──────────────────────────────────────────────────────
+
+    // Client -> Server
+    CHAT_SEND             = 0x0401,  // [channel_id(4)][text(string)][attachment_count(1)][attachments...]
+    CHAT_HISTORY_REQ      = 0x0402,  // [channel_id(4)][before_id(8)][limit(2)]
+    CHAT_PIN              = 0x0403,  // [message_id(8)]
+    CHAT_UNPIN            = 0x0404,  // [message_id(8)]
+    CHAT_DELETE           = 0x0405,  // [message_id(8)]
+    CHAT_FILE_UPLOAD_REQ  = 0x0406,  // [message_id(8)][file_index(1)][file_size(8)]
+    CHAT_FILE_DOWNLOAD_REQ= 0x0407,  // [file_id(8)]
+    CHAT_SEARCH           = 0x0408,  // [channel_id(4)][query(string)][before_id(8)][limit(2)]
+    CHAT_PINNED_REQ       = 0x0409,  // [channel_id(4)]
+
+    // Server -> Client
+    CHAT_MESSAGE          = 0x0501,  // [msg_id(8)][channel_id(4)][sender_id(4)][sender_name][timestamp(8)][text][pinned(1)][attachments...]
+    CHAT_HISTORY_RESP     = 0x0502,  // [channel_id(4)][has_more(1)][count(2)][messages...]
+    CHAT_MESSAGE_DELETED  = 0x0503,  // [message_id(8)][channel_id(4)]
+    CHAT_FILE_UPLOAD_RESP = 0x0504,  // [message_id(8)][file_index(1)][accepted(1)][reason(string)]
+    CHAT_FILE_READY       = 0x0505,  // [message_id(8)][file_index(1)][file_id(8)]
+    CHAT_SEARCH_RESP      = 0x0506,  // [channel_id(4)][count(2)][messages...]
+    CHAT_PINNED_RESP      = 0x0507,  // [channel_id(4)][count(2)][messages...]
+    CHAT_CHANNEL_LIST     = 0x0508,  // [count(4)][channel_id(4), name(string), sort_order(4)]...
+
+    // Admin text channels (client -> server)
+    ADMIN_CREATE_TEXT_CHANNEL = 0x040A,  // [name(string)]
+    ADMIN_DELETE_TEXT_CHANNEL = 0x040B,  // [channel_id(4)]
 };
 
 // Data plane packet types (first byte of every datagram/stream)
@@ -53,6 +80,10 @@ constexpr uint8_t VOICE_PACKET_TYPE        = 0x01;
 constexpr uint8_t VIDEO_FRAME_PACKET_TYPE  = 0x02;
 constexpr uint8_t VIDEO_CONTROL_TYPE       = 0x03;
 constexpr uint8_t STREAM_AUDIO_PACKET_TYPE = 0x04;  // Screen share audio (Opus, stereo)
+
+// File transfer stream type bytes (first byte on streams 2+)
+constexpr uint8_t STREAM_TYPE_FILE_UPLOAD   = 0x10;
+constexpr uint8_t STREAM_TYPE_FILE_DOWNLOAD = 0x11;
 
 // Video control subtypes
 constexpr uint8_t VIDEO_CTL_PLI         = 0x01;

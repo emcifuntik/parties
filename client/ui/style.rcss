@@ -2025,3 +2025,412 @@ input.range.stream-volume-slider sliderbar:hover {
     flex-direction: column;
     flex: 1;
 }
+
+/* ── Chat content ────────────────────────────────────── */
+
+.chat-content {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+}
+
+.chat-header {
+    display: flex;
+    flex-direction: row;
+    padding: 10dp 16dp;
+    border-bottom: 1dp #1E2030;
+}
+
+.chat-title {
+    display: block;
+    flex: 1;
+    font-size: 16dp;
+    font-weight: bold;
+    color: #F0F2F8;
+}
+
+.chat-header-actions {
+    display: flex;
+    flex-direction: row;
+    gap: 8dp;
+}
+
+.chat-header-btn {
+    display: block;
+    padding: 4dp;
+    border-radius: 4dp;
+    cursor: pointer;
+    opacity: 0.5;
+}
+
+.chat-header-btn:hover {
+    opacity: 1;
+    background-color: #252838;
+}
+
+.chat-search-bar {
+    display: flex;
+    padding: 6dp 16dp;
+    border-bottom: 1dp #1E2030;
+}
+
+.chat-search-input {
+    display: block;
+    flex: 1;
+    padding: 6dp 10dp;
+    background-color: #181A24;
+    border: 1dp #2A2D3E;
+    border-radius: 6dp;
+    color: #C4C8D8;
+    font-size: 13dp;
+}
+
+.chat-pinned-panel {
+    display: flex;
+    flex-direction: column;
+    max-height: 200dp;
+    overflow-y: auto;
+    background-color: #181A24;
+    border-bottom: 1dp #1E2030;
+    padding: 8dp 16dp;
+}
+
+.chat-pinned-header {
+    display: flex;
+    flex-direction: row;
+    margin-bottom: 8dp;
+    font-size: 13dp;
+    font-weight: bold;
+    color: #8A8FA6;
+}
+
+.chat-pinned-header span {
+    display: block;
+    flex: 1;
+}
+
+.chat-pinned-empty {
+    display: block;
+    padding: 8dp;
+    text-align: center;
+}
+
+.chat-messages {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    overflow-y: auto;
+    padding: 8dp 16dp;
+}
+
+.chat-load-more {
+    display: block;
+    text-align: center;
+    padding: 8dp;
+    color: #7C5CFC;
+    font-size: 12dp;
+    cursor: pointer;
+}
+
+.chat-load-more:hover {
+    text-decoration: underline;
+}
+
+.chat-message {
+    display: flex;
+    flex-direction: row;
+    padding: 6dp 0;
+}
+
+.chat-message.pinned {
+    background-color: rgba(124, 92, 252, 0.05);
+    border-left: 2dp #7C5CFC;
+    padding-left: 8dp;
+    margin-left: -10dp;
+}
+
+.msg-avatar-wrap {
+    display: block;
+    width: 32dp;
+    height: 32dp;
+    margin-right: 10dp;
+    margin-top: 2dp;
+}
+
+.msg-avatar {
+    width: 32dp;
+    height: 32dp;
+}
+
+.msg-body {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+}
+
+.msg-header {
+    display: flex;
+    flex-direction: row;
+    gap: 8dp;
+    margin-bottom: 2dp;
+}
+
+.msg-sender {
+    display: block;
+    font-size: 13dp;
+    font-weight: bold;
+    color: #F0F2F8;
+}
+
+.msg-time {
+    display: block;
+    font-size: 11dp;
+    color: #5A5E73;
+    margin-top: 2dp;
+}
+
+.msg-pin-badge {
+    display: block;
+    font-size: 9dp;
+    color: #7C5CFC;
+    background-color: rgba(124, 92, 252, 0.15);
+    padding: 1dp 6dp;
+    border-radius: 3dp;
+    margin-top: 1dp;
+}
+
+.msg-text {
+    display: block;
+    font-size: 13dp;
+    color: #C4C8D8;
+    line-height: 1.4;
+}
+
+.msg-attachments {
+    display: flex;
+    flex-direction: column;
+    margin-top: 4dp;
+}
+
+.msg-attachment {
+    display: flex;
+    flex-direction: row;
+    gap: 6dp;
+    padding: 4dp 8dp;
+    background-color: #1A1D2A;
+    border-radius: 4dp;
+    margin-top: 2dp;
+}
+
+.att-name {
+    display: block;
+    font-size: 12dp;
+    color: #7C5CFC;
+    flex: 1;
+}
+
+.att-size {
+    display: block;
+    font-size: 11dp;
+    color: #5A5E73;
+}
+
+.chat-empty {
+    display: flex;
+    flex: 1;
+    justify-content: center;
+    align-items: center;
+}
+
+.chat-compose {
+    display: flex;
+    flex-direction: column;
+    padding: 10dp 16dp;
+    border-top: 1dp #1E2030;
+}
+
+.compose-row {
+    display: flex;
+    flex-direction: row;
+    gap: 8dp;
+}
+
+.compose-input {
+    display: block;
+    flex: 1;
+    padding: 8dp 12dp;
+    background-color: #181A24;
+    border: 1dp #2A2D3E;
+    border-radius: 8dp;
+    color: #F0F2F8;
+    font-size: 13dp;
+}
+
+.compose-input:focus {
+    border-color: #7C5CFC;
+}
+
+.send-btn {
+    display: block;
+    padding: 8dp 16dp;
+    background-color: #7C5CFC;
+    color: #FFFFFF;
+    border-radius: 8dp;
+    font-size: 13dp;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+.send-btn:hover {
+    background-color: #6B4FDB;
+}
+
+.msg-actions {
+    display: none;
+    flex-direction: row;
+    gap: 4dp;
+    margin-top: 2dp;
+    margin-left: 8dp;
+}
+
+.chat-message:hover .msg-actions {
+    display: flex;
+}
+
+.msg-action-btn {
+    display: block;
+    padding: 2dp 8dp;
+    font-size: 10dp;
+    color: #8A8FA6;
+    background-color: #1E2030;
+    border-radius: 3dp;
+    cursor: pointer;
+}
+
+.msg-action-btn:hover {
+    background-color: #252838;
+    color: #F0F2F8;
+}
+
+.msg-action-danger:hover {
+    background-color: #3D1515;
+    color: #FF6B6B;
+}
+
+.chat-unread-dot {
+    display: block;
+    width: 6dp;
+    height: 6dp;
+    background-color: #7C5CFC;
+    border-radius: 3dp;
+    margin-top: 5dp;
+    margin-left: 4dp;
+}
+
+.chat-item.unread .chat-item-name {
+    color: #F0F2F8;
+    font-weight: bold;
+}
+
+/* File attachment download/pending */
+/* Clickable URL in message text */
+.msg-link {
+    color: #7C9BFC;
+    cursor: pointer;
+}
+
+.msg-link:hover {
+    color: #9BB3FF;
+    text-decoration: underline;
+}
+
+.att-download {
+    display: block;
+    padding: 2dp 8dp;
+    font-size: 10dp;
+    color: #7C5CFC;
+    background-color: #1E2030;
+    border-radius: 3dp;
+    cursor: pointer;
+}
+
+.att-download:hover {
+    background-color: #252838;
+    color: #9B82FC;
+}
+
+.att-pending {
+    display: block;
+    font-size: 10dp;
+    color: #5A5E73;
+    font-style: italic;
+}
+
+/* Attach button */
+.attach-btn {
+    display: block;
+    width: 36dp;
+    height: 36dp;
+    background-color: #1E2030;
+    border-radius: 8dp;
+    color: #8A8FA6;
+    font-size: 18dp;
+    font-weight: bold;
+    text-align: center;
+    line-height: 36dp;
+    cursor: pointer;
+}
+
+.attach-btn:hover {
+    background-color: #252838;
+    color: #F0F2F8;
+}
+
+/* Pending files list */
+.pending-files {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 6dp;
+    padding-bottom: 8dp;
+}
+
+.pending-file {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 6dp;
+    padding: 4dp 8dp;
+    background-color: #1A1D2A;
+    border-radius: 4dp;
+    border: 1dp #2A2D3E;
+}
+
+.pending-file-name {
+    display: block;
+    font-size: 12dp;
+    color: #C8CCE0;
+}
+
+.pending-file-size {
+    display: block;
+    font-size: 10dp;
+    color: #5A5E73;
+}
+
+.pending-file-remove {
+    display: block;
+    width: 16dp;
+    height: 16dp;
+    font-size: 12dp;
+    color: #5A5E73;
+    text-align: center;
+    line-height: 16dp;
+    cursor: pointer;
+    border-radius: 3dp;
+}
+
+.pending-file-remove:hover {
+    color: #FF6B6B;
+    background-color: #3D1515;
+}

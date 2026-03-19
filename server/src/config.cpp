@@ -79,6 +79,17 @@ Config Config::load(const std::string& toml_path) {
                 auto& l = data.at("logging");
                 cfg.log_level = toml::find_or(l, "level", cfg.log_level);
             }
+
+            if (data.contains("chat")) {
+                auto& c = data.at("chat");
+                cfg.chat.max_message_length     = toml::find_or(c, "max_message_length", cfg.chat.max_message_length);
+                cfg.chat.max_file_size          = toml::find_or(c, "max_file_size", cfg.chat.max_file_size);
+                cfg.chat.max_total_file_storage = toml::find_or(c, "max_total_file_storage", cfg.chat.max_total_file_storage);
+                cfg.chat.file_retention         = toml::find_or(c, "file_retention", cfg.chat.file_retention);
+                cfg.chat.file_retention_days    = toml::find_or(c, "file_retention_days", cfg.chat.file_retention_days);
+                cfg.chat.file_storage_path      = toml::find_or(c, "file_storage_path", cfg.chat.file_storage_path);
+                cfg.chat.message_retention_days = toml::find_or(c, "message_retention_days", cfg.chat.message_retention_days);
+            }
         }
     }
 

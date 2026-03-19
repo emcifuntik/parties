@@ -14,8 +14,16 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <commdlg.h>
+#include <shlobj.h>
+#endif
 
 namespace parties::client {
 
@@ -95,6 +103,7 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
 
     // Setup model callbacks
     setup_model_callbacks();
+    setup_chat_model_callbacks();
     setup_server_model_callbacks();
 
     // Initialize models with RmlUi context
@@ -104,6 +113,10 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
     }
     if (!model_.init(rml_context)) {
         LOG_ERROR("model init failed");
+        return false;
+    }
+    if (!chat_model_.init(rml_context)) {
+        LOG_ERROR("chat_model init failed");
         return false;
     }
 
@@ -158,6 +171,42 @@ void AppCore::tick()
         model_.dirty("update_version");
     }
 #endif
+
+    // Process completed file downloads on main thread
+    {
+        std::vector<CompletedDownload> downloads;
+        {
+            std::lock_guard<std::mutex> lock(downloads_mutex_);
+            downloads.swap(completed_downloads_);
+        }
+        for (auto& dl : downloads) {
+            std::string file_name = "download";
+            for (auto& msg : chat_model_.messages) {
+                for (auto& att : msg.attachments) {
+                    if (att.id == static_cast<int64_t>(dl.attachment_id)) {
+                        file_name = std::string(att.file_name);
+                        break;
+                    }
+                }
+            }
+#ifdef _WIN32
+            char save_buf[MAX_PATH] = {};
+            strncpy(save_buf, file_name.c_str(), MAX_PATH - 1);
+            OPENFILENAMEA ofn = {};
+            ofn.lStructSize = sizeof(ofn);
+            ofn.lpstrFile = save_buf;
+            ofn.nMaxFile = MAX_PATH;
+            ofn.lpstrFilter = "All Files\0*.*\0";
+            ofn.Flags = OFN_OVERWRITEPROMPT;
+
+            if (GetSaveFileNameA(&ofn)) {
+                std::ofstream out(save_buf, std::ios::binary);
+                if (out)
+                    out.write(reinterpret_cast<const char*>(dl.data.data()), dl.data.size());
+            }
+#endif
+        }
+    }
 
     // Send keepalive ping every 2 seconds while connected
     if (authenticated_) {
@@ -515,6 +564,31 @@ void AppCore::on_disconnect_cleanup()
     model_.admin_message.clear();
     model_.dirty_all();
 
+    // Clear chat state
+    model_.show_chat = false;
+    model_.dirty("show_chat");
+    pending_uploads_.clear();
+    {
+        std::lock_guard<std::mutex> lock(downloads_mutex_);
+        completed_downloads_.clear();
+    }
+    chat_model_.text_channels.clear();
+    chat_model_.messages.clear();
+    chat_model_.active_channel = 0;
+    chat_model_.active_channel_name.clear();
+    chat_model_.has_more_history = false;
+    chat_model_.show_search = false;
+    chat_model_.show_pinned = false;
+    chat_model_.compose_text.clear();
+    chat_model_.dirty("text_channels");
+    chat_model_.dirty("messages");
+    chat_model_.dirty("active_channel");
+    chat_model_.dirty("active_channel_name");
+    chat_model_.dirty("has_more_history");
+    chat_model_.dirty("show_search");
+    chat_model_.dirty("show_pinned");
+    chat_model_.dirty("compose_text");
+
     server_model_.connected_server_id = 0;
     server_model_.show_login          = false;
     server_model_.show_add_form       = false;
@@ -534,6 +608,15 @@ void AppCore::on_disconnect_cleanup()
 void AppCore::join_channel(ChannelId id)
 {
     if (!authenticated_ || id == current_channel_) return;
+
+    // Deselect text channel when joining voice channel
+    chat_model_.active_channel = 0;
+    chat_model_.active_channel_name.clear();
+    chat_model_.dirty("active_channel");
+    chat_model_.dirty("active_channel_name");
+    model_.show_chat = false;
+    model_.dirty("show_chat");
+
     awaiting_channel_join_ = true;
     pending_channel_id_ = id;
     BinaryWriter w;
@@ -703,6 +786,20 @@ void AppCore::handle_server_message(protocol::ControlMessageType type,
         on_admin_result(data, len); break;
     case protocol::ControlMessageType::SERVER_ERROR:
         on_server_error(data, len); break;
+    case protocol::ControlMessageType::CHAT_CHANNEL_LIST:
+        on_chat_channel_list(data, len); break;
+    case protocol::ControlMessageType::CHAT_MESSAGE:
+        on_chat_message(data, len); break;
+    case protocol::ControlMessageType::CHAT_HISTORY_RESP:
+        on_chat_history_resp(data, len); break;
+    case protocol::ControlMessageType::CHAT_MESSAGE_DELETED:
+        on_chat_message_deleted(data, len); break;
+    case protocol::ControlMessageType::CHAT_SEARCH_RESP:
+        on_chat_search_resp(data, len); break;
+    case protocol::ControlMessageType::CHAT_PINNED_RESP:
+        on_chat_pinned_resp(data, len); break;
+    case protocol::ControlMessageType::CHAT_FILE_READY:
+        on_chat_file_ready(data, len); break;
     case protocol::ControlMessageType::KEEPALIVE_PONG:
         if (ping_pending_) {
             ping_pending_ = false;
@@ -1716,6 +1813,469 @@ void AppCore::setup_server_model_callbacks()
         server_model_.dirty("show_login");
         net_.disconnect();
     };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Chat model callbacks
+
+void AppCore::setup_chat_model_callbacks()
+{
+    chat_model_.on_select_channel = [this](int channel_id) {
+        chat_model_.active_channel = channel_id;
+        // Find channel name
+        for (auto& tc : chat_model_.text_channels) {
+            if (tc.id == channel_id) {
+                chat_model_.active_channel_name = tc.name;
+                tc.has_unread = false;
+                break;
+            }
+        }
+        chat_model_.messages.clear();
+        chat_model_.has_more_history = false;
+        chat_model_.show_search = false;
+        chat_model_.show_pinned = false;
+        chat_model_.dirty("active_channel");
+        chat_model_.dirty("active_channel_name");
+        chat_model_.dirty("text_channels");
+        chat_model_.dirty("messages");
+        chat_model_.dirty("has_more_history");
+        chat_model_.dirty("show_search");
+        chat_model_.dirty("show_pinned");
+
+        // Deselect voice channel, show chat view
+        model_.current_channel = 0;
+        model_.current_channel_name = "";
+        model_.show_chat = true;
+        model_.dirty("current_channel");
+        model_.dirty("current_channel_name");
+        model_.dirty("show_chat");
+
+        // Request history
+        BinaryWriter writer;
+        writer.write_u32(static_cast<uint32_t>(channel_id));
+        writer.write_u64(0); // latest
+        writer.write_u16(50);
+        net_.send_message(protocol::ControlMessageType::CHAT_HISTORY_REQ,
+                         writer.data().data(), writer.data().size());
+    };
+
+    chat_model_.on_send_message = [this]() {
+        if (chat_model_.active_channel == 0) return;
+        bool has_text = !chat_model_.compose_text.empty();
+        bool has_files = !chat_model_.pending_files.empty();
+        if (!has_text && !has_files) return;
+
+        // Read pending files into memory before sending
+        pending_uploads_.clear();
+        for (auto& pf : chat_model_.pending_files) {
+            std::ifstream in(std::string(pf.path), std::ios::binary | std::ios::ate);
+            if (!in) continue;
+            auto sz = in.tellg();
+            in.seekg(0);
+            PendingUpload pu;
+            pu.path = std::string(pf.name);
+            pu.data.resize(static_cast<size_t>(sz));
+            in.read(reinterpret_cast<char*>(pu.data.data()), sz);
+            pending_uploads_.push_back(std::move(pu));
+        }
+
+        BinaryWriter writer;
+        writer.write_u32(static_cast<uint32_t>(chat_model_.active_channel));
+        writer.write_string(has_text ? std::string(chat_model_.compose_text) : std::string());
+        writer.write_u8(static_cast<uint8_t>(pending_uploads_.size()));
+        for (auto& pu : pending_uploads_) {
+            writer.write_string(pu.path);  // file_name
+            writer.write_u64(static_cast<uint64_t>(pu.data.size()));  // file_size
+            writer.write_string("application/octet-stream");  // mime
+        }
+        net_.send_message(protocol::ControlMessageType::CHAT_SEND,
+                         writer.data().data(), writer.data().size());
+
+        chat_model_.compose_text = "";
+        chat_model_.pending_files.clear();
+        chat_model_.dirty("compose_text");
+        chat_model_.dirty("pending_files");
+    };
+
+    chat_model_.on_load_more_history = [this]() {
+        if (chat_model_.messages.empty() || !chat_model_.has_more_history)
+            return;
+
+        BinaryWriter writer;
+        writer.write_u32(static_cast<uint32_t>(chat_model_.active_channel));
+        writer.write_u64(static_cast<uint64_t>(chat_model_.messages.front().id));
+        writer.write_u16(50);
+        net_.send_message(protocol::ControlMessageType::CHAT_HISTORY_REQ,
+                         writer.data().data(), writer.data().size());
+    };
+
+    chat_model_.on_pin_message = [this](int64_t msg_id) {
+        BinaryWriter writer;
+        writer.write_u64(static_cast<uint64_t>(msg_id));
+        net_.send_message(protocol::ControlMessageType::CHAT_PIN,
+                         writer.data().data(), writer.data().size());
+    };
+
+    chat_model_.on_unpin_message = [this](int64_t msg_id) {
+        BinaryWriter writer;
+        writer.write_u64(static_cast<uint64_t>(msg_id));
+        net_.send_message(protocol::ControlMessageType::CHAT_UNPIN,
+                         writer.data().data(), writer.data().size());
+    };
+
+    chat_model_.on_delete_message = [this](int64_t msg_id) {
+        BinaryWriter writer;
+        writer.write_u64(static_cast<uint64_t>(msg_id));
+        net_.send_message(protocol::ControlMessageType::CHAT_DELETE,
+                         writer.data().data(), writer.data().size());
+    };
+
+    chat_model_.on_do_search = [this]() {
+        if (chat_model_.search_query.empty() || chat_model_.active_channel == 0)
+            return;
+
+        BinaryWriter writer;
+        writer.write_u32(static_cast<uint32_t>(chat_model_.active_channel));
+        writer.write_string(std::string(chat_model_.search_query));
+        writer.write_u64(0); // latest
+        writer.write_u16(50);
+        net_.send_message(protocol::ControlMessageType::CHAT_SEARCH,
+                         writer.data().data(), writer.data().size());
+    };
+
+    chat_model_.on_request_pinned = [this]() {
+        if (chat_model_.active_channel == 0) return;
+
+        BinaryWriter writer;
+        writer.write_u32(static_cast<uint32_t>(chat_model_.active_channel));
+        net_.send_message(protocol::ControlMessageType::CHAT_PINNED_REQ,
+                         writer.data().data(), writer.data().size());
+    };
+
+    chat_model_.on_create_text_channel = [this]() {
+        if (chat_model_.new_text_channel_name.empty()) return;
+
+        BinaryWriter writer;
+        writer.write_string(std::string(chat_model_.new_text_channel_name));
+        net_.send_message(protocol::ControlMessageType::ADMIN_CREATE_TEXT_CHANNEL,
+                         writer.data().data(), writer.data().size());
+
+        chat_model_.show_create_text_channel = false;
+        chat_model_.dirty("show_create_text_channel");
+    };
+
+    chat_model_.on_open_url = [](const std::string& url) {
+        // Validate URL starts with http(s) to prevent command injection
+        if (url.find("http://") != 0 && url.find("https://") != 0) return;
+#ifdef _WIN32
+        ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+#elif defined(__APPLE__)
+        // Use fork+exec to avoid shell injection
+        if (fork() == 0) { execlp("open", "open", url.c_str(), nullptr); _exit(1); }
+#else
+        if (fork() == 0) { execlp("xdg-open", "xdg-open", url.c_str(), nullptr); _exit(1); }
+#endif
+    };
+
+    chat_model_.on_attach_file = [this]() {
+#ifdef _WIN32
+        char file_buf[4096] = {};
+        OPENFILENAMEA ofn = {};
+        ofn.lStructSize = sizeof(ofn);
+        ofn.lpstrFile = file_buf;
+        ofn.nMaxFile = sizeof(file_buf);
+        ofn.lpstrFilter = "All Files\0*.*\0";
+        ofn.Flags = OFN_FILEMUSTEXIST | OFN_ALLOWMULTISELECT | OFN_EXPLORER;
+
+        if (GetOpenFileNameA(&ofn)) {
+            namespace fs = std::filesystem;
+            // Single file: file_buf is full path
+            // Multi-select: file_buf is dir\0file1\0file2\0\0
+            if (ofn.nFileOffset > 0 && file_buf[ofn.nFileOffset - 1] == '\0') {
+                // Multi-select
+                std::string dir(file_buf);
+                char* p = file_buf + dir.size() + 1;
+                while (*p) {
+                    fs::path fpath = fs::path(dir) / p;
+                    PendingFile pf;
+                    pf.name = Rml::String(fpath.filename().string());
+                    pf.path = Rml::String(fpath.string());
+                    auto sz = fs::file_size(fpath);
+                    if (sz < 1024)
+                        pf.size_str = Rml::String(std::to_string(sz) + " B");
+                    else if (sz < 1024 * 1024)
+                        pf.size_str = Rml::String(std::format("{:.1f} KB", sz / 1024.0));
+                    else
+                        pf.size_str = Rml::String(std::format("{:.1f} MB", sz / (1024.0 * 1024.0)));
+                    chat_model_.pending_files.push_back(std::move(pf));
+                    p += strlen(p) + 1;
+                }
+            } else {
+                // Single file
+                fs::path fpath(file_buf);
+                PendingFile pf;
+                pf.name = Rml::String(fpath.filename().string());
+                pf.path = Rml::String(fpath.string());
+                auto sz = fs::file_size(fpath);
+                if (sz < 1024)
+                    pf.size_str = Rml::String(std::to_string(sz) + " B");
+                else if (sz < 1024 * 1024)
+                    pf.size_str = Rml::String(std::format("{:.1f} KB", sz / 1024.0));
+                else
+                    pf.size_str = Rml::String(std::format("{:.1f} MB", sz / (1024.0 * 1024.0)));
+                chat_model_.pending_files.push_back(std::move(pf));
+            }
+            chat_model_.dirty("pending_files");
+        }
+#endif
+    };
+
+    chat_model_.on_download_file = [this](int64_t file_id) {
+        net_.download_file(static_cast<uint64_t>(file_id));
+    };
+
+    net_.on_file_downloaded = [this](uint64_t attachment_id, std::vector<uint8_t> data) {
+        // Push to queue — processed on main thread in tick()
+        std::lock_guard<std::mutex> lock(downloads_mutex_);
+        completed_downloads_.push_back({attachment_id, std::move(data)});
+    };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Chat protocol handlers
+
+static Rml::String format_timestamp(uint64_t unix_ts) {
+    auto t = static_cast<std::time_t>(unix_ts);
+    auto* tm = std::localtime(&t);
+    if (!tm) return "";
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "%H:%M", tm);
+    return Rml::String(buf);
+}
+
+static int name_color_index(const Rml::String& name) {
+    uint32_t hash = 0;
+    for (char c : name) hash = hash * 31 + static_cast<uint8_t>(c);
+    return static_cast<int>(hash % 12);
+}
+
+static Rml::Vector<TextSegment> split_text_with_urls(const Rml::String& text) {
+    Rml::Vector<TextSegment> segments;
+    size_t pos = 0;
+    while (pos < text.size()) {
+        size_t http_pos = text.find("http://", pos);
+        size_t https_pos = text.find("https://", pos);
+        size_t url_start = (std::min)(http_pos, https_pos);
+        if (url_start == Rml::String::npos) {
+            if (pos < text.size())
+                segments.push_back({text.substr(pos), false});
+            break;
+        }
+        if (url_start > pos)
+            segments.push_back({text.substr(pos, url_start - pos), false});
+        // Find URL end (whitespace or end of string)
+        size_t url_end = url_start;
+        while (url_end < text.size() && text[url_end] != ' ' && text[url_end] != '\n'
+               && text[url_end] != '\r' && text[url_end] != '\t')
+            url_end++;
+        // Strip trailing punctuation that's likely not part of URL
+        while (url_end > url_start && (text[url_end - 1] == '.' || text[url_end - 1] == ','
+               || text[url_end - 1] == ')' || text[url_end - 1] == ';'))
+            url_end--;
+        segments.push_back({text.substr(url_start, url_end - url_start), true});
+        pos = url_end;
+    }
+    if (segments.empty())
+        segments.push_back({text, false});
+    return segments;
+}
+
+static ChatMessage parse_chat_message(BinaryReader& reader) {
+    ChatMessage msg;
+    msg.id = static_cast<int64_t>(reader.read_u64());
+    uint32_t channel_id = reader.read_u32();
+    (void)channel_id;
+    msg.sender_id = static_cast<int>(reader.read_u32());
+    msg.sender_name = Rml::String(reader.read_string());
+    uint64_t ts = reader.read_u64();
+    msg.timestamp_str = format_timestamp(ts);
+    msg.text = Rml::String(reader.read_string());
+    msg.segments = split_text_with_urls(msg.text);
+    msg.pinned = reader.read_u8() != 0;
+    msg.color_index = name_color_index(msg.sender_name);
+
+    uint8_t att_count = reader.read_u8();
+    for (uint8_t i = 0; i < att_count && !reader.error(); i++) {
+        ChatAttachment att;
+        att.id = static_cast<int64_t>(reader.read_u64());
+        att.file_name = Rml::String(reader.read_string());
+        uint64_t fsize = reader.read_u64();
+        att.uploaded = reader.read_u8() != 0;
+
+        // Format size
+        if (fsize < 1024)
+            att.size_str = Rml::String(std::to_string(fsize) + " B");
+        else if (fsize < 1024 * 1024)
+            att.size_str = Rml::String(std::format("{:.1f} KB", fsize / 1024.0));
+        else
+            att.size_str = Rml::String(std::format("{:.1f} MB", fsize / (1024.0 * 1024.0)));
+
+        std::string mime = reader.read_string(); // consume mime_type
+        (void)mime;
+        msg.attachments.push_back(std::move(att));
+    }
+
+    return msg;
+}
+
+void AppCore::on_chat_channel_list(const uint8_t* data, size_t len) {
+    BinaryReader reader(data, len);
+    uint32_t count = reader.read_u32();
+    if (reader.error()) return;
+
+    chat_model_.text_channels.clear();
+    for (uint32_t i = 0; i < count && !reader.error(); i++) {
+        TextChannel tc;
+        tc.id = static_cast<int>(reader.read_u32());
+        tc.name = Rml::String(reader.read_string());
+        reader.read_u32(); // sort_order
+        chat_model_.text_channels.push_back(std::move(tc));
+    }
+    chat_model_.dirty("text_channels");
+}
+
+void AppCore::on_chat_message(const uint8_t* data, size_t len) {
+    BinaryReader reader(data, len);
+    auto msg = parse_chat_message(reader);
+    if (reader.error()) return;
+
+    // Read channel_id from the message for routing (it's at offset 8)
+    BinaryReader peek(data, len);
+    peek.read_u64(); // msg_id
+    uint32_t channel_id = peek.read_u32();
+
+    // If this is our message and we have pending uploads, upload file data now
+    if (msg.sender_id == static_cast<int>(user_id_) && !pending_uploads_.empty()) {
+        // Match pending uploads to attachment IDs by index
+        size_t upload_count = (std::min)(pending_uploads_.size(), msg.attachments.size());
+        for (size_t i = 0; i < upload_count; i++) {
+            net_.upload_file(static_cast<uint64_t>(msg.attachments[i].id),
+                            pending_uploads_[i].data.data(),
+                            pending_uploads_[i].data.size());
+        }
+        pending_uploads_.clear();
+    }
+
+    if (static_cast<int>(channel_id) == chat_model_.active_channel) {
+        // Check if this is an update to an existing message (e.g., pin state change)
+        bool found = false;
+        for (auto& m : chat_model_.messages) {
+            if (m.id == msg.id) {
+                m.pinned = msg.pinned;
+                m.text = msg.text;
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+            chat_model_.messages.push_back(std::move(msg));
+        chat_model_.dirty("messages");
+    } else {
+        // Mark channel as unread
+        for (auto& tc : chat_model_.text_channels) {
+            if (tc.id == static_cast<int>(channel_id)) {
+                tc.has_unread = true;
+                break;
+            }
+        }
+        chat_model_.dirty("text_channels");
+    }
+}
+
+void AppCore::on_chat_history_resp(const uint8_t* data, size_t len) {
+    BinaryReader reader(data, len);
+    uint32_t channel_id = reader.read_u32();
+    uint8_t has_more = reader.read_u8();
+    uint16_t count = reader.read_u16();
+    if (reader.error()) return;
+
+    if (static_cast<int>(channel_id) != chat_model_.active_channel)
+        return;
+
+    // Parse messages
+    Rml::Vector<ChatMessage> batch;
+    for (uint16_t i = 0; i < count && !reader.error(); i++)
+        batch.push_back(parse_chat_message(reader));
+
+    // Prepend to existing messages (batch is oldest-first from server)
+    if (!batch.empty()) {
+        batch.insert(batch.end(), chat_model_.messages.begin(), chat_model_.messages.end());
+        chat_model_.messages = std::move(batch);
+    }
+
+    chat_model_.has_more_history = has_more != 0;
+    chat_model_.dirty("messages");
+    chat_model_.dirty("has_more_history");
+}
+
+void AppCore::on_chat_message_deleted(const uint8_t* data, size_t len) {
+    BinaryReader reader(data, len);
+    uint64_t message_id = reader.read_u64();
+    uint32_t channel_id = reader.read_u32();
+    if (reader.error()) return;
+
+    if (static_cast<int>(channel_id) == chat_model_.active_channel) {
+        auto& msgs = chat_model_.messages;
+        msgs.erase(std::remove_if(msgs.begin(), msgs.end(),
+            [message_id](const ChatMessage& m) { return m.id == static_cast<int64_t>(message_id); }),
+            msgs.end());
+        chat_model_.dirty("messages");
+    }
+}
+
+void AppCore::on_chat_search_resp(const uint8_t* data, size_t len) {
+    BinaryReader reader(data, len);
+    reader.read_u32(); // channel_id
+    uint16_t count = reader.read_u16();
+    if (reader.error()) return;
+
+    chat_model_.search_results.clear();
+    for (uint16_t i = 0; i < count && !reader.error(); i++)
+        chat_model_.search_results.push_back(parse_chat_message(reader));
+    chat_model_.dirty("search_results");
+}
+
+void AppCore::on_chat_pinned_resp(const uint8_t* data, size_t len) {
+    BinaryReader reader(data, len);
+    reader.read_u32(); // channel_id
+    uint16_t count = reader.read_u16();
+    if (reader.error()) return;
+
+    chat_model_.pinned_messages.clear();
+    for (uint16_t i = 0; i < count && !reader.error(); i++)
+        chat_model_.pinned_messages.push_back(parse_chat_message(reader));
+    chat_model_.dirty("pinned_messages");
+}
+
+void AppCore::on_chat_file_ready(const uint8_t* data, size_t len) {
+    BinaryReader reader(data, len);
+    uint64_t message_id = reader.read_u64();
+    uint64_t attachment_id = reader.read_u64();
+    if (reader.error()) return;
+
+    // Update attachment status in displayed messages
+    for (auto& msg : chat_model_.messages) {
+        if (msg.id == static_cast<int64_t>(message_id)) {
+            for (auto& att : msg.attachments) {
+                if (att.id == static_cast<int64_t>(attachment_id)) {
+                    att.uploaded = true;
+                    break;
+                }
+            }
+            break;
+        }
+    }
+    chat_model_.dirty("messages");
 }
 
 } // namespace parties::client
