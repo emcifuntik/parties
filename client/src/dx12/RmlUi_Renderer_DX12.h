@@ -1,10 +1,15 @@
 #pragma once
 
 #include "../RmlUi_RenderInterface_Extended.h"
+#include <unordered_map>
 
 #ifndef RMLUI_PLATFORM_WIN32
 	#error "DirectX 12 renderer only supported on Windows"
 #endif
+
+// Forward declarations
+class SlugFontEngine;
+struct SlugBatchData;
 
 // Forward declarations — avoid pulling heavy DX12 headers into every TU
 struct ID3D12Device;
@@ -319,4 +324,30 @@ private:
 	// Clip mask state (stencil-based)
 	bool clip_mask_enabled_ = false;
 	uint32_t stencil_ref_ = 0;
+
+	// --- Slug GPU font rendering pipeline ---
+public:
+	void SetSlugFontEngine(SlugFontEngine* engine) { slug_font_engine_ = engine; }
+	bool CreateSlugPipeline();
+
+private:
+	void RenderSlugGeometry(Rml::CompiledGeometryHandle geometry, Rml::Vector2f translation);
+	void CreateSlugGPUTextures();
+	void UploadSlugTextures();
+
+	SlugFontEngine* slug_font_engine_ = nullptr;
+	ComPtr<ID3D12RootSignature> slug_root_signature_;
+	ComPtr<ID3D12PipelineState> pso_slug_;
+	ComPtr<ID3D12PipelineState> pso_slug_stencil_;
+
+	// Slug curve/band GPU textures
+	ComPtr<ID3D12Resource> slug_curve_texture_;
+	ComPtr<ID3D12Resource> slug_band_texture_;
+	int32_t slug_curve_srv_index_ = -1;
+	int32_t slug_band_srv_index_ = -1;
+	bool slug_textures_created_ = false;
+
+	// Map: compiled geometry handle -> slug batch data (VB + draw info)
+	struct SlugGPUBatch; // Defined in .cpp (uses D3D12 types)
+	std::unordered_map<Rml::CompiledGeometryHandle, std::unique_ptr<SlugGPUBatch>> slug_batches_;
 };
