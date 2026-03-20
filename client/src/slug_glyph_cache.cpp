@@ -66,6 +66,7 @@ const SlugGlyphData& SlugGlyphCache::GetOrCreateGlyph(
 		data.band_offset_y = -gi.em_ymin * data.band_scale_y;
 
 		dirty_ = true;
+		version_++;
 	}
 
 	auto [ins_it, _] = cache_.emplace(key, data);

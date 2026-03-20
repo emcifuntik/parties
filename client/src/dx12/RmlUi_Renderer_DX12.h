@@ -346,6 +346,8 @@ private:
 	int32_t slug_curve_srv_index_ = -1;
 	int32_t slug_band_srv_index_ = -1;
 	bool slug_textures_created_ = false;
+	bool slug_textures_uploaded_ = false;   // tracks resource state for re-upload barriers
+	uint32_t slug_uploaded_version_ = 0;    // last glyph cache version we uploaded
 
 	// Map: compiled geometry handle -> slug batch data (VB + draw info)
 	struct SlugGPUBatch; // Defined in .cpp (uses D3D12 types)

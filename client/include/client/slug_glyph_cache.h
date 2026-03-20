@@ -57,7 +57,11 @@ public:
 	int GetBandTexWidth() const { return kBandTexWidth; }
 	int GetTexHeight() const { return kTexHeight; }
 
-	// Returns true if new glyphs were added since last call to ClearDirty()
+	// Version-based dirty tracking — supports multiple renderers sharing one cache.
+	// Each renderer stores its own "last uploaded version" and compares with GetVersion().
+	uint32_t GetVersion() const { return version_; }
+
+	// DEPRECATED: single-consumer dirty flag (kept for backward compat, prefer version)
 	bool IsDirty() const { return dirty_; }
 	void ClearDirty() { dirty_ = false; }
 
@@ -101,4 +105,5 @@ private:
 	int band_alloc_x_ = 0, band_alloc_y_ = 0;
 
 	bool dirty_ = false;
+	uint32_t version_ = 0;
 };

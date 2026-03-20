@@ -2140,7 +2140,8 @@ void RenderInterface_DX12::CreateSlugGPUTextures() {
 void RenderInterface_DX12::UploadSlugTextures() {
 	if (!slug_font_engine_) return;
 	auto& cache = slug_font_engine_->GetGlyphCache();
-	if (!cache.IsDirty()) return;
+	uint32_t cache_version = cache.GetVersion();
+	if (cache_version == slug_uploaded_version_) return;
 
 	if (!slug_textures_created_)
 		CreateSlugGPUTextures();
@@ -2148,6 +2149,23 @@ void RenderInterface_DX12::UploadSlugTextures() {
 	int curve_w = cache.GetCurveTexWidth();
 	int band_w = cache.GetBandTexWidth();
 	int tex_h = cache.GetTexHeight();
+
+	// Transition textures to COPY_DEST if they were previously uploaded (already in SHADER_RESOURCE state).
+	// First upload: textures are created in COPY_DEST state, so no transition needed.
+	if (slug_textures_uploaded_) {
+		D3D12_RESOURCE_BARRIER barriers[2] = {};
+		barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		barriers[0].Transition.pResource = slug_curve_texture_.Get();
+		barriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+		barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+		barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		barriers[1].Transition.pResource = slug_band_texture_.Get();
+		barriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+		barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+		command_list_->ResourceBarrier(2, barriers);
+	}
 
 	// Upload curve texture (RGBA32F — 16 bytes per texel)
 	{
@@ -2187,15 +2205,6 @@ void RenderInterface_DX12::UploadSlugTextures() {
 			src_loc.PlacedFootprint.Footprint.RowPitch = aligned_row_pitch;
 
 			command_list_->CopyTextureRegion(&dst_loc, 0, 0, 0, &src_loc, nullptr);
-
-			D3D12_RESOURCE_BARRIER barrier{};
-			barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-			barrier.Transition.pResource = slug_curve_texture_.Get();
-			barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-			barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-			barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-			command_list_->ResourceBarrier(1, &barrier);
-
 			DeferRelease(std::move(upload_buf));
 		}
 	}
@@ -2238,20 +2247,28 @@ void RenderInterface_DX12::UploadSlugTextures() {
 			src_loc.PlacedFootprint.Footprint.RowPitch = aligned_row_pitch;
 
 			command_list_->CopyTextureRegion(&dst_loc, 0, 0, 0, &src_loc, nullptr);
-
-			D3D12_RESOURCE_BARRIER barrier{};
-			barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-			barrier.Transition.pResource = slug_band_texture_.Get();
-			barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-			barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-			barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-			command_list_->ResourceBarrier(1, &barrier);
-
 			DeferRelease(std::move(upload_buf));
 		}
 	}
 
-	cache.ClearDirty();
+	// Transition both textures to PIXEL_SHADER_RESOURCE after upload
+	{
+		D3D12_RESOURCE_BARRIER barriers[2] = {};
+		barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		barriers[0].Transition.pResource = slug_curve_texture_.Get();
+		barriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+		barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+		barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		barriers[1].Transition.pResource = slug_band_texture_.Get();
+		barriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+		barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+		command_list_->ResourceBarrier(2, barriers);
+	}
+	slug_textures_uploaded_ = true;
+
+	slug_uploaded_version_ = cache_version;
 }
 
 void RenderInterface_DX12::RenderSlugGeometry(
