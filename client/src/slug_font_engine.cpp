@@ -35,7 +35,7 @@ struct SlugFontEngine::FontFace {
 struct SlugFontEngine::FontFaceSize {
 	int face_index;      // Index into faces_
 	int size;            // Pixel size
-	float pixel_scale;   // stbtt_ScaleForPixelHeight result
+	float pixel_scale;   // stbtt_ScaleForMappingEmToPixels result
 	Rml::FontMetrics metrics;
 };
 
@@ -258,7 +258,7 @@ Rml::FontFaceHandle SlugFontEngine::GetFontFaceHandle(
 	auto fs = std::make_unique<FontFaceSize>();
 	fs->face_index = face_idx;
 	fs->size = size;
-	fs->pixel_scale = stbtt_ScaleForPixelHeight(&face->font_info, static_cast<float>(size));
+	fs->pixel_scale = stbtt_ScaleForMappingEmToPixels(&face->font_info, static_cast<float>(size));
 
 	// Compute metrics
 	float ps = fs->pixel_scale;
