@@ -16,17 +16,23 @@ jobs:
   # ── Windows retail build ────────────────────────────────────────────────────
   windows:
     runs-on: windows-latest
+    env:
+      VCPKG_BINARY_SOURCES: "clear;nuget,https://nuget.pkg.github.com/emcifuntik/index.json,readwrite"
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Cache vcpkg binary packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/vcpkg/archives
-          key: vcpkg-win-retail-${{ hashFiles('vcpkg.json', 'vendor/ports/**') }}
-          restore-keys: vcpkg-win-retail-
+      - name: Configure vcpkg NuGet binary caching
+        shell: pwsh
+        run: |
+          &(vcpkg fetch nuget | Select-Object -Last 1) sources add `
+            -Source "https://nuget.pkg.github.com/emcifuntik/index.json" `
+            -StorePasswordInClearText -Name GitHubPackages `
+            -UserName "emcifuntik" -Password "${{ secrets.GITHUB_TOKEN }}"
+          &(vcpkg fetch nuget | Select-Object -Last 1) setapikey `
+            "${{ secrets.GITHUB_TOKEN }}" `
+            -Source "https://nuget.pkg.github.com/emcifuntik/index.json"
 
       - name: Install LLVM 22
         run: |

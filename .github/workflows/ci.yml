@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+  packages: write
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -14,6 +18,8 @@ jobs:
   # ── Windows (clang-cl + LLVM 22) ────────────────────────────────────────────
   windows:
     runs-on: windows-latest
+    env:
+      VCPKG_BINARY_SOURCES: "clear;nuget,https://nuget.pkg.github.com/emcifuntik/index.json,readwrite"
     strategy:
       fail-fast: false
       matrix:
@@ -23,12 +29,16 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Cache vcpkg binary packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/vcpkg/archives
-          key: vcpkg-win-${{ matrix.preset }}-${{ hashFiles('vcpkg.json', 'vendor/ports/**') }}
-          restore-keys: vcpkg-win-${{ matrix.preset }}-
+      - name: Configure vcpkg NuGet binary caching
+        shell: pwsh
+        run: |
+          &(vcpkg fetch nuget | Select-Object -Last 1) sources add `
+            -Source "https://nuget.pkg.github.com/emcifuntik/index.json" `
+            -StorePasswordInClearText -Name GitHubPackages `
+            -UserName "emcifuntik" -Password "${{ secrets.GITHUB_TOKEN }}"
+          &(vcpkg fetch nuget | Select-Object -Last 1) setapikey `
+            "${{ secrets.GITHUB_TOKEN }}" `
+            -Source "https://nuget.pkg.github.com/emcifuntik/index.json"
 
       - name: Install LLVM 22
         run: |
