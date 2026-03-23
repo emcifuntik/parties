@@ -87,46 +87,63 @@ bool AmfEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
         return false;
     }
 
-    LOG_INFO("Selected encoder codec: {} ({}x{} @ {} fps)",
-             codec_name(codec_), width, height, fps);
+    LOG_INFO("Selected encoder codec: {} ({}x{} @ {} fps), bitrate: {} bps",
+             codec_name(codec_), width, height, fps, bitrate);
+
+    amf_int64 br = static_cast<amf_int64>(bitrate);
+    amf_int64 keyframe_period = static_cast<amf_int64>(fps * (VIDEO_KEYFRAME_INTERVAL_MS / 1000));
 
     if (codec_ == VideoCodecId::AV1) {
         encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_USAGE,
             static_cast<amf_int64>(AMF_VIDEO_ENCODER_AV1_USAGE_LOW_LATENCY));
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD,
-            static_cast<amf_int64>(AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR));
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_TARGET_BITRATE, static_cast<amf_int64>(bitrate));
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_PEAK_BITRATE, static_cast<amf_int64>(bitrate * 5));
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_FRAMERATE, AMFConstructRate(fps, 1));
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_GOP_SIZE,
-            static_cast<amf_int64>(fps * (VIDEO_KEYFRAME_INTERVAL_MS / 1000)));
         encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET,
             static_cast<amf_int64>(AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET_SPEED));
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD,
+            static_cast<amf_int64>(AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_CBR));
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_TARGET_BITRATE, br);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_PEAK_BITRATE, br);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_VBV_BUFFER_SIZE, br);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_INITIAL_VBV_BUFFER_FULLNESS, static_cast<amf_int64>(64));
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_ENFORCE_HRD, true);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_FILLER_DATA, false);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_FRAMERATE, AMFConstructRate(fps, 1));
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_GOP_SIZE, keyframe_period);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_HEADER_INSERTION_MODE,
+            static_cast<amf_int64>(AMF_VIDEO_ENCODER_AV1_HEADER_INSERTION_MODE_KEY_FRAME_ALIGNED));
     } else if (codec_ == VideoCodecId::H265) {
         encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_USAGE,
             static_cast<amf_int64>(AMF_VIDEO_ENCODER_HEVC_USAGE_LOW_LATENCY));
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD,
-            static_cast<amf_int64>(AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR));
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_TARGET_BITRATE, static_cast<amf_int64>(bitrate));
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_PEAK_BITRATE, static_cast<amf_int64>(bitrate * 5));
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_FRAMERATE, AMFConstructRate(fps, 1));
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_GOP_SIZE,
-            static_cast<amf_int64>(fps * (VIDEO_KEYFRAME_INTERVAL_MS / 1000)));
         encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET,
             static_cast<amf_int64>(AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_SPEED));
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD,
+            static_cast<amf_int64>(AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_CBR));
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_TARGET_BITRATE, br);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_PEAK_BITRATE, br);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_VBV_BUFFER_SIZE, br);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_INITIAL_VBV_BUFFER_FULLNESS, static_cast<amf_int64>(64));
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_ENFORCE_HRD, true);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_FILLER_DATA_ENABLE, false);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_FRAMERATE, AMFConstructRate(fps, 1));
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_GOP_SIZE, keyframe_period);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_HEADER_INSERTION_MODE,
+            static_cast<amf_int64>(AMF_VIDEO_ENCODER_HEVC_HEADER_INSERTION_MODE_IDR_ALIGNED));
     } else {
         encoder_->SetProperty(AMF_VIDEO_ENCODER_USAGE,
             static_cast<amf_int64>(AMF_VIDEO_ENCODER_USAGE_LOW_LATENCY));
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD,
-            static_cast<amf_int64>(AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR));
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_TARGET_BITRATE, static_cast<amf_int64>(bitrate));
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_PEAK_BITRATE, static_cast<amf_int64>(bitrate * 5));
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_FRAMERATE, AMFConstructRate(fps, 1));
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_IDR_PERIOD,
-            static_cast<amf_int64>(fps * (VIDEO_KEYFRAME_INTERVAL_MS / 1000)));
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_B_PIC_PATTERN, static_cast<amf_int64>(0));
         encoder_->SetProperty(AMF_VIDEO_ENCODER_QUALITY_PRESET,
             static_cast<amf_int64>(AMF_VIDEO_ENCODER_QUALITY_PRESET_SPEED));
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD,
+            static_cast<amf_int64>(AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_CBR));
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_TARGET_BITRATE, br);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_PEAK_BITRATE, br);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_VBV_BUFFER_SIZE, br);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_INITIAL_VBV_BUFFER_FULLNESS, static_cast<amf_int64>(64));
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_ENFORCE_HRD, true);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_FILLER_DATA_ENABLE, false);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_FRAMERATE, AMFConstructRate(fps, 1));
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_IDR_PERIOD, keyframe_period);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_B_PIC_PATTERN, static_cast<amf_int64>(0));
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEADER_INSERTION_SPACING, keyframe_period);
     }
 
     res = encoder_->Init(amf::AMF_SURFACE_BGRA, width, height);
@@ -289,12 +306,20 @@ void AmfEncoder::force_keyframe() {
 void AmfEncoder::set_bitrate(uint32_t bitrate) {
     if (!initialized_ || !encoder_) return;
 
-    if (codec_ == VideoCodecId::AV1)
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_TARGET_BITRATE, static_cast<amf_int64>(bitrate));
-    else if (codec_ == VideoCodecId::H265)
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_TARGET_BITRATE, static_cast<amf_int64>(bitrate));
-    else
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_TARGET_BITRATE, static_cast<amf_int64>(bitrate));
+    amf_int64 br = static_cast<amf_int64>(bitrate);
+    if (codec_ == VideoCodecId::AV1) {
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_TARGET_BITRATE, br);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_PEAK_BITRATE, br);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_VBV_BUFFER_SIZE, br);
+    } else if (codec_ == VideoCodecId::H265) {
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_TARGET_BITRATE, br);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_PEAK_BITRATE, br);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_VBV_BUFFER_SIZE, br);
+    } else {
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_TARGET_BITRATE, br);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_PEAK_BITRATE, br);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_VBV_BUFFER_SIZE, br);
+    }
 }
 
 EncoderInfo AmfEncoder::info() const {
