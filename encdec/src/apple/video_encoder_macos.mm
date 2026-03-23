@@ -15,53 +15,56 @@ namespace parties::client {
 
 // ── Annex-B helpers ───────────────────────────────────────────────────────────
 
-// Convert a CMSampleBuffer in AVCC/HVCC format to Annex-B.
-// Parameter sets (SPS, PPS, VPS) from the format description are prepended
-// before the first IDR NAL unit so the decoder always has them.
-static std::vector<uint8_t> sample_to_annexb(CMSampleBufferRef sample,
-                                              bool              is_keyframe,
-                                              MacVideoCodec     codec)
+// Convert a CMSampleBuffer to the wire format.
+// H264/H265: AVCC/HVCC → Annex-B with parameter sets prepended on keyframes.
+// AV1: raw OBU output from VideoToolbox, passed through as-is.
+static std::vector<uint8_t> sample_to_wire(CMSampleBufferRef sample,
+                                            bool              is_keyframe,
+                                            MacVideoCodec     codec)
 {
-    std::vector<uint8_t> out;
+    CMBlockBufferRef block = CMSampleBufferGetDataBuffer(sample);
+    if (!block) return {};
 
+    size_t total = CMBlockBufferGetDataLength(block);
+
+    // AV1: VideoToolbox outputs raw OBUs — no length-prefix conversion needed
+    if (codec == MacVideoCodec::AV1) {
+        std::vector<uint8_t> out(total);
+        CMBlockBufferCopyDataBytes(block, 0, total, out.data());
+        return out;
+    }
+
+    // H264/H265: convert AVCC/HVCC (4-byte length prefix) → Annex-B
+    std::vector<uint8_t> out;
     CMFormatDescriptionRef fmt = CMSampleBufferGetFormatDescription(sample);
 
-    // Prepend parameter sets on keyframes.
+    // Prepend parameter sets on keyframes
     if (is_keyframe && fmt) {
         if (codec == MacVideoCodec::H264) {
-            size_t offset = 0;
+            size_t idx = 0;
             while (true) {
-                const uint8_t* ps    = nullptr;
-                size_t         ps_sz = 0;
-                OSStatus st = CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
-                    fmt, offset, &ps, &ps_sz, nullptr, nullptr);
-                if (st != noErr) break;
-                // Annex-B start code
+                const uint8_t* ps = nullptr; size_t ps_sz = 0;
+                if (CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+                        fmt, idx, &ps, &ps_sz, nullptr, nullptr) != noErr) break;
                 out.push_back(0); out.push_back(0); out.push_back(0); out.push_back(1);
                 out.insert(out.end(), ps, ps + ps_sz);
-                ++offset;
+                ++idx;
             }
-        } else { // H265
-            size_t offset = 0;
+        } else {
+            size_t idx = 0;
             while (true) {
-                const uint8_t* ps    = nullptr;
-                size_t         ps_sz = 0;
-                OSStatus st = CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
-                    fmt, offset, &ps, &ps_sz, nullptr, nullptr);
-                if (st != noErr) break;
+                const uint8_t* ps = nullptr; size_t ps_sz = 0;
+                if (CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
+                        fmt, idx, &ps, &ps_sz, nullptr, nullptr) != noErr) break;
                 out.push_back(0); out.push_back(0); out.push_back(0); out.push_back(1);
                 out.insert(out.end(), ps, ps + ps_sz);
-                ++offset;
+                ++idx;
             }
         }
     }
 
-    // Convert AVCC/HVCC NAL units (4-byte length prefix) → Annex-B.
-    CMBlockBufferRef block = CMSampleBufferGetDataBuffer(sample);
-    if (!block) return out;
-
-    size_t   total   = CMBlockBufferGetDataLength(block);
-    size_t   offset  = 0;
+    // NAL units: 4-byte length prefix → Annex-B start code
+    size_t offset = 0;
     while (offset + 4 <= total) {
         uint8_t len_bytes[4];
         CMBlockBufferCopyDataBytes(block, offset, 4, len_bytes);
@@ -71,7 +74,6 @@ static std::vector<uint8_t> sample_to_annexb(CMSampleBufferRef sample,
                          |  (uint32_t)len_bytes[3];
         offset += 4;
         if (offset + nal_len > total) break;
-
         out.push_back(0); out.push_back(0); out.push_back(0); out.push_back(1);
         size_t base = out.size();
         out.resize(base + nal_len);
@@ -95,9 +97,17 @@ bool VideoEncoderMac::init(MacVideoCodec codec, uint32_t width, uint32_t height,
     height_ = height;
     pts_    = 0;
 
-    CMVideoCodecType vt_codec =
-        (codec == MacVideoCodec::H265) ? kCMVideoCodecType_HEVC
-                                       : kCMVideoCodecType_H264;
+    CMVideoCodecType vt_codec;
+    if (codec == MacVideoCodec::AV1) {
+        if (@available(macOS 14.0, *))
+            vt_codec = kCMVideoCodecType_AV1;
+        else
+            vt_codec = kCMVideoCodecType_HEVC; // fallback on older macOS
+    } else if (codec == MacVideoCodec::H265) {
+        vt_codec = kCMVideoCodecType_HEVC;
+    } else {
+        vt_codec = kCMVideoCodecType_H264;
+    }
 
     // Encoder properties
     CFMutableDictionaryRef props =
@@ -270,9 +280,9 @@ void VideoEncoderMac::handle_encoded_sample(CMSampleBufferRef sample)
             is_keyframe = false;
     }
 
-    std::vector<uint8_t> annexb = sample_to_annexb(sample, is_keyframe, codec_);
-    if (!annexb.empty())
-        on_encoded(annexb.data(), annexb.size(), is_keyframe);
+    std::vector<uint8_t> wire = sample_to_wire(sample, is_keyframe, codec_);
+    if (!wire.empty())
+        on_encoded(wire.data(), wire.size(), is_keyframe);
 }
 
 } // namespace parties::client

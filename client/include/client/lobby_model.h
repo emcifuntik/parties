@@ -129,7 +129,7 @@ public:
     Rml::Vector<ShareTarget> share_targets;
     float share_bitrate = 2.0f;    // Mbps (0.5 - 20.0)
     int share_fps = 2;             // 0=15, 1=30, 2=60, 3=120
-    int share_codec = 0;           // 0=AV1, 1=H.264
+    int share_codec = 0;           // 0=AV1, 1=H.265, 2=H.264
     int share_scale = 0;           // 0=Source, 1=x0.75, 2=x0.5, 3=x0.25
 
     // Auto-update

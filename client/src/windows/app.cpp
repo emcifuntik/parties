@@ -947,7 +947,9 @@ void App::encode_loop() {
         uint32_t w = encode_tex_w_, h = encode_tex_h_;
 
         if (!encoder_ || w != encoder_->width() || h != encoder_->height()) {
-            VideoCodecId codec = core_.model_.share_codec == 1 ? VideoCodecId::H264 : VideoCodecId::AV1;
+            VideoCodecId codec = core_.model_.share_codec == 2 ? VideoCodecId::H264
+                               : core_.model_.share_codec == 1 ? VideoCodecId::H265
+                                                                : VideoCodecId::AV1;
             encoder_.reset(); encode_registered_ = false;
             auto enc = std::make_unique<VideoEncoder>();
             uint32_t bitrate_bps = static_cast<uint32_t>(core_.model_.share_bitrate * 1'000'000.0f);

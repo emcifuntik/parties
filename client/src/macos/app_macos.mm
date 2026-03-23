@@ -645,9 +645,10 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
             static const uint32_t fps_table[] = { 15, 30, 60, 120 };
             uint32_t fps = fps_table[std::min(bself->_core.model_.share_fps, 3)];
 
-            // Codec selection: 0=H265 (best macOS default), 1=H264
-            MacVideoCodec mac_codec = (bself->_core.model_.share_codec == 1)
-                                        ? MacVideoCodec::H264 : MacVideoCodec::H265;
+            // Codec selection: 0=AV1, 1=H265, 2=H264
+            MacVideoCodec mac_codec = (bself->_core.model_.share_codec == 0) ? MacVideoCodec::AV1
+                                    : (bself->_core.model_.share_codec == 2) ? MacVideoCodec::H264
+                                                                             : MacVideoCodec::H265;
 
             // Apply scale factor
             static const float scale_factors[] = {1.0f, 0.75f, 0.5f, 0.25f};
@@ -666,8 +667,9 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
             }
             bself->_encoderReady = true;
 
-            VideoCodecId wire_codec = (mac_codec == MacVideoCodec::H264)
-                                       ? VideoCodecId::H264 : VideoCodecId::H265;
+            VideoCodecId wire_codec = (mac_codec == MacVideoCodec::AV1)  ? VideoCodecId::AV1
+                                   : (mac_codec == MacVideoCodec::H264) ? VideoCodecId::H264
+                                                                        : VideoCodecId::H265;
             bself->_encoder->on_encoded = [bself, wire_codec](const uint8_t* data, size_t len, bool is_kf) {
                 if (!bself->_core.authenticated_) return;
 

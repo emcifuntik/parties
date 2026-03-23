@@ -365,11 +365,11 @@
                     <div class="settings-sublabel">Codec</div>
                     <div class="share-codec-buttons">
                         <div class="share-codec-btn" data-class-active="share_codec == 0"
-                             data-event-click="select_share_codec(0)" data-if="use_native_picker == false">AV1</div>
-                        <div class="share-codec-btn" data-class-active="share_codec == 0"
-                             data-event-click="select_share_codec(0)" data-if="use_native_picker">H.265</div>
+                             data-event-click="select_share_codec(0)">AV1</div>
                         <div class="share-codec-btn" data-class-active="share_codec == 1"
-                             data-event-click="select_share_codec(1)">H.264</div>
+                             data-event-click="select_share_codec(1)">H.265</div>
+                        <div class="share-codec-btn" data-class-active="share_codec == 2"
+                             data-event-click="select_share_codec(2)">H.264</div>
                     </div>
                 </div>
                 <div class="share-setting-group">
@@ -463,11 +463,11 @@
                     <div class="settings-label">Codec</div>
                     <div class="share-codec-buttons">
                         <div class="share-codec-btn" data-class-active="share_codec == 0"
-                             data-event-click="select_share_codec(0)" data-if="use_native_picker == false">AV1</div>
-                        <div class="share-codec-btn" data-class-active="share_codec == 0"
-                             data-event-click="select_share_codec(0)" data-if="use_native_picker">H.265</div>
+                             data-event-click="select_share_codec(0)">AV1</div>
                         <div class="share-codec-btn" data-class-active="share_codec == 1"
-                             data-event-click="select_share_codec(1)">H.264</div>
+                             data-event-click="select_share_codec(1)">H.265</div>
+                        <div class="share-codec-btn" data-class-active="share_codec == 2"
+                             data-event-click="select_share_codec(2)">H.264</div>
                     </div>
                 </div>
                 <div class="share-setting-group">

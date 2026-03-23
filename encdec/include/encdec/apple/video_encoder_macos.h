@@ -16,7 +16,7 @@
 
 namespace parties::client {
 
-enum class MacVideoCodec { H264, H265 };
+enum class MacVideoCodec { H264, H265, AV1 };
 
 class VideoEncoderMac {
 public:
