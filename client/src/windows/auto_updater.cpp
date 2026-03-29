@@ -448,26 +448,44 @@ void AutoUpdater::apply_and_restart() {
 
     if (state_.load(std::memory_order_relaxed) != static_cast<int>(State::ReadyToInstall)) return;
     std::wstring zip_path = download_path_;
-    std::wstring ver_w = to_wide(version_);
 
     // Get current exe path
-    wchar_t exe_path[MAX_PATH];
-    GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
+    wchar_t exe_buf[MAX_PATH];
+    GetModuleFileNameW(nullptr, exe_buf, MAX_PATH);
+    std::filesystem::path current_exe{exe_buf};
+    std::filesystem::path old_exe = current_exe;
+    old_exe.replace_extension(L".old.exe");
 
+    // Find the extracted exe in temp
     wchar_t temp[MAX_PATH];
     GetTempPathW(MAX_PATH, temp);
-    std::wstring extract_dir = std::wstring(temp) + L"parties-update-extract";
-    std::wstring script_path = std::wstring(temp) + L"parties_update.cmd";
+    std::filesystem::path extract_dir = std::filesystem::path{temp} / "parties-update-extract";
+    std::filesystem::path extracted = extract_dir / "parties_client.exe";
 
-    // Place the new exe beside the current one
-    std::filesystem::path current_exe{exe_path};
-    std::filesystem::path new_exe = current_exe.parent_path() / "parties_client_new.exe";
-    std::filesystem::path extracted = std::filesystem::path{extract_dir} / "parties_client.exe";
+    if (!std::filesystem::exists(extracted)) {
+        LOG_ERROR("[Updater] Extracted exe not found: {}", extracted.string());
+        return;
+    }
 
     std::error_code ec;
-    std::filesystem::copy_file(extracted, new_exe, std::filesystem::copy_options::overwrite_existing, ec);
+
+    // Step 1: Delete any leftover .old.exe from a previous update
+    std::filesystem::remove(old_exe, ec);
+
+    // Step 2: Rename ourselves: parties_client.exe -> parties_client.old.exe
+    // (Windows allows renaming a running exe!)
+    std::filesystem::rename(current_exe, old_exe, ec);
     if (ec) {
-        LOG_ERROR("[Updater] Failed to copy extracted exe: {}", ec.message());
+        LOG_ERROR("[Updater] Failed to rename self to .old: {}", ec.message());
+        return;
+    }
+
+    // Step 3: Move the new exe into place as parties_client.exe
+    std::filesystem::copy_file(extracted, current_exe, std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) {
+        LOG_ERROR("[Updater] Failed to place new exe: {}", ec.message());
+        // Restore: rename .old back
+        std::filesystem::rename(old_exe, current_exe, ec);
         return;
     }
 
@@ -475,12 +493,12 @@ void AutoUpdater::apply_and_restart() {
     std::filesystem::remove_all(extract_dir, ec);
     DeleteFileW(zip_path.c_str());
 
-    LOG_INFO("[Updater] Launching new exe: {} --update-replace \"{}\"", new_exe.string(), current_exe.string());
+    LOG_INFO("[Updater] Launching updated exe with --update-cleanup");
     spdlog::default_logger()->flush();
 
-    // Launch the new exe with --update-replace pointing to the current exe
-    std::wstring args = L"--update-replace \"" + current_exe.wstring() + L"\"";
-    ShellExecuteW(nullptr, L"open", new_exe.wstring().c_str(), args.c_str(), nullptr, SW_HIDE);
+    // Step 4: Launch the NEW exe with --update-cleanup to delete .old on startup
+    std::wstring args = L"--update-cleanup \"" + old_exe.wstring() + L"\"";
+    ShellExecuteW(nullptr, L"open", current_exe.wstring().c_str(), args.c_str(), nullptr, SW_SHOWNORMAL);
 
     ExitProcess(0);
 }
@@ -488,29 +506,40 @@ void AutoUpdater::apply_and_restart() {
 bool AutoUpdater::handle_update_args(int argc, char** argv) {
     std::string mode, target;
     for (int i = 1; i < argc; i++) {
-        if (std::string(argv[i]) == "--update-replace" && i + 1 < argc) {
-            mode = "replace"; target = argv[++i];
-        } else if (std::string(argv[i]) == "--update-cleanup" && i + 1 < argc) {
+        if (std::string(argv[i]) == "--update-cleanup" && i + 1 < argc) {
             mode = "cleanup"; target = argv[++i];
+        } else if (std::string(argv[i]) == "--update-replace" && i + 1 < argc) {
+            // Backward compat: old updater launched us as _new.exe with --update-replace
+            mode = "replace"; target = argv[++i];
         }
     }
     if (mode.empty()) return false;
 
-    if (mode == "replace") {
-        // We are parties_client_new.exe. Delete the old exe, copy ourselves there, relaunch.
-        std::filesystem::path old_exe{target};
-        wchar_t self_path[MAX_PATH];
-        GetModuleFileNameW(nullptr, self_path, MAX_PATH);
-        std::filesystem::path self{self_path};
+    if (mode == "cleanup") {
+        // Delete the .old.exe (or legacy _new.exe) left from the update
+        std::filesystem::path old_file{target};
+        for (int attempt = 0; attempt < 10; attempt++) {
+            std::error_code ec;
+            if (std::filesystem::remove(old_file, ec)) break;
+            Sleep(500);
+        }
+        return false; // continue normal startup
+    }
 
-        // Wait for old exe to be deletable (up to 10 seconds)
+    if (mode == "replace") {
+        // Legacy path: we are parties_client_new.exe, old exe is at target.
+        // Delete old, copy ourselves there, relaunch with --update-cleanup.
+        std::filesystem::path old_exe{target};
+        wchar_t self_buf[MAX_PATH];
+        GetModuleFileNameW(nullptr, self_buf, MAX_PATH);
+        std::filesystem::path self{self_buf};
+
         for (int i = 0; i < 20; i++) {
             std::error_code ec;
             if (std::filesystem::remove(old_exe, ec)) break;
             Sleep(500);
         }
 
-        // Copy ourselves to the old path
         std::error_code ec;
         std::filesystem::copy_file(self, old_exe, std::filesystem::copy_options::overwrite_existing, ec);
         if (ec) {
@@ -518,23 +547,9 @@ bool AutoUpdater::handle_update_args(int argc, char** argv) {
             return true;
         }
 
-        // Launch the restored exe with --update-cleanup so it deletes us
         std::wstring args = L"--update-cleanup \"" + self.wstring() + L"\"";
         ShellExecuteW(nullptr, L"open", old_exe.wstring().c_str(), args.c_str(), nullptr, SW_SHOWNORMAL);
         ExitProcess(0);
-    }
-
-    if (mode == "cleanup") {
-        // We are the restored parties_client.exe. Delete the _new exe.
-        std::filesystem::path new_exe{target};
-        // Retry a few times in case the _new process hasn't fully exited
-        for (int i = 0; i < 10; i++) {
-            std::error_code ec;
-            if (std::filesystem::remove(new_exe, ec)) break;
-            Sleep(500);
-        }
-        // Continue normal startup
-        return false;
     }
 
     return false;
