@@ -8,12 +8,8 @@ vcpkg_extract_source_archive(
     SOURCE_PATH
     ARCHIVE "${ARCHIVE}"
     NO_REMOVE_ONE_LEVEL
-    PATCHES
-        fix-crashpad-wer.patch
-        fix-usage-runtime.patch
-        fix-cmake4.patch
+    # No patches needed for inproc backend (crashpad patches don't apply).
 )
-file(REMOVE_RECURSE "${SOURCE_PATH}/external/crashpad/third_party/zlib/zlib")
 
 vcpkg_list(SET options)
 
