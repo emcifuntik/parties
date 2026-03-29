@@ -101,6 +101,16 @@ jobs:
             Write-Host "Verified $exe`: $($sig.SignerCertificate.Subject)"
           }
 
+      - name: Collect PDB files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path pdb-staging
+          Get-ChildItem -Recurse -Path build-retail -Filter "*.pdb" | ForEach-Object {
+            Write-Host "Found PDB: $($_.FullName)"
+            Copy-Item $_.FullName -Destination pdb-staging/
+          }
+          Write-Host "Total PDBs: $((Get-ChildItem pdb-staging).Count)"
+
       - name: Upload Windows client artifact
         uses: actions/upload-artifact@v7
         with:
@@ -112,6 +122,12 @@ jobs:
         with:
           name: release-windows-server
           path: build-retail/server/parties_server.exe
+
+      - name: Upload Windows PDB artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-windows-pdb
+          path: pdb-staging/
 
   # ── macOS retail build ──────────────────────────────────────────────────────
   macos:
@@ -241,6 +257,12 @@ jobs:
           name: release-windows-server
           path: dist/windows-server
 
+      - name: Download Windows PDB
+        uses: actions/download-artifact@v7
+        with:
+          name: release-windows-pdb
+          path: dist/windows-pdb
+
       - name: Download macOS client
         uses: actions/download-artifact@v7
         with:
@@ -254,6 +276,7 @@ jobs:
         run: |
           cd dist/windows-client && zip -r ../../parties-client-windows-${{ github.ref_name }}.zip . && cd ../..
           cd dist/windows-server && zip -r ../../parties-server-windows-${{ github.ref_name }}.zip . && cd ../..
+          cd dist/windows-pdb && zip -r ../../parties-pdb-windows-${{ github.ref_name }}.zip . && cd ../..
           tar -czf parties-client-macos-${{ github.ref_name }}.tar.gz -C dist/macos-client Parties.app
 
       - name: Create GitHub Release
@@ -263,4 +286,5 @@ jobs:
           files: |
             parties-client-windows-${{ github.ref_name }}.zip
             parties-server-windows-${{ github.ref_name }}.zip
+            parties-pdb-windows-${{ github.ref_name }}.zip
             parties-client-macos-${{ github.ref_name }}.tar.gz

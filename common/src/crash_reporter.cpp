@@ -7,7 +7,12 @@
 
 namespace parties {
 
-void crash_reporter_init(const char* dsn) {
+bool crash_reporter_is_crashpad_handler([[maybe_unused]] int argc, [[maybe_unused]] char* argv[]) {
+    // No-op: using inproc backend, no handler subprocess needed.
+    return false;
+}
+
+void crash_reporter_init(const char* dsn, [[maybe_unused]] const char* exe_path) {
 #ifdef SENTRY_ENABLED
     if (!dsn || dsn[0] == '\0') return;
     sentry_options_t* options = sentry_options_new();
@@ -19,7 +24,9 @@ void crash_reporter_init(const char* dsn) {
     sentry_options_set_environment(options, "development");
 #endif
     sentry_options_set_database_path(options, ".sentry-native");
+    sentry_options_set_auto_session_tracking(options, 1);
     sentry_init(options);
+    sentry_start_session();
 #else
     (void)dsn;
 #endif
@@ -39,6 +46,7 @@ void crash_reporter_set_user(const std::string& user_id, const std::string& disp
 
 void crash_reporter_shutdown() {
 #ifdef SENTRY_ENABLED
+    sentry_end_session();
     sentry_close();
 #endif
 }

@@ -236,6 +236,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             return 0;
         }
         break;
+    case WM_SYSKEYDOWN:
+        if (wParam == VK_F1 && (GetKeyState(VK_MENU) & 0x8000)) {
+            LOG_ERROR("Test crash triggered by Alt+F1");
+            volatile int* p = nullptr;
+            *p = 0xDEAD;
+        }
+        break;
 #endif
     }
 
@@ -255,9 +262,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 // ═══════════════════════════════════════════════════════════════════════
 
 int main(int argc, char* argv[]) {
+    // Must be first: if launched as crashpad handler subprocess, run handler and exit.
+    parties::crash_reporter_is_crashpad_handler(argc, argv);
+
     TracySetThreadName("Main");
 #ifdef SENTRY_DSN_VALUE
-    parties::crash_reporter_init(SENTRY_DSN_VALUE);
+    parties::crash_reporter_init(SENTRY_DSN_VALUE, argv[0]);
 #else
     parties::crash_reporter_init(nullptr);
 #endif

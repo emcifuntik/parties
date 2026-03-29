@@ -7,6 +7,8 @@
     "opus",
     {
       "name": "sentry-native",
+      "default-features": false,
+      "features": ["backend", "transport"],
       "platform": "linux | (windows & !uwp & !arm)"
     },
     {
