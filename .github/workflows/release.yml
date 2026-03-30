@@ -199,13 +199,21 @@ jobs:
           IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)"/\1/')
           echo "Signing with: $IDENTITY"
 
-          # Sign embedded frameworks first, then the main binary
-          find "$APP/Contents/Frameworks" -name "*.framework" -maxdepth 1 | while read fw; do
-            codesign --force --options runtime \
-              --sign "$IDENTITY" \
-              "$fw"
-          done
+          SPARKLE="$APP/Contents/Frameworks/Sparkle.framework"
 
+          # Sign Sparkle internals inside-out: XPC services, Updater.app, helper, then framework
+          codesign --force --options runtime --sign "$IDENTITY" \
+            "$SPARKLE/Versions/B/XPCServices/Downloader.xpc"
+          codesign --force --options runtime --sign "$IDENTITY" \
+            "$SPARKLE/Versions/B/XPCServices/Installer.xpc"
+          codesign --force --options runtime --sign "$IDENTITY" \
+            "$SPARKLE/Versions/B/Updater.app"
+          codesign --force --options runtime --sign "$IDENTITY" \
+            "$SPARKLE/Versions/B/Autoupdate"
+          codesign --force --options runtime --sign "$IDENTITY" \
+            "$SPARKLE/Versions/B"
+
+          # Sign the main app bundle
           codesign --force --options runtime \
             --entitlements client/res/Parties.entitlements \
             --sign "$IDENTITY" \
