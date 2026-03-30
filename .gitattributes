@@ -1,0 +1,4 @@
+# Force LF line endings for Apple plist/entitlements files (codesign requires LF)
+*.entitlements text eol=lf
+*.plist        text eol=lf
+*.plist.in     text eol=lf
