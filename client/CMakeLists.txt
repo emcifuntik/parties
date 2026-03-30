@@ -66,6 +66,9 @@ elseif(APPLE)
 
         # Screen capture — ScreenCaptureKit (macOS 12.3+)
         src/macos/screen_capture_macos.mm
+
+        # Auto-updater (Sparkle)
+        src/macos/auto_updater_macos.mm
     )
 else()
     set(CLIENT_PLATFORM_SOURCES
@@ -312,6 +315,29 @@ if(APPLE AND ENABLE_SENTRY)
         "${_SWIFT_SDK_PATH}/usr/lib/swift"
     )
     target_link_libraries(parties_client PRIVATE "-lswiftCore")
+endif()
+
+# ── Sparkle auto-updater for macOS ───────────────────────────────────────────
+if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS" AND BUILD_IN_RETAIL)
+    include(FetchContent)
+    set(SPARKLE_VERSION "2.9.1")
+    FetchContent_Declare(sparkle
+        URL "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz"
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+    FetchContent_MakeAvailable(sparkle)
+
+    target_compile_options(parties_client PRIVATE "-F${sparkle_SOURCE_DIR}")
+    target_link_libraries(parties_client PRIVATE "-F${sparkle_SOURCE_DIR}" "-framework Sparkle")
+    target_compile_definitions(parties_client PRIVATE SPARKLE_ENABLED)
+
+    # Embed Sparkle.framework in the app bundle
+    add_custom_command(TARGET parties_client POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_DIR:parties_client>/Contents/Frameworks"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${sparkle_SOURCE_DIR}/Sparkle.framework"
+            "$<TARGET_BUNDLE_DIR:parties_client>/Contents/Frameworks/Sparkle.framework"
+    )
 endif()
 
 # Copy client exe to additional test folders for multi-instance testing (Windows only)

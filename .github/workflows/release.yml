@@ -171,22 +171,138 @@ jobs:
 
       - name: Prepare app bundle for distribution
         run: |
-          # Remove dSYM from inside the app bundle (already uploaded to Sentry)
           rm -rf build-macos-release/client/parties_client.app/Contents/MacOS/*.dSYM
-          # Rename to Parties.app for a proper macOS app experience
           mv build-macos-release/client/parties_client.app build-macos-release/client/Parties.app
 
-      - name: Prepare macOS artifact
+      # ── Code signing ──────────────────────────────────────────────────────
+      - name: Import code signing certificate
+        env:
+          P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          P12_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
         run: |
-          mkdir -p staging
-          cp -R build-macos-release/client/Parties.app staging/
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          echo "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$RUNNER_TEMP/cert.p12" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
 
-      - name: Upload macOS artifact
+      - name: Code sign app bundle
+        run: |
+          APP="build-macos-release/client/Parties.app"
+
+          # Find the Developer ID Application identity from the imported certificate
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)"/\1/')
+          echo "Signing with: $IDENTITY"
+
+          # Sign embedded frameworks first, then the main binary
+          find "$APP/Contents/Frameworks" -name "*.framework" -maxdepth 1 | while read fw; do
+            codesign --force --options runtime \
+              --sign "$IDENTITY" \
+              "$fw"
+          done
+
+          codesign --force --options runtime \
+            --entitlements client/res/Parties.entitlements \
+            --sign "$IDENTITY" \
+            "$APP"
+
+          codesign --verify --deep --strict "$APP"
+
+      # ── DMG creation ──────────────────────────────────────────────────────
+      - name: Create DMG
+        run: |
+          npx --yes create-dmg \
+            --overwrite \
+            "build-macos-release/client/Parties.app" \
+            build-macos-release/ || true
+          # create-dmg names the file automatically; rename to our convention
+          mv build-macos-release/*.dmg "parties-client-macos-${{ github.ref_name }}.dmg"
+
+      # ── Notarization ──────────────────────────────────────────────────────
+      - name: Notarize DMG
+        env:
+          APPLE_ID: ${{ secrets.MACOS_APPLE_ID }}
+          APP_PASSWORD: ${{ secrets.MACOS_APP_PASSWORD }}
+          TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}
+        run: |
+          xcrun notarytool submit "parties-client-macos-${{ github.ref_name }}.dmg" \
+            --apple-id "$APPLE_ID" \
+            --password "$APP_PASSWORD" \
+            --team-id "$TEAM_ID" \
+            --wait
+          xcrun stapler staple "parties-client-macos-${{ github.ref_name }}.dmg"
+
+      # ── Sparkle update signature ──────────────────────────────────────────
+      - name: Sign update for Sparkle
+        env:
+          SPARKLE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          SIGN_TOOL="build-macos-release/_deps/sparkle-src/bin/sign_update"
+          if [ -f "$SIGN_TOOL" ]; then
+            SIGNATURE=$("$SIGN_TOOL" "parties-client-macos-${{ github.ref_name }}.dmg" --ed-key-file <(echo "$SPARKLE_KEY"))
+            echo "SPARKLE_SIG=$SIGNATURE" >> "$GITHUB_ENV"
+          else
+            echo "SPARKLE_SIG=" >> "$GITHUB_ENV"
+            echo "::warning::Sparkle sign_update tool not found, skipping update signature"
+          fi
+
+      - name: Generate appcast.xml
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          DMG_NAME="parties-client-macos-${GITHUB_REF_NAME}.dmg"
+          DMG_SIZE=$(stat -f%z "$DMG_NAME")
+          DMG_URL="https://github.com/emcifuntik/parties/releases/download/${GITHUB_REF_NAME}/${DMG_NAME}"
+
+          cat > appcast.xml << 'APPCAST_HEADER'
+          <?xml version="1.0" encoding="utf-8"?>
+          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
+            <channel>
+              <title>Parties Updates</title>
+          APPCAST_HEADER
+
+          cat >> appcast.xml << APPCAST_ITEM
+              <item>
+                <title>Version ${VERSION}</title>
+                <pubDate>$(date -R)</pubDate>
+                <sparkle:version>${VERSION}</sparkle:version>
+                <sparkle:shortVersionString>${VERSION}</sparkle:shortVersionString>
+                <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+                <enclosure
+                  url="${DMG_URL}"
+                  length="${DMG_SIZE}"
+                  type="application/octet-stream"
+                  sparkle:edSignature="${SPARKLE_SIG}" />
+              </item>
+          APPCAST_ITEM
+
+          cat >> appcast.xml << 'APPCAST_FOOTER'
+            </channel>
+          </rss>
+          APPCAST_FOOTER
+
+          # Strip leading whitespace from heredoc indentation
+          sed -i '' 's/^          //' appcast.xml
+
+      - name: Clean up keychain
+        if: always()
+        run: security delete-keychain "$KEYCHAIN_PATH" || true
+
+      - name: Upload DMG artifact
         uses: actions/upload-artifact@v7
         with:
-          name: release-macos
-          path: staging/
-          include-hidden-files: true
+          name: release-macos-dmg
+          path: parties-client-macos-${{ github.ref_name }}.dmg
+
+      - name: Upload appcast artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-appcast
+          path: appcast.xml
 
   # ── Linux Docker image ─────────────────────────────────────────────────────
   linux-docker:
@@ -263,21 +379,23 @@ jobs:
           name: release-windows-pdb
           path: dist/windows-pdb
 
-      - name: Download macOS client
+      - name: Download macOS DMG
         uses: actions/download-artifact@v7
         with:
-          name: release-macos
-          path: dist/macos-client
+          name: release-macos-dmg
+          path: dist/macos
 
-      - name: Restore macOS executable permissions
-        run: chmod +x dist/macos-client/Parties.app/Contents/MacOS/parties_client
+      - name: Download appcast
+        uses: actions/download-artifact@v7
+        with:
+          name: release-appcast
+          path: dist/appcast
 
       - name: Package release archives
         run: |
           cd dist/windows-client && zip -r ../../parties-client-windows-${{ github.ref_name }}.zip . && cd ../..
           cd dist/windows-server && zip -r ../../parties-server-windows-${{ github.ref_name }}.zip . && cd ../..
           cd dist/windows-pdb && zip -r ../../parties-pdb-windows-${{ github.ref_name }}.zip . && cd ../..
-          tar -czf parties-client-macos-${{ github.ref_name }}.tar.gz -C dist/macos-client Parties.app
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -287,4 +405,5 @@ jobs:
             parties-client-windows-${{ github.ref_name }}.zip
             parties-server-windows-${{ github.ref_name }}.zip
             parties-pdb-windows-${{ github.ref_name }}.zip
-            parties-client-macos-${{ github.ref_name }}.tar.gz
+            dist/macos/parties-client-macos-${{ github.ref_name }}.dmg
+            dist/appcast/appcast.xml

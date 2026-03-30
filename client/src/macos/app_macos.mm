@@ -51,6 +51,12 @@
 
 #include <encdec/apple/VideoDecoderIOS.h>
 
+#ifdef SPARKLE_ENABLED
+// Defined in auto_updater_macos.mm
+extern void macos_updater_init();
+extern void macos_updater_check_now();
+#endif
+
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -930,6 +936,10 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
     [NSApp activateIgnoringOtherApps:YES];
+
+#ifdef SPARKLE_ENABLED
+    macos_updater_init();
+#endif
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)sender

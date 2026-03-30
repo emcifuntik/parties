@@ -32,5 +32,9 @@
     <string>Parties needs camera access for video calls.</string>
     <key>NSHumanReadableCopyright</key>
     <string>MIT License</string>
+    <key>SUFeedURL</key>
+    <string>https://github.com/emcifuntik/parties/releases/latest/download/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>XMYpl1LClni1E3t256j+TsHWq/5aquhdnRr+PIU2l6E=</string>
 </dict>
 </plist>
