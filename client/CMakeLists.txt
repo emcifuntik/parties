@@ -331,11 +331,10 @@ if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS" AND BUILD_IN_RETAIL)
     target_link_libraries(parties_client PRIVATE "-F${sparkle_SOURCE_DIR}" "-framework Sparkle")
     target_compile_definitions(parties_client PRIVATE SPARKLE_ENABLED)
 
-    # Embed Sparkle.framework in the app bundle
+    # Embed Sparkle.framework in the app bundle (ditto preserves symlinks, unlike cmake -E copy_directory)
     add_custom_command(TARGET parties_client POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_DIR:parties_client>/Contents/Frameworks"
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${sparkle_SOURCE_DIR}/Sparkle.framework"
+        COMMAND ditto "${sparkle_SOURCE_DIR}/Sparkle.framework"
             "$<TARGET_BUNDLE_DIR:parties_client>/Contents/Frameworks/Sparkle.framework"
     )
 endif()
