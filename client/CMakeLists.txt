@@ -331,6 +331,9 @@ if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS" AND BUILD_IN_RETAIL)
     target_link_libraries(parties_client PRIVATE "-F${sparkle_SOURCE_DIR}" "-framework Sparkle")
     target_compile_definitions(parties_client PRIVATE SPARKLE_ENABLED)
 
+    # Set rpath so the dynamic linker finds Sparkle.framework in the app bundle
+    target_link_options(parties_client PRIVATE "LINKER:-rpath,@executable_path/../Frameworks")
+
     # Embed Sparkle.framework in the app bundle (ditto preserves symlinks, unlike cmake -E copy_directory)
     add_custom_command(TARGET parties_client POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_BUNDLE_DIR:parties_client>/Contents/Frameworks"
