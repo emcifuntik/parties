@@ -14,6 +14,7 @@ typedef struct HWND__* HWND;
 class ExtendedRenderInterface;
 class SystemInterface_Win32;
 class TextInputMethodEditor_Win32;
+class SlugFontEngine;
 
 namespace parties::client {
 
@@ -65,6 +66,7 @@ private:
     std::unique_ptr<ExtendedRenderInterface> render_interface_;
     std::unique_ptr<SystemInterface_Win32> system_interface_;
     std::unique_ptr<TextInputMethodEditor_Win32> text_input_editor_;
+    std::unique_ptr<SlugFontEngine> slug_font_engine_;
     EmbeddedFileInterface file_interface_;
 
     Rml::Context* context_ = nullptr;

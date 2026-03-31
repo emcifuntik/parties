@@ -386,6 +386,230 @@ float4 main(PS_Input input) : SV_TARGET {
 )HLSL";
 
 // ---------------------------------------------------------------------------
+// Slug GPU font rendering shaders (Eric Lengyel, MIT/Apache-2.0)
+// Reference: https://jcgt.org/published/0006/02/02/
+// ---------------------------------------------------------------------------
+
+static const char g_slug_vs_source[] = R"HLSL(
+void SlugUnpack(float4 tex, float4 bnd, out float4 vbnd, out int4 vgly)
+{
+	uint2 g = asuint(tex.zw);
+	vgly = int4(g.x & 0xFFFFU, g.x >> 16U, g.y & 0xFFFFU, g.y >> 16U);
+	vbnd = bnd;
+}
+
+float2 SlugDilate(float4 pos, float4 tex, float4 jac, float4 m0, float4 m1, float4 m3, float2 dim, out float2 vpos)
+{
+	float2 n = normalize(pos.zw);
+	float s = dot(m3.xy, pos.xy) + m3.w;
+	float t = dot(m3.xy, n);
+
+	float u = (s * dot(m0.xy, n) - t * (dot(m0.xy, pos.xy) + m0.w)) * dim.x;
+	float v = (s * dot(m1.xy, n) - t * (dot(m1.xy, pos.xy) + m1.w)) * dim.y;
+
+	float s2 = s * s;
+	float st = s * t;
+	float uv = u * u + v * v;
+	float2 d = pos.zw * (s2 * (st + sqrt(uv)) / (uv - st * st));
+
+	vpos = pos.xy + d;
+	return (float2(tex.x + dot(d, jac.xy), tex.y + dot(d, jac.zw)));
+}
+
+cbuffer ParamStruct : register(b0)
+{
+	float4 slug_matrix[4];
+	float4 slug_viewport;
+};
+
+struct VertexStruct
+{
+	float4 position : SV_Position;
+	float4 color : U_COLOR;
+	float2 texcoord : U_TEXCOORD;
+	nointerpolation float4 banding : U_BANDING;
+	nointerpolation int4 glyph : U_GLYPH;
+};
+
+VertexStruct main(float4 attrib[5] : ATTRIB, uint vid : SV_VertexID)
+{
+	float2 p;
+	VertexStruct vresult;
+
+	vresult.texcoord = SlugDilate(attrib[0], attrib[1], attrib[2], slug_matrix[0], slug_matrix[1], slug_matrix[3], slug_viewport.xy, p);
+
+	vresult.position.x = p.x * slug_matrix[0].x + p.y * slug_matrix[0].y + slug_matrix[0].w;
+	vresult.position.y = p.x * slug_matrix[1].x + p.y * slug_matrix[1].y + slug_matrix[1].w;
+	vresult.position.z = p.x * slug_matrix[2].x + p.y * slug_matrix[2].y + slug_matrix[2].w;
+	vresult.position.w = p.x * slug_matrix[3].x + p.y * slug_matrix[3].y + slug_matrix[3].w;
+
+	SlugUnpack(attrib[1], attrib[3], vresult.banding, vresult.glyph);
+	vresult.color = attrib[4];
+	return (vresult);
+}
+)HLSL";
+
+static const char g_slug_ps_source[] = R"HLSL(
+#define kLogBandTextureWidth 12
+#define TexelLoad2D(x, y) x.Load(int3(y, 0))
+
+uint CalcRootCode(float y1, float y2, float y3)
+{
+	uint i1 = asuint(y1) >> 31U;
+	uint i2 = asuint(y2) >> 30U;
+	uint i3 = asuint(y3) >> 29U;
+
+	uint shift = (i2 & 2U) | (i1 & ~2U);
+	shift = (i3 & 4U) | (shift & ~4U);
+
+	return ((0x2E74U >> shift) & 0x0101U);
+}
+
+float2 SolveHorizPoly(float4 p12, float2 p3)
+{
+	float2 a = p12.xy - p12.zw * 2.0 + p3;
+	float2 b = p12.xy - p12.zw;
+	float ra = 1.0 / a.y;
+	float rb = 0.5 / b.y;
+
+	float d = sqrt(max(b.y * b.y - a.y * p12.y, 0.0));
+	float t1 = (b.y - d) * ra;
+	float t2 = (b.y + d) * ra;
+
+	if (abs(a.y) < 1.0 / 65536.0) t1 = t2 = p12.y * rb;
+
+	return (float2((a.x * t1 - b.x * 2.0) * t1 + p12.x, (a.x * t2 - b.x * 2.0) * t2 + p12.x));
+}
+
+float2 SolveVertPoly(float4 p12, float2 p3)
+{
+	float2 a = p12.xy - p12.zw * 2.0 + p3;
+	float2 b = p12.xy - p12.zw;
+	float ra = 1.0 / a.x;
+	float rb = 0.5 / b.x;
+
+	float d = sqrt(max(b.x * b.x - a.x * p12.x, 0.0));
+	float t1 = (b.x - d) * ra;
+	float t2 = (b.x + d) * ra;
+
+	if (abs(a.x) < 1.0 / 65536.0) t1 = t2 = p12.x * rb;
+
+	return (float2((a.y * t1 - b.y * 2.0) * t1 + p12.y, (a.y * t2 - b.y * 2.0) * t2 + p12.y));
+}
+
+int2 CalcBandLoc(int2 glyphLoc, uint offset)
+{
+	int2 bandLoc = int2(glyphLoc.x + int(offset), glyphLoc.y);
+	bandLoc.y += bandLoc.x >> kLogBandTextureWidth;
+	bandLoc.x &= (1 << kLogBandTextureWidth) - 1;
+	return (bandLoc);
+}
+
+float CalcCoverage(float xcov, float ycov, float xwgt, float ywgt, int flags)
+{
+	float coverage = max(abs(xcov * xwgt + ycov * ywgt) / max(xwgt + ywgt, 1.0 / 65536.0), min(abs(xcov), abs(ycov)));
+	coverage = saturate(coverage);
+	return (coverage);
+}
+
+float SlugRender(Texture2D curveData, Texture2D<uint4> bandData, float2 renderCoord, float4 bandTransform, int4 glyphData)
+{
+	int curveIndex;
+
+	float2 emsPerPixel = fwidth(renderCoord);
+	float2 pixelsPerEm = 1.0 / emsPerPixel;
+
+	int2 bandMax = glyphData.zw;
+	bandMax.y &= 0x00FF;
+
+	int2 bandIndex = clamp(int2(renderCoord * bandTransform.xy + bandTransform.zw), int2(0, 0), bandMax);
+	int2 glyphLoc = glyphData.xy;
+
+	float xcov = 0.0;
+	float xwgt = 0.0;
+
+	uint2 hbandData = TexelLoad2D(bandData, int2(glyphLoc.x + bandIndex.y, glyphLoc.y)).xy;
+	int2 hbandLoc = CalcBandLoc(glyphLoc, hbandData.y);
+
+	for (curveIndex = 0; curveIndex < int(hbandData.x); curveIndex++)
+	{
+		int2 curveLoc = int2(TexelLoad2D(bandData, int2(hbandLoc.x + curveIndex, hbandLoc.y)).xy);
+		float4 p12 = TexelLoad2D(curveData, curveLoc) - float4(renderCoord, renderCoord);
+		float2 p3 = TexelLoad2D(curveData, int2(curveLoc.x + 1, curveLoc.y)).xy - renderCoord;
+
+		if (max(max(p12.x, p12.z), p3.x) * pixelsPerEm.x < -0.5) break;
+
+		uint code = CalcRootCode(p12.y, p12.w, p3.y);
+		if (code != 0U)
+		{
+			float2 r = SolveHorizPoly(p12, p3) * pixelsPerEm.x;
+			if ((code & 1U) != 0U)
+			{
+				xcov += saturate(r.x + 0.5);
+				xwgt = max(xwgt, saturate(1.0 - abs(r.x) * 2.0));
+			}
+			if (code > 1U)
+			{
+				xcov -= saturate(r.y + 0.5);
+				xwgt = max(xwgt, saturate(1.0 - abs(r.y) * 2.0));
+			}
+		}
+	}
+
+	float ycov = 0.0;
+	float ywgt = 0.0;
+
+	uint2 vbandData = TexelLoad2D(bandData, int2(glyphLoc.x + bandMax.y + 1 + bandIndex.x, glyphLoc.y)).xy;
+	int2 vbandLoc = CalcBandLoc(glyphLoc, vbandData.y);
+
+	for (curveIndex = 0; curveIndex < int(vbandData.x); curveIndex++)
+	{
+		int2 curveLoc = int2(TexelLoad2D(bandData, int2(vbandLoc.x + curveIndex, vbandLoc.y)).xy);
+		float4 p12 = TexelLoad2D(curveData, curveLoc) - float4(renderCoord, renderCoord);
+		float2 p3 = TexelLoad2D(curveData, int2(curveLoc.x + 1, curveLoc.y)).xy - renderCoord;
+
+		if (max(max(p12.y, p12.w), p3.y) * pixelsPerEm.y < -0.5) break;
+
+		uint code = CalcRootCode(p12.x, p12.z, p3.x);
+		if (code != 0U)
+		{
+			float2 r = SolveVertPoly(p12, p3) * pixelsPerEm.y;
+			if ((code & 1U) != 0U)
+			{
+				ycov -= saturate(r.x + 0.5);
+				ywgt = max(ywgt, saturate(1.0 - abs(r.x) * 2.0));
+			}
+			if (code > 1U)
+			{
+				ycov += saturate(r.y + 0.5);
+				ywgt = max(ywgt, saturate(1.0 - abs(r.y) * 2.0));
+			}
+		}
+	}
+
+	return (CalcCoverage(xcov, ycov, xwgt, ywgt, glyphData.w));
+}
+
+struct VertexStruct
+{
+	float4 position : SV_Position;
+	float4 color : U_COLOR;
+	float2 texcoord : U_TEXCOORD;
+	nointerpolation float4 banding : U_BANDING;
+	nointerpolation int4 glyph : U_GLYPH;
+};
+
+Texture2D curveTexture : register(t0);
+Texture2D<uint4> bandTexture : register(t1);
+
+float4 main(VertexStruct vresult) : SV_Target
+{
+	float coverage = SlugRender(curveTexture, bandTexture, vresult.texcoord, vresult.banding, vresult.glyph);
+	return (vresult.color * coverage);
+}
+)HLSL";
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
@@ -594,6 +818,7 @@ RenderInterface_DX12::RenderInterface_DX12(void* p_window_handle, const Backend:
 	if (!CreateMSAARenderTarget()) return;
 
 	if (!CreatePipelineState()) return;
+	if (!CreateSlugPipeline()) return;
 	if (!CreateFullscreenQuad()) return;
 
 	if (!CreateFrameUploadHeaps()) return;
@@ -1670,6 +1895,483 @@ bool RenderInterface_DX12::CreatePipelineState() {
 }
 
 // ---------------------------------------------------------------------------
+// Slug GPU font rendering pipeline
+// ---------------------------------------------------------------------------
+
+#include <client/slug_font_engine.h>
+
+// Slug constant buffer: must match the vertex shader's ParamStruct
+struct RenderInterface_DX12::SlugGPUBatch {
+	Microsoft::WRL::ComPtr<ID3D12Resource> vertex_buffer;
+	D3D12_VERTEX_BUFFER_VIEW vbv = {};
+	int num_indices = 0;
+};
+
+struct alignas(256) SlugCBData {
+	float matrix[4][4]; // slug_matrix[4]: four float4 rows
+	float viewport[4];  // slug_viewport
+};
+static_assert(sizeof(SlugCBData) == 256, "SlugCBData must be 256-byte aligned");
+
+bool RenderInterface_DX12::CreateSlugPipeline() {
+	// Compile Slug shaders
+	auto slug_vs = CompileHLSL(g_slug_vs_source, sizeof(g_slug_vs_source) - 1,
+		"main", "vs_5_0", "Slug_VS");
+	if (!slug_vs) return false;
+
+	auto slug_ps = CompileHLSL(g_slug_ps_source, sizeof(g_slug_ps_source) - 1,
+		"main", "ps_5_0", "Slug_PS");
+	if (!slug_ps) return false;
+
+	// --- Slug root signature ---
+	// Parameter 0: Root CBV at b0 (SlugCBData: MVP matrix + viewport) — VS + PS
+	// Parameter 1: Descriptor table for SRV t0 (curve texture, RGBA32F) — PS
+	// Parameter 2: Descriptor table for SRV t1 (band texture, RGBA32UI) — PS
+
+	D3D12_DESCRIPTOR_RANGE1 slug_curve_range{};
+	slug_curve_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+	slug_curve_range.NumDescriptors = 1;
+	slug_curve_range.BaseShaderRegister = 0; // t0
+	slug_curve_range.RegisterSpace = 0;
+	slug_curve_range.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE;
+	slug_curve_range.OffsetInDescriptorsFromTableStart = 0;
+
+	D3D12_DESCRIPTOR_RANGE1 slug_band_range{};
+	slug_band_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+	slug_band_range.NumDescriptors = 1;
+	slug_band_range.BaseShaderRegister = 1; // t1
+	slug_band_range.RegisterSpace = 0;
+	slug_band_range.Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC_WHILE_SET_AT_EXECUTE;
+	slug_band_range.OffsetInDescriptorsFromTableStart = 0;
+
+	D3D12_ROOT_PARAMETER1 slug_params[3] = {};
+
+	// Param 0: Root CBV at b0
+	slug_params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+	slug_params[0].Descriptor.ShaderRegister = 0;
+	slug_params[0].Descriptor.RegisterSpace = 0;
+	slug_params[0].Descriptor.Flags = D3D12_ROOT_DESCRIPTOR_FLAG_DATA_STATIC;
+	slug_params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL; // VS needs it for dilation
+
+	// Param 1: Descriptor table for curve texture (t0)
+	slug_params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+	slug_params[1].DescriptorTable.NumDescriptorRanges = 1;
+	slug_params[1].DescriptorTable.pDescriptorRanges = &slug_curve_range;
+	slug_params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+	// Param 2: Descriptor table for band texture (t1)
+	slug_params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+	slug_params[2].DescriptorTable.NumDescriptorRanges = 1;
+	slug_params[2].DescriptorTable.pDescriptorRanges = &slug_band_range;
+	slug_params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+	D3D12_VERSIONED_ROOT_SIGNATURE_DESC slug_rs_desc{};
+	slug_rs_desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+	slug_rs_desc.Desc_1_1.NumParameters = 3;
+	slug_rs_desc.Desc_1_1.pParameters = slug_params;
+	slug_rs_desc.Desc_1_1.NumStaticSamplers = 0; // Slug uses Load(), no samplers
+	slug_rs_desc.Desc_1_1.pStaticSamplers = nullptr;
+	slug_rs_desc.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
+		D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS |
+		D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
+		D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
+
+	ComPtr<ID3DBlob> slug_rs_blob;
+	ComPtr<ID3DBlob> slug_rs_error;
+	DX_CHECK(D3D12SerializeVersionedRootSignature(&slug_rs_desc, &slug_rs_blob, &slug_rs_error),
+		"D3D12SerializeVersionedRootSignature(Slug)");
+
+	DX_CHECK(device_->CreateRootSignature(0, slug_rs_blob->GetBufferPointer(),
+		slug_rs_blob->GetBufferSize(), IID_PPV_ARGS(&slug_root_signature_)),
+		"CreateRootSignature(Slug)");
+	slug_root_signature_->SetName(L"Slug_RootSignature");
+
+	// --- Slug input layout: 5 x ATTRIB float4, stride 80 ---
+	D3D12_INPUT_ELEMENT_DESC slug_input_layout[] = {
+		{ "ATTRIB", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{ "ATTRIB", 1, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 16, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{ "ATTRIB", 2, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{ "ATTRIB", 3, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 48, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+		{ "ATTRIB", 4, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 64, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+	};
+
+	// --- Slug PSO ---
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC slug_pso{};
+	slug_pso.pRootSignature = slug_root_signature_.Get();
+	slug_pso.VS = { slug_vs->GetBufferPointer(), slug_vs->GetBufferSize() };
+	slug_pso.PS = { slug_ps->GetBufferPointer(), slug_ps->GetBufferSize() };
+	slug_pso.InputLayout = { slug_input_layout, _countof(slug_input_layout) };
+	slug_pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+
+	// Premultiplied alpha blend
+	slug_pso.BlendState.AlphaToCoverageEnable = FALSE;
+	slug_pso.BlendState.IndependentBlendEnable = FALSE;
+	auto& slug_rt = slug_pso.BlendState.RenderTarget[0];
+	slug_rt.BlendEnable = TRUE;
+	slug_rt.SrcBlend = D3D12_BLEND_ONE;
+	slug_rt.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+	slug_rt.BlendOp = D3D12_BLEND_OP_ADD;
+	slug_rt.SrcBlendAlpha = D3D12_BLEND_ONE;
+	slug_rt.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+	slug_rt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+	slug_rt.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+	// Rasterizer: no culling
+	slug_pso.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+	slug_pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+	slug_pso.RasterizerState.DepthClipEnable = TRUE;
+	slug_pso.RasterizerState.MultisampleEnable = msaa_samples_ > 1 ? TRUE : FALSE;
+
+	// Depth disabled, stencil disabled (base variant)
+	slug_pso.DepthStencilState.DepthEnable = FALSE;
+	slug_pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+	slug_pso.DepthStencilState.StencilEnable = FALSE;
+	slug_pso.DepthStencilState.StencilReadMask = 0xFF;
+	slug_pso.DepthStencilState.StencilWriteMask = 0xFF;
+
+	D3D12_DEPTH_STENCILOP_DESC slug_stencil_keep{};
+	slug_stencil_keep.StencilFailOp = D3D12_STENCIL_OP_KEEP;
+	slug_stencil_keep.StencilDepthFailOp = D3D12_STENCIL_OP_KEEP;
+	slug_stencil_keep.StencilPassOp = D3D12_STENCIL_OP_KEEP;
+	slug_stencil_keep.StencilFunc = D3D12_COMPARISON_FUNC_EQUAL;
+	slug_pso.DepthStencilState.FrontFace = slug_stencil_keep;
+	slug_pso.DepthStencilState.BackFace = slug_stencil_keep;
+
+	slug_pso.NumRenderTargets = 1;
+	slug_pso.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+	slug_pso.DSVFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
+	slug_pso.SampleDesc.Count = msaa_samples_;
+	slug_pso.SampleDesc.Quality = msaa_quality_;
+	slug_pso.SampleMask = UINT_MAX;
+
+	DX_CHECK(device_->CreateGraphicsPipelineState(&slug_pso, IID_PPV_ARGS(&pso_slug_)),
+		"CreateGraphicsPipelineState(Slug)");
+	pso_slug_->SetName(L"Slug_PSO");
+
+	// Stencil variant (for clip masks)
+	slug_pso.DepthStencilState.StencilEnable = TRUE;
+	DX_CHECK(device_->CreateGraphicsPipelineState(&slug_pso, IID_PPV_ARGS(&pso_slug_stencil_)),
+		"CreateGraphicsPipelineState(SlugStencil)");
+	pso_slug_stencil_->SetName(L"Slug_PSO_Stencil");
+
+	std::printf("[DX12] Slug GPU font pipeline created\n");
+	return true;
+}
+
+void RenderInterface_DX12::CreateSlugGPUTextures() {
+	if (!slug_font_engine_) return;
+	auto& cache = slug_font_engine_->GetGlyphCache();
+
+	int curve_w = cache.GetCurveTexWidth();
+	int band_w = cache.GetBandTexWidth();
+	int tex_h = cache.GetTexHeight();
+
+	if (!slug_textures_created_) {
+		// Allocate SRV slots
+		slug_curve_srv_index_ = AllocateSrvSlot();
+		slug_band_srv_index_ = AllocateSrvSlot();
+		if (slug_curve_srv_index_ < 0 || slug_band_srv_index_ < 0) return;
+
+		D3D12_HEAP_PROPERTIES default_heap{};
+		default_heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+		// Curve texture: RGBA32F
+		{
+			D3D12_RESOURCE_DESC tex_desc{};
+			tex_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+			tex_desc.Width = static_cast<UINT64>(curve_w);
+			tex_desc.Height = static_cast<UINT>(tex_h);
+			tex_desc.DepthOrArraySize = 1;
+			tex_desc.MipLevels = 1;
+			tex_desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+			tex_desc.SampleDesc.Count = 1;
+			tex_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+
+			device_->CreateCommittedResource(
+				&default_heap, D3D12_HEAP_FLAG_NONE, &tex_desc,
+				D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+				IID_PPV_ARGS(&slug_curve_texture_));
+			slug_curve_texture_->SetName(L"Slug_CurveTexture");
+
+			D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc{};
+			srv_desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+			srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+			srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			srv_desc.Texture2D.MipLevels = 1;
+
+			D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle = srv_heap_->GetCPUDescriptorHandleForHeapStart();
+			cpu_handle.ptr += static_cast<SIZE_T>(slug_curve_srv_index_) * srv_descriptor_size_;
+			device_->CreateShaderResourceView(slug_curve_texture_.Get(), &srv_desc, cpu_handle);
+		}
+
+		// Band texture: RGBA32UI
+		{
+			D3D12_RESOURCE_DESC tex_desc{};
+			tex_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+			tex_desc.Width = static_cast<UINT64>(band_w);
+			tex_desc.Height = static_cast<UINT>(tex_h);
+			tex_desc.DepthOrArraySize = 1;
+			tex_desc.MipLevels = 1;
+			tex_desc.Format = DXGI_FORMAT_R32G32B32A32_UINT;
+			tex_desc.SampleDesc.Count = 1;
+			tex_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+
+			device_->CreateCommittedResource(
+				&default_heap, D3D12_HEAP_FLAG_NONE, &tex_desc,
+				D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+				IID_PPV_ARGS(&slug_band_texture_));
+			slug_band_texture_->SetName(L"Slug_BandTexture");
+
+			D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc{};
+			srv_desc.Format = DXGI_FORMAT_R32G32B32A32_UINT;
+			srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+			srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			srv_desc.Texture2D.MipLevels = 1;
+
+			D3D12_CPU_DESCRIPTOR_HANDLE cpu_handle = srv_heap_->GetCPUDescriptorHandleForHeapStart();
+			cpu_handle.ptr += static_cast<SIZE_T>(slug_band_srv_index_) * srv_descriptor_size_;
+			device_->CreateShaderResourceView(slug_band_texture_.Get(), &srv_desc, cpu_handle);
+		}
+
+		slug_textures_created_ = true;
+	}
+}
+
+void RenderInterface_DX12::UploadSlugTextures() {
+	if (!slug_font_engine_) return;
+	auto& cache = slug_font_engine_->GetGlyphCache();
+	uint32_t cache_version = cache.GetVersion();
+	if (cache_version == slug_uploaded_version_) return;
+
+	if (!slug_textures_created_)
+		CreateSlugGPUTextures();
+
+	int curve_w = cache.GetCurveTexWidth();
+	int band_w = cache.GetBandTexWidth();
+	int tex_h = cache.GetTexHeight();
+
+	// Transition textures to COPY_DEST if they were previously uploaded (already in SHADER_RESOURCE state).
+	// First upload: textures are created in COPY_DEST state, so no transition needed.
+	if (slug_textures_uploaded_) {
+		D3D12_RESOURCE_BARRIER barriers[2] = {};
+		barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		barriers[0].Transition.pResource = slug_curve_texture_.Get();
+		barriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+		barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+		barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		barriers[1].Transition.pResource = slug_band_texture_.Get();
+		barriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+		barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+		command_list_->ResourceBarrier(2, barriers);
+	}
+
+	// Upload curve texture (RGBA32F — 16 bytes per texel)
+	{
+		UINT row_pitch = static_cast<UINT>(curve_w * 4 * sizeof(float));
+		UINT aligned_row_pitch = (row_pitch + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1) &
+			~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1);
+		UINT upload_size = aligned_row_pitch * tex_h;
+
+		auto upload_buf = CreateUploadBuffer(upload_size, nullptr);
+		if (upload_buf) {
+			void* mapped = nullptr;
+			D3D12_RANGE read_range{0, 0};
+			upload_buf->Map(0, &read_range, &mapped);
+
+			const float* src = cache.GetCurveTexData();
+			for (int y = 0; y < tex_h; y++) {
+				std::memcpy(
+					static_cast<uint8_t*>(mapped) + y * aligned_row_pitch,
+					src + y * curve_w * 4,
+					row_pitch);
+			}
+			upload_buf->Unmap(0, nullptr);
+
+			D3D12_TEXTURE_COPY_LOCATION dst_loc{};
+			dst_loc.pResource = slug_curve_texture_.Get();
+			dst_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+			dst_loc.SubresourceIndex = 0;
+
+			D3D12_TEXTURE_COPY_LOCATION src_loc{};
+			src_loc.pResource = upload_buf.Get();
+			src_loc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+			src_loc.PlacedFootprint.Offset = 0;
+			src_loc.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+			src_loc.PlacedFootprint.Footprint.Width = curve_w;
+			src_loc.PlacedFootprint.Footprint.Height = tex_h;
+			src_loc.PlacedFootprint.Footprint.Depth = 1;
+			src_loc.PlacedFootprint.Footprint.RowPitch = aligned_row_pitch;
+
+			command_list_->CopyTextureRegion(&dst_loc, 0, 0, 0, &src_loc, nullptr);
+			DeferRelease(std::move(upload_buf));
+		}
+	}
+
+	// Upload band texture (RGBA32UI — 16 bytes per texel)
+	{
+		UINT row_pitch = static_cast<UINT>(band_w * 4 * sizeof(uint32_t));
+		UINT aligned_row_pitch = (row_pitch + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1) &
+			~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1);
+		UINT upload_size = aligned_row_pitch * tex_h;
+
+		auto upload_buf = CreateUploadBuffer(upload_size, nullptr);
+		if (upload_buf) {
+			void* mapped = nullptr;
+			D3D12_RANGE read_range{0, 0};
+			upload_buf->Map(0, &read_range, &mapped);
+
+			const uint32_t* src = cache.GetBandTexData();
+			for (int y = 0; y < tex_h; y++) {
+				std::memcpy(
+					static_cast<uint8_t*>(mapped) + y * aligned_row_pitch,
+					src + y * band_w * 4,
+					row_pitch);
+			}
+			upload_buf->Unmap(0, nullptr);
+
+			D3D12_TEXTURE_COPY_LOCATION dst_loc{};
+			dst_loc.pResource = slug_band_texture_.Get();
+			dst_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+			dst_loc.SubresourceIndex = 0;
+
+			D3D12_TEXTURE_COPY_LOCATION src_loc{};
+			src_loc.pResource = upload_buf.Get();
+			src_loc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+			src_loc.PlacedFootprint.Offset = 0;
+			src_loc.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R32G32B32A32_UINT;
+			src_loc.PlacedFootprint.Footprint.Width = band_w;
+			src_loc.PlacedFootprint.Footprint.Height = tex_h;
+			src_loc.PlacedFootprint.Footprint.Depth = 1;
+			src_loc.PlacedFootprint.Footprint.RowPitch = aligned_row_pitch;
+
+			command_list_->CopyTextureRegion(&dst_loc, 0, 0, 0, &src_loc, nullptr);
+			DeferRelease(std::move(upload_buf));
+		}
+	}
+
+	// Transition both textures to PIXEL_SHADER_RESOURCE after upload
+	{
+		D3D12_RESOURCE_BARRIER barriers[2] = {};
+		barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		barriers[0].Transition.pResource = slug_curve_texture_.Get();
+		barriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+		barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+		barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		barriers[1].Transition.pResource = slug_band_texture_.Get();
+		barriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+		barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+		command_list_->ResourceBarrier(2, barriers);
+	}
+	slug_textures_uploaded_ = true;
+
+	slug_uploaded_version_ = cache_version;
+}
+
+void RenderInterface_DX12::RenderSlugGeometry(
+    Rml::CompiledGeometryHandle geometry, Rml::Vector2f translation) {
+
+	auto it = slug_batches_.find(geometry);
+	if (it == slug_batches_.end() || !it->second) return;
+	const SlugGPUBatch& slug = *it->second;
+
+	if (slug_curve_srv_index_ < 0 || slug_band_srv_index_ < 0) return;
+
+	// Build Slug constant buffer
+	// The Slug VS applies: clip.x = p.x * m[0].x + p.y * m[0].y + m[0].w
+	// For RmlUi orthographic: origin at top-left, Y down, NDC range [-1,1]
+	SlugCBData cb_data{};
+	std::memset(&cb_data, 0, sizeof(cb_data));
+
+	// Build the combined MVP matrix
+	Rml::Matrix4f mvp;
+	if (transform_active_) {
+		mvp = projection_ * transform_;
+	} else {
+		mvp = projection_;
+	}
+
+	// Bake translation into the projection matrix
+	// RmlUi projection is column-major: m[col][row]
+	// Add translation: effectively translate the positions before projection
+	// The standard path does: pos = input.position + translate; then mul(transform, float4(pos, 0, 1))
+	// For Slug, we bake it into the matrix: m[3] += m[0]*tx + m[1]*ty
+	Rml::Matrix4f mvp_translated = mvp;
+	// Column-major: column 3 += column 0 * tx + column 1 * ty
+	for (int r = 0; r < 4; r++) {
+		mvp_translated[3][r] += mvp[0][r] * translation.x + mvp[1][r] * translation.y;
+	}
+
+	// Slug expects row-major float4[4] where row i = the coefficients for clip component i.
+	// RmlUi Matrix4f is column-major. So Slug row i = RmlUi column... no.
+	// Column-major: M[col][row], so M(r,c) = data[c*4+r]
+	// Slug: clip.x = p.x * m[0].x + p.y * m[0].y + m[0].w
+	//        = p.x * M(0,0) + p.y * M(0,1) + M(0,3)  (Slug row 0 = matrix row 0)
+	// In column-major: M(0,0) = data[0], M(0,1) = data[4], M(0,2) = data[8], M(0,3) = data[12]
+	// So Slug row r = { M(r,0), M(r,1), M(r,2), M(r,3) } = { data[0*4+r], data[1*4+r], data[2*4+r], data[3*4+r] }
+	const float* md = mvp_translated.data();
+	for (int r = 0; r < 4; r++) {
+		cb_data.matrix[r][0] = md[0 * 4 + r]; // column 0, row r
+		cb_data.matrix[r][1] = md[1 * 4 + r]; // column 1, row r
+		cb_data.matrix[r][2] = md[2 * 4 + r]; // column 2, row r
+		cb_data.matrix[r][3] = md[3 * 4 + r]; // column 3, row r
+	}
+
+	cb_data.viewport[0] = static_cast<float>(width_);
+	cb_data.viewport[1] = static_cast<float>(height_);
+	cb_data.viewport[2] = 0.0f;
+	cb_data.viewport[3] = 0.0f;
+
+	auto cb = AllocateCB(sizeof(SlugCBData), &cb_data);
+	if (!cb.cpu_ptr) return;
+
+	// Switch to Slug pipeline
+	command_list_->SetGraphicsRootSignature(slug_root_signature_.Get());
+	command_list_->SetPipelineState(
+		clip_mask_enabled_ ? pso_slug_stencil_.Get() : pso_slug_.Get());
+	if (clip_mask_enabled_)
+		command_list_->OMSetStencilRef(stencil_ref_);
+
+	// Must re-bind the descriptor heap after SetGraphicsRootSignature
+	ID3D12DescriptorHeap* heaps[] = { srv_heap_.Get() };
+	command_list_->SetDescriptorHeaps(1, heaps);
+
+	// Bind CBV
+	command_list_->SetGraphicsRootConstantBufferView(0, cb.gpu_address);
+
+	// Bind curve texture (t0)
+	D3D12_GPU_DESCRIPTOR_HANDLE curve_srv = srv_heap_->GetGPUDescriptorHandleForHeapStart();
+	curve_srv.ptr += static_cast<UINT64>(slug_curve_srv_index_) * srv_descriptor_size_;
+	command_list_->SetGraphicsRootDescriptorTable(1, curve_srv);
+
+	// Bind band texture (t1)
+	D3D12_GPU_DESCRIPTOR_HANDLE band_srv = srv_heap_->GetGPUDescriptorHandleForHeapStart();
+	band_srv.ptr += static_cast<UINT64>(slug_band_srv_index_) * srv_descriptor_size_;
+	command_list_->SetGraphicsRootDescriptorTable(2, band_srv);
+
+	// Set scissor
+	if (scissor_enabled_) {
+		command_list_->RSSetScissorRects(1, &scissor_rect_);
+	} else {
+		D3D12_RECT full_rect = { 0, 0, static_cast<LONG>(width_), static_cast<LONG>(height_) };
+		command_list_->RSSetScissorRects(1, &full_rect);
+	}
+
+	// Bind Slug VB + standard IB, draw
+	command_list_->IASetVertexBuffers(0, 1, &slug.vbv);
+	auto* geom = reinterpret_cast<GeometryData*>(geometry);
+	command_list_->IASetIndexBuffer(&geom->ibv);
+	command_list_->DrawIndexedInstanced(static_cast<UINT>(slug.num_indices), 1, 0, 0, 0);
+
+	// Restore standard root signature so subsequent non-Slug draws work
+	command_list_->SetGraphicsRootSignature(root_signature_.Get());
+	command_list_->SetDescriptorHeaps(1, heaps);
+}
+
+// ---------------------------------------------------------------------------
 // Release back buffer references (before ResizeBuffers)
 // ---------------------------------------------------------------------------
 
@@ -2341,6 +3043,10 @@ void RenderInterface_DX12::BeginFrame() {
 
 	// Set topology (triangle list) for the frame
 	command_list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+	// Upload Slug font textures if glyph cache has new data
+	if (slug_font_engine_)
+		UploadSlugTextures();
 }
 
 // ---------------------------------------------------------------------------
@@ -2561,7 +3267,63 @@ Rml::CompiledGeometryHandle RenderInterface_DX12::CompileGeometry(
 
 	geom->num_indices = static_cast<int>(indices.size());
 
-	return reinterpret_cast<Rml::CompiledGeometryHandle>(geom);
+	auto handle = reinterpret_cast<Rml::CompiledGeometryHandle>(geom);
+
+	// Check for Slug font batch: magic value in first vertex's tex_coord.x
+	if (slug_font_engine_ && vertices.size() >= 4) {
+		float magic_test;
+		std::memcpy(&magic_test, &vertices[0].tex_coord.x, sizeof(float));
+		if (magic_test == SLUG_MAGIC_U) {
+			// Extract batch ID from tex_coord.y
+			uint32_t batch_id;
+			std::memcpy(&batch_id, &vertices[0].tex_coord.y, sizeof(uint32_t));
+
+			SlugBatchData* batch = slug_font_engine_->ConsumePendingBatch(batch_id);
+			if (batch && !batch->vertices.empty()) {
+				// Upload Slug vertex buffer (80 bytes/vertex)
+				auto gpu_batch = std::make_unique<SlugGPUBatch>();
+
+				const UINT slug_vb_size = static_cast<UINT>(batch->vertices.size() * sizeof(SlugVertex));
+				D3D12_HEAP_PROPERTIES slug_heap{};
+				slug_heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+				D3D12_RESOURCE_DESC slug_buf{};
+				slug_buf.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+				slug_buf.Width = slug_vb_size;
+				slug_buf.Height = 1;
+				slug_buf.DepthOrArraySize = 1;
+				slug_buf.MipLevels = 1;
+				slug_buf.Format = DXGI_FORMAT_UNKNOWN;
+				slug_buf.SampleDesc.Count = 1;
+				slug_buf.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+				hr = device_->CreateCommittedResource(
+					&slug_heap, D3D12_HEAP_FLAG_NONE, &slug_buf,
+					D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+					IID_PPV_ARGS(&gpu_batch->vertex_buffer));
+
+				if (SUCCEEDED(hr)) {
+					gpu_batch->vertex_buffer->SetName(L"Slug_VB");
+
+					void* slug_mapped = nullptr;
+					D3D12_RANGE slug_read{0, 0};
+					hr = gpu_batch->vertex_buffer->Map(0, &slug_read, &slug_mapped);
+					if (SUCCEEDED(hr)) {
+						std::memcpy(slug_mapped, batch->vertices.data(), slug_vb_size);
+						gpu_batch->vertex_buffer->Unmap(0, nullptr);
+					}
+
+					gpu_batch->vbv.BufferLocation = gpu_batch->vertex_buffer->GetGPUVirtualAddress();
+					gpu_batch->vbv.SizeInBytes = slug_vb_size;
+					gpu_batch->vbv.StrideInBytes = sizeof(SlugVertex);
+					gpu_batch->num_indices = static_cast<int>(batch->indices.size());
+
+					slug_batches_[handle] = std::move(gpu_batch);
+				}
+			}
+		}
+	}
+
+	return handle;
 }
 
 void RenderInterface_DX12::UpdateGeometryVertices(
@@ -2585,6 +3347,12 @@ void RenderInterface_DX12::RenderGeometry(
 
 
 	if (!geometry) return;
+
+	// Check if this is a Slug font batch
+	if (slug_batches_.count(geometry)) {
+		RenderSlugGeometry(geometry, translation);
+		return;
+	}
 
 	auto* geom = reinterpret_cast<GeometryData*>(geometry);
 	auto* tex = reinterpret_cast<TextureData*>(texture);
@@ -2645,6 +3413,14 @@ void RenderInterface_DX12::RenderGeometry(
 
 void RenderInterface_DX12::ReleaseGeometry(Rml::CompiledGeometryHandle geometry) {
 	if (!geometry) return;
+
+	// Clean up associated Slug batch if any
+	auto slug_it = slug_batches_.find(geometry);
+	if (slug_it != slug_batches_.end()) {
+		DeferRelease(std::move(slug_it->second->vertex_buffer));
+		slug_batches_.erase(slug_it);
+	}
+
 	auto* geom = reinterpret_cast<GeometryData*>(geometry);
 	// Defer deletion — GPU may still be using these buffers
 	DeferRelease(std::move(geom->vertex_buffer));

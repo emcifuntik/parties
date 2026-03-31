@@ -1,0 +1,89 @@
+<rml>
+<head>
+	<link type="text/rcss" href="manager.rcss" />
+	<title>RmlUI Designer</title>
+</head>
+<body data-model="designer">
+	<div class="content">
+		<h1>RmlUI Designer</h1>
+
+		<div class="section">
+			<h2>Document</h2>
+			<div class="btn-row">
+				<span class="btn btn-primary" data-event-click="browse_document">Open .rml File</span>
+			</div>
+		</div>
+
+		<div class="section-grow">
+			<h2>Bind Variables</h2>
+			<p class="hint">Define data model variables for the preview document.</p>
+
+			<div class="var-list">
+				<div class="var-header">
+					<span class="var-col-name">Name</span>
+					<span class="var-col-type">Type</span>
+					<span class="var-col-value">Value</span>
+					<span class="var-col-actions"></span>
+				</div>
+				<div class="var-row" data-for="var : variables">
+					<span class="var-col-name">{{ var.name }}</span>
+					<span class="var-col-type">{{ var.type_name }}</span>
+					<div class="var-col-value">
+						<input class="var-input" type="text"
+							data-if="var.type_name != 'bool' && var.type_name != 'event'"
+							data-attr-value="var.value"
+							data-event-change="set_var(var.name, ev.value)" />
+						<span class="var-bool-toggle"
+							data-if="var.type_name == 'bool'"
+							data-event-click="toggle_var(var.name)">{{ var.value }}</span>
+						<span class="var-event-label" data-if="var.type_name == 'event'">(callback)</span>
+					</div>
+					<span class="var-col-actions">
+						<span class="remove-btn" data-event-click="remove_var(var.name)">x</span>
+					</span>
+				</div>
+			</div>
+
+			<div class="add-var-form">
+				<div class="add-var-row">
+					<label>Model:</label>
+					<input class="text add-input-model" type="text" data-value="new_model" />
+					<label>Name:</label>
+					<input class="text add-input-name" type="text" data-value="new_name" />
+				</div>
+				<div class="add-var-row">
+					<label>Type:</label>
+					<select data-value="new_type">
+						<option value="string">string</option>
+						<option value="int">int</option>
+						<option value="float">float</option>
+						<option value="bool">bool</option>
+						<option value="string[]">string[]</option>
+					</select>
+					<span class="btn btn-primary" data-event-click="add_var">Add Variable</span>
+				</div>
+			</div>
+		</div>
+
+		<div class="section">
+			<h2>Asset Folders</h2>
+			<div class="btn-row">
+				<span class="btn" data-event-click="browse_folder">Add Folder</span>
+			</div>
+		</div>
+
+		<div class="section">
+			<h2>Shortcuts</h2>
+			<div class="shortcut-list">
+				<div class="shortcut-item"><span class="shortcut-key">F5</span> <span>Reload document</span></div>
+				<div class="shortcut-item"><span class="shortcut-key">F6</span> <span>Save bind variables (.vars)</span></div>
+				<div class="shortcut-item"><span class="shortcut-key">F8</span> <span>Toggle RmlUi Debugger</span></div>
+			</div>
+		</div>
+	</div>
+
+	<div class="status-bar">
+		<span>Ready</span>
+	</div>
+</body>
+</rml>

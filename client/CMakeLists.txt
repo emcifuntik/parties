@@ -38,6 +38,8 @@ set(CLIENT_COMMON_SOURCES
     src/app_core.cpp
     src/sound_player.cpp
     src/net_client_msquic.cpp
+    src/slug_glyph_cache.cpp
+    src/slug_font_engine.cpp
 )
 
 # ── Platform-specific sources ─────────────────────────────────────────────────

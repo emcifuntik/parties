@@ -1,0 +1,417 @@
+/* RmlUI Designer — Manager window styles (flexbox layout) */
+
+body {
+	font-family: Inter;
+	font-size: 14dp;
+	color: #E0E0E0;
+	background-color: #1E1E1E;
+	display: flex;
+	flex-direction: column;
+	width: 100%;
+	height: 100%;
+	padding: 0;
+	margin: 0;
+	box-sizing: border-box;
+}
+
+div { display: block; }
+h1, h2, h3 { display: block; }
+p { display: block; }
+span { display: inline; }
+
+/* ── Scrollable content area ─────────────────────────────────────────── */
+
+.content {
+	display: flex;
+	flex-direction: column;
+	flex-grow: 1;
+	overflow: auto;
+	padding: 16dp;
+	drag: none;
+}
+
+/* ── Header ──────────────────────────────────────────────────────────── */
+
+h1 {
+	font-size: 20dp;
+	font-weight: bold;
+	color: #FFFFFF;
+	margin-bottom: 12dp;
+	flex-shrink: 0;
+}
+
+h2 {
+	font-size: 15dp;
+	font-weight: bold;
+	color: #CCCCCC;
+	margin-top: 12dp;
+	margin-bottom: 6dp;
+}
+
+.hint {
+	font-size: 12dp;
+	color: #777777;
+	margin-bottom: 6dp;
+}
+
+/* ── Section ─────────────────────────────────────────────────────────── */
+
+.section {
+	display: flex;
+	flex-direction: column;
+	margin-bottom: 12dp;
+	flex-shrink: 0;
+}
+
+/* Bind Variables section grows to fill space */
+.section-grow {
+	display: flex;
+	flex-direction: column;
+	margin-bottom: 12dp;
+	flex-grow: 1;
+	min-height: 120dp;
+}
+
+/* ── Variable list (scrollable table) ────────────────────────────────── */
+
+.var-list {
+	display: flex;
+	flex-direction: column;
+	background-color: #252525;
+	border-width: 1dp;
+	border-color: #3A3A3A;
+	flex-grow: 1;
+	overflow: auto;
+	min-height: 40dp;
+	drag: none;
+}
+
+.var-header {
+	display: flex;
+	flex-direction: row;
+	padding: 6dp 8dp;
+	border-bottom-width: 1dp;
+	border-color: #3A3A3A;
+	flex-shrink: 0;
+}
+
+.var-header span {
+	font-size: 11dp;
+	color: #777777;
+	font-weight: bold;
+}
+
+.var-row {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	padding: 4dp 8dp;
+	border-bottom-width: 1dp;
+	border-color: #2D2D2D;
+	flex-shrink: 0;
+}
+
+.var-row:hover {
+	background-color: #2A2A2A;
+}
+
+.var-col-name {
+	width: 140dp;
+	flex-shrink: 0;
+	color: #CCCCCC;
+	font-size: 12dp;
+	overflow: hidden;
+}
+
+.var-col-type {
+	width: 55dp;
+	flex-shrink: 0;
+	color: #7FAACC;
+	font-size: 11dp;
+}
+
+.var-col-value {
+	flex-grow: 1;
+	min-width: 60dp;
+}
+
+.var-col-actions {
+	width: 24dp;
+	flex-shrink: 0;
+	text-align: center;
+}
+
+.var-input {
+	display: block;
+	background-color: #2D2D2D;
+	border-width: 1dp;
+	border-color: #3A3A3A;
+	color: #E0E0E0;
+	padding: 2dp 6dp;
+	font-size: 12dp;
+	width: 100%;
+	box-sizing: border-box;
+}
+
+.var-input:focus {
+	border-color: #5B9BD5;
+}
+
+.var-select {
+	display: block;
+	background-color: #2D2D2D;
+	border-width: 1dp;
+	border-color: #3A3A3A;
+	color: #E0E0E0;
+	padding: 2dp 6dp;
+	font-size: 12dp;
+	width: 100%;
+	box-sizing: border-box;
+}
+
+.var-bool-toggle {
+	display: block;
+	background-color: #2D2D2D;
+	border-width: 1dp;
+	border-color: #3A3A3A;
+	color: #7FAACC;
+	padding: 2dp 6dp;
+	font-size: 12dp;
+	cursor: pointer;
+	text-align: center;
+}
+
+.var-bool-toggle:hover {
+	background-color: #3A3A3A;
+	border-color: #5B9BD5;
+}
+
+.var-event-label {
+	color: #555555;
+	font-size: 11dp;
+	font-style: italic;
+}
+
+.remove-btn {
+	display: inline-block;
+	color: #FF6666;
+	cursor: pointer;
+	font-weight: bold;
+	font-size: 12dp;
+}
+
+.remove-btn:hover {
+	color: #FF3333;
+}
+
+.var-empty {
+	padding: 12dp 8dp;
+	color: #555555;
+	font-size: 12dp;
+	text-align: center;
+}
+
+/* ── Add variable form ───────────────────────────────────────────────── */
+
+.add-var-form {
+	display: flex;
+	flex-direction: column;
+	background-color: #252525;
+	border-width: 1dp;
+	border-color: #3A3A3A;
+	padding: 8dp;
+	margin-top: 6dp;
+	flex-shrink: 0;
+	gap: 6dp;
+}
+
+.add-var-row {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	gap: 6dp;
+}
+
+.add-var-row label {
+	display: block;
+	width: 44dp;
+	flex-shrink: 0;
+	color: #999999;
+	font-size: 12dp;
+}
+
+input.text {
+	display: block;
+	background-color: #2D2D2D;
+	border-width: 1dp;
+	border-color: #3A3A3A;
+	color: #E0E0E0;
+	padding: 4dp 8dp;
+	font-size: 12dp;
+}
+
+input.text:focus {
+	border-color: #5B9BD5;
+}
+
+.add-input-model {
+	flex-grow: 1;
+	min-width: 60dp;
+}
+
+.add-input-name {
+	flex-grow: 2;
+	min-width: 80dp;
+}
+
+select {
+	display: block;
+	background-color: #2D2D2D;
+	border-width: 1dp;
+	border-color: #3A3A3A;
+	color: #E0E0E0;
+	padding: 4dp 8dp;
+	font-size: 12dp;
+	width: 80dp;
+	flex-shrink: 0;
+}
+
+.btn {
+	display: block;
+	background-color: #333333;
+	border-width: 1dp;
+	border-color: #555555;
+	color: #E0E0E0;
+	padding: 5dp 14dp;
+	cursor: pointer;
+	flex-shrink: 0;
+	font-size: 12dp;
+	text-align: center;
+}
+
+.btn:hover {
+	background-color: #444444;
+	border-color: #777777;
+}
+
+.btn:active {
+	background-color: #555555;
+}
+
+.btn-primary {
+	background-color: #2D5A88;
+	border-color: #5B9BD5;
+}
+
+.btn-primary:hover {
+	background-color: #3A6FA0;
+}
+
+/* ── Button row ───────────────────────────────────────────────────────── */
+
+.btn-row {
+	display: flex;
+	flex-direction: row;
+	gap: 6dp;
+	margin-top: 4dp;
+}
+
+/* ── Info text ────────────────────────────────────────────────────────── */
+
+.info-text {
+	color: #777777;
+	font-size: 12dp;
+}
+
+/* ── Shortcuts ────────────────────────────────────────────────────────── */
+
+.shortcut-list {
+	display: flex;
+	flex-direction: column;
+	gap: 2dp;
+	margin-top: 4dp;
+}
+
+.shortcut-item {
+	display: flex;
+	flex-direction: row;
+	gap: 8dp;
+	font-size: 12dp;
+	color: #999999;
+}
+
+.shortcut-key {
+	display: block;
+	width: 24dp;
+	flex-shrink: 0;
+	color: #CCCCCC;
+	font-weight: bold;
+	text-align: right;
+}
+
+/* ── Scrollbars ──────────────────────────────────────────────────────── */
+
+scrollbarvertical {
+	width: 8dp;
+	margin-left: auto;
+}
+
+scrollbarvertical slidertrack {
+	background-color: #1A1A1A;
+}
+
+scrollbarvertical sliderbar {
+	width: 8dp;
+	min-height: 20dp;
+	background-color: #555555;
+}
+
+scrollbarvertical sliderbar:hover {
+	background-color: #777777;
+}
+
+scrollbarvertical sliderbar:active {
+	background-color: #999999;
+}
+
+scrollbarvertical sliderarrowdec,
+scrollbarvertical sliderarrowinc {
+	width: 0;
+	height: 0;
+}
+
+scrollbarhorizontal {
+	height: 8dp;
+	margin-top: auto;
+}
+
+scrollbarhorizontal slidertrack {
+	background-color: #1A1A1A;
+}
+
+scrollbarhorizontal sliderbar {
+	height: 8dp;
+	min-width: 20dp;
+	background-color: #555555;
+}
+
+scrollbarhorizontal sliderarrowdec,
+scrollbarhorizontal sliderarrowinc {
+	width: 0;
+	height: 0;
+}
+
+/* ── Status bar (pinned to bottom) ───────────────────────────────────── */
+
+.status-bar {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	padding: 6dp 16dp;
+	background-color: #252525;
+	border-top-width: 1dp;
+	border-color: #333333;
+	color: #777777;
+	font-size: 11dp;
+	flex-shrink: 0;
+}

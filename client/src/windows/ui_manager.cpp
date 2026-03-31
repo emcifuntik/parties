@@ -1,4 +1,5 @@
 #include <client/ui_manager.h>
+#include <client/slug_font_engine.h>
 #include <parties/profiler.h>
 
 #include "RmlUi_RenderInterface_Extended.h"
@@ -85,6 +86,16 @@ bool UiManager::init(HWND hwnd, int renderer_id) {
 
     Rml::SetRenderInterface(render_interface_.get());
 
+    // Create Slug GPU font engine (replaces FreeType)
+    slug_font_engine_ = std::make_unique<SlugFontEngine>();
+
+    // Wire the font engine to the DX12 renderer for marker texture and batch data
+    if (auto* dx12 = dynamic_cast<RenderInterface_DX12*>(render_interface_.get())) {
+        dx12->SetSlugFontEngine(slug_font_engine_.get());
+    }
+
+    Rml::SetFontEngineInterface(slug_font_engine_.get());
+
     if (!Rml::Initialise()) {
         LOG_ERROR("Failed to initialise RmlUi");
         return false;
@@ -142,6 +153,11 @@ void UiManager::shutdown() {
         context_ = nullptr;
     }
     Rml::Shutdown();
+
+    // Destroy font engine after Rml::Shutdown — Shutdown() calls
+    // font_interface->Shutdown() which clears our CallbackTextureSource,
+    // then destroys RenderManagers. The engine itself is safe to destroy after.
+    slug_font_engine_.reset();
 
     render_interface_.reset();
     system_interface_.reset();

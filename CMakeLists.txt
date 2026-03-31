@@ -102,3 +102,8 @@ endif()
 if(NOT APPLE)
     add_subdirectory(tests)
 endif()
+
+option(BUILD_DESIGNER "Build the RmlUI Designer tool" OFF)
+if(BUILD_DESIGNER AND NOT APPLE)
+    add_subdirectory(designer)
+endif()
