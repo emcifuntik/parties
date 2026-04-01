@@ -248,7 +248,7 @@ bool AmfDecoder::decode(const uint8_t* data, size_t len, int64_t timestamp) {
             frame.y_stride = static_cast<uint32_t>(y_plane->GetHPitch());
             frame.uv_stride = static_cast<uint32_t>(uv_plane->GetHPitch());
             frame.width = static_cast<uint32_t>(y_plane->GetWidth());
-            frame.height = static_cast<uint32_t>(y_plane->GetVPitch());
+            frame.height = static_cast<uint32_t>(y_plane->GetHeight());
             frame.timestamp = out_data->GetPts();
             frame.nv12 = true;
 
