@@ -9,6 +9,9 @@
 #include <parties/log.h>
 
 #include <RmlUi/Core/Core.h>
+#include <RmlUi/Core/Context.h>
+#include <RmlUi/Core/Element.h>
+#include <RmlUi/Core/ElementDocument.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -22,6 +25,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <commdlg.h>
+#include <shellapi.h>
 #include <shlobj.h>
 #endif
 
@@ -36,6 +40,7 @@ AppCore::~AppCore() = default;
 
 bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml::Context* rml_context)
 {
+    rml_context_ = rml_context;
     bridge_ = std::move(bridge);
 
     if (!settings_.open(settings_path)) {
@@ -559,6 +564,7 @@ void AppCore::on_disconnect_cleanup()
     model_.show_create_channel = false;
     model_.my_role = 3;
     model_.can_manage_channels = false;
+    chat_model_.can_manage_channels = false;
     model_.can_kick = false;
     model_.can_manage_roles = false;
     model_.admin_message.clear();
@@ -581,7 +587,7 @@ void AppCore::on_disconnect_cleanup()
     chat_model_.show_pinned = false;
     chat_model_.compose_text.clear();
     chat_model_.dirty("text_channels");
-    chat_model_.dirty("messages");
+    rebuild_chat_messages_html();
     chat_model_.dirty("active_channel");
     chat_model_.dirty("active_channel_name");
     chat_model_.dirty("has_more_history");
@@ -607,15 +613,25 @@ void AppCore::on_disconnect_cleanup()
 
 void AppCore::join_channel(ChannelId id)
 {
-    if (!authenticated_ || id == current_channel_) return;
+    if (!authenticated_) return;
+
+    // Always dismiss chat view when clicking a voice channel
+    if (model_.show_chat) {
+        chat_model_.active_channel = 0;
+        chat_model_.active_channel_name.clear();
+        chat_model_.dirty("active_channel");
+        chat_model_.dirty("active_channel_name");
+        model_.show_chat = false;
+        model_.dirty("show_chat");
+    }
+
+    if (id == current_channel_) return;
 
     // Deselect text channel when joining voice channel
     chat_model_.active_channel = 0;
     chat_model_.active_channel_name.clear();
     chat_model_.dirty("active_channel");
     chat_model_.dirty("active_channel_name");
-    model_.show_chat = false;
-    model_.dirty("show_chat");
 
     awaiting_channel_join_ = true;
     pending_channel_id_ = id;
@@ -855,6 +871,7 @@ void AppCore::on_auth_response(const uint8_t* data, size_t len)
     if (bridge_.play_sound) bridge_.play_sound(SoundPlayer::Effect::ServerConnected);
     model_.my_role              = role_;
     model_.can_manage_channels  = (role_ <= static_cast<int>(parties::Role::Moderator));
+    chat_model_.can_manage_channels = model_.can_manage_channels;
     model_.can_kick             = (role_ <= static_cast<int>(parties::Role::Moderator));
     model_.can_manage_roles     = (role_ <= static_cast<int>(parties::Role::Admin));
     model_.dirty("server_name");
@@ -865,6 +882,7 @@ void AppCore::on_auth_response(const uint8_t* data, size_t len)
     model_.dirty("is_connected");
     model_.dirty("my_role");
     model_.dirty("can_manage_channels");
+    chat_model_.dirty("can_manage_channels");
     model_.dirty("can_kick");
     model_.dirty("can_manage_roles");
 
@@ -1089,10 +1107,12 @@ void AppCore::on_user_role_changed(const uint8_t* data, size_t len)
         role_                   = new_role;
         model_.my_role          = new_role;
         model_.can_manage_channels = (new_role <= static_cast<int>(parties::Role::Moderator));
+        chat_model_.can_manage_channels = model_.can_manage_channels;
         model_.can_kick            = (new_role <= static_cast<int>(parties::Role::Moderator));
         model_.can_manage_roles    = (new_role <= static_cast<int>(parties::Role::Admin));
         model_.dirty("my_role");
         model_.dirty("can_manage_channels");
+        chat_model_.dirty("can_manage_channels");
         model_.dirty("can_kick");
         model_.dirty("can_manage_roles");
     }
@@ -1837,24 +1857,20 @@ void AppCore::setup_chat_model_callbacks()
         chat_model_.dirty("active_channel");
         chat_model_.dirty("active_channel_name");
         chat_model_.dirty("text_channels");
-        chat_model_.dirty("messages");
+        rebuild_chat_messages_html();
         chat_model_.dirty("has_more_history");
         chat_model_.dirty("show_search");
         chat_model_.dirty("show_pinned");
 
-        // Deselect voice channel, show chat view
-        model_.current_channel = 0;
-        model_.current_channel_name = "";
+        // Show chat view (keep voice channel connection intact)
         model_.show_chat = true;
-        model_.dirty("current_channel");
-        model_.dirty("current_channel_name");
         model_.dirty("show_chat");
 
         // Request history
         BinaryWriter writer;
         writer.write_u32(static_cast<uint32_t>(channel_id));
         writer.write_u64(0); // latest
-        writer.write_u16(50);
+        writer.write_u16(30);
         net_.send_message(protocol::ControlMessageType::CHAT_HISTORY_REQ,
                          writer.data().data(), writer.data().size());
     };
@@ -1904,7 +1920,7 @@ void AppCore::setup_chat_model_callbacks()
         BinaryWriter writer;
         writer.write_u32(static_cast<uint32_t>(chat_model_.active_channel));
         writer.write_u64(static_cast<uint64_t>(chat_model_.messages.front().id));
-        writer.write_u16(50);
+        writer.write_u16(30);
         net_.send_message(protocol::ControlMessageType::CHAT_HISTORY_REQ,
                          writer.data().data(), writer.data().size());
     };
@@ -1938,7 +1954,7 @@ void AppCore::setup_chat_model_callbacks()
         writer.write_u32(static_cast<uint32_t>(chat_model_.active_channel));
         writer.write_string(std::string(chat_model_.search_query));
         writer.write_u64(0); // latest
-        writer.write_u16(50);
+        writer.write_u16(30);
         net_.send_message(protocol::ControlMessageType::CHAT_SEARCH,
                          writer.data().data(), writer.data().size());
     };
@@ -1953,10 +1969,15 @@ void AppCore::setup_chat_model_callbacks()
     };
 
     chat_model_.on_create_text_channel = [this]() {
-        if (chat_model_.new_text_channel_name.empty()) return;
+        if (!authenticated_) return;
+        std::string name(chat_model_.new_text_channel_name);
+        if (name.empty()) {
+            LOG_WARN("Text channel name is empty, ignoring create request");
+            return;
+        }
 
         BinaryWriter writer;
-        writer.write_string(std::string(chat_model_.new_text_channel_name));
+        writer.write_string(name);
         net_.send_message(protocol::ControlMessageType::ADMIN_CREATE_TEXT_CHANNEL,
                          writer.data().data(), writer.data().size());
 
@@ -2049,14 +2070,72 @@ static Rml::String format_timestamp(uint64_t unix_ts) {
     auto* tm = std::localtime(&t);
     if (!tm) return "";
     char buf[32];
-    std::strftime(buf, sizeof(buf), "%H:%M", tm);
+    std::strftime(buf, sizeof(buf), "%I:%M %p", tm);
+    // Remove leading zero from hour: "09:32 AM" -> "9:32 AM"
+    if (buf[0] == '0')
+        return Rml::String(buf + 1);
     return Rml::String(buf);
+}
+
+static int day_of_timestamp(uint64_t unix_ts) {
+    auto t = static_cast<std::time_t>(unix_ts);
+    auto* tm = std::localtime(&t);
+    if (!tm) return -1;
+    return tm->tm_year * 400 + tm->tm_yday;
+}
+
+static Rml::String format_date_label(uint64_t unix_ts) {
+    auto now = std::time(nullptr);
+    int today = day_of_timestamp(static_cast<uint64_t>(now));
+    int msg_day = day_of_timestamp(unix_ts);
+    if (msg_day == today) return "Today";
+    if (msg_day == today - 1) return "Yesterday";
+    auto t = static_cast<std::time_t>(unix_ts);
+    auto* tm = std::localtime(&t);
+    if (!tm) return "";
+    char buf[32];
+    std::strftime(buf, sizeof(buf), "%B %d, %Y", tm);
+    return Rml::String(buf);
+}
+
+static void assign_date_labels(Rml::Vector<ChatMessage>& msgs) {
+    int prev_day = -1;
+    for (auto& m : msgs) {
+        int d = day_of_timestamp(m.raw_timestamp);
+        if (d != prev_day) {
+            m.date_label = format_date_label(m.raw_timestamp);
+            prev_day = d;
+        } else {
+            m.date_label.clear();
+        }
+    }
 }
 
 static int name_color_index(const Rml::String& name) {
     uint32_t hash = 0;
     for (char c : name) hash = hash * 31 + static_cast<uint8_t>(c);
     return static_cast<int>(hash % 12);
+}
+
+static Rml::String make_initials(const Rml::String& name) {
+    if (name.empty()) return "?";
+    Rml::String result;
+    result += static_cast<char>(std::toupper(static_cast<unsigned char>(name[0])));
+    // Find second word start
+    auto sp = name.find(' ');
+    if (sp != Rml::String::npos && sp + 1 < name.size())
+        result += static_cast<char>(std::toupper(static_cast<unsigned char>(name[sp + 1])));
+    else if (name.size() > 1)
+        result += static_cast<char>(std::toupper(static_cast<unsigned char>(name[1])));
+    return result;
+}
+
+static Rml::String file_extension_upper(const Rml::String& filename) {
+    auto dot = filename.rfind('.');
+    if (dot == Rml::String::npos || dot + 1 >= filename.size()) return "";
+    Rml::String ext = filename.substr(dot + 1);
+    for (auto& c : ext) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    return ext;
 }
 
 static Rml::Vector<TextSegment> split_text_with_urls(const Rml::String& text) {
@@ -2090,17 +2169,22 @@ static Rml::Vector<TextSegment> split_text_with_urls(const Rml::String& text) {
     return segments;
 }
 
-static ChatMessage parse_chat_message(BinaryReader& reader) {
+static ChatMessage parse_chat_message(BinaryReader& reader, uint32_t my_user_id = 0) {
     ChatMessage msg;
     msg.id = static_cast<int64_t>(reader.read_u64());
     uint32_t channel_id = reader.read_u32();
     (void)channel_id;
     msg.sender_id = static_cast<int>(reader.read_u32());
     msg.sender_name = Rml::String(reader.read_string());
+    msg.initials = make_initials(msg.sender_name);
+    msg.is_own = (static_cast<uint32_t>(msg.sender_id) == my_user_id);
     uint64_t ts = reader.read_u64();
+    msg.raw_timestamp = ts;
     msg.timestamp_str = format_timestamp(ts);
     msg.text = Rml::String(reader.read_string());
     msg.segments = split_text_with_urls(msg.text);
+    msg.has_url = std::any_of(msg.segments.begin(), msg.segments.end(),
+                              [](const TextSegment& s) { return s.is_url; });
     msg.pinned = reader.read_u8() != 0;
     msg.color_index = name_color_index(msg.sender_name);
 
@@ -2109,8 +2193,8 @@ static ChatMessage parse_chat_message(BinaryReader& reader) {
         ChatAttachment att;
         att.id = static_cast<int64_t>(reader.read_u64());
         att.file_name = Rml::String(reader.read_string());
+        att.file_ext = file_extension_upper(att.file_name);
         uint64_t fsize = reader.read_u64();
-        att.uploaded = reader.read_u8() != 0;
 
         // Format size
         if (fsize < 1024)
@@ -2120,8 +2204,9 @@ static ChatMessage parse_chat_message(BinaryReader& reader) {
         else
             att.size_str = Rml::String(std::format("{:.1f} MB", fsize / (1024.0 * 1024.0)));
 
-        std::string mime = reader.read_string(); // consume mime_type
+        std::string mime = reader.read_string(); // mime_type
         (void)mime;
+        att.uploaded = reader.read_u8() != 0;
         msg.attachments.push_back(std::move(att));
     }
 
@@ -2146,7 +2231,7 @@ void AppCore::on_chat_channel_list(const uint8_t* data, size_t len) {
 
 void AppCore::on_chat_message(const uint8_t* data, size_t len) {
     BinaryReader reader(data, len);
-    auto msg = parse_chat_message(reader);
+    auto msg = parse_chat_message(reader, user_id_);
     if (reader.error()) return;
 
     // Read channel_id from the message for routing (it's at offset 8)
@@ -2177,9 +2262,16 @@ void AppCore::on_chat_message(const uint8_t* data, size_t len) {
                 break;
             }
         }
-        if (!found)
-            chat_model_.messages.push_back(std::move(msg));
-        chat_model_.dirty("messages");
+        if (!found) {
+            chat_model_.messages.push_back(msg);
+            assign_date_labels(chat_model_.messages);
+            // Incremental append — only adds one element to DOM
+            append_chat_message_html(chat_model_.messages.back());
+        } else {
+            // Existing message updated — full rebuild needed
+            assign_date_labels(chat_model_.messages);
+            rebuild_chat_messages_html();
+        }
     } else {
         // Mark channel as unread
         for (auto& tc : chat_model_.text_channels) {
@@ -2205,7 +2297,7 @@ void AppCore::on_chat_history_resp(const uint8_t* data, size_t len) {
     // Parse messages
     Rml::Vector<ChatMessage> batch;
     for (uint16_t i = 0; i < count && !reader.error(); i++)
-        batch.push_back(parse_chat_message(reader));
+        batch.push_back(parse_chat_message(reader, user_id_));
 
     // Prepend to existing messages (batch is oldest-first from server)
     if (!batch.empty()) {
@@ -2214,7 +2306,8 @@ void AppCore::on_chat_history_resp(const uint8_t* data, size_t len) {
     }
 
     chat_model_.has_more_history = has_more != 0;
-    chat_model_.dirty("messages");
+    assign_date_labels(chat_model_.messages);
+    rebuild_chat_messages_html();
     chat_model_.dirty("has_more_history");
 }
 
@@ -2229,7 +2322,8 @@ void AppCore::on_chat_message_deleted(const uint8_t* data, size_t len) {
         msgs.erase(std::remove_if(msgs.begin(), msgs.end(),
             [message_id](const ChatMessage& m) { return m.id == static_cast<int64_t>(message_id); }),
             msgs.end());
-        chat_model_.dirty("messages");
+        assign_date_labels(msgs);
+        rebuild_chat_messages_html();
     }
 }
 
@@ -2241,7 +2335,7 @@ void AppCore::on_chat_search_resp(const uint8_t* data, size_t len) {
 
     chat_model_.search_results.clear();
     for (uint16_t i = 0; i < count && !reader.error(); i++)
-        chat_model_.search_results.push_back(parse_chat_message(reader));
+        chat_model_.search_results.push_back(parse_chat_message(reader, user_id_));
     chat_model_.dirty("search_results");
 }
 
@@ -2253,7 +2347,7 @@ void AppCore::on_chat_pinned_resp(const uint8_t* data, size_t len) {
 
     chat_model_.pinned_messages.clear();
     for (uint16_t i = 0; i < count && !reader.error(); i++)
-        chat_model_.pinned_messages.push_back(parse_chat_message(reader));
+        chat_model_.pinned_messages.push_back(parse_chat_message(reader, user_id_));
     chat_model_.dirty("pinned_messages");
 }
 
@@ -2275,7 +2369,154 @@ void AppCore::on_chat_file_ready(const uint8_t* data, size_t len) {
             break;
         }
     }
-    chat_model_.dirty("messages");
+    rebuild_chat_messages_html();
+}
+
+static std::string escape_rml(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        switch (c) {
+            case '<': out += "&lt;"; break;
+            case '>': out += "&gt;"; break;
+            case '&': out += "&amp;"; break;
+            default:  out += c;
+        }
+    }
+    return out;
+}
+
+static std::string build_message_html(const ChatMessage& msg) {
+    std::string html;
+
+    // Date separator
+    if (!msg.date_label.empty()) {
+        html += "<div class=\"date-separator\">"
+                "<div class=\"date-separator-line\"></div>"
+                "<span class=\"date-separator-text\">";
+        html += escape_rml(std::string(msg.date_label));
+        html += "</span>"
+                "<div class=\"date-separator-line\"></div>"
+                "</div>";
+    }
+
+    // Message
+    html += "<div class=\"chat-message\">";
+    html += "<span class=\"msg-time\">";
+    html += escape_rml(std::string(msg.timestamp_str));
+    html += "</span><span class=\"msg-sender\">";
+    html += escape_rml(std::string(msg.sender_name));
+    html += "</span>";
+
+    if (msg.has_url) {
+        for (auto& seg : msg.segments) {
+            if (seg.is_url) {
+                html += "<span class=\"msg-link\">";
+                html += escape_rml(std::string(seg.text));
+                html += "</span>";
+            } else {
+                html += "<span class=\"msg-text\">";
+                html += escape_rml(std::string(seg.text));
+                html += "</span>";
+            }
+        }
+    } else {
+        html += "<span class=\"msg-text\">";
+        html += escape_rml(std::string(msg.text));
+        html += "</span>";
+    }
+
+    // Attachments
+    for (auto& att : msg.attachments) {
+        html += "<div class=\"att-card\">"
+                "<svg class=\"att-icon\" src=\"icon-file.svg\" width=\"16\" height=\"16\" />"
+                "<span class=\"att-name\">";
+        html += escape_rml(std::string(att.file_name));
+        html += "</span><span class=\"att-size\">";
+        html += escape_rml(std::string(att.size_str));
+        html += "</span>";
+        if (att.uploaded) {
+            html += "<div class=\"att-download-btn\" data-model=\"chat\" "
+                    "data-event-click=\"download_file(";
+            html += std::to_string(att.id);
+            html += ")\">"
+                    "<svg class=\"att-download-icon\" src=\"icon-download.svg\" "
+                    "width=\"14\" height=\"14\" /></div>";
+        }
+        html += "</div>";
+    }
+
+    // Pin / Delete actions
+    html += "<div class=\"msg-actions\">"
+            "<div class=\"msg-action-btn\" data-model=\"chat\" "
+            "data-event-click=\"pin_message(";
+    html += std::to_string(msg.id);
+    html += ")\">"
+            "<svg class=\"msg-action-icon\" src=\"icon-pin-add.svg\" width=\"12\" height=\"12\" />"
+            "</div>"
+            "<div class=\"msg-action-btn msg-action-danger\" data-model=\"chat\" "
+            "data-event-click=\"delete_message(";
+    html += std::to_string(msg.id);
+    html += ")\">"
+            "<svg class=\"msg-action-icon\" src=\"icon-trash.svg\" width=\"12\" height=\"12\" />"
+            "</div></div>";
+
+    html += "</div>"; // chat-message
+    return html;
+}
+
+Rml::Element* AppCore::get_chat_container() {
+    if (!rml_context_) return nullptr;
+    for (int i = 0; i < rml_context_->GetNumDocuments(); i++) {
+        auto* doc = rml_context_->GetDocument(i);
+        if (doc) {
+            auto* el = doc->GetElementById("chat-messages");
+            if (el) return el;
+        }
+    }
+    return nullptr;
+}
+
+void AppCore::rebuild_chat_messages_html() {
+    auto* container = get_chat_container();
+    if (!container) return;
+
+    std::string html;
+
+    if (chat_model_.has_more_history)
+        html += "<div class=\"chat-load-more\" data-model=\"chat\" "
+                "data-event-click=\"load_more_history\">Load older messages</div>";
+
+    for (auto& msg : chat_model_.messages)
+        html += build_message_html(msg);
+
+    if (chat_model_.messages.empty() && !chat_model_.has_more_history)
+        html += "<div class=\"chat-empty\">"
+                "<span class=\"text-muted-msg\">No messages yet. Say something!</span>"
+                "</div>";
+
+    container->SetInnerRML(html);
+    last_rendered_msg_id_ = chat_model_.messages.empty() ? 0
+        : chat_model_.messages.back().id;
+}
+
+void AppCore::append_chat_message_html(const ChatMessage& msg) {
+    auto* container = get_chat_container();
+    if (!container) return;
+    auto* doc = container->GetOwnerDocument();
+    if (!doc) return;
+
+    // Create a wrapper div, set its inner RML, then append it
+    auto wrapper = doc->CreateElement("div");
+    wrapper->SetInnerRML(build_message_html(msg));
+    container->AppendChild(std::move(wrapper));
+
+    // Cap visible messages — remove oldest from DOM
+    constexpr int kMaxDomMessages = 50;
+    while (container->GetNumChildren() > kMaxDomMessages)
+        container->RemoveChild(container->GetChild(0));
+
+    last_rendered_msg_id_ = msg.id;
 }
 
 } // namespace parties::client

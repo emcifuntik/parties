@@ -2,6 +2,7 @@
 
 #include <RmlUi/Core/Context.h>
 #include <RmlUi/Core/DataModelHandle.h>
+#include <RmlUi/Core/Element.h>
 #include <RmlUi/Core/Event.h>
 #include <RmlUi/Core/Input.h>
 
@@ -27,6 +28,7 @@ bool ChatModel::init(Rml::Context* context) {
         s.RegisterMember("id",        &ChatAttachment::id);
         s.RegisterMember("file_name", &ChatAttachment::file_name);
         s.RegisterMember("size_str",  &ChatAttachment::size_str);
+        s.RegisterMember("file_ext",  &ChatAttachment::file_ext);
         s.RegisterMember("uploaded",  &ChatAttachment::uploaded);
     }
     ctor.RegisterArray<Rml::Vector<ChatAttachment>>();
@@ -35,9 +37,13 @@ bool ChatModel::init(Rml::Context* context) {
         s.RegisterMember("id",            &ChatMessage::id);
         s.RegisterMember("sender_id",     &ChatMessage::sender_id);
         s.RegisterMember("sender_name",   &ChatMessage::sender_name);
+        s.RegisterMember("initials",      &ChatMessage::initials);
+        s.RegisterMember("is_own",        &ChatMessage::is_own);
         s.RegisterMember("text",          &ChatMessage::text);
+        s.RegisterMember("has_url",       &ChatMessage::has_url);
         s.RegisterMember("segments",      &ChatMessage::segments);
         s.RegisterMember("timestamp_str", &ChatMessage::timestamp_str);
+        s.RegisterMember("date_label",    &ChatMessage::date_label);
         s.RegisterMember("pinned",        &ChatMessage::pinned);
         s.RegisterMember("color_index",   &ChatMessage::color_index);
         s.RegisterMember("attachments",   &ChatMessage::attachments);
@@ -72,6 +78,7 @@ bool ChatModel::init(Rml::Context* context) {
     ctor.Bind("show_pinned",        &show_pinned);
     ctor.Bind("pinned_messages",    &pinned_messages);
     ctor.Bind("pending_files",             &pending_files);
+    ctor.Bind("can_manage_channels",       &can_manage_channels);
     ctor.Bind("show_create_text_channel", &show_create_text_channel);
     ctor.Bind("new_text_channel_name",    &new_text_channel_name);
 
@@ -193,6 +200,10 @@ bool ChatModel::init(Rml::Context* context) {
         [this](Rml::DataModelHandle, Rml::Event& event, const Rml::VariantList&) {
             if (event.GetParameter("key_identifier", 0) == Rml::Input::KI_RETURN) {
                 if (on_send_message) on_send_message();
+                // RmlUi data-value binding may not sync cleared model back to input,
+                // so explicitly clear the input element's value attribute
+                if (auto* el = event.GetCurrentElement())
+                    el->SetAttribute("value", Rml::String(""));
             }
         });
 

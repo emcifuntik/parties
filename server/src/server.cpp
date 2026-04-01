@@ -78,6 +78,15 @@ bool Server::start(const Config& cfg) {
         }
     };
 
+    // Ensure file storage directory exists
+    try {
+        std::filesystem::create_directories(config_.chat.file_storage_path);
+    } catch (const std::exception& e) {
+        LOG_ERROR("Failed to create file storage directory '{}': {}",
+                  config_.chat.file_storage_path, e.what());
+        return false;
+    }
+
     running_ = true;
     LOG_INFO("{} started successfully", config_.server_name);
     return true;

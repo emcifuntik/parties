@@ -36,6 +36,7 @@ set(CLIENT_COMMON_SOURCES
     src/gradient_circle_element.cpp
     src/stream_audio_player.cpp
     src/app_core.cpp
+    src/chat_model.cpp
     src/sound_player.cpp
     src/net_client_msquic.cpp
     src/slug_glyph_cache.cpp

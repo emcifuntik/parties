@@ -2037,16 +2037,39 @@ input.range.stream-volume-slider sliderbar:hover {
 .chat-header {
     display: flex;
     flex-direction: row;
-    padding: 10dp 16dp;
+    align-items: center;
+    padding: 12dp 20dp;
     border-bottom: 1dp #1E2030;
+}
+
+.chat-header-left {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    flex: 1;
+    gap: 10dp;
+}
+
+.chat-header-icon {
+    display: block;
+    flex: none;
+    image-color: #6B7394;
 }
 
 .chat-title {
     display: block;
-    flex: 1;
     font-size: 16dp;
     font-weight: bold;
     color: #F0F2F8;
+}
+
+.chat-header-desc {
+    display: block;
+    font-size: 13dp;
+    color: #5A5E73;
+    margin-left: 4dp;
+    padding-left: 12dp;
+    border-left: 1dp #2A2D3E;
 }
 
 .chat-header-actions {
@@ -2057,8 +2080,8 @@ input.range.stream-volume-slider sliderbar:hover {
 
 .chat-header-btn {
     display: block;
-    padding: 4dp;
-    border-radius: 4dp;
+    padding: 6dp;
+    border-radius: 6dp;
     cursor: pointer;
     opacity: 0.5;
 }
@@ -2068,23 +2091,25 @@ input.range.stream-volume-slider sliderbar:hover {
     background-color: #252838;
 }
 
+/* Search bar */
 .chat-search-bar {
     display: flex;
-    padding: 6dp 16dp;
+    padding: 8dp 20dp;
     border-bottom: 1dp #1E2030;
 }
 
 .chat-search-input {
     display: block;
     flex: 1;
-    padding: 6dp 10dp;
+    padding: 8dp 12dp;
     background-color: #181A24;
     border: 1dp #2A2D3E;
-    border-radius: 6dp;
+    border-radius: 8dp;
     color: #C4C8D8;
     font-size: 13dp;
 }
 
+/* Pinned messages panel */
 .chat-pinned-panel {
     display: flex;
     flex-direction: column;
@@ -2092,7 +2117,7 @@ input.range.stream-volume-slider sliderbar:hover {
     overflow-y: auto;
     background-color: #181A24;
     border-bottom: 1dp #1E2030;
-    padding: 8dp 16dp;
+    padding: 8dp 20dp;
 }
 
 .chat-pinned-header {
@@ -2115,12 +2140,36 @@ input.range.stream-volume-slider sliderbar:hover {
     text-align: center;
 }
 
+/* Date separator */
+.date-separator {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 12dp;
+    padding: 14dp 0;
+}
+
+.date-separator-line {
+    display: block;
+    flex: 1;
+    height: 1dp;
+    background-color: #2A2D3E;
+}
+
+.date-separator-text {
+    display: block;
+    font-size: 11dp;
+    color: #5A5E73;
+    font-weight: bold;
+}
+
+/* Message list */
 .chat-messages {
     display: flex;
     flex-direction: column;
     flex: 1;
     overflow-y: auto;
-    padding: 8dp 16dp;
+    padding: 4dp 20dp;
 }
 
 .chat-load-more {
@@ -2136,97 +2185,78 @@ input.range.stream-volume-slider sliderbar:hover {
     text-decoration: underline;
 }
 
+/* Message (compact) */
 .chat-message {
-    display: flex;
-    flex-direction: row;
-    padding: 6dp 0;
-}
-
-.chat-message.pinned {
-    background-color: rgba(124, 92, 252, 0.05);
-    border-left: 2dp #7C5CFC;
-    padding-left: 8dp;
-    margin-left: -10dp;
-}
-
-.msg-avatar-wrap {
     display: block;
-    width: 32dp;
-    height: 32dp;
-    margin-right: 10dp;
-    margin-top: 2dp;
+    padding: 3dp 0;
+    position: relative;
 }
 
-.msg-avatar {
-    width: 32dp;
-    height: 32dp;
-}
-
-.msg-body {
-    display: flex;
-    flex-direction: column;
-    flex: 1;
-}
-
-.msg-header {
-    display: flex;
-    flex-direction: row;
-    gap: 8dp;
-    margin-bottom: 2dp;
-}
-
-.msg-sender {
-    display: block;
-    font-size: 13dp;
-    font-weight: bold;
-    color: #F0F2F8;
+.chat-message:hover {
+    background-color: #1A1D28;
 }
 
 .msg-time {
-    display: block;
     font-size: 11dp;
     color: #5A5E73;
-    margin-top: 2dp;
+    margin-right: 6dp;
 }
 
-.msg-pin-badge {
-    display: block;
-    font-size: 9dp;
-    color: #7C5CFC;
-    background-color: rgba(124, 92, 252, 0.15);
-    padding: 1dp 6dp;
-    border-radius: 3dp;
-    margin-top: 1dp;
+.msg-sender {
+    font-size: 13dp;
+    font-weight: bold;
+    color: #6EECD4;
+    margin-right: 6dp;
 }
 
 .msg-text {
-    display: block;
     font-size: 13dp;
     color: #C4C8D8;
-    line-height: 1.4;
 }
 
+.msg-link {
+    color: #7C9BFC;
+    cursor: pointer;
+}
+
+.msg-link:hover {
+    color: #9BB3FF;
+    text-decoration: underline;
+}
+
+/* Attachment cards */
 .msg-attachments {
     display: flex;
     flex-direction: column;
-    margin-top: 4dp;
+    gap: 6dp;
+    margin-top: 8dp;
 }
 
-.msg-attachment {
+.att-card {
     display: flex;
     flex-direction: row;
-    gap: 6dp;
-    padding: 4dp 8dp;
+    align-items: center;
+    gap: 8dp;
+    padding: 6dp 10dp;
     background-color: #1A1D2A;
-    border-radius: 4dp;
-    margin-top: 2dp;
+    border: 1dp #2A2D3E;
+    border-radius: 6dp;
+    margin-top: 4dp;
+    margin-left: 10dp;
+    max-width: 350dp;
+}
+
+.att-icon {
+    display: block;
+    flex: none;
+    image-color: #7C9BFC;
 }
 
 .att-name {
     display: block;
-    font-size: 12dp;
-    color: #7C5CFC;
     flex: 1;
+    font-size: 13dp;
+    color: #C8CCE0;
 }
 
 .att-size {
@@ -2235,6 +2265,28 @@ input.range.stream-volume-slider sliderbar:hover {
     color: #5A5E73;
 }
 
+.att-download-btn {
+    display: flex;
+    flex: none;
+    width: 28dp;
+    height: 28dp;
+    border-radius: 6dp;
+    justify-content: center;
+    align-items: center;
+    cursor: pointer;
+    background-color: #252838;
+}
+
+.att-download-btn:hover {
+    background-color: #2F3348;
+}
+
+.att-download-icon {
+    display: block;
+    image-color: #7C9BFC;
+}
+
+/* Empty state */
 .chat-empty {
     display: flex;
     flex: 1;
@@ -2242,55 +2294,14 @@ input.range.stream-volume-slider sliderbar:hover {
     align-items: center;
 }
 
-.chat-compose {
-    display: flex;
-    flex-direction: column;
-    padding: 10dp 16dp;
-    border-top: 1dp #1E2030;
-}
-
-.compose-row {
-    display: flex;
-    flex-direction: row;
-    gap: 8dp;
-}
-
-.compose-input {
-    display: block;
-    flex: 1;
-    padding: 8dp 12dp;
-    background-color: #181A24;
-    border: 1dp #2A2D3E;
-    border-radius: 8dp;
-    color: #F0F2F8;
-    font-size: 13dp;
-}
-
-.compose-input:focus {
-    border-color: #7C5CFC;
-}
-
-.send-btn {
-    display: block;
-    padding: 8dp 16dp;
-    background-color: #7C5CFC;
-    color: #FFFFFF;
-    border-radius: 8dp;
-    font-size: 13dp;
-    font-weight: bold;
-    cursor: pointer;
-}
-
-.send-btn:hover {
-    background-color: #6B4FDB;
-}
-
+/* Message actions (hover) */
 .msg-actions {
     display: none;
+    position: absolute;
+    top: 1dp;
+    right: 0;
     flex-direction: row;
-    gap: 4dp;
-    margin-top: 2dp;
-    margin-left: 8dp;
+    gap: 2dp;
 }
 
 .chat-message:hover .msg-actions {
@@ -2298,25 +2309,38 @@ input.range.stream-volume-slider sliderbar:hover {
 }
 
 .msg-action-btn {
-    display: block;
-    padding: 2dp 8dp;
-    font-size: 10dp;
-    color: #8A8FA6;
-    background-color: #1E2030;
-    border-radius: 3dp;
+    display: flex;
+    flex: none;
+    width: 18dp;
+    height: 18dp;
     cursor: pointer;
+    justify-content: center;
+    align-items: center;
+    border-radius: 3dp;
+}
+
+.msg-action-icon {
+    display: block;
+    image-color: #8A8FA6;
 }
 
 .msg-action-btn:hover {
     background-color: #252838;
-    color: #F0F2F8;
+}
+
+.msg-action-btn:hover .msg-action-icon {
+    image-color: #F0F2F8;
 }
 
 .msg-action-danger:hover {
     background-color: #3D1515;
-    color: #FF6B6B;
 }
 
+.msg-action-danger:hover .msg-action-icon {
+    image-color: #FF6B6B;
+}
+
+/* Unread dot */
 .chat-unread-dot {
     display: block;
     width: 6dp;
@@ -2332,67 +2356,97 @@ input.range.stream-volume-slider sliderbar:hover {
     font-weight: bold;
 }
 
-/* File attachment download/pending */
-/* Clickable URL in message text */
-.msg-link {
-    color: #7C9BFC;
-    cursor: pointer;
+/* ── Compose area ─────────────────────────────────────── */
+
+.chat-compose {
+    display: flex;
+    flex-direction: column;
+    padding: 12dp 20dp 16dp 20dp;
 }
 
-.msg-link:hover {
-    color: #9BB3FF;
-    text-decoration: underline;
+.compose-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 10dp;
 }
 
-.att-download {
+.compose-input-wrap {
+    display: flex;
+    flex-direction: row;
+    flex: 1;
+    align-items: center;
+    background-color: #1A1D2A;
+    border: 1dp #2A2D3E;
+    border-radius: 22dp;
+    padding: 0 4dp 0 0;
+}
+
+input.text.compose-input {
     display: block;
-    padding: 2dp 8dp;
-    font-size: 10dp;
-    color: #7C5CFC;
-    background-color: #1E2030;
-    border-radius: 3dp;
-    cursor: pointer;
-}
-
-.att-download:hover {
-    background-color: #252838;
-    color: #9B82FC;
-}
-
-.att-pending {
-    display: block;
-    font-size: 10dp;
-    color: #5A5E73;
-    font-style: italic;
-}
-
-/* Attach button */
-.attach-btn {
-    display: block;
-    width: 36dp;
-    height: 36dp;
-    background-color: #1E2030;
-    border-radius: 8dp;
-    color: #8A8FA6;
-    font-size: 18dp;
-    font-weight: bold;
-    text-align: center;
-    line-height: 36dp;
-    cursor: pointer;
-}
-
-.attach-btn:hover {
-    background-color: #252838;
+    flex: 1;
+    padding: 10dp 16dp;
+    background-color: #1A1D2A;
+    border: 0;
+    border-radius: 22dp 0 0 22dp;
     color: #F0F2F8;
+    font-size: 14dp;
+    margin-bottom: 0;
+    width: auto;
 }
 
-/* Pending files list */
+.compose-attach-btn {
+    display: flex;
+    flex: none;
+    width: 32dp;
+    height: 32dp;
+    justify-content: center;
+    align-items: center;
+    cursor: pointer;
+    border-radius: 16dp;
+}
+
+.compose-attach-btn:hover {
+    background-color: #252838;
+}
+
+.compose-attach-icon {
+    display: block;
+    image-color: #5A5E73;
+}
+
+.compose-attach-btn:hover .compose-attach-icon {
+    image-color: #C4C8D8;
+}
+
+.send-btn {
+    display: flex;
+    flex: none;
+    width: 40dp;
+    height: 40dp;
+    background-color: #6EECD4;
+    border-radius: 20dp;
+    justify-content: center;
+    align-items: center;
+    cursor: pointer;
+}
+
+.send-btn:hover {
+    background-color: #5DD8C2;
+}
+
+.send-icon {
+    display: block;
+    image-color: #0E1018;
+}
+
+/* Pending files */
 .pending-files {
     display: flex;
     flex-direction: row;
     flex-wrap: wrap;
     gap: 6dp;
-    padding-bottom: 8dp;
+    padding-bottom: 10dp;
 }
 
 .pending-file {
@@ -2400,9 +2454,9 @@ input.range.stream-volume-slider sliderbar:hover {
     flex-direction: row;
     align-items: center;
     gap: 6dp;
-    padding: 4dp 8dp;
+    padding: 6dp 10dp;
     background-color: #1A1D2A;
-    border-radius: 4dp;
+    border-radius: 6dp;
     border: 1dp #2A2D3E;
 }
 

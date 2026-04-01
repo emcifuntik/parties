@@ -18,6 +18,7 @@ struct ChatAttachment {
     int64_t id = 0;
     Rml::String file_name;
     Rml::String size_str;       // formatted "2.4 MB"
+    Rml::String file_ext;       // "PDF", "PNG" etc. for type badge
     bool uploaded = false;
 };
 
@@ -25,9 +26,14 @@ struct ChatMessage {
     int64_t id = 0;
     int sender_id = 0;
     Rml::String sender_name;
+    Rml::String initials;       // "SK" from "Sara King"
+    bool is_own = false;        // true if sent by current user
     Rml::String text;           // raw text
+    bool has_url = false;       // true if text contains a URL (for clickable rendering)
     Rml::Vector<TextSegment> segments;  // text split into plain text + URL segments
-    Rml::String timestamp_str;  // "14:32" or "Mar 17, 14:32"
+    Rml::String timestamp_str;  // "10:32 AM"
+    Rml::String date_label;     // "Today", "Yesterday", "Mar 17" — set on first msg of each day
+    uint64_t raw_timestamp = 0; // unix timestamp for date grouping (not bound to RmlUi)
     bool pinned = false;
     int color_index = 0;
     Rml::Vector<ChatAttachment> attachments;
@@ -78,6 +84,7 @@ public:
     Rml::Vector<PendingFile> pending_files;
 
     // Create text channel
+    bool can_manage_channels = false;
     bool show_create_text_channel = false;
     Rml::String new_text_channel_name;
 

@@ -71,6 +71,42 @@ static constexpr unsigned char embed_icon_chat[] = {
     #embed "../ui/icon-chat.svg"
 };
 
+static constexpr unsigned char embed_icon_pin[] = {
+    #embed "../ui/icon-pin.svg"
+};
+
+static constexpr unsigned char embed_icon_search[] = {
+    #embed "../ui/icon-search.svg"
+};
+
+static constexpr unsigned char embed_icon_file[] = {
+    #embed "../ui/icon-file.svg"
+};
+
+static constexpr unsigned char embed_icon_download[] = {
+    #embed "../ui/icon-download.svg"
+};
+
+static constexpr unsigned char embed_icon_attach[] = {
+    #embed "../ui/icon-attach.svg"
+};
+
+static constexpr unsigned char embed_icon_send[] = {
+    #embed "../ui/icon-send.svg"
+};
+
+static constexpr unsigned char embed_icon_pin_add[] = {
+    #embed "../ui/icon-pin-add.svg"
+};
+
+static constexpr unsigned char embed_icon_pin_remove[] = {
+    #embed "../ui/icon-pin-remove.svg"
+};
+
+static constexpr unsigned char embed_icon_trash[] = {
+    #embed "../ui/icon-trash.svg"
+};
+
 static constexpr unsigned char embed_font_regular[] = {
     #embed "../ui/fonts/Inter-Regular.ttf"
 };
@@ -112,6 +148,15 @@ EmbeddedFileInterface::EmbeddedFileInterface() {
     entries_["ui/icon-disconnect.svg"] = { embed_icon_disconnect, sizeof(embed_icon_disconnect) };
     entries_["ui/icon-room.svg"] = { embed_icon_room, sizeof(embed_icon_room) };
     entries_["ui/icon-chat.svg"] = { embed_icon_chat, sizeof(embed_icon_chat) };
+    entries_["ui/icon-pin.svg"] = { embed_icon_pin, sizeof(embed_icon_pin) };
+    entries_["ui/icon-search.svg"] = { embed_icon_search, sizeof(embed_icon_search) };
+    entries_["ui/icon-file.svg"] = { embed_icon_file, sizeof(embed_icon_file) };
+    entries_["ui/icon-download.svg"] = { embed_icon_download, sizeof(embed_icon_download) };
+    entries_["ui/icon-attach.svg"] = { embed_icon_attach, sizeof(embed_icon_attach) };
+    entries_["ui/icon-send.svg"] = { embed_icon_send, sizeof(embed_icon_send) };
+    entries_["ui/icon-pin-add.svg"] = { embed_icon_pin_add, sizeof(embed_icon_pin_add) };
+    entries_["ui/icon-pin-remove.svg"] = { embed_icon_pin_remove, sizeof(embed_icon_pin_remove) };
+    entries_["ui/icon-trash.svg"] = { embed_icon_trash, sizeof(embed_icon_trash) };
     entries_["ui/fonts/Inter-Regular.ttf"] = { embed_font_regular, sizeof(embed_font_regular) };
     entries_["ui/fonts/Inter-Medium.ttf"] = { embed_font_medium, sizeof(embed_font_medium) };
     entries_["ui/fonts/Inter-Bold.ttf"] = { embed_font_bold, sizeof(embed_font_bold) };
