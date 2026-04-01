@@ -9,6 +9,37 @@
 #include <parties/log.h>
 #include <cstring>
 
+#ifdef _WIN32
+#include <windows.h>
+// Wrap SubmitInput in SEH to catch driver access violations gracefully.
+// Must be in a plain-C function (no C++ destructors in scope).
+static AMF_RESULT safe_submit_input(amf::AMFComponent* decoder, amf::AMFData* data) {
+    __try {
+        return decoder->SubmitInput(data);
+    } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION
+                    ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        return AMF_FAIL;
+    }
+}
+
+static AMF_RESULT safe_query_output(amf::AMFComponent* decoder, amf::AMFData** data) {
+    __try {
+        return decoder->QueryOutput(data);
+    } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION
+                    ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        *data = nullptr;
+        return AMF_FAIL;
+    }
+}
+#else
+static AMF_RESULT safe_submit_input(amf::AMFComponent* decoder, amf::AMFData* data) {
+    return decoder->SubmitInput(data);
+}
+static AMF_RESULT safe_query_output(amf::AMFComponent* decoder, amf::AMFData** data) {
+    return decoder->QueryOutput(data);
+}
+#endif
+
 namespace parties::encdec::amd {
 
 static const wchar_t* decoder_component_id(VideoCodecId codec) {
@@ -105,23 +136,38 @@ bool AmfDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height) {
 bool AmfDecoder::decode(const uint8_t* data, size_t len, int64_t timestamp) {
     ZoneScopedN("AmfDecoder::decode");
     if (!initialized_ || context_lost_) return false;
+    if (!data || len == 0) return false;
+    if (!decoder_ || !context_) {
+        context_lost_ = true;
+        return false;
+    }
 
     amf::AMFBuffer* buffer = nullptr;
     AMF_RESULT res = context_->AllocBuffer(amf::AMF_MEMORY_HOST, len, &buffer);
     if (res != AMF_OK || !buffer) {
         LOG_ERROR("AllocBuffer failed: {}", (int)res);
+        if (res == AMF_FAIL || res == AMF_NOT_INITIALIZED)
+            context_lost_ = true;
         return false;
     }
 
-    std::memcpy(buffer->GetNative(), data, len);
+    void* native = buffer->GetNative();
+    if (!native) {
+        LOG_ERROR("AMFBuffer::GetNative() returned null");
+        buffer->Release();
+        return false;
+    }
+
+    std::memcpy(native, data, len);
     buffer->SetPts(timestamp);
 
-    res = decoder_->SubmitInput(buffer);
+    res = safe_submit_input(decoder_, buffer);
     buffer->Release();
 
     if (res != AMF_OK && res != AMF_DECODER_NO_FREE_SURFACES) {
-        LOG_ERROR("Decoder SubmitInput failed: {}", (int)res);
+        LOG_ERROR("Decoder SubmitInput failed: {} (len={})", (int)res, len);
         if (res == AMF_FAIL || res == AMF_NOT_INITIALIZED) {
+            LOG_ERROR("AMF context lost — will fall back to software decoder");
             context_lost_ = true;
         }
         return false;
@@ -129,7 +175,7 @@ bool AmfDecoder::decode(const uint8_t* data, size_t len, int64_t timestamp) {
 
     while (true) {
         amf::AMFData* out_data = nullptr;
-        res = decoder_->QueryOutput(&out_data);
+        res = safe_query_output(decoder_, &out_data);
         if (res == AMF_REPEAT || !out_data) break;
         if (res != AMF_OK) break;
 
