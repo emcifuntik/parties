@@ -8,6 +8,7 @@
 #include <parties/profiler.h>
 #include <parties/log.h>
 #include <cstring>
+#include <dxgi.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -72,8 +73,20 @@ AmfDecoder::~AmfDecoder() {
         context_ = nullptr;
     }
 
+    device_.Reset();
     initialized_ = false;
     context_lost_ = false;
+}
+
+bool AmfDecoder::check_device_health() {
+    if (!device_) return false;
+    HRESULT reason = device_->GetDeviceRemovedReason();
+    if (reason != S_OK) {
+        LOG_ERROR("D3D11 device removed (reason=0x{:08x}) — AMF context lost", (unsigned)reason);
+        context_lost_ = true;
+        return false;
+    }
+    return true;
 }
 
 bool AmfDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height) {
@@ -82,13 +95,46 @@ bool AmfDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height) {
 
     if (!load_amf(factory_)) return false;
 
+    // Create a dedicated D3D11 device for AMF decoding so we can monitor its health.
+    // Enumerate DXGI adapters to find the AMD GPU.
+    Microsoft::WRL::ComPtr<IDXGIFactory1> dxgi_factory;
+    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&dxgi_factory)))) {
+        LOG_ERROR("CreateDXGIFactory1 failed");
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
+    Microsoft::WRL::ComPtr<IDXGIAdapter1> amd_adapter;
+    for (UINT i = 0; dxgi_factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; i++) {
+        DXGI_ADAPTER_DESC1 desc{};
+        adapter->GetDesc1(&desc);
+        if (desc.VendorId == 0x1002) { // AMD
+            amd_adapter = adapter;
+            break;
+        }
+        adapter.Reset();
+    }
+
+    D3D_FEATURE_LEVEL feature_level = D3D_FEATURE_LEVEL_11_1;
+    HRESULT hr = D3D11CreateDevice(
+        amd_adapter.Get(),  // nullptr = default adapter, or specific AMD adapter
+        amd_adapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
+        nullptr, 0,
+        &feature_level, 1,
+        D3D11_SDK_VERSION,
+        &device_, nullptr, nullptr);
+    if (FAILED(hr)) {
+        LOG_ERROR("D3D11CreateDevice for AMF decoder failed: 0x{:08x}", (unsigned)hr);
+        return false;
+    }
+
     AMF_RESULT res = factory_->CreateContext(&context_);
     if (res != AMF_OK || !context_) {
         LOG_ERROR("Decoder CreateContext failed: {}", (int)res);
         return false;
     }
 
-    res = context_->InitDX11(nullptr);
+    res = context_->InitDX11(device_.Get());
     if (res != AMF_OK) {
         LOG_ERROR("Decoder InitDX11 failed: {}", (int)res);
         context_->Release();
@@ -137,10 +183,8 @@ bool AmfDecoder::decode(const uint8_t* data, size_t len, int64_t timestamp) {
     ZoneScopedN("AmfDecoder::decode");
     if (!initialized_ || context_lost_) return false;
     if (!data || len == 0) return false;
-    if (!decoder_ || !context_) {
-        context_lost_ = true;
+    if (!decoder_ || !context_ || !check_device_health())
         return false;
-    }
 
     amf::AMFBuffer* buffer = nullptr;
     AMF_RESULT res = context_->AllocBuffer(amf::AMF_MEMORY_HOST, len, &buffer);

@@ -6,6 +6,9 @@
 #include <AMF/core/Context.h>
 #include <AMF/components/Component.h>
 
+#include <d3d11.h>
+#include <wrl/client.h>
+
 #include <cstdint>
 #include <vector>
 
@@ -24,9 +27,12 @@ public:
     DecoderInfo info() const override;
 
 private:
+    bool check_device_health();
+
     amf::AMFFactory* factory_ = nullptr;
     amf::AMFContext* context_ = nullptr;
     amf::AMFComponent* decoder_ = nullptr;
+    Microsoft::WRL::ComPtr<ID3D11Device> device_;
 
     VideoCodecId codec_ = VideoCodecId::AV1;
     uint32_t width_ = 0;

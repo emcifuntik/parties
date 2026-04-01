@@ -1078,13 +1078,20 @@ void App::decode_loop() {
         while (!batch.empty()) {
             auto& work = batch.front();
             if (!decoder_ || decoder_->context_lost() || decoder_->codec() != work.codec) {
+                bool was_context_lost = decoder_ && decoder_->context_lost();
                 if (decoder_) decoder_->shutdown();
+                if (was_context_lost) {
+                    // Give the GPU a moment to recover from TDR before reinit
+                    LOG_WARN("Decoder context lost — reinitializing after brief delay");
+                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                }
                 decoder_ = std::make_unique<VideoDecoder>();
                 if (!decoder_->init(work.codec, work.width, work.height)) {
                     LOG_ERROR("Decoder init failed codec={} {}x{}",
                                  static_cast<uint8_t>(work.codec), work.width, work.height);
                     decoder_.reset(); batch.pop(); continue;
                 }
+                LOG_INFO("Decoder reinitialized: {}",  decoder_->backend_name());
                 decoder_->on_decoded = [this](const DecodedFrame& f) { on_video_decoded(f); };
             }
             decoder_->decode(work.data.data(), work.data.size(), work.timestamp);
