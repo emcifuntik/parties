@@ -3350,6 +3350,10 @@ void RenderInterface_DX12::RenderGeometry(
 
 	// Check if this is a Slug font batch
 	if (slug_batches_.count(geometry)) {
+		// Lazy upload: ensure glyph atlas is up-to-date before first Slug draw.
+		// GenerateString() may have rasterized new glyphs after BeginFrame().
+		if (slug_font_engine_)
+			UploadSlugTextures();
 		RenderSlugGeometry(geometry, translation);
 		return;
 	}
