@@ -24,6 +24,8 @@
 #include <commdlg.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#else
+#include <unistd.h>
 #endif
 
 namespace parties::client {

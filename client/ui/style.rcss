@@ -247,6 +247,12 @@ body {
     height: 12dp;
     border-radius: 4dp;
 }
+
+.platform-ios input.range sliderprogress {
+    height: 12dp;
+    border-radius: 4dp;
+}
+
 .platform-ios input.range sliderbar {
     width: 18dp;
     height: 18dp;
