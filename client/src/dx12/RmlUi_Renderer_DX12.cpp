@@ -636,6 +636,8 @@ struct GeometryData {
 	D3D12_VERTEX_BUFFER_VIEW vbv = {};
 	D3D12_INDEX_BUFFER_VIEW ibv = {};
 	int num_indices = 0;
+	// Axis-aligned bounding box for CPU-side frustum culling
+	float min_x = 0, min_y = 0, max_x = 0, max_y = 0;
 };
 
 struct TextureData {
@@ -3265,6 +3267,19 @@ Rml::CompiledGeometryHandle RenderInterface_DX12::CompileGeometry(
 
 	geom->num_indices = static_cast<int>(indices.size());
 
+	// Compute AABB for CPU-side scissor culling
+	if (!vertices.empty()) {
+		geom->min_x = geom->max_x = vertices[0].position.x;
+		geom->min_y = geom->max_y = vertices[0].position.y;
+		for (size_t i = 1; i < vertices.size(); i++) {
+			float x = vertices[i].position.x, y = vertices[i].position.y;
+			if (x < geom->min_x) geom->min_x = x;
+			if (x > geom->max_x) geom->max_x = x;
+			if (y < geom->min_y) geom->min_y = y;
+			if (y > geom->max_y) geom->max_y = y;
+		}
+	}
+
 	auto handle = reinterpret_cast<Rml::CompiledGeometryHandle>(geom);
 
 	// Check for Slug font batch: magic value in first vertex's tex_coord.x
@@ -3358,6 +3373,17 @@ void RenderInterface_DX12::RenderGeometry(
 
 	auto* geom = reinterpret_cast<GeometryData*>(geometry);
 	auto* tex = reinterpret_cast<TextureData*>(texture);
+
+	// CPU-side scissor cull: skip draw call if geometry is entirely outside the scissor rect
+	if (scissor_enabled_ && !transform_active_) {
+		float gx0 = geom->min_x + translation.x;
+		float gy0 = geom->min_y + translation.y;
+		float gx1 = geom->max_x + translation.x;
+		float gy1 = geom->max_y + translation.y;
+		if (gx1 < scissor_rect_.left || gx0 > scissor_rect_.right ||
+		    gy1 < scissor_rect_.top  || gy0 > scissor_rect_.bottom)
+			return;
+	}
 
 	// --- Build transform constant buffer ---
 	// Compute final_transform = projection * model_transform
