@@ -249,22 +249,21 @@ body {
 }
 
 .platform-ios input.range sliderprogress {
-    height: 12dp;
-    border-radius: 4dp;
+    display: none;
 }
 
 .platform-ios input.range sliderbar {
     width: 18dp;
     height: 18dp;
     border-radius: 12dp;
-    margin-top: -3dp;
+    margin: -3dp -9dp 0dp -9dp;
 }
 
 .platform-ios input.range sliderbar:hover {
     width: 18dp;
     height: 18dp;
     border-radius: 12dp;
-    margin-top: -3dp;
+    margin: -3dp -9dp 0dp -9dp;
 }
 
 /* Move user island up to avoid iPhone home indicator */
@@ -1380,7 +1379,8 @@ input.password:focus {
 .slider-row {
     display: flex;
     flex-direction: column;
-    padding: 8dp 0dp 4dp 26dp;
+    padding: 8dp 0dp 4dp 0dp;
+    margin-bottom: 6dp;
 }
 
 .slider-label {
@@ -1399,6 +1399,7 @@ input.range slidertrack {
     height: 4dp;
     background-color: #2A3050;
     border-radius: 2dp;
+    overflow: visible;
     cursor: pointer;
 }
 
@@ -1415,7 +1416,7 @@ input.range sliderbar {
     height: 14dp;
     background-color: #FFFFFF;
     border-radius: 7dp;
-    margin-top: -5dp;
+    margin: -5dp -7dp 0dp -7dp;
     cursor: pointer;
 }
 
@@ -1424,7 +1425,7 @@ input.range sliderbar:hover {
     width: 16dp;
     height: 16dp;
     border-radius: 8dp;
-    margin-top: -6dp;
+    margin: -6dp -8dp 0dp -8dp;
 }
 
 input.range sliderbar:active {
@@ -1441,11 +1442,6 @@ input.range sliderarrowinc {
 .vad-settings {
     display: flex;
     flex-direction: column;
-    padding-left: 26dp;
-}
-
-.vad-settings .slider-row {
-    padding: 8dp 0dp 4dp 0dp;
 }
 
 .level-meter {
@@ -1454,7 +1450,6 @@ input.range sliderarrowinc {
     background-color: #1C2033;
     margin-top: 8dp;
     position: relative;
-    border-radius: 3dp;
 }
 
 .level-fill {
@@ -1597,6 +1592,7 @@ scrollbarvertical sliderarrowinc {
     display: flex;
     flex-direction: column;
     gap: 6dp;
+    margin-bottom: 6dp;
 }
 
 .share-codec-buttons {

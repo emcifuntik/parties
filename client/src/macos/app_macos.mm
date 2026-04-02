@@ -18,6 +18,8 @@
 // RmlUi core
 #include <RmlUi/Core/Core.h>
 #include <RmlUi/Core/Context.h>
+#include <RmlUi/Core/StyleSheetSpecification.h>
+#include <RmlUi/Core/PropertyDefinition.h>
 #include <RmlUi/Core/ElementDocument.h>
 #include <RmlUi/Core/Factory.h>
 #include <RmlUi/Core/Input.h>
@@ -313,6 +315,10 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
     Rml::Initialise();
 
+    // Register window-action as no-op to suppress warnings (used on Windows for caption hit-testing)
+    Rml::StyleSheetSpecification::RegisterProperty("window-action", "none", true)
+        .AddParser("keyword", "none, caption, close, minimize, maximize");
+
     Rml::Factory::RegisterElementInstancer("video_frame", &_videoInstancer);
     Rml::Factory::RegisterElementInstancer("level_meter", &_levelMeterInstancer);
     Rml::Factory::RegisterElementInstancer("gradient_circle", &_gradientCircleInstancer);
@@ -464,7 +470,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
     // Update voice level meter
     if (_levelMeter && _core.model_.is_connected) {
-        _levelMeter->SetLevel(_core.audio_.voice_level());
+        _levelMeter->SetLevel(audio::rms_to_perceptual(_core.audio_.voice_level()));
         _levelMeter->SetThreshold(_core.model_.vad_threshold);
     }
 
