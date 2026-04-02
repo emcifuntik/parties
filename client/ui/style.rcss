@@ -2197,17 +2197,26 @@ input.range.stream-volume-slider sliderbar:hover {
     background-color: #1A1D28;
 }
 
-/* Avatar circle */
-.msg-avatar {
+/* Avatar — gradient circle with initials overlay */
+.msg-avatar-wrap {
     display: flex;
     flex: none;
     width: 32dp;
     height: 32dp;
-    border-radius: 16dp;
     margin-right: 10dp;
     margin-top: 2dp;
     justify-content: center;
     align-items: center;
+    position: relative;
+}
+
+.msg-avatar {
+    display: block;
+    width: 32dp;
+    height: 32dp;
+    position: absolute;
+    top: 0;
+    left: 0;
 }
 
 .msg-initials {
@@ -2215,21 +2224,8 @@ input.range.stream-volume-slider sliderbar:hover {
     font-size: 11dp;
     font-weight: bold;
     color: #FFFFFF;
+    position: relative;
 }
-
-/* Avatar color variants */
-.msg-avatar[data-color="0"]  { background-color: #E8567C; }
-.msg-avatar[data-color="1"]  { background-color: #5B8DEF; }
-.msg-avatar[data-color="2"]  { background-color: #43B581; }
-.msg-avatar[data-color="3"]  { background-color: #F5A623; }
-.msg-avatar[data-color="4"]  { background-color: #9B59B6; }
-.msg-avatar[data-color="5"]  { background-color: #E67E22; }
-.msg-avatar[data-color="6"]  { background-color: #1ABC9C; }
-.msg-avatar[data-color="7"]  { background-color: #3498DB; }
-.msg-avatar[data-color="8"]  { background-color: #E74C3C; }
-.msg-avatar[data-color="9"]  { background-color: #2ECC71; }
-.msg-avatar[data-color="10"] { background-color: #F39C12; }
-.msg-avatar[data-color="11"] { background-color: #8E44AD; }
 
 /* Message body */
 .msg-body {

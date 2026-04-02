@@ -644,7 +644,8 @@
                      data-event-click="load_more_history">Load older messages</div>
                 <div data-for="msg : messages" class="msg-row"
                      data-event-mousedown="message_mousedown(msg.id)">
-                    <div class="msg-avatar" data-attr-data-color="msg.color_index">
+                    <div class="msg-avatar-wrap">
+                        <gradient_circle class="msg-avatar" data-attr-seed="msg.sender_name" />
                         <span class="msg-initials">{{ msg.initials }}</span>
                     </div>
                     <div class="msg-body">
