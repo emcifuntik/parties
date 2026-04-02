@@ -214,6 +214,15 @@ bool ChatModel::init(Rml::Context* context) {
             }
         });
 
+    ctor.BindEventCallback("message_mousedown",
+        [this](Rml::DataModelHandle, Rml::Event& event, const Rml::VariantList& args) {
+            // Right-click (button 1) opens context menu for message actions
+            if (event.GetParameter("button", 0) == 1 && !args.empty()) {
+                if (on_message_context_menu)
+                    on_message_context_menu(args[0].Get<int64_t>());
+            }
+        });
+
     handle_ = ctor.GetModelHandle();
     return true;
 }

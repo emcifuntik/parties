@@ -30,6 +30,7 @@ struct PlatformBridge {
     std::function<void(float)>                                 set_notification_volume;
     std::function<void(int channel_id, const std::string& name)> show_channel_menu;
     std::function<void(int server_id)>                         show_server_menu;
+    std::function<void(int64_t message_id)>                    show_message_menu;
     std::function<void()>                                      open_share_picker;
     std::function<void()>                                      on_authenticated;
     std::function<void()>                                      stop_screen_share;
@@ -77,7 +78,6 @@ public:
     PublicKey   public_key_{};
     bool        has_identity_         = false;
     std::string seed_phrase_;
-    Rml::Context* rml_context_        = nullptr;
     bool        awaiting_connection_   = false;
     bool        awaiting_channel_join_ = false;
     ChannelId   pending_channel_id_    = 0;
@@ -179,10 +179,6 @@ private:
     void on_chat_search_resp(const uint8_t* data, size_t len);
     void on_chat_pinned_resp(const uint8_t* data, size_t len);
     void on_chat_file_ready(const uint8_t* data, size_t len);
-    Rml::Element* get_chat_container();
-    void rebuild_chat_messages_html();      // full rebuild (channel switch, history load)
-    void append_chat_message_html(const ChatMessage& msg); // incremental append
-    int64_t last_rendered_msg_id_ = 0;      // track what's already rendered
 
     void update_speaking_state();
     void generate_identity();

@@ -158,6 +158,22 @@ bool App::init(HWND hwnd, int renderer_id) {
         }
     };
 
+    bridge.show_message_menu = [this](int64_t msg_id) {
+        constexpr int ID_PIN    = 1;
+        constexpr int ID_DELETE = 2;
+        std::vector<ContextMenu::Item> items;
+        items.push_back({L"Pin Message",    ID_PIN,    false});
+        items.push_back({L"Delete Message", ID_DELETE, true});
+        int cmd = ContextMenu::show(hwnd_, items);
+        if (cmd == ID_PIN) {
+            if (core_.chat_model_.on_pin_message)
+                core_.chat_model_.on_pin_message(msg_id);
+        } else if (cmd == ID_DELETE) {
+            if (core_.chat_model_.on_delete_message)
+                core_.chat_model_.on_delete_message(msg_id);
+        }
+    };
+
     bridge.open_share_picker = [this]() { show_share_picker(); };
 
     bridge.on_authenticated = nullptr; // Windows needs no special post-auth step

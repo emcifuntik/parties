@@ -3223,7 +3223,6 @@ Rml::CompiledGeometryHandle RenderInterface_DX12::CompileGeometry(
 		delete geom;
 		return Rml::CompiledGeometryHandle(0);
 	}
-	geom->vertex_buffer->SetName(L"RmlUi_VB");
 
 	void* mapped = nullptr;
 	D3D12_RANGE read_range{0, 0};
@@ -3246,7 +3245,6 @@ Rml::CompiledGeometryHandle RenderInterface_DX12::CompileGeometry(
 		delete geom;
 		return Rml::CompiledGeometryHandle(0);
 	}
-	geom->index_buffer->SetName(L"RmlUi_IB");
 
 	hr = geom->index_buffer->Map(0, &read_range, &mapped);
 	if (FAILED(hr)) {

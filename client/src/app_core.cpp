@@ -9,9 +9,6 @@
 #include <parties/log.h>
 
 #include <RmlUi/Core/Core.h>
-#include <RmlUi/Core/Context.h>
-#include <RmlUi/Core/Element.h>
-#include <RmlUi/Core/ElementDocument.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -40,7 +37,6 @@ AppCore::~AppCore() = default;
 
 bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml::Context* rml_context)
 {
-    rml_context_ = rml_context;
     bridge_ = std::move(bridge);
 
     if (!settings_.open(settings_path)) {
@@ -587,7 +583,7 @@ void AppCore::on_disconnect_cleanup()
     chat_model_.show_pinned = false;
     chat_model_.compose_text.clear();
     chat_model_.dirty("text_channels");
-    rebuild_chat_messages_html();
+    chat_model_.dirty("messages");
     chat_model_.dirty("active_channel");
     chat_model_.dirty("active_channel_name");
     chat_model_.dirty("has_more_history");
@@ -1857,10 +1853,10 @@ void AppCore::setup_chat_model_callbacks()
         chat_model_.dirty("active_channel");
         chat_model_.dirty("active_channel_name");
         chat_model_.dirty("text_channels");
-        rebuild_chat_messages_html();
         chat_model_.dirty("has_more_history");
         chat_model_.dirty("show_search");
         chat_model_.dirty("show_pinned");
+        chat_model_.dirty("messages");
 
         // Show chat view (keep voice channel connection intact)
         model_.show_chat = true;
@@ -1944,6 +1940,11 @@ void AppCore::setup_chat_model_callbacks()
         writer.write_u64(static_cast<uint64_t>(msg_id));
         net_.send_message(protocol::ControlMessageType::CHAT_DELETE,
                          writer.data().data(), writer.data().size());
+    };
+
+    chat_model_.on_message_context_menu = [this](int64_t msg_id) {
+        if (bridge_.show_message_menu)
+            bridge_.show_message_menu(msg_id);
     };
 
     chat_model_.on_do_search = [this]() {
@@ -2262,16 +2263,19 @@ void AppCore::on_chat_message(const uint8_t* data, size_t len) {
                 break;
             }
         }
-        if (!found) {
-            chat_model_.messages.push_back(msg);
-            assign_date_labels(chat_model_.messages);
-            // Incremental append — only adds one element to DOM
-            append_chat_message_html(chat_model_.messages.back());
-        } else {
-            // Existing message updated — full rebuild needed
-            assign_date_labels(chat_model_.messages);
-            rebuild_chat_messages_html();
+        if (!found)
+            chat_model_.messages.push_back(std::move(msg));
+        // Keep at most 30 messages displayed
+        if (chat_model_.messages.size() > 30) {
+            chat_model_.messages.erase(
+                chat_model_.messages.begin(),
+                chat_model_.messages.begin() +
+                    static_cast<int>(chat_model_.messages.size() - 30));
+            chat_model_.has_more_history = true;
+            chat_model_.dirty("has_more_history");
         }
+        assign_date_labels(chat_model_.messages);
+        chat_model_.dirty("messages");
     } else {
         // Mark channel as unread
         for (auto& tc : chat_model_.text_channels) {
@@ -2307,8 +2311,8 @@ void AppCore::on_chat_history_resp(const uint8_t* data, size_t len) {
 
     chat_model_.has_more_history = has_more != 0;
     assign_date_labels(chat_model_.messages);
-    rebuild_chat_messages_html();
     chat_model_.dirty("has_more_history");
+    chat_model_.dirty("messages");
 }
 
 void AppCore::on_chat_message_deleted(const uint8_t* data, size_t len) {
@@ -2323,7 +2327,8 @@ void AppCore::on_chat_message_deleted(const uint8_t* data, size_t len) {
             [message_id](const ChatMessage& m) { return m.id == static_cast<int64_t>(message_id); }),
             msgs.end());
         assign_date_labels(msgs);
-        rebuild_chat_messages_html();
+        assign_date_labels(msgs);
+        chat_model_.dirty("messages");
     }
 }
 
@@ -2369,154 +2374,7 @@ void AppCore::on_chat_file_ready(const uint8_t* data, size_t len) {
             break;
         }
     }
-    rebuild_chat_messages_html();
-}
-
-static std::string escape_rml(const std::string& s) {
-    std::string out;
-    out.reserve(s.size());
-    for (char c : s) {
-        switch (c) {
-            case '<': out += "&lt;"; break;
-            case '>': out += "&gt;"; break;
-            case '&': out += "&amp;"; break;
-            default:  out += c;
-        }
-    }
-    return out;
-}
-
-static std::string build_message_html(const ChatMessage& msg) {
-    std::string html;
-
-    // Date separator
-    if (!msg.date_label.empty()) {
-        html += "<div class=\"date-separator\">"
-                "<div class=\"date-separator-line\"></div>"
-                "<span class=\"date-separator-text\">";
-        html += escape_rml(std::string(msg.date_label));
-        html += "</span>"
-                "<div class=\"date-separator-line\"></div>"
-                "</div>";
-    }
-
-    // Message
-    html += "<div class=\"chat-message\">";
-    html += "<span class=\"msg-time\">";
-    html += escape_rml(std::string(msg.timestamp_str));
-    html += "</span><span class=\"msg-sender\">";
-    html += escape_rml(std::string(msg.sender_name));
-    html += "</span>";
-
-    if (msg.has_url) {
-        for (auto& seg : msg.segments) {
-            if (seg.is_url) {
-                html += "<span class=\"msg-link\">";
-                html += escape_rml(std::string(seg.text));
-                html += "</span>";
-            } else {
-                html += "<span class=\"msg-text\">";
-                html += escape_rml(std::string(seg.text));
-                html += "</span>";
-            }
-        }
-    } else {
-        html += "<span class=\"msg-text\">";
-        html += escape_rml(std::string(msg.text));
-        html += "</span>";
-    }
-
-    // Attachments
-    for (auto& att : msg.attachments) {
-        html += "<div class=\"att-card\">"
-                "<svg class=\"att-icon\" src=\"icon-file.svg\" width=\"16\" height=\"16\" />"
-                "<span class=\"att-name\">";
-        html += escape_rml(std::string(att.file_name));
-        html += "</span><span class=\"att-size\">";
-        html += escape_rml(std::string(att.size_str));
-        html += "</span>";
-        if (att.uploaded) {
-            html += "<div class=\"att-download-btn\" data-model=\"chat\" "
-                    "data-event-click=\"download_file(";
-            html += std::to_string(att.id);
-            html += ")\">"
-                    "<svg class=\"att-download-icon\" src=\"icon-download.svg\" "
-                    "width=\"14\" height=\"14\" /></div>";
-        }
-        html += "</div>";
-    }
-
-    // Pin / Delete actions
-    html += "<div class=\"msg-actions\">"
-            "<div class=\"msg-action-btn\" data-model=\"chat\" "
-            "data-event-click=\"pin_message(";
-    html += std::to_string(msg.id);
-    html += ")\">"
-            "<svg class=\"msg-action-icon\" src=\"icon-pin-add.svg\" width=\"12\" height=\"12\" />"
-            "</div>"
-            "<div class=\"msg-action-btn msg-action-danger\" data-model=\"chat\" "
-            "data-event-click=\"delete_message(";
-    html += std::to_string(msg.id);
-    html += ")\">"
-            "<svg class=\"msg-action-icon\" src=\"icon-trash.svg\" width=\"12\" height=\"12\" />"
-            "</div></div>";
-
-    html += "</div>"; // chat-message
-    return html;
-}
-
-Rml::Element* AppCore::get_chat_container() {
-    if (!rml_context_) return nullptr;
-    for (int i = 0; i < rml_context_->GetNumDocuments(); i++) {
-        auto* doc = rml_context_->GetDocument(i);
-        if (doc) {
-            auto* el = doc->GetElementById("chat-messages");
-            if (el) return el;
-        }
-    }
-    return nullptr;
-}
-
-void AppCore::rebuild_chat_messages_html() {
-    auto* container = get_chat_container();
-    if (!container) return;
-
-    std::string html;
-
-    if (chat_model_.has_more_history)
-        html += "<div class=\"chat-load-more\" data-model=\"chat\" "
-                "data-event-click=\"load_more_history\">Load older messages</div>";
-
-    for (auto& msg : chat_model_.messages)
-        html += build_message_html(msg);
-
-    if (chat_model_.messages.empty() && !chat_model_.has_more_history)
-        html += "<div class=\"chat-empty\">"
-                "<span class=\"text-muted-msg\">No messages yet. Say something!</span>"
-                "</div>";
-
-    container->SetInnerRML(html);
-    last_rendered_msg_id_ = chat_model_.messages.empty() ? 0
-        : chat_model_.messages.back().id;
-}
-
-void AppCore::append_chat_message_html(const ChatMessage& msg) {
-    auto* container = get_chat_container();
-    if (!container) return;
-    auto* doc = container->GetOwnerDocument();
-    if (!doc) return;
-
-    // Create a wrapper div, set its inner RML, then append it
-    auto wrapper = doc->CreateElement("div");
-    wrapper->SetInnerRML(build_message_html(msg));
-    container->AppendChild(std::move(wrapper));
-
-    // Cap visible messages — remove oldest from DOM
-    constexpr int kMaxDomMessages = 50;
-    while (container->GetNumChildren() > kMaxDomMessages)
-        container->RemoveChild(container->GetChild(0));
-
-    last_rendered_msg_id_ = msg.id;
+    chat_model_.dirty("messages");
 }
 
 } // namespace parties::client

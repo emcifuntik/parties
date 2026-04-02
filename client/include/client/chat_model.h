@@ -95,6 +95,7 @@ public:
     std::function<void(int64_t)> on_pin_message;
     std::function<void(int64_t)> on_unpin_message;
     std::function<void(int64_t)> on_delete_message;
+    std::function<void(int64_t)> on_message_context_menu;
     std::function<void(int64_t)> on_download_file;
     std::function<void()>        on_do_search;
     std::function<void()>        on_request_pinned;
