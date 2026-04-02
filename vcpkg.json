@@ -16,7 +16,10 @@
       "default-features": false
     },
     "rapidjson",
-    "sqlite3",
+    {
+      "name": "sqlite3",
+      "features": ["fts5"]
+    },
     "toml11",
     {
       "name": "tracy",

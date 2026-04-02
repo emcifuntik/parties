@@ -31,11 +31,13 @@ public:
 private:
     void process_control_messages();
     void process_data_packets();
+    void process_file_transfers();
     void handle_message(const IncomingMessage& msg);
     void on_client_disconnect(uint32_t session_id);
 
     void send_error(uint32_t session_id, const std::string& message);
     void send_channel_list(uint32_t session_id);
+    void send_text_channel_list(uint32_t session_id);
     void send_channel_key(uint32_t session_id, ChannelId channel_id);
 
     // Screen sharing

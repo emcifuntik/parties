@@ -114,6 +114,9 @@ public:
     // Mobile navigation (iOS: sidebar vs content panel)
     bool mobile_show_content = false;
 
+    // Chat view active (hides voice channel-content area)
+    bool show_chat = false;
+
     // Screen sharing
     bool is_sharing = false;
     bool someone_sharing = false;           // convenience: !sharers.empty()

@@ -20,6 +20,8 @@
 #include <RmlUi/Core/ElementDocument.h>
 #include <RmlUi/Core/Factory.h>
 #include <RmlUi/Core/Input.h>
+#include <RmlUi/Core/StyleSheetSpecification.h>
+#include <RmlUi/Core/PropertyDefinition.h>
 #ifdef RMLUI_DEBUG
 #include <RmlUi/Debugger.h>
 #endif
@@ -27,6 +29,7 @@
 // Parties shared code
 #include <parties/protocol.h>
 #include <parties/types.h>
+#include <parties/audio_common.h>
 #include <parties/video_common.h>
 #include <parties/quic_common.h>
 
@@ -178,6 +181,10 @@ using namespace parties::protocol;
     Rml::SetSystemInterface(Backend::GetSystemInterface());
     Rml::SetRenderInterface(Backend::GetRenderInterface());
     Rml::Initialise();
+
+    // Register window-action as no-op to suppress warnings (used on Windows for caption hit-testing)
+    Rml::StyleSheetSpecification::RegisterProperty("window-action", "none", true)
+        .AddParser("keyword", "none, caption, close, minimize, maximize");
 
     Rml::Factory::RegisterElementInstancer("video_frame", &_videoInstancer);
     Rml::Factory::RegisterElementInstancer("level_meter", &_levelMeterInstancer);
@@ -653,7 +660,7 @@ using namespace parties::protocol;
 
     // Update voice level meter
     if (_levelMeter && _core.model_.is_connected) {
-        _levelMeter->SetLevel(_core.audio_.voice_level());
+        _levelMeter->SetLevel(audio::rms_to_perceptual(_core.audio_.voice_level()));
         _levelMeter->SetThreshold(_core.model_.vad_threshold);
     }
 
@@ -756,8 +763,12 @@ using namespace parties::protocol;
     _rmlContext->ProcessMouseMove((int)pt.x, (int)pt.y, 0);
     // Check if we hit a slider before pressing — if so, lock out scrolling.
     _isDraggingWidget = [self hitTestSlider:pt];
-    // Press immediately so drag-based widgets (sliders) get mousedown.
-    _rmlContext->ProcessMouseButtonDown(0, 0);
+    // Only press immediately for drag-based widgets (sliders).
+    // For everything else, defer until touchesEnded to avoid
+    // toggling checkboxes when the user intends to scroll.
+    if (_isDraggingWidget) {
+        _rmlContext->ProcessMouseButtonDown(0, 0);
+    }
 }
 
 - (void)touchesMoved:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)event
@@ -772,8 +783,6 @@ using namespace parties::protocol;
     if (!_isScrolling && !_isDraggingWidget) {
         float dy = fabsf((float)(cur.y - _touchStart.y));
         if (dy > 10.0f) {
-            // Release the button so we don't drag widgets while scrolling.
-            _rmlContext->ProcessMouseButtonUp(0, 0);
             _isScrolling = YES;
         }
     }
@@ -807,8 +816,14 @@ using namespace parties::protocol;
     _rmlContext->ProcessMouseMove((int)pt.x, (int)pt.y, 0);
 
     if (!_isScrolling) {
-        // Button was already pressed in touchesBegan — just release.
-        _rmlContext->ProcessMouseButtonUp(0, 0);
+        if (_isDraggingWidget) {
+            // Slider drag — button was pressed in touchesBegan, just release.
+            _rmlContext->ProcessMouseButtonUp(0, 0);
+        } else {
+            // Tap — send down+up together now that we know it's not a scroll.
+            _rmlContext->ProcessMouseButtonDown(0, 0);
+            _rmlContext->ProcessMouseButtonUp(0, 0);
+        }
         _velocityY = 0.0f;
     } else if (fabsf(_velocityY) > 50.0f) {
         _momentumActive = YES;

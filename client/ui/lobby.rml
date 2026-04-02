@@ -138,31 +138,23 @@
 
             <div class="sidebar-separator"></div>
 
-            <div class="channel-category-row">
+            <div class="channel-category-row" data-model="chat">
                 <span class="channel-category">Chats</span>
                 <span class="channel-add-btn" data-if="can_manage_channels"
-                      data-event-click="show_create_chat_form">+</span>
+                      data-event-click="show_create_text_channel_form">+</span>
             </div>
-            <div class="chat-item active">
-                <svg class="chat-icon" src="icon-chat.svg" width="16" height="16" />
-                <span class="chat-item-name">Alice</span>
-                <span class="chat-item-time">2m</span>
+            <div data-model="chat" data-for="tc : text_channels">
+                <div class="chat-item"
+                     data-class-active="tc.id == active_channel"
+                     data-class-unread="tc.has_unread"
+                     data-event-click="select_text_channel(tc.id)">
+                    <svg class="chat-icon" src="icon-chat.svg" width="16" height="16" />
+                    <span class="chat-item-name">{{ tc.name }}</span>
+                    <span class="chat-unread-dot" data-if="tc.has_unread"></span>
+                </div>
             </div>
-            <div class="chat-item">
-                <svg class="chat-icon" src="icon-chat.svg" width="16" height="16" />
-                <span class="chat-item-name">Bob</span>
-                <span class="chat-item-time">15m</span>
-            </div>
-            <div class="chat-item">
-                <svg class="chat-icon" src="icon-chat.svg" width="16" height="16" />
-                <span class="chat-item-name">Charlie</span>
-                <span class="chat-item-time">1h</span>
-            </div>
-            <div class="chat-item">
-                <svg class="chat-icon" src="icon-chat.svg" width="16" height="16" />
-                <span class="chat-item-name">Team Chat</span>
-                <span class="chat-item-time">3h</span>
-            </div>
+
+            <!-- (text channel creation uses modal below) -->
 
             <div class="chat-spaceholder"></div>
         </div>
@@ -522,8 +514,8 @@
             </div>
         </div>
 
-        <!-- Channel content -->
-        <div class="channel-content" data-if="show_settings == false && show_share_picker == false">
+        <!-- Channel content (voice) -->
+        <div class="channel-content" data-if="show_settings == false && show_share_picker == false && show_chat == false">
             <div class="channel-header" data-if="current_channel > 0">
                 <span class="channel-title"># {{ current_channel_name }}</span>
             </div>
@@ -574,8 +566,140 @@
                              data-event-click="stream_tap_fullscreen" />
             </div>
 
-            <div class="text-placeholder" data-if="current_channel > 0 && someone_sharing == false">
-                <span class="text-muted-msg">Text chat coming soon</span>
+        </div>
+
+        <!-- Chat content (visible when text channel selected) -->
+        <div class="chat-content" data-model="chat"
+             data-if="active_channel > 0">
+
+            <!-- Header -->
+            <div class="chat-header">
+                <div class="chat-header-left">
+                    <svg class="chat-header-icon" src="icon-chat.svg" width="18" height="18" />
+                    <span class="chat-title">{{ active_channel_name }}</span>
+                </div>
+                <div class="chat-header-actions">
+                    <div class="chat-header-btn" data-event-click="toggle_pinned">
+                        <svg src="icon-pin.svg" width="16" height="16" />
+                    </div>
+                    <div class="chat-header-btn" data-event-click="toggle_search">
+                        <svg src="icon-search.svg" width="16" height="16" />
+                    </div>
+                </div>
+            </div>
+
+            <!-- Search bar -->
+            <div class="chat-search-bar" data-if="show_search">
+                <input type="text" class="chat-search-input"
+                       data-value="search_query"
+                       data-event-keydown="search_keydown"
+                       placeholder="Search messages..." />
+            </div>
+
+            <!-- Pinned messages panel -->
+            <div class="chat-pinned-panel" data-if="show_pinned">
+                <div class="chat-pinned-header">
+                    <span>Pinned Messages</span>
+                    <div class="close-icon" data-event-click="toggle_pinned">
+                        <div class="close-icon-a"></div>
+                        <div class="close-icon-b"></div>
+                    </div>
+                </div>
+                <div data-for="pm : pinned_messages">
+                    <div class="chat-message pinned-msg">
+                        <div class="msg-body">
+                            <div class="msg-header">
+                                <span class="msg-sender">{{ pm.sender_name }}</span>
+                                <span class="msg-time">{{ pm.timestamp_str }}</span>
+                            </div>
+                            <div class="msg-text">{{ pm.text }}</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="chat-pinned-empty" data-if="pinned_messages.size == 0">
+                    <span class="text-muted-msg">No pinned messages</span>
+                </div>
+            </div>
+
+            <!-- Search results (shown when search is active) -->
+            <div class="chat-messages" data-if="show_search">
+                <div data-for="sr : search_results" class="msg-row">
+                    <div class="msg-avatar" data-attr-data-color="sr.color_index">
+                        <span class="msg-initials">{{ sr.initials }}</span>
+                    </div>
+                    <div class="msg-body">
+                        <span class="msg-sender">{{ sr.sender_name }}</span>
+                        <span class="msg-time">{{ sr.timestamp_str }}</span>
+                        <div class="msg-text">{{ sr.text }}</div>
+                    </div>
+                </div>
+                <div class="chat-empty" data-if="search_results.size == 0">
+                    <span class="text-muted-msg">No results found</span>
+                </div>
+            </div>
+
+            <!-- Message list (hidden during search) -->
+            <div class="chat-messages" id="chat-messages" data-if="show_search == false">
+                <div class="chat-load-more" data-if="has_more_history"
+                     data-event-click="load_more_history">Load older messages</div>
+                <div data-for="msg : messages" class="msg-row"
+                     data-event-mousedown="message_mousedown(msg.id)">
+                    <div class="msg-avatar-wrap">
+                        <gradient_circle class="msg-avatar" data-attr-seed="msg.sender_name" />
+                        <span class="msg-initials">{{ msg.initials }}</span>
+                    </div>
+                    <div class="msg-body">
+                        <span class="msg-sender">{{ msg.sender_name }}</span>
+                        <span class="msg-you" data-if="msg.is_own">(you)</span>
+                        <span class="msg-time">{{ msg.timestamp_str }}</span>
+                        <div class="msg-text" data-if="msg.has_url == false">{{ msg.text }}</div>
+                        <div class="msg-text" data-if="msg.has_url">
+                            <span data-for="seg : msg.segments"
+                                  data-class-msg-link="seg.is_url"
+                                  data-event-click="open_url(seg.text)">{{ seg.text }}</span>
+                        </div>
+                        <div data-for="att : msg.attachments" class="att-card">
+                            <svg class="att-icon" src="icon-file.svg" width="16" height="16" />
+                            <span class="att-name">{{ att.file_name }}</span>
+                            <span class="att-size">{{ att.size_str }}</span>
+                            <div class="att-download-btn" data-if="att.uploaded"
+                                 data-event-click="download_file(att.id)">
+                                <svg class="att-download-icon" src="icon-download.svg" width="14" height="14" />
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="chat-empty" data-if="messages.size == 0 && has_more_history == false">
+                    <span class="text-muted-msg">No messages yet. Say something!</span>
+                </div>
+            </div>
+
+            <!-- Compose area -->
+            <div class="chat-compose">
+                <div class="pending-files" data-if="pending_files.size > 0">
+                    <div data-for="pf : pending_files">
+                        <div class="pending-file">
+                            <span class="pending-file-name">{{ pf.name }}</span>
+                            <span class="pending-file-size">{{ pf.size_str }}</span>
+                            <div class="pending-file-remove"
+                                 data-event-click="remove_pending_file(pf.path)">x</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="compose-row">
+                    <div class="compose-input-wrap">
+                        <input type="text" class="compose-input"
+                               data-value="compose_text"
+                               data-event-keydown="compose_keydown"
+                               placeholder="Write something..." />
+                        <div class="compose-attach-btn" data-event-click="attach_file">
+                            <svg class="compose-attach-icon" src="icon-attach.svg" width="18" height="18" />
+                        </div>
+                    </div>
+                    <div class="send-btn" data-event-click="send_message">
+                        <svg class="send-icon" src="icon-send.svg" width="18" height="18" />
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -741,6 +865,19 @@
 
             <div class="btn" data-event-click="create_channel">Create</div>
             <div class="btn btn-secondary" data-event-click="cancel_create_channel">Cancel</div>
+        </div>
+    </div>
+
+    <!-- Create text channel modal -->
+    <div class="modal-backdrop" data-model="chat" data-if="show_create_text_channel">
+        <div class="modal-box">
+            <h1>Create Text Channel</h1>
+
+            <div class="label">Channel Name</div>
+            <input type="text" data-value="new_text_channel_name" />
+
+            <div class="btn" data-event-click="create_text_channel">Create</div>
+            <div class="btn btn-secondary" data-event-click="cancel_create_text_channel">Cancel</div>
         </div>
     </div>
 

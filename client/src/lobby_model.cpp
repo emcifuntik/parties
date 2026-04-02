@@ -73,6 +73,7 @@ bool LobbyModel::init(Rml::Context* context) {
     ctor.Bind("is_muted",       &is_muted);
     ctor.Bind("is_deafened",    &is_deafened);
     ctor.Bind("show_settings",  &show_settings);
+    ctor.Bind("show_chat",      &show_chat);
 
     ctor.Bind("capture_devices",  &capture_devices);
     ctor.Bind("playback_devices", &playback_devices);

@@ -14,6 +14,7 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <thread>
 
 namespace parties::server {
@@ -77,16 +78,52 @@ bool Server::start(const Config& cfg) {
         }
     };
 
+    // Ensure file storage directory exists
+    try {
+        std::filesystem::create_directories(config_.chat.file_storage_path);
+    } catch (const std::exception& e) {
+        LOG_ERROR("Failed to create file storage directory '{}': {}",
+                  config_.chat.file_storage_path, e.what());
+        return false;
+    }
+
     running_ = true;
     LOG_INFO("{} started successfully", config_.server_name);
     return true;
 }
 
 void Server::run() {
+    auto last_retention_check = std::chrono::steady_clock::now();
+
     while (running_) {
         ZoneScopedN("Server::run");
         process_control_messages();
         process_data_packets();
+        process_file_transfers();
+
+        // Periodic retention enforcement (every 60 seconds)
+        auto now = std::chrono::steady_clock::now();
+        if (now - last_retention_check > std::chrono::seconds(60)) {
+            last_retention_check = now;
+            if (config_.chat.message_retention_days > 0) {
+                int purged = db_.purge_old_messages(config_.chat.message_retention_days);
+                if (purged > 0)
+                    LOG_INFO("Purged {} old messages", purged);
+            }
+            if (config_.chat.file_retention == "time" && config_.chat.file_retention_days > 0) {
+                int purged = db_.purge_old_files(config_.chat.file_retention_days,
+                                                  config_.chat.file_storage_path);
+                if (purged > 0)
+                    LOG_INFO("Purged {} expired files", purged);
+            } else if (config_.chat.file_retention == "ring" &&
+                       config_.chat.max_total_file_storage > 0) {
+                int purged = db_.purge_oldest_files(config_.chat.max_total_file_storage,
+                                                     config_.chat.file_storage_path);
+                if (purged > 0)
+                    LOG_INFO("Purged {} files (ring buffer)", purged);
+            }
+        }
+
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 }
@@ -149,6 +186,86 @@ void Server::process_data_packets() {
     }
 }
 
+void Server::process_file_transfers() {
+    namespace fs = std::filesystem;
+
+    // Handle completed file uploads
+    auto uploads = quic_.file_uploads().drain();
+    for (auto& ev : uploads) {
+        auto session = quic_.get_session(ev.session_id);
+        if (!session || !session->authenticated) continue;
+
+        auto att = db_.get_attachment(ev.attachment_id);
+        if (!att) {
+            LOG_WARN("Upload for unknown attachment {}", ev.attachment_id);
+            continue;
+        }
+        if (att->uploaded) continue;  // already uploaded
+
+        // Check file size limit
+        if (static_cast<int64_t>(ev.data.size()) > config_.chat.max_file_size) {
+            LOG_WARN("File too large ({} bytes) from session {}", ev.data.size(), ev.session_id);
+            continue;
+        }
+
+        // Create directory and write file
+        fs::path full_path = fs::path(config_.chat.file_storage_path) / att->disk_path;
+        fs::create_directories(full_path.parent_path());
+
+        std::ofstream out(full_path, std::ios::binary);
+        if (!out) {
+            LOG_ERROR("Failed to create file: {}", full_path.string());
+            continue;
+        }
+        out.write(reinterpret_cast<const char*>(ev.data.data()), ev.data.size());
+        out.close();
+
+        db_.mark_attachment_uploaded(ev.attachment_id);
+        LOG_INFO("File uploaded: {} ({} bytes)", att->file_name, ev.data.size());
+
+        // Broadcast CHAT_FILE_READY to all authenticated clients
+        BinaryWriter writer;
+        writer.write_u64(att->message_id);
+        writer.write_u64(ev.attachment_id);
+        auto all = quic_.get_sessions();
+        for (auto& s : all) {
+            if (s->authenticated)
+                quic_.send_to(s->id, protocol::ControlMessageType::CHAT_FILE_READY,
+                             writer.data().data(), writer.data().size());
+        }
+    }
+
+    // Handle file download requests
+    auto downloads = quic_.file_downloads().drain();
+    for (auto& req : downloads) {
+        auto session = quic_.get_session(req.session_id);
+        if (!session || !session->authenticated) continue;
+
+        auto att = db_.get_attachment(req.attachment_id);
+        if (!att || !att->uploaded) {
+            LOG_WARN("Download request for unavailable attachment {}", req.attachment_id);
+            continue;
+        }
+
+        fs::path full_path = fs::path(config_.chat.file_storage_path) / att->disk_path;
+        std::ifstream in(full_path, std::ios::binary | std::ios::ate);
+        if (!in) {
+            LOG_ERROR("Failed to read file: {}", full_path.string());
+            continue;
+        }
+
+        auto fpos = in.tellg();
+        size_t file_size = static_cast<size_t>(fpos);
+        in.seekg(0);
+        std::vector<uint8_t> file_data(file_size);
+        in.read(reinterpret_cast<char*>(file_data.data()), static_cast<std::streamsize>(file_size));
+        in.close();
+
+        quic_.send_file_on_stream(req.stream, file_data.data(), file_data.size());
+        LOG_INFO("File sent: {} ({} bytes)", att->file_name, file_size);
+    }
+}
+
 void Server::send_error(uint32_t session_id, const std::string& message) {
     BinaryWriter writer;
     writer.write_string(message);
@@ -179,6 +296,21 @@ void Server::send_channel_list(uint32_t session_id) {
     }
 
     quic_.send_to(session_id, protocol::ControlMessageType::CHANNEL_LIST,
+                 writer.data().data(), writer.data().size());
+}
+
+void Server::send_text_channel_list(uint32_t session_id) {
+    auto channels = db_.get_all_text_channels();
+
+    BinaryWriter writer;
+    writer.write_u32(static_cast<uint32_t>(channels.size()));
+    for (auto& ch : channels) {
+        writer.write_u32(ch.id);
+        writer.write_string(ch.name);
+        writer.write_u32(static_cast<uint32_t>(ch.sort_order));
+    }
+
+    quic_.send_to(session_id, protocol::ControlMessageType::CHAT_CHANNEL_LIST,
                  writer.data().data(), writer.data().size());
 }
 
@@ -337,6 +469,7 @@ void Server::handle_message(const IncomingMessage& msg) {
 
         // Send channel list immediately after auth
         send_channel_list(msg.session_id);
+        send_text_channel_list(msg.session_id);
 
         // Send user lists for all channels so the client can see who's online
         {
@@ -895,6 +1028,381 @@ void Server::handle_message(const IncomingMessage& msg) {
                 }
             }
         }
+        break;
+    }
+
+    // ── Admin: create text channel ────────────────────────────────────
+    case protocol::ControlMessageType::ADMIN_CREATE_TEXT_CHANNEL: {
+        if (!session->authenticated) break;
+
+        Role user_role = static_cast<Role>(session->role);
+        if (!has_permission(user_role, Permission::CreateChannel)) {
+            send_error(msg.session_id, "Permission denied");
+            break;
+        }
+
+        BinaryReader reader(msg.payload.data(), msg.payload.size());
+        std::string name = reader.read_string();
+        if (reader.error() || name.empty()) break;
+
+        if (!db_.create_text_channel(name)) {
+            send_error(msg.session_id, "Failed to create text channel");
+            break;
+        }
+
+        LOG_INFO("Text channel '{}' created by '{}'", name, session->username);
+
+        // Broadcast updated text channel list to all authenticated clients
+        auto all = quic_.get_sessions();
+        for (auto& s : all) {
+            if (s->authenticated)
+                send_text_channel_list(s->id);
+        }
+
+        BinaryWriter writer;
+        writer.write_u8(1);
+        writer.write_string("Text channel created");
+        quic_.send_to(msg.session_id, protocol::ControlMessageType::ADMIN_RESULT,
+                     writer.data().data(), writer.data().size());
+        break;
+    }
+
+    // ── Admin: delete text channel ────────────────────────────────────
+    case protocol::ControlMessageType::ADMIN_DELETE_TEXT_CHANNEL: {
+        if (!session->authenticated) break;
+
+        Role user_role = static_cast<Role>(session->role);
+        if (!has_permission(user_role, Permission::DeleteChannel)) {
+            send_error(msg.session_id, "Permission denied");
+            break;
+        }
+
+        BinaryReader reader(msg.payload.data(), msg.payload.size());
+        uint32_t channel_id = reader.read_u32();
+        if (reader.error()) break;
+
+        if (!db_.delete_text_channel(channel_id)) {
+            send_error(msg.session_id, "Failed to delete text channel");
+            break;
+        }
+
+        LOG_INFO("Text channel {} deleted by '{}'", channel_id, session->username);
+
+        // Broadcast updated text channel list
+        auto all = quic_.get_sessions();
+        for (auto& s : all) {
+            if (s->authenticated)
+                send_text_channel_list(s->id);
+        }
+
+        BinaryWriter writer;
+        writer.write_u8(1);
+        writer.write_string("Text channel deleted");
+        quic_.send_to(msg.session_id, protocol::ControlMessageType::ADMIN_RESULT,
+                     writer.data().data(), writer.data().size());
+        break;
+    }
+
+    // ── Chat: send message ───────────────────────────────────────────
+    case protocol::ControlMessageType::CHAT_SEND: {
+        if (!session->authenticated) break;
+
+        BinaryReader reader(msg.payload.data(), msg.payload.size());
+        uint32_t channel_id = reader.read_u32();
+        std::string text = reader.read_string();
+        uint8_t attachment_count = reader.read_u8();
+        if (reader.error()) break;
+
+        // Validate channel exists
+        auto ch = db_.get_text_channel(channel_id);
+        if (!ch) {
+            send_error(msg.session_id, "Text channel not found");
+            break;
+        }
+
+        // Validate message length
+        if (static_cast<int>(text.size()) > config_.chat.max_message_length) {
+            send_error(msg.session_id, "Message too long");
+            break;
+        }
+
+        auto now = static_cast<uint64_t>(std::time(nullptr));
+        uint64_t msg_id = db_.insert_message(channel_id, session->user_id,
+                                              session->username, text, now);
+        if (msg_id == 0) {
+            send_error(msg.session_id, "Failed to store message");
+            break;
+        }
+
+        // Read attachment metadata and create DB entries
+        struct PendingAttachment { std::string name; uint64_t size; std::string mime; uint64_t db_id; };
+        std::vector<PendingAttachment> attachments;
+        for (uint8_t i = 0; i < attachment_count; i++) {
+            std::string fname = reader.read_string();
+            uint64_t fsize = reader.read_u64();
+            std::string mime = reader.read_string();
+            if (reader.error()) break;
+
+            // Generate disk path
+            auto t = std::time(nullptr);
+            std::tm tm_buf{};
+#ifdef _MSC_VER
+            gmtime_s(&tm_buf, &t);
+#else
+            gmtime_r(&t, &tm_buf);
+#endif
+            char dir[16];
+            std::strftime(dir, sizeof(dir), "%Y-%m", &tm_buf);
+            std::string disk_path = std::string(dir) + "/" +
+                std::to_string(msg_id) + "_" + std::to_string(i) + "_" + fname;
+
+            uint64_t att_id = db_.insert_attachment(msg_id, fname,
+                static_cast<int64_t>(fsize), mime, disk_path);
+            attachments.push_back({fname, fsize, mime, att_id});
+        }
+
+        // Build CHAT_MESSAGE and broadcast to all authenticated clients
+        BinaryWriter writer;
+        writer.write_u64(msg_id);
+        writer.write_u32(channel_id);
+        writer.write_u32(session->user_id);
+        writer.write_string(session->username);
+        writer.write_u64(now);
+        writer.write_string(text);
+        writer.write_u8(0); // pinned = false
+        writer.write_u8(static_cast<uint8_t>(attachments.size()));
+        for (auto& att : attachments) {
+            writer.write_u64(att.db_id);
+            writer.write_string(att.name);
+            writer.write_u64(att.size);
+            writer.write_string(att.mime);
+            writer.write_u8(0); // uploaded = false
+        }
+
+        auto all = quic_.get_sessions();
+        for (auto& s : all) {
+            if (s->authenticated)
+                quic_.send_to(s->id, protocol::ControlMessageType::CHAT_MESSAGE,
+                             writer.data().data(), writer.data().size());
+        }
+        break;
+    }
+
+    // ── Chat: history request ─────────────────────────────────────────
+    case protocol::ControlMessageType::CHAT_HISTORY_REQ: {
+        if (!session->authenticated) break;
+
+        BinaryReader reader(msg.payload.data(), msg.payload.size());
+        uint32_t channel_id = reader.read_u32();
+        uint64_t before_id = reader.read_u64();
+        uint16_t limit = reader.read_u16();
+        if (reader.error()) break;
+
+        // Cap limit server-side
+        if (limit > 100) limit = 100;
+
+        auto messages = db_.get_messages(channel_id, before_id, limit);
+
+        // Check if there are more messages before this batch
+        uint8_t has_more = 0;
+        if (!messages.empty()) {
+            auto oldest = db_.get_messages(channel_id, messages.front().id, 1);
+            has_more = oldest.empty() ? 0 : 1;
+        }
+
+        BinaryWriter writer;
+        writer.write_u32(channel_id);
+        writer.write_u8(has_more);
+        writer.write_u16(static_cast<uint16_t>(messages.size()));
+
+        for (auto& m : messages) {
+            writer.write_u64(m.id);
+            writer.write_u32(m.channel_id);
+            writer.write_u32(m.sender_id);
+            writer.write_string(m.sender_name);
+            writer.write_u64(m.created_at);
+            writer.write_string(m.text);
+            writer.write_u8(m.pinned ? 1 : 0);
+
+            auto atts = db_.get_attachments_for_message(m.id);
+            writer.write_u8(static_cast<uint8_t>(atts.size()));
+            for (auto& a : atts) {
+                writer.write_u64(a.id);
+                writer.write_string(a.file_name);
+                writer.write_u64(static_cast<uint64_t>(a.file_size));
+                writer.write_string(a.mime_type);
+                writer.write_u8(a.uploaded ? 1 : 0);
+            }
+        }
+
+        quic_.send_to(msg.session_id, protocol::ControlMessageType::CHAT_HISTORY_RESP,
+                     writer.data().data(), writer.data().size());
+        break;
+    }
+
+    // ── Chat: pin message ─────────────────────────────────────────────
+    case protocol::ControlMessageType::CHAT_PIN: {
+        if (!session->authenticated) break;
+
+        BinaryReader reader(msg.payload.data(), msg.payload.size());
+        uint64_t message_id = reader.read_u64();
+        if (reader.error()) break;
+
+        auto message = db_.get_message(message_id);
+        if (!message) break;
+
+        db_.pin_message(message_id);
+
+        // Broadcast updated message to all
+        message->pinned = true;
+        BinaryWriter writer;
+        writer.write_u64(message->id);
+        writer.write_u32(message->channel_id);
+        writer.write_u32(message->sender_id);
+        writer.write_string(message->sender_name);
+        writer.write_u64(message->created_at);
+        writer.write_string(message->text);
+        writer.write_u8(1); // pinned
+        writer.write_u8(0); // no attachments in update
+
+        auto all = quic_.get_sessions();
+        for (auto& s : all) {
+            if (s->authenticated)
+                quic_.send_to(s->id, protocol::ControlMessageType::CHAT_MESSAGE,
+                             writer.data().data(), writer.data().size());
+        }
+        break;
+    }
+
+    // ── Chat: unpin message ───────────────────────────────────────────
+    case protocol::ControlMessageType::CHAT_UNPIN: {
+        if (!session->authenticated) break;
+
+        BinaryReader reader(msg.payload.data(), msg.payload.size());
+        uint64_t message_id = reader.read_u64();
+        if (reader.error()) break;
+
+        auto message = db_.get_message(message_id);
+        if (!message) break;
+
+        db_.unpin_message(message_id);
+
+        message->pinned = false;
+        BinaryWriter writer;
+        writer.write_u64(message->id);
+        writer.write_u32(message->channel_id);
+        writer.write_u32(message->sender_id);
+        writer.write_string(message->sender_name);
+        writer.write_u64(message->created_at);
+        writer.write_string(message->text);
+        writer.write_u8(0); // unpinned
+        writer.write_u8(0);
+
+        auto all = quic_.get_sessions();
+        for (auto& s : all) {
+            if (s->authenticated)
+                quic_.send_to(s->id, protocol::ControlMessageType::CHAT_MESSAGE,
+                             writer.data().data(), writer.data().size());
+        }
+        break;
+    }
+
+    // ── Chat: delete message ──────────────────────────────────────────
+    case protocol::ControlMessageType::CHAT_DELETE: {
+        if (!session->authenticated) break;
+
+        BinaryReader reader(msg.payload.data(), msg.payload.size());
+        uint64_t message_id = reader.read_u64();
+        if (reader.error()) break;
+
+        auto message = db_.get_message(message_id);
+        if (!message) break;
+
+        // Only author or moderator+ can delete
+        Role user_role = static_cast<Role>(session->role);
+        if (message->sender_id != session->user_id &&
+            !has_permission(user_role, Permission::KickFromChannel)) {
+            send_error(msg.session_id, "Permission denied");
+            break;
+        }
+
+        db_.soft_delete_message(message_id);
+
+        BinaryWriter writer;
+        writer.write_u64(message_id);
+        writer.write_u32(message->channel_id);
+
+        auto all = quic_.get_sessions();
+        for (auto& s : all) {
+            if (s->authenticated)
+                quic_.send_to(s->id, protocol::ControlMessageType::CHAT_MESSAGE_DELETED,
+                             writer.data().data(), writer.data().size());
+        }
+        break;
+    }
+
+    // ── Chat: pinned messages request ─────────────────────────────────
+    case protocol::ControlMessageType::CHAT_PINNED_REQ: {
+        if (!session->authenticated) break;
+
+        BinaryReader reader(msg.payload.data(), msg.payload.size());
+        uint32_t channel_id = reader.read_u32();
+        if (reader.error()) break;
+
+        auto messages = db_.get_pinned_messages(channel_id);
+
+        BinaryWriter writer;
+        writer.write_u32(channel_id);
+        writer.write_u16(static_cast<uint16_t>(messages.size()));
+
+        for (auto& m : messages) {
+            writer.write_u64(m.id);
+            writer.write_u32(m.channel_id);
+            writer.write_u32(m.sender_id);
+            writer.write_string(m.sender_name);
+            writer.write_u64(m.created_at);
+            writer.write_string(m.text);
+            writer.write_u8(m.pinned ? 1 : 0);
+            writer.write_u8(0); // no attachments in pinned list
+        }
+
+        quic_.send_to(msg.session_id, protocol::ControlMessageType::CHAT_PINNED_RESP,
+                     writer.data().data(), writer.data().size());
+        break;
+    }
+
+    // ── Chat: search ──────────────────────────────────────────────────
+    case protocol::ControlMessageType::CHAT_SEARCH: {
+        if (!session->authenticated) break;
+
+        BinaryReader reader(msg.payload.data(), msg.payload.size());
+        uint32_t channel_id = reader.read_u32();
+        std::string query = reader.read_string();
+        uint64_t before_id = reader.read_u64();
+        uint16_t limit = reader.read_u16();
+        if (reader.error() || query.empty()) break;
+
+        if (limit > 50) limit = 50;
+
+        auto results = db_.search_messages(channel_id, query, before_id, limit);
+
+        BinaryWriter writer;
+        writer.write_u32(channel_id);
+        writer.write_u16(static_cast<uint16_t>(results.size()));
+
+        for (auto& m : results) {
+            writer.write_u64(m.id);
+            writer.write_u32(m.channel_id);
+            writer.write_u32(m.sender_id);
+            writer.write_string(m.sender_name);
+            writer.write_u64(m.created_at);
+            writer.write_string(m.text);
+            writer.write_u8(m.pinned ? 1 : 0);
+            writer.write_u8(0);
+        }
+
+        quic_.send_to(msg.session_id, protocol::ControlMessageType::CHAT_SEARCH_RESP,
+                     writer.data().data(), writer.data().size());
         break;
     }
 
