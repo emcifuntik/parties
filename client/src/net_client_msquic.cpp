@@ -45,13 +45,15 @@ struct NetClient::Impl {
     std::vector<uint8_t> video_recv_buffer;
 
     std::string server_fingerprint;
+    bool encryption_disabled_ = false;
 
     explicit Impl(NetClient& p) : parent(p) {}
 
     // ── connect / disconnect ──────────────────────────────────────────────
 
     bool connect(const std::string& host, uint16_t port,
-                 const uint8_t* ticket, size_t ticket_len)
+                 const uint8_t* ticket, size_t ticket_len,
+                 bool /*disable_encryption*/)
     {
         ZoneScopedN("NetClient::connect");
         if (connected) return false;
@@ -115,6 +117,19 @@ struct NetClient::Impl {
                 LOG_WARN("SetParam(RESUMPTION_TICKET): {:#x} (non-fatal)", (unsigned long)status);
         }
 
+        // Always attempt to negotiate encryption disable.
+        // If the server also sets this, both sides agree and 1-RTT encryption
+        // is disabled. If the server doesn't, the transport parameter is ignored
+        // and encryption stays on. We detect the actual state after handshake.
+        // Advertise willingness to disable 1-RTT encryption. If the server
+        // also advertises it, both sides agree and encryption is disabled.
+        // If the server doesn't, the transport param is silently ignored.
+        {
+            BOOLEAN value = TRUE;
+            api->SetParam(connection, QUIC_PARAM_CONN_DISABLE_1RTT_ENCRYPTION,
+                          sizeof(value), &value);
+        }
+
         status = api->ConnectionStart(connection, configuration,
                                       QUIC_ADDRESS_FAMILY_UNSPEC,
                                       host.c_str(), port);
@@ -138,6 +153,7 @@ struct NetClient::Impl {
         connected       = false;
         connecting      = false;
         connect_failed_ = false;
+        encryption_disabled_ = false;
 
         if (connection) {
             api->ConnectionShutdown(connection, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, 0);
@@ -255,6 +271,15 @@ struct NetClient::Impl {
                     if (vs) api->StreamClose(vs);
                 }
                 connected = true;
+
+                // Check if 1-RTT encryption was actually disabled (both sides agreed)
+                BOOLEAN enc_disabled = FALSE;
+                uint32_t enc_size = sizeof(enc_disabled);
+                if (QUIC_SUCCEEDED(api->GetParam(conn, QUIC_PARAM_CONN_DISABLE_1RTT_ENCRYPTION,
+                                                  &enc_size, &enc_disabled)) && enc_disabled) {
+                    encryption_disabled_ = true;
+                    LOG_WARN("1-RTT encryption is DISABLED - connection is NOT secure");
+                }
             }
             break;
         }
@@ -429,13 +454,15 @@ NetClient::NetClient()  : impl_(std::make_unique<Impl>(*this)) {}
 NetClient::~NetClient() { disconnect(); }
 
 bool NetClient::connect(const std::string& host, uint16_t port,
-                        const uint8_t* ticket, size_t ticket_len)
+                        const uint8_t* ticket, size_t ticket_len,
+                        bool disable_encryption)
 {
-    return impl_->connect(host, port, ticket, ticket_len);
+    return impl_->connect(host, port, ticket, ticket_len, disable_encryption);
 }
 
 void        NetClient::disconnect()              { impl_->disconnect(); }
 std::string NetClient::get_server_fingerprint()  const { return impl_->server_fingerprint; }
+bool        NetClient::encryption_disabled()     const { return impl_->encryption_disabled_; }
 bool        NetClient::is_connected()            const { return impl_->connected; }
 bool        NetClient::is_connecting()           const { return impl_->connecting && !impl_->connected && !impl_->connect_failed_; }
 bool        NetClient::connect_failed()          const { return impl_->connect_failed_; }

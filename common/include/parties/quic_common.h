@@ -1,5 +1,9 @@
 #pragma once
 
+// Enable MsQuic insecure features API (QUIC_PARAM_CONN_DISABLE_1RTT_ENCRYPTION).
+// The MsQuic core library already compiles this in; the define only unhides
+// the constant in the public header.
+#define QUIC_API_ENABLE_INSECURE_FEATURES 1
 #include <msquic.h>
 
 namespace parties {

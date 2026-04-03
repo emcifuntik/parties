@@ -60,6 +60,7 @@ bool LobbyModel::init(Rml::Context* context) {
 
     // Bind variables
     ctor.Bind("is_connected",   &is_connected);
+    ctor.Bind("connection_insecure", &connection_insecure);
     ctor.Bind("ping_ms",        &ping_ms);
     ctor.Bind("server_name",    &server_name);
     ctor.Bind("server_initials",&server_initials);
@@ -541,6 +542,7 @@ void LobbyModel::dirty(const Rml::String& variable) {
 
 void LobbyModel::dirty_all() {
     dirty("is_connected");
+    dirty("connection_insecure");
     dirty("server_name");
     dirty("username");
     dirty("error_text");

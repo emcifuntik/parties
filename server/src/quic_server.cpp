@@ -31,7 +31,9 @@ QuicServer::~QuicServer() {
 }
 
 bool QuicServer::start(const std::string& listen_ip, uint16_t port, size_t max_clients,
-                       const std::string& cert_file, const std::string& key_file) {
+                       const std::string& cert_file, const std::string& key_file,
+                       bool disable_encryption) {
+    encryption_disabled_ = disable_encryption;
 	ZoneScopedN("QuicServer::start");
     api_ = parties::quic_api();
     if (!api_) {
@@ -338,6 +340,17 @@ QUIC_STATUS QuicServer::on_new_connection(HQUIC /*listener*/, QUIC_LISTENER_EVEN
     // Create connection context (leak-free: cleaned up in SHUTDOWN_COMPLETE)
     auto* ctx = new ConnectionContext{ this, session_id };
     api_->SetCallbackHandler(connection, (void*)connection_callback, ctx);
+
+    // Disable 1-RTT encryption before ConnectionSetConfiguration.
+    if (encryption_disabled_) {
+        BOOLEAN value = TRUE;
+        QUIC_STATUS enc_status = api_->SetParam(connection,
+                                                QUIC_PARAM_CONN_DISABLE_1RTT_ENCRYPTION | QUIC_PARAM_HIGH_PRIORITY,
+                                                sizeof(value), &value);
+        if (QUIC_FAILED(enc_status))
+            LOG_ERROR("Failed to disable encryption for session {}: {:#x}",
+                      session_id, (unsigned long)enc_status);
+    }
 
     QUIC_STATUS status = api_->ConnectionSetConfiguration(connection, configuration_);
     if (QUIC_FAILED(status)) {

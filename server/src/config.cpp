@@ -54,6 +54,7 @@ Config Config::load(const std::string& toml_path) {
                 auto& t = data.at("tls");
                 cfg.cert_file = toml::find_or(t, "cert_file", cfg.cert_file);
                 cfg.key_file  = toml::find_or(t, "key_file", cfg.key_file);
+                cfg.disable_encryption = toml::find_or(t, "disable_encryption", cfg.disable_encryption);
             }
 
             if (data.contains("database")) {

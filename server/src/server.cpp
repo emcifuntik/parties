@@ -52,7 +52,8 @@ bool Server::start(const Config& cfg) {
     // Start QUIC transport (unified control + data plane)
     if (!quic_.start(config_.listen_ip, config_.port,
                      static_cast<size_t>(config_.max_clients),
-                     config_.cert_file, config_.key_file)) {
+                     config_.cert_file, config_.key_file,
+                     config_.disable_encryption)) {
         return false;
     }
 
@@ -89,6 +90,18 @@ bool Server::start(const Config& cfg) {
 
     running_ = true;
     LOG_INFO("{} started successfully", config_.server_name);
+
+    if (config_.disable_encryption) {
+        std::fprintf(stderr,
+            "\033[1;31m"
+            "***********************************************************\n"
+            "*  WARNING: QUIC encryption is DISABLED                   *\n"
+            "*  All traffic is transmitted in plain text.              *\n"
+            "*  Do NOT use this in production!                         *\n"
+            "***********************************************************"
+            "\033[0m\n");
+    }
+
     return true;
 }
 

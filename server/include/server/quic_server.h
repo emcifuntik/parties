@@ -52,7 +52,8 @@ public:
 
     // Start the QUIC listener
     bool start(const std::string& listen_ip, uint16_t port, size_t max_clients,
-               const std::string& cert_file, const std::string& key_file);
+               const std::string& cert_file, const std::string& key_file,
+               bool disable_encryption = false);
 
     // Stop the server
     void stop();
@@ -160,6 +161,7 @@ private:
     HQUIC configuration_ = nullptr;
     HQUIC listener_ = nullptr;
     std::atomic<bool> running_{false};
+    bool encryption_disabled_ = false;
 
     std::mutex sessions_mutex_;
     std::unordered_map<uint32_t, std::shared_ptr<Session>> sessions_;

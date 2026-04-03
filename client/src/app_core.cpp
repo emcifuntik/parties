@@ -548,6 +548,7 @@ void AppCore::on_disconnect_cleanup()
     voice_last_active_.clear();
 
     model_.is_connected = false;
+    model_.connection_insecure = false;
     if (bridge_.play_sound) bridge_.play_sound(SoundPlayer::Effect::ServerDisconnected);
     model_.ping_ms = 0;
     ping_pending_ = false;
@@ -866,6 +867,7 @@ void AppCore::on_auth_response(const uint8_t* data, size_t len)
     model_.username             = Rml::String(username_);
     { uint32_t h = 0; for (char c : username_) h = h * 31 + static_cast<uint8_t>(c); model_.my_color_index = static_cast<int>(h % 12); }
     model_.is_connected         = true;
+    model_.connection_insecure  = net_.encryption_disabled();
     if (bridge_.play_sound) bridge_.play_sound(SoundPlayer::Effect::ServerConnected);
     model_.my_role              = role_;
     model_.can_manage_channels  = (role_ <= static_cast<int>(parties::Role::Moderator));
@@ -878,6 +880,7 @@ void AppCore::on_auth_response(const uint8_t* data, size_t len)
     model_.dirty("username");
     model_.dirty("my_color_index");
     model_.dirty("is_connected");
+    model_.dirty("connection_insecure");
     model_.dirty("my_role");
     model_.dirty("can_manage_channels");
     chat_model_.dirty("can_manage_channels");

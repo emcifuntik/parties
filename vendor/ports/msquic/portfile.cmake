@@ -90,6 +90,49 @@ if(VCPKG_TARGET_IS_WINDOWS)
 
 endif() # VCPKG_TARGET_IS_WINDOWS
 
+# Allow QUIC_PARAM_CONN_DISABLE_1RTT_ENCRYPTION to be set even after State.Started.
+# The QUIC_CONN_BAD_START_STATE check prevents setting it from the NEW_CONNECTION
+# listener callback because MsQuic's API dispatch queues the SetParam to the
+# connection worker, where ConnectionSetConfiguration (also queued) may run first.
+# Remove both the BAD_START_STATE and the PeerTransportParameter checks from
+# DISABLE_1RTT_ENCRYPTION SetParam. The SetParam is dispatched async to the
+# connection worker, so by the time it runs: (1) State.Started may be true,
+# and (2) PeerTransportParameterValid may be true without the flag because
+# both sides are trying to set the flag simultaneously. The handshake
+# negotiation handles the actual agreement via transport parameters.
+vcpkg_replace_string("${QUIC_SOURCE_PATH}/src/core/connection.c"
+    [[    case QUIC_PARAM_CONN_DISABLE_1RTT_ENCRYPTION:
+
+        if (BufferLength != sizeof(BOOLEAN)) {
+            Status = QUIC_STATUS_INVALID_PARAMETER;
+            break;
+        }
+
+        if (QUIC_CONN_BAD_START_STATE(Connection)) {
+            Status = QUIC_STATUS_INVALID_STATE;
+            break;
+        }
+
+        if (Connection->State.PeerTransportParameterValid &&
+            (!(Connection->PeerTransportParams.Flags & QUIC_TP_FLAG_DISABLE_1RTT_ENCRYPTION))) {
+            //
+            // The peer did't negotiate the feature.
+            //
+            Status = QUIC_STATUS_INVALID_STATE;
+            break;
+        }
+
+        Connection->State.Disable1RttEncrytion = *(BOOLEAN*)Buffer;]]
+    [[    case QUIC_PARAM_CONN_DISABLE_1RTT_ENCRYPTION:
+
+        if (BufferLength != sizeof(BOOLEAN)) {
+            Status = QUIC_STATUS_INVALID_PARAMETER;
+            break;
+        }
+
+        Connection->State.Disable1RttEncrytion = *(BOOLEAN*)Buffer;]]
+)
+
 # MsQuic's flatten_link_dependencies tries to merge system libs into the
 # monolithic archive. Exclude them.
 vcpkg_replace_string("${QUIC_SOURCE_PATH}/src/bin/CMakeLists.txt"

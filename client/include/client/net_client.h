@@ -35,7 +35,8 @@ public:
 
     // Start connecting (non-blocking). Poll is_connected() / connect_failed().
     bool connect(const std::string& host, uint16_t port,
-                 const uint8_t* ticket = nullptr, size_t ticket_len = 0);
+                 const uint8_t* ticket = nullptr, size_t ticket_len = 0,
+                 bool disable_encryption = false);
 
     // Disconnect (or cancel a pending connection).
     void disconnect();
@@ -43,6 +44,9 @@ public:
     // SHA-256 hex fingerprint of the server's TLS certificate (TOFU).
     // Available after a successful handshake.
     std::string get_server_fingerprint() const;
+
+    // True if the connection has 1-RTT encryption disabled (insecure).
+    bool encryption_disabled() const;
 
     bool is_connected()  const;
     bool is_connecting() const;

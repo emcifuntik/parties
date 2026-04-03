@@ -52,6 +52,12 @@ body {
     window-action: caption;
 }
 
+.insecure-text {
+    display: block;
+    font-size: 11dp;
+    color: #E85A5A;
+}
+
 .titlebar-left {
     display: flex;
     flex-direction: row;
@@ -113,7 +119,7 @@ body {
     font-weight: bold;
 }
 
-.titlebar-stats {
+.titlebar-right {
     display: flex;
     flex-direction: row;
     align-items: center;
@@ -126,12 +132,16 @@ body {
     display: block;
     color: #4A5170;
     font-size: 11dp;
+    min-width: 45dp;
+    text-align: right;
 }
 
 .titlebar-fps {
     display: block;
     color: #4A5170;
     font-size: 11dp;
+    min-width: 50dp;
+    text-align: right;
 }
 
 .titlebar-buttons {

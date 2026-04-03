@@ -58,6 +58,7 @@ public:
 
     // --- Bound state (public for App to update directly) ---
     bool is_connected = false;
+    bool connection_insecure = false;  // true when 1-RTT encryption is disabled
     int ping_ms = 0;
     Rml::String server_name;
     Rml::String server_initials;

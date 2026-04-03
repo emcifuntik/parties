@@ -25,6 +25,7 @@ struct Config {
 
     std::string cert_file      = "server.pem";
     std::string key_file       = "server.key.pem";
+    bool        disable_encryption = false;  // Disable QUIC 1-RTT encryption (insecure!)
 
     std::string db_path        = "parties.db";
 
