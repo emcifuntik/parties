@@ -6,6 +6,7 @@
 #include <miniaudio.h>
 #include <rnnoise.h>
 #include <speex/speex_echo.h>
+#include <speex/speex_preprocess.h>
 
 #include <functional>
 #include <atomic>
@@ -116,6 +117,7 @@ private:
 
     // SpeexDSP echo canceller
     SpeexEchoState* aec_ = nullptr;
+    SpeexPreprocessState* aec_preprocess_ = nullptr;
     std::vector<spx_int16_t> aec_ref_buf_;     // playback reference ring buffer
     size_t aec_ref_write_ = 0;
     size_t aec_ref_read_ = 0;

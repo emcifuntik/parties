@@ -73,8 +73,9 @@ bool AudioEngine::init() {
     }
 
     // Initialize SpeexDSP echo canceller
-    // filter_length = 100ms worth of samples at 48kHz = 4800
-    aec_ = speex_echo_state_init(audio::FRAME_SIZE, audio::SAMPLE_RATE / 10);
+    // filter_length = 200ms worth of samples at 48kHz = 9600
+    // 200ms tail covers typical speaker-to-mic echo paths on laptops/phones
+    aec_ = speex_echo_state_init(audio::FRAME_SIZE, audio::SAMPLE_RATE / 5);
     if (!aec_) {
         LOG_ERROR("Failed to create Speex AEC state");
         rnnoise_destroy(rnn_);
@@ -85,8 +86,24 @@ bool AudioEngine::init() {
         int rate = audio::SAMPLE_RATE;
         speex_echo_ctl(aec_, SPEEX_ECHO_SET_SAMPLING_RATE, &rate);
     }
-    // Ring buffer for playback reference: enough for ~50ms latency headroom
-    aec_ref_buf_.resize(audio::SAMPLE_RATE / 10, 0);
+
+    // Initialize Speex preprocessor for residual echo suppression
+    aec_preprocess_ = speex_preprocess_state_init(audio::FRAME_SIZE, audio::SAMPLE_RATE);
+    if (aec_preprocess_) {
+        speex_preprocess_ctl(aec_preprocess_, SPEEX_PREPROCESS_SET_ECHO_STATE, aec_);
+        // Suppress residual echo aggressively
+        int suppress = -60;
+        speex_preprocess_ctl(aec_preprocess_, SPEEX_PREPROCESS_SET_ECHO_SUPPRESS, &suppress);
+        int suppress_active = -60;
+        speex_preprocess_ctl(aec_preprocess_, SPEEX_PREPROCESS_SET_ECHO_SUPPRESS_ACTIVE, &suppress_active);
+        // Disable other preprocessing (RNNoise handles denoising/AGC)
+        int off = 0;
+        speex_preprocess_ctl(aec_preprocess_, SPEEX_PREPROCESS_SET_DENOISE, &off);
+        speex_preprocess_ctl(aec_preprocess_, SPEEX_PREPROCESS_SET_AGC, &off);
+    }
+
+    // Ring buffer for playback reference: 250ms to handle system audio latency
+    aec_ref_buf_.resize(audio::SAMPLE_RATE / 4, 0);
     aec_ref_write_ = 0;
     aec_ref_read_ = 0;
 
@@ -174,6 +191,10 @@ void AudioEngine::shutdown() {
     if (capture_initialized_) {
         ma_device_uninit(&capture_device_);
         capture_initialized_ = false;
+    }
+    if (aec_preprocess_) {
+        speex_preprocess_state_destroy(aec_preprocess_);
+        aec_preprocess_ = nullptr;
     }
     if (aec_) {
         speex_echo_state_destroy(aec_);
@@ -325,6 +346,10 @@ void AudioEngine::process_capture(const float* input, ma_uint32 frame_count) {
                     aec_ref_read_ += audio::FRAME_SIZE;
 
                     speex_echo_cancellation(aec_, mic, ref, out);
+
+                    // Residual echo suppression via preprocessor
+                    if (aec_preprocess_)
+                        speex_preprocess_run(aec_preprocess_, out);
 
                     for (int i = 0; i < audio::FRAME_SIZE; i++)
                         capture_buf_[i] = static_cast<float>(out[i]) / 32767.0f;
