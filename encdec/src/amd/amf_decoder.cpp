@@ -12,7 +12,7 @@
 
 #ifdef _WIN32
 #include <windows.h>
-// Wrap SubmitInput in SEH to catch driver access violations gracefully.
+// Wrap AMF calls in SEH to catch driver access violations gracefully.
 // Must be in a plain-C function (no C++ destructors in scope).
 static AMF_RESULT safe_submit_input(amf::AMFComponent* decoder, amf::AMFData* data) {
     __try {
@@ -32,12 +32,36 @@ static AMF_RESULT safe_query_output(amf::AMFComponent* decoder, amf::AMFData** d
         return AMF_FAIL;
     }
 }
+
+static AMF_RESULT safe_drain(amf::AMFComponent* decoder) {
+    __try {
+        return decoder->Drain();
+    } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION
+                    ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        return AMF_FAIL;
+    }
+}
+
+static AMF_RESULT safe_reinit(amf::AMFComponent* decoder, uint32_t width, uint32_t height) {
+    __try {
+        return decoder->ReInit(width, height);
+    } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION
+                    ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) {
+        return AMF_FAIL;
+    }
+}
 #else
 static AMF_RESULT safe_submit_input(amf::AMFComponent* decoder, amf::AMFData* data) {
     return decoder->SubmitInput(data);
 }
 static AMF_RESULT safe_query_output(amf::AMFComponent* decoder, amf::AMFData** data) {
     return decoder->QueryOutput(data);
+}
+static AMF_RESULT safe_drain(amf::AMFComponent* decoder) {
+    return decoder->Drain();
+}
+static AMF_RESULT safe_reinit(amf::AMFComponent* decoder, uint32_t width, uint32_t height) {
+    return decoder->ReInit(width, height);
 }
 #endif
 
@@ -264,14 +288,25 @@ bool AmfDecoder::decode(const uint8_t* data, size_t len, int64_t timestamp) {
 
 void AmfDecoder::flush() {
     if (!initialized_ || !decoder_ || context_lost_) return;
-    decoder_->Drain();
+    if (!check_device_health()) return;
+
+    AMF_RESULT res = safe_drain(decoder_);
+    if (res != AMF_OK && res != AMF_EOF) {
+        LOG_ERROR("AMF Drain failed: {} - marking context lost", (int)res);
+        context_lost_ = true;
+        return;
+    }
     while (true) {
         amf::AMFData* data = nullptr;
-        AMF_RESULT res = decoder_->QueryOutput(&data);
+        res = safe_query_output(decoder_, &data);
         if (res != AMF_OK || !data) break;
         data->Release();
     }
-    decoder_->ReInit(width_, height_);
+    res = safe_reinit(decoder_, width_, height_);
+    if (res != AMF_OK) {
+        LOG_ERROR("AMF ReInit failed: {} - marking context lost", (int)res);
+        context_lost_ = true;
+    }
 }
 
 DecoderInfo AmfDecoder::info() const {
