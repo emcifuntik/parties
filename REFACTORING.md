@@ -1,7 +1,7 @@
 [x] Make wrapper on RmlUI bindings using modern C++ features, so bindings should become much easier to use. Use it in whole project.
-[ ] Analysis of our DX12 implementation and backend implementation + bug fixes. Currently we have a bug that when we are moving application our Stream playback freezes. Maybe we need to do separate UI and logic threads. Figure it out and fix and remove workaround that fixing FPS lags while moving application window.
-[ ] UDP unbound information on server that will return count of users connected (not in QUIC, but like in game servers for server list)
-[ ] Make complete project and network protocol analysis and find places to improve
+[x] Analysis of our DX12 implementation and backend implementation + bug fixes. Currently we have a bug that when we are moving application our Stream playback freezes. Maybe we need to do separate UI and logic threads. Figure it out and fix and remove workaround that fixing FPS lags while moving application window.
+[x] UDP unbound information on server that will return count of users connected (not in QUIC, but like in game servers for server list)
+[ ] Make complete project and network protocol analysis and find places to improve, also autoreconnect on connection drop should be implemented with reconnect to server and last channel.
 [ ] Add support of multiple videos streams playback
 [ ] Make support of sending and playing multiple VOIP streams (for plugins in future)
 [ ] Implement plugins SDK (as dynamic libraries). As initial functionality plugins should have a possibility to create custom page in "Plugins". Plugins page should also be implemented in Parties client UI. Example Karaoke plugin should provide possibility to select .WAV file to stream it as extra audio track to server and broadcast to channel members. 

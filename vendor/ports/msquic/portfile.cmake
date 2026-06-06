@@ -4,6 +4,8 @@ vcpkg_from_github(
     REF 7bd862e49d9fcee754cf97397b1c69ff613afcee
     SHA512 5d803f30d0e0f530974f12259aa387a9d8e59c6e98fc71131c2bff6bbc3b3a83a92232e90338bce58363ca73cc7ab92dd6b9eaa65e8574466d4e82086f8eb86c
     HEAD_REF main
+    PATCHES
+        0001-unconnected-query.patch   # adds out-of-RFC connectionless server-query listener event
 )
 
 string(COMPARE EQUAL "${VCPKG_CRT_LINKAGE}" "static" STATIC_CRT)

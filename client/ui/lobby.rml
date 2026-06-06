@@ -71,6 +71,12 @@
                                 <span class="party-card-initials">{{ srv.initials }}</span>
                             </div>
                             <span class="party-card-name">{{ srv.name }}</span>
+                            <div class="party-card-status">
+                                <span class="status-dot" data-class-online="srv.online"></span>
+                                <span class="party-card-users" data-if="srv.online">{{ srv.users_text }}</span>
+                                <span class="party-card-users party-card-offline" data-if="srv.online == false">Offline</span>
+                                <span class="party-card-lock" data-if="srv.locked">Private</span>
+                            </div>
                         </div>
                     </div>
                     <!-- Add party card -->

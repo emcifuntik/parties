@@ -49,6 +49,11 @@ bool Server::start(const Config& cfg) {
         LOG_INFO("Certificate written to {} / {}", config_.cert_file, config_.key_file);
     }
 
+    // Info reported to connectionless server queries (server-browser style).
+    quic_.set_server_info(config_.server_name,
+                          static_cast<uint16_t>(config_.max_clients),
+                          !config_.server_password.empty());
+
     // Start QUIC transport (unified control + data plane)
     if (!quic_.start(config_.listen_ip, config_.port,
                      static_cast<size_t>(config_.max_clients),

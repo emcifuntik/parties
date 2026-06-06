@@ -437,7 +437,7 @@ body {
     flex-direction: column;
     align-items: center;
     width: 120dp;
-    height: 120dp;
+    height: 140dp;
     flex: none;
     padding: 20dp 14dp 16dp 14dp;
     background-color: #181B25;
@@ -487,6 +487,46 @@ gradient_circle.party-card-gradient {
     font-size: 13dp;
     font-weight: bold;
     text-align: center;
+}
+
+/* Live server status (online dot + user count + lock badge) */
+.party-card-status {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 5dp;
+    margin-top: 6dp;
+}
+
+.status-dot {
+    display: block;
+    width: 7dp;
+    height: 7dp;
+    border-radius: 4dp;
+    background-color: #5C6280;
+}
+
+.status-dot.online {
+    background-color: #3BA55D;
+}
+
+.party-card-users {
+    display: block;
+    color: #9AA0B8;
+    font-size: 11dp;
+}
+
+.party-card-offline {
+    color: #5C6280;
+}
+
+.party-card-lock {
+    display: block;
+    color: #E8B339;
+    font-size: 10dp;
+    font-weight: bold;
 }
 
 .party-card-add {

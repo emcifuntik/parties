@@ -18,7 +18,9 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
+#include <vector>
 
 namespace Rml { class Context; }
 
@@ -185,6 +187,27 @@ private:
 
     void update_speaking_state();
     void generate_identity();
+
+    // ── Server-list query polling (connectionless, game-browser style) ──
+    // A background thread queries each saved server's UDP port while the lobby
+    // is visible; results are applied to server_model_ on the main thread in
+    // tick() (mirrors the disconnect_pending_ cross-thread pattern).
+    struct QueryTarget { int id; std::string host; uint16_t port; };
+    struct QueryResult { bool online = false; uint16_t cur = 0; uint16_t max = 0; bool locked = false; std::string name; };
+
+    std::thread               query_thread_;
+    std::atomic<bool>         query_thread_run_{false};
+    std::atomic<bool>         lobby_visible_{true};
+    std::atomic<bool>         query_results_dirty_{false};
+    std::mutex                query_targets_mutex_;
+    std::vector<QueryTarget>  query_targets_;
+    std::mutex                query_results_mutex_;
+    std::unordered_map<int, QueryResult> query_results_;
+
+    void start_query_thread();
+    void stop_query_thread();
+    void query_thread_loop();
+    void apply_query_results();
 };
 
 } // namespace parties::client

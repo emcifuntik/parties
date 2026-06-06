@@ -20,6 +20,12 @@ struct ServerEntry {
     Rml::String last_username;
     Rml::String initials;   // first 2 chars of name, computed by App
     int color_index = 0;    // 0-4, derived from name hash for icon color
+
+    // Live status from the connectionless server query (auto-refreshed while
+    // the lobby is visible). Populated by AppCore's polling thread.
+    bool        online = false;
+    Rml::String users_text;     // "3 / 64" when online, empty otherwise
+    bool        locked = false; // password-protected
 };
 
 class ServerListModel : public rml::Model {

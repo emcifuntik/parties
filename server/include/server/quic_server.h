@@ -79,6 +79,11 @@ public:
     // Get all sessions (snapshot)
     std::vector<std::shared_ptr<Session>> get_sessions();
 
+    // Set the info reported to connectionless server queries (game-server-browser
+    // style, served by the MsQuic unconnected-query patch). Call before start();
+    // the values are read from the MsQuic listener thread.
+    void set_server_info(std::string name, uint16_t max_users, bool password_locked);
+
     // Callback for when a session disconnects
     std::function<void(uint32_t session_id)> on_disconnect;
 
@@ -142,6 +147,7 @@ private:
                                     QUIC_CONNECTION_EVENT* event);
     QUIC_STATUS on_stream_event(HQUIC stream, uint32_t session_id,
                                 QUIC_STREAM_EVENT* event);
+    QUIC_STATUS on_unconnected_query(QUIC_LISTENER_EVENT* event);
     QUIC_STATUS on_file_stream_event(HQUIC stream, FileStreamContext* ctx,
                                       QUIC_STREAM_EVENT* event);
 
@@ -164,6 +170,11 @@ private:
     std::mutex sessions_mutex_;
     std::unordered_map<uint32_t, std::shared_ptr<Session>> sessions_;
     uint32_t next_session_id_ = 1;
+
+    // Connectionless server-query info (set before start(), read on MsQuic thread)
+    std::string query_server_name_;
+    uint16_t    query_max_users_ = 0;
+    bool        query_password_locked_ = false;
 
     // Per-session stream receive buffers
     std::mutex buffers_mutex_;

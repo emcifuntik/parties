@@ -1,6 +1,7 @@
 #include <server/quic_server.h>
 #include <parties/quic_common.h>
 #include <parties/protocol.h>
+#include <parties/server_query.h>
 #include <parties/profiler.h>
 
 #include <parties/log.h>
@@ -300,6 +301,8 @@ QUIC_STATUS QUIC_API QuicServer::listener_callback(
     switch (event->Type) {
     case QUIC_LISTENER_EVENT_NEW_CONNECTION:
         return server->on_new_connection(listener, event);
+    case QUIC_LISTENER_EVENT_UNCONNECTED_QUERY:
+        return server->on_unconnected_query(event);
     case QUIC_LISTENER_EVENT_STOP_COMPLETE:
         break;
     default:
@@ -324,6 +327,53 @@ QUIC_STATUS QUIC_API QuicServer::stream_callback(
     if (event->Type == QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE)
         delete ctx;
     return status;
+}
+
+void QuicServer::set_server_info(std::string name, uint16_t max_users, bool password_locked) {
+    query_server_name_ = std::move(name);
+    query_max_users_ = max_users;
+    query_password_locked_ = password_locked;
+}
+
+QUIC_STATUS QuicServer::on_unconnected_query(QUIC_LISTENER_EVENT* event) {
+    ZoneScopedN("QuicServer::on_unconnected_query");
+    auto& q = event->UNCONNECTED_QUERY;
+
+    // The MsQuic patch only raises this for datagrams matching the magic, but
+    // re-validate defensively before replying.
+    if (!parties::is_server_query_request(q.Payload, q.PayloadLength)) {
+        q.ReplyBufferLength = 0;
+        return QUIC_STATUS_SUCCESS;
+    }
+
+    parties::ServerQueryInfo info;
+    info.protocol_version = protocol::PROTOCOL_VERSION;
+    info.server_name      = query_server_name_;
+    info.max_users        = query_max_users_;
+    info.password_locked  = query_password_locked_;
+
+    uint16_t count = 0;
+    {
+        std::lock_guard<std::mutex> lock(sessions_mutex_);
+        for (auto& [id, session] : sessions_) {
+            if (session->authenticated) ++count;
+        }
+    }
+    info.current_users = count;
+
+    uint32_t token = parties::server_query_request_token(q.Payload, q.PayloadLength);
+    std::vector<uint8_t> reply = parties::build_server_query_reply(token, info);
+
+    // Anti-amplification: the reply buffer capacity equals the request length.
+    // If the reply somehow doesn't fit, send nothing rather than truncate.
+    if (reply.size() > q.ReplyBufferLength) {
+        q.ReplyBufferLength = 0;
+        return QUIC_STATUS_SUCCESS;
+    }
+
+    std::memcpy(q.ReplyBuffer, reply.data(), reply.size());
+    q.ReplyBufferLength = static_cast<uint16_t>(reply.size());
+    return QUIC_STATUS_SUCCESS;
 }
 
 QUIC_STATUS QuicServer::on_new_connection(HQUIC /*listener*/, QUIC_LISTENER_EVENT* event) {

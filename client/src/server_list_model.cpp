@@ -13,7 +13,10 @@ void ServerListModel::build(rml::Builder& b) {
          .member("port",          &ServerEntry::port)
          .member("last_username", &ServerEntry::last_username)
          .member("initials",      &ServerEntry::initials)
-         .member("color_index",   &ServerEntry::color_index);
+         .member("color_index",   &ServerEntry::color_index)
+         .member("online",        &ServerEntry::online)
+         .member("users_text",    &ServerEntry::users_text)
+         .member("locked",        &ServerEntry::locked);
     });
     b.register_array<Rml::Vector<ServerEntry>>();
 

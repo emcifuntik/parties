@@ -6,6 +6,7 @@
 #include <parties/serialization.h>
 #include <parties/crypto.h>
 #include <parties/permissions.h>
+#include <parties/server_query.h>
 #include <parties/log.h>
 
 #include <RmlUi/Core/Core.h>
@@ -31,7 +32,7 @@
 namespace parties::client {
 
 AppCore::AppCore() = default;
-AppCore::~AppCore() = default;
+AppCore::~AppCore() { stop_query_thread(); }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // init / shutdown
@@ -134,6 +135,8 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
     updater_->start();
 #endif
 
+    start_query_thread();
+
     return true;
 }
 
@@ -143,6 +146,7 @@ void AppCore::shutdown()
     if (updater_) updater_->stop();
     updater_.reset();
 #endif
+    stop_query_thread();
     net_.disconnect();
     audio_.stop();
     stream_audio_player_.shutdown();
@@ -158,6 +162,11 @@ void AppCore::tick()
 {
     if (disconnect_pending_.exchange(false, std::memory_order_acquire))
         on_disconnect_cleanup();
+
+    // Server-list status polling runs only while the lobby is visible.
+    lobby_visible_.store(!authenticated_, std::memory_order_relaxed);
+    apply_query_results();
+
     if (awaiting_connection_) poll_connecting();
     process_server_messages();
     update_speaking_state();
@@ -407,6 +416,106 @@ void AppCore::refresh_server_list()
     server_model_.party_count_text = Rml::String(
         std::to_string(n) + (n == 1 ? " party" : " parties"));
     server_model_.servers.notify();
+
+    // Publish targets for the background polling thread and request a re-merge
+    // of any last-known status onto the freshly rebuilt entries.
+    {
+        std::lock_guard<std::mutex> lock(query_targets_mutex_);
+        query_targets_.clear();
+        for (auto& s : saved)
+            query_targets_.push_back({ s.id, s.host, static_cast<uint16_t>(s.port) });
+    }
+    query_results_dirty_.store(true, std::memory_order_release);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Server-list query polling
+// ─────────────────────────────────────────────────────────────────────────────
+
+void AppCore::start_query_thread()
+{
+    if (query_thread_run_.exchange(true)) return;  // already running
+    query_thread_ = std::thread([this] { query_thread_loop(); });
+}
+
+void AppCore::stop_query_thread()
+{
+    if (!query_thread_run_.exchange(false)) return;  // not running
+    if (query_thread_.joinable()) query_thread_.join();
+}
+
+void AppCore::query_thread_loop()
+{
+    using namespace std::chrono;
+    while (query_thread_run_.load(std::memory_order_relaxed)) {
+        if (lobby_visible_.load(std::memory_order_relaxed)) {
+            std::vector<QueryTarget> targets;
+            {
+                std::lock_guard<std::mutex> lock(query_targets_mutex_);
+                targets = query_targets_;
+            }
+            for (auto& t : targets) {
+                if (!query_thread_run_.load(std::memory_order_relaxed)) break;
+                auto info = parties::query_server(t.host, t.port, 800);
+                {
+                    std::lock_guard<std::mutex> lock(query_results_mutex_);
+                    QueryResult& r = query_results_[t.id];
+                    if (info) {
+                        r.online = true;
+                        r.cur    = info->current_users;
+                        r.max    = info->max_users;
+                        r.locked = info->password_locked;
+                        r.name   = info->server_name;
+                    } else {
+                        r.online = false;
+                    }
+                }
+                query_results_dirty_.store(true, std::memory_order_release);
+            }
+        }
+        // Refresh roughly every 3s, waking promptly on shutdown.
+        for (int i = 0; i < 30 && query_thread_run_.load(std::memory_order_relaxed); ++i)
+            std::this_thread::sleep_for(milliseconds(100));
+    }
+}
+
+void AppCore::apply_query_results()
+{
+    if (!query_results_dirty_.exchange(false, std::memory_order_acq_rel)) return;
+
+    std::lock_guard<std::mutex> lock(query_results_mutex_);
+    auto& servers = server_model_.servers.silent();
+    bool changed = false;
+    for (auto& entry : servers) {
+        auto it = query_results_.find(entry.id);
+        if (it == query_results_.end()) continue;
+        const QueryResult& r = it->second;
+        Rml::String users = r.online
+            ? Rml::String(std::to_string(r.cur) + " / " + std::to_string(r.max))
+            : Rml::String();
+
+        // Keep the saved name until the query gives us the server's real name;
+        // once online with a non-empty name, switch the display to it (and the
+        // derived initials/gradient). Falls back to the saved name when offline.
+        Rml::String name     = entry.name;
+        Rml::String initials = entry.initials;
+        if (r.online && !r.name.empty()) {
+            name = Rml::String(r.name);
+            if (r.name.size() >= 2)      initials = Rml::String(r.name.substr(0, 2));
+            else if (!r.name.empty())    initials = Rml::String(r.name.substr(0, 1));
+        }
+
+        if (entry.online != r.online || entry.locked != r.locked ||
+            entry.users_text != users || entry.name != name) {
+            entry.online     = r.online;
+            entry.locked     = r.locked;
+            entry.users_text = std::move(users);
+            entry.name       = std::move(name);
+            entry.initials   = std::move(initials);
+            changed = true;
+        }
+    }
+    if (changed) server_model_.servers.notify();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

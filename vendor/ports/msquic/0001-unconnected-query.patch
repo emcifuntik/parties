@@ -1,0 +1,227 @@
+diff --git a/src/core/binding.c b/src/core/binding.c
+index a3c6f3d..c6368f0 100644
+--- a/src/core/binding.c
++++ b/src/core/binding.c
+@@ -639,6 +639,127 @@ QuicBindingOnConnectionHandshakeConfirmed(
+ // operations that might have expired. Then it adds the new operation only if
+ // the remote address isn't already in the table.
+ //
++//
++// Out-of-RFC connectionless server query (game-server-browser style), added by
++// the parties overlay patch. The 8-byte magic can never be a valid QUIC packet:
++// byte 0 == 0xC0 sets the long-header form + fixed bit, and bytes 1-4 ("PART")
++// are a reserved value that is not a real QUIC version, so even if this
++// detection were ever bypassed the packet would fall to the (rate-limited,
++// size-gated) version-negotiation path rather than be mistaken for a connection.
++// It is detected before any QUIC validation and answered, unencrypted, via the
++// existing stateless send path. The application supplies the reply through the
++// QUIC_LISTENER_EVENT_UNCONNECTED_QUERY listener event.
++//
++static const uint8_t QuicUnconnectedQueryMagic[8] =
++    { 0xC0, 'P', 'A', 'R', 'T', 'Y', 'Q', '1' };
++
++static
++BOOLEAN
++QuicBindingIsUnconnectedQuery(
++    _In_reads_(Length) const uint8_t* Buffer,
++    _In_ uint16_t Length
++    )
++{
++    return
++        Length >= sizeof(QuicUnconnectedQueryMagic) &&
++        memcmp(Buffer, QuicUnconnectedQueryMagic, sizeof(QuicUnconnectedQueryMagic)) == 0;
++}
++
++//
++// Returns a started listener on the binding (first one found, any address
++// family) with a held start reference the caller must release via
++// QuicListenerStartRelease, or NULL if the binding has no live listener.
++//
++_IRQL_requires_max_(PASSIVE_LEVEL)
++static
++QUIC_LISTENER*
++QuicBindingGetQueryListener(
++    _In_ QUIC_BINDING* Binding
++    )
++{
++    QUIC_LISTENER* Listener = NULL;
++    CxPlatDispatchRwLockAcquireShared(&Binding->RwLock, PrevIrql);
++    for (CXPLAT_LIST_ENTRY* Link = Binding->Listeners.Flink;
++         Link != &Binding->Listeners;
++         Link = Link->Flink) {
++        QUIC_LISTENER* Existing = CXPLAT_CONTAINING_RECORD(Link, QUIC_LISTENER, Link);
++        if (CxPlatRefIncrementNonZero(&Existing->StartRefCount, 1)) {
++            Listener = Existing;
++            break;
++        }
++    }
++    CxPlatDispatchRwLockReleaseShared(&Binding->RwLock, PrevIrql);
++    return Listener;
++}
++
++//
++// Handles a detected out-of-RFC query on the stateless worker (PASSIVE_LEVEL):
++// indicate the new listener event so the app fills in a reply, then send it back
++// to the sender unencrypted. Anti-amplification: the reply capacity is capped to
++// the request length, so the response can never be larger than the request.
++//
++_IRQL_requires_max_(PASSIVE_LEVEL)
++static
++void
++QuicBindingProcessUnconnectedQuery(
++    _In_ QUIC_BINDING* Binding,
++    _In_ QUIC_RX_PACKET* RecvPacket
++    )
++{
++    QUIC_LISTENER* Listener = QuicBindingGetQueryListener(Binding);
++    if (Listener == NULL) {
++        return;
++    }
++
++    CXPLAT_SEND_CONFIG SendConfig =
++        { RecvPacket->Route, 0, CXPLAT_ECN_NON_ECT, 0, CXPLAT_DSCP_CS0 };
++    CXPLAT_SEND_DATA* SendData = CxPlatSendDataAlloc(Binding->Socket, &SendConfig);
++    if (SendData == NULL) {
++        QuicListenerStartRelease(Listener, TRUE);
++        return;
++    }
++
++    uint16_t ReplyCap = RecvPacket->AvailBufferLength;
++    if (ReplyCap > MAX_UDP_PAYLOAD_LENGTH) {
++        ReplyCap = MAX_UDP_PAYLOAD_LENGTH;
++    }
++
++    QUIC_BUFFER* SendDatagram = CxPlatSendDataAllocBuffer(SendData, ReplyCap);
++    if (SendDatagram == NULL) {
++        CxPlatSendDataFree(SendData);
++        QuicListenerStartRelease(Listener, TRUE);
++        return;
++    }
++
++    QUIC_LISTENER_EVENT Event;
++    Event.Type = QUIC_LISTENER_EVENT_UNCONNECTED_QUERY;
++    Event.UNCONNECTED_QUERY.RemoteAddress = &RecvPacket->Route->RemoteAddress;
++    Event.UNCONNECTED_QUERY.Payload = RecvPacket->AvailBuffer;
++    Event.UNCONNECTED_QUERY.PayloadLength = RecvPacket->AvailBufferLength;
++    Event.UNCONNECTED_QUERY.ReplyBuffer = SendDatagram->Buffer;
++    Event.UNCONNECTED_QUERY.ReplyBufferLength = (uint16_t)SendDatagram->Length;
++
++    QUIC_STATUS Status = QuicListenerIndicateEvent(Listener, &Event);
++    QuicListenerStartRelease(Listener, TRUE);
++
++    if (QUIC_FAILED(Status) ||
++        Event.UNCONNECTED_QUERY.ReplyBufferLength == 0 ||
++        Event.UNCONNECTED_QUERY.ReplyBufferLength > ReplyCap) {
++        CxPlatSendDataFree(SendData);
++        return;
++    }
++
++    SendDatagram->Length = Event.UNCONNECTED_QUERY.ReplyBufferLength;
++
++    QuicBindingSend(
++        Binding,
++        &MsQuicLib.Partitions[RecvPacket->PartitionIndex],
++        RecvPacket->Route,
++        SendData,
++        SendDatagram->Length,
++        1);
++}
++
+ _IRQL_requires_max_(DISPATCH_LEVEL)
+ QUIC_STATELESS_CONTEXT*
+ QuicBindingCreateStatelessOperation(
+@@ -814,6 +935,16 @@ QuicBindingProcessStatelessOperation(
+         &MsQuicLib.Partitions[StatelessCtx->Packet->PartitionIndex];
+     QUIC_BUFFER* SendDatagram = NULL;
+ 
++    if (OperationType == QUIC_OPER_TYPE_UNCONNECTED_QUERY) {
++        //
++        // Out-of-RFC query (parties patch): handled by a dedicated path that
++        // does not require a validated QUIC header (the packet deliberately is
++        // not a QUIC packet), so it must run before the asserts below.
++        //
++        QuicBindingProcessUnconnectedQuery(Binding, RecvPacket);
++        return;
++    }
++
+     CXPLAT_DBG_ASSERT(RecvPacket->ValidatedHeaderInv);
+ 
+     QuicTraceEvent(
+@@ -1696,6 +1827,30 @@ QuicBindingReceive(
+         }
+ #endif
+ 
++        //
++        // Out-of-RFC connectionless server query (parties patch): intercept
++        // before any QUIC validation. A matching magic can never be a valid
++        // QUIC packet, so this never steals real QUIC traffic.
++        //
++        if (QuicBindingIsUnconnectedQuery(Datagram->Buffer, Datagram->BufferLength)) {
++            if (!QuicBindingHasListenerRegistered(Binding) ||
++                QuicBindingDropBlockedSourcePorts(Binding, Packet) ||
++                !QuicBindingQueueStatelessOperation(
++                    Binding, QUIC_OPER_TYPE_UNCONNECTED_QUERY, Packet)) {
++                //
++                // No listener, blocked source port, or queue failed: drop and
++                // return the datagram to the datapath.
++                //
++                *ReleaseChainTail = Datagram;
++                ReleaseChainTail = &Datagram->Next;
++            }
++            //
++            // On success the stateless operation owns the datagram; it is
++            // returned via QuicBindingReleaseStatelessOperation after the reply.
++            //
++            continue;
++        }
++
+         //
+         // Perform initial validation.
+         //
+diff --git a/src/core/operation.h b/src/core/operation.h
+index e8e7a92..41f50a6 100644
+--- a/src/core/operation.h
++++ b/src/core/operation.h
+@@ -39,6 +39,7 @@ typedef enum QUIC_OPERATION_TYPE {
+     QUIC_OPER_TYPE_VERSION_NEGOTIATION, // A version negotiation needs to be sent.
+     QUIC_OPER_TYPE_STATELESS_RESET,     // A stateless reset needs to be sent.
+     QUIC_OPER_TYPE_RETRY,               // A retry needs to be sent.
++    QUIC_OPER_TYPE_UNCONNECTED_QUERY,   // App-defined out-of-RFC server query reply. (parties patch)
+ 
+ } QUIC_OPERATION_TYPE;
+ 
+diff --git a/src/inc/msquic.h b/src/inc/msquic.h
+index a60a588..385edfa 100644
+--- a/src/inc/msquic.h
++++ b/src/inc/msquic.h
+@@ -1226,6 +1226,7 @@ typedef enum QUIC_LISTENER_EVENT_TYPE {
+     QUIC_LISTENER_EVENT_NEW_CONNECTION      = 0,
+     QUIC_LISTENER_EVENT_STOP_COMPLETE       = 1,
+     QUIC_LISTENER_EVENT_DOS_MODE_CHANGED    = 2,
++    QUIC_LISTENER_EVENT_UNCONNECTED_QUERY   = 3,    // Out-of-RFC connectionless UDP query (parties patch)
+ } QUIC_LISTENER_EVENT_TYPE;
+ 
+ typedef struct QUIC_LISTENER_EVENT {
+@@ -1243,6 +1244,22 @@ typedef struct QUIC_LISTENER_EVENT {
+             BOOLEAN DosModeEnabled : 1;
+             BOOLEAN RESERVED       : 7;
+         } DOS_MODE_CHANGED;
++        //
++        // Out-of-RFC connectionless server query (parties patch). An unencrypted
++        // UDP datagram matching the app's magic arrived on the listener's port.
++        // The app inspects Payload, writes up to ReplyBufferLength bytes into
++        // ReplyBuffer, sets ReplyBufferLength to the number actually written, and
++        // returns QUIC_STATUS_SUCCESS to send the reply. Returning a failure
++        // status or a length of 0 sends nothing. The reply capacity is capped to
++        // the request length (anti-amplification), so pad the request as needed.
++        //
++        struct {
++            const QUIC_ADDR* RemoteAddress;     // IN:  sender of the query
++            const uint8_t*   Payload;           // IN:  received datagram bytes
++            uint16_t         PayloadLength;     // IN:  length of Payload
++            uint8_t*         ReplyBuffer;       // OUT: app writes the reply here
++            uint16_t         ReplyBufferLength; // IN: capacity; OUT: bytes written
++        } UNCONNECTED_QUERY;
+     };
+ } QUIC_LISTENER_EVENT;
+ 
