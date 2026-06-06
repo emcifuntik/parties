@@ -39,6 +39,7 @@
 #include <client/video_element.h>
 #include <client/level_meter_element.h>
 #include <client/gradient_circle_element.h>
+#include <client/custom_elements.h>
 
 #include <encdec/apple/VideoDecoderIOS.h>
 
@@ -95,9 +96,7 @@ using namespace parties::protocol;
     EmbeddedFileInterface   _fileInterface;
 
     // Custom element instancers
-    VideoElementInstancer   _videoInstancer;
-    LevelMeterInstancer     _levelMeterInstancer;
-    GradientCircleInstancer _gradientCircleInstancer;
+    parties::rml::ElementRegistry _elementRegistry;
     LevelMeterElement*      _levelMeter;
 
     // Touch / scroll (channels list)
@@ -186,9 +185,7 @@ using namespace parties::protocol;
     Rml::StyleSheetSpecification::RegisterProperty("window-action", "none", true)
         .AddParser("keyword", "none, caption, close, minimize, maximize");
 
-    Rml::Factory::RegisterElementInstancer("video_frame", &_videoInstancer);
-    Rml::Factory::RegisterElementInstancer("level_meter", &_levelMeterInstancer);
-    Rml::Factory::RegisterElementInstancer("gradient_circle", &_gradientCircleInstancer);
+    parties::client::register_custom_elements(_elementRegistry);
 
     _dpRatio = UIScreen.mainScreen.scale;
     CGSize native = UIScreen.mainScreen.nativeBounds.size;
@@ -435,7 +432,7 @@ using namespace parties::protocol;
     _core.net_.send_message(ControlMessageType::SCREEN_SHARE_VIEW,
                             (const uint8_t*)&id32, sizeof(id32));
 
-    _core.model_.viewing_sharer_id = static_cast<int>(uid);
+    _core.model_.viewing_sharer_id.silent() = static_cast<int>(uid);
     _streamRevealed = false;
     // Don't dirty yet — onVideoDecoded dirties on first frame to avoid black flash
 }
@@ -444,7 +441,6 @@ using namespace parties::protocol;
 {
     _streamFullscreen = !_streamFullscreen;
     _core.model_.stream_fullscreen = _streamFullscreen;
-    _core.model_.dirty("stream_fullscreen");
 
     if (_streamFullscreen && _streamWidth > _streamHeight) {
         // Landscape video → rotate to landscape
@@ -479,7 +475,6 @@ using namespace parties::protocol;
     if (_streamFullscreen) {
         _streamFullscreen = false;
         _core.model_.stream_fullscreen = false;
-        _core.model_.dirty("stream_fullscreen");
         [self setNeedsUpdateOfSupportedInterfaceOrientations];
         auto scene = self.view.window.windowScene;
         if (scene) {
@@ -501,7 +496,6 @@ using namespace parties::protocol;
                             (const uint8_t*)&zero, sizeof(zero));
 
     _core.model_.viewing_sharer_id = 0;
-    _core.model_.dirty("viewing_sharer_id");
 
     if (_doc) {
         auto* el = dynamic_cast<VideoElement*>(_doc->GetElementById("screen-share"));
@@ -677,7 +671,7 @@ using namespace parties::protocol;
                 elem->SetInnerRML(Rml::String(std::to_string(fps) + " fps"));
             if (auto* elem = _doc->GetElementById("titlebar-ping")) {
                 if (_core.model_.is_connected)
-                    elem->SetInnerRML(Rml::String(std::to_string(_core.model_.ping_ms) + " ms"));
+                    elem->SetInnerRML(Rml::String(std::to_string(_core.model_.ping_ms.get()) + " ms"));
                 else
                     elem->SetInnerRML("");
             }

@@ -3,6 +3,7 @@
 #include "RmlUi_Renderer_DX12.h"
 #include "RmlUi_Platform_Win32.h"
 #include <client/slug_font_engine.h>
+#include <client/rml_binding.h>
 
 #include <RmlUi/Core/Core.h>
 #include <RmlUi/Core/DataModelHandle.h>
@@ -754,6 +755,9 @@ void DesignerApp::RebuildPreviewDataModels() {
 			std::printf("[Designer] Failed to create data model: %s\n", model_name.c_str());
 			continue;
 		}
+		// Designer preview models are runtime-named and type-erased, so they use
+		// the Builder facade with bind_raw / on (not the compile-time Property path).
+		parties::rml::Builder b(ctor, nullptr);
 
 		// Register array types first (required before binding arrays)
 		bool has_string_array = false;
@@ -761,30 +765,29 @@ void DesignerApp::RebuildPreviewDataModels() {
 			if (var.type == VarType::StringArray) has_string_array = true;
 		}
 		if (has_string_array)
-			ctor.RegisterArray<Rml::Vector<Rml::String>>();
+			b.register_array<Rml::Vector<Rml::String>>();
 
 		// Bind each variable
 		for (auto& [var_name, var] : model.vars) {
 			switch (var.type) {
 			case VarType::String:
-				if (var.val_string) ctor.Bind(var_name, var.val_string.get());
+				if (var.val_string) b.bind_raw(var_name, var.val_string.get());
 				break;
 			case VarType::Int:
-				if (var.val_int) ctor.Bind(var_name, var.val_int.get());
+				if (var.val_int) b.bind_raw(var_name, var.val_int.get());
 				break;
 			case VarType::Float:
-				if (var.val_float) ctor.Bind(var_name, var.val_float.get());
+				if (var.val_float) b.bind_raw(var_name, var.val_float.get());
 				break;
 			case VarType::Bool:
-				if (var.val_bool) ctor.Bind(var_name, var.val_bool.get());
+				if (var.val_bool) b.bind_raw(var_name, var.val_bool.get());
 				break;
 			case VarType::StringArray:
-				if (var.val_string_array) ctor.Bind(var_name, var.val_string_array.get());
+				if (var.val_string_array) b.bind_raw(var_name, var.val_string_array.get());
 				break;
 			case VarType::Event:
 				// Register a no-op event callback so data-event-* expressions don't error
-				ctor.BindEventCallback(var_name,
-					[](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {});
+				b.on(var_name, [] {});
 				break;
 			}
 		}

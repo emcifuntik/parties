@@ -168,10 +168,6 @@ void AppCore::tick()
         model_.update_downloading = (s == AutoUpdater::State::Downloading);
         model_.update_ready       = (s == AutoUpdater::State::ReadyToInstall);
         model_.update_version     = Rml::String("v") + updater_->latest_version().c_str();
-        model_.dirty("update_available");
-        model_.dirty("update_downloading");
-        model_.dirty("update_ready");
-        model_.dirty("update_version");
     }
 #endif
 
@@ -184,7 +180,7 @@ void AppCore::tick()
         }
         for (auto& dl : downloads) {
             std::string file_name = "download";
-            for (auto& msg : chat_model_.messages) {
+            for (auto& msg : chat_model_.messages.get()) {
                 for (auto& att : msg.attachments) {
                     if (att.id == static_cast<int64_t>(dl.attachment_id)) {
                         file_name = std::string(att.file_name);
@@ -231,7 +227,6 @@ void AppCore::tick()
         int sfps = static_cast<int>(sc / elapsed);
         if (sfps != model_.stream_fps) {
             model_.stream_fps = sfps;
-            model_.dirty("stream_fps");
         }
         stream_fps_last_update_ = now;
     }
@@ -241,7 +236,6 @@ void AppCore::tick()
         float lvl = audio_.voice_level();
         if (std::abs(lvl - model_.voice_level) > 0.01f) {
             model_.voice_level = lvl;
-            model_.dirty("voice_level");
         }
     }
 }
@@ -261,9 +255,11 @@ void AppCore::load_saved_prefs()
     auto playback_devs = audio_.get_playback_devices();
 
     for (auto& d : capture_devs)
-        model_.capture_devices.push_back({Rml::String(d.name), d.index});
+        model_.capture_devices.silent().push_back({Rml::String(d.name), d.index});
     for (auto& d : playback_devs)
-        model_.playback_devices.push_back({Rml::String(d.name), d.index});
+        model_.playback_devices.silent().push_back({Rml::String(d.name), d.index});
+    model_.capture_devices.notify();
+    model_.playback_devices.notify();
 
     model_.selected_capture  = audio_.default_capture_index();
     model_.selected_playback = audio_.default_playback_index();
@@ -358,7 +354,6 @@ void AppCore::load_or_generate_identity(const std::string& username_hint)
         }
         has_identity_ = false;
         server_model_.show_onboarding = true;
-        server_model_.dirty("show_onboarding");
     }
 
     if (!username_hint.empty())
@@ -366,8 +361,6 @@ void AppCore::load_or_generate_identity(const std::string& username_hint)
 
     server_model_.has_identity = has_identity_;
     server_model_.fingerprint  = Rml::String(settings_.get_fingerprint());
-    server_model_.dirty("has_identity");
-    server_model_.dirty("fingerprint");
 }
 
 void AppCore::generate_identity()
@@ -385,7 +378,8 @@ void AppCore::generate_identity()
 void AppCore::refresh_server_list()
 {
     auto saved = settings_.get_saved_servers();
-    server_model_.servers.clear();
+    auto& servers = server_model_.servers.silent();
+    servers.clear();
     for (auto& s : saved) {
         ServerEntry entry;
         entry.id            = s.id;
@@ -403,13 +397,12 @@ void AppCore::refresh_server_list()
         uint32_t hash = 0;
         for (char c : s.name) hash = hash * 31 + static_cast<uint8_t>(c);
         entry.color_index = static_cast<int>(hash % 5);
-        server_model_.servers.push_back(std::move(entry));
+        servers.push_back(std::move(entry));
     }
-    size_t n = server_model_.servers.size();
+    size_t n = servers.size();
     server_model_.party_count_text = Rml::String(
         std::to_string(n) + (n == 1 ? " party" : " parties"));
-    server_model_.dirty("servers");
-    server_model_.dirty("party_count_text");
+    server_model_.servers.notify();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -420,26 +413,22 @@ void AppCore::do_connect()
 {
     if (!has_identity_) {
         server_model_.login_error = "No identity — generate seed phrase first";
-        server_model_.dirty("login_error");
         return;
     }
 
     username_ = server_model_.login_username;
     server_password_ = std::string(server_model_.login_password);
     server_model_.login_error = "";
-    server_model_.dirty("login_error");
 
     if (net_.is_connected()) { finish_connect(); return; }
     if (net_.is_connecting()) return;
 
     server_model_.login_status = "Connecting...";
-    server_model_.dirty("login_status");
 
     auto ticket = settings_.load_resumption_ticket(server_host_, server_port_);
     if (!net_.connect(server_host_, server_port_,
                       ticket.empty() ? nullptr : ticket.data(), ticket.size())) {
         server_model_.login_error = "Failed to connect to server";
-        server_model_.dirty("login_error");
         return;
     }
     awaiting_connection_ = true;
@@ -451,8 +440,6 @@ void AppCore::poll_connecting()
         awaiting_connection_ = false;
         server_model_.login_error  = "Failed to connect to server";
         server_model_.login_status = "";
-        server_model_.dirty("login_error");
-        server_model_.dirty("login_status");
         net_.disconnect();
         return;
     }
@@ -481,9 +468,6 @@ void AppCore::finish_connect()
             server_model_.tofu_fingerprint  = Rml::String(fp);
             server_model_.show_tofu_warning = true;
             server_model_.show_login        = false;
-            server_model_.dirty("tofu_fingerprint");
-            server_model_.dirty("show_tofu_warning");
-            server_model_.dirty("show_login");
             return;
         }
         if (result == Settings::TofuResult::Unknown)
@@ -491,7 +475,6 @@ void AppCore::finish_connect()
     }
 
     server_model_.login_status = "Authenticating...";
-    server_model_.dirty("login_status");
     send_auth_identity();
 }
 
@@ -510,7 +493,6 @@ void AppCore::send_auth_identity()
     if (!parties::ed25519_sign(sig_msg.data().data(), sig_msg.data().size(),
                                 secret_key_, public_key_, sig)) {
         server_model_.login_error = "Failed to sign auth message";
-        server_model_.dirty("login_error");
         return;
     }
 
@@ -526,8 +508,7 @@ void AppCore::send_auth_identity()
                       writer.data().data(), writer.data().size());
 
     // Clear password from memory after sending
-    server_model_.login_password.clear();
-    server_model_.dirty("login_password");
+    server_model_.login_password = "";
 }
 
 void AppCore::on_disconnect_cleanup()
@@ -552,8 +533,8 @@ void AppCore::on_disconnect_cleanup()
     model_.ping_ms = 0;
     ping_pending_ = false;
     model_.current_channel = 0;
-    model_.current_channel_name.clear();
-    model_.channels.clear();
+    model_.current_channel_name = "";
+    model_.channels.silent().clear();
     model_.is_muted = false;
     model_.is_deafened = false;
     model_.is_sharing = false;
@@ -565,44 +546,32 @@ void AppCore::on_disconnect_cleanup()
     chat_model_.can_manage_channels = false;
     model_.can_kick = false;
     model_.can_manage_roles = false;
-    model_.admin_message.clear();
+    model_.admin_message = "";
     model_.dirty_all();
 
     // Clear chat state
     model_.show_chat = false;
-    model_.dirty("show_chat");
     pending_uploads_.clear();
     {
         std::lock_guard<std::mutex> lock(downloads_mutex_);
         completed_downloads_.clear();
     }
-    chat_model_.text_channels.clear();
-    chat_model_.messages.clear();
+    chat_model_.text_channels.silent().clear();
+    chat_model_.messages.silent().clear();
     chat_model_.active_channel = 0;
-    chat_model_.active_channel_name.clear();
+    chat_model_.active_channel_name = "";
     chat_model_.has_more_history = false;
     chat_model_.show_search = false;
     chat_model_.show_pinned = false;
-    chat_model_.compose_text.clear();
-    chat_model_.dirty("text_channels");
-    chat_model_.dirty("messages");
-    chat_model_.dirty("active_channel");
-    chat_model_.dirty("active_channel_name");
-    chat_model_.dirty("has_more_history");
-    chat_model_.dirty("show_search");
-    chat_model_.dirty("show_pinned");
-    chat_model_.dirty("compose_text");
+    chat_model_.compose_text = "";
+    chat_model_.text_channels.notify();
+    chat_model_.messages.notify();
 
     server_model_.connected_server_id = 0;
     server_model_.show_login          = false;
     server_model_.show_add_form       = false;
     server_model_.login_error         = "";
     server_model_.login_status        = "";
-    server_model_.dirty("connected_server_id");
-    server_model_.dirty("show_login");
-    server_model_.dirty("show_add_form");
-    server_model_.dirty("login_error");
-    server_model_.dirty("login_status");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -616,20 +585,15 @@ void AppCore::join_channel(ChannelId id)
     // Always dismiss chat view when clicking a voice channel
     if (model_.show_chat) {
         chat_model_.active_channel = 0;
-        chat_model_.active_channel_name.clear();
-        chat_model_.dirty("active_channel");
-        chat_model_.dirty("active_channel_name");
+        chat_model_.active_channel_name = "";
         model_.show_chat = false;
-        model_.dirty("show_chat");
     }
 
     if (id == current_channel_) return;
 
     // Deselect text channel when joining voice channel
     chat_model_.active_channel = 0;
-    chat_model_.active_channel_name.clear();
-    chat_model_.dirty("active_channel");
-    chat_model_.dirty("active_channel_name");
+    chat_model_.active_channel_name = "";
 
     awaiting_channel_join_ = true;
     pending_channel_id_ = id;
@@ -645,7 +609,6 @@ void AppCore::leave_channel()
 
     if (model_.show_share_picker) {
         model_.show_share_picker = false;
-        model_.dirty("show_share_picker");
     }
     if (model_.is_sharing && bridge_.stop_screen_share)
         bridge_.stop_screen_share();
@@ -654,11 +617,11 @@ void AppCore::leave_channel()
         stop_watching();
     clear_all_sharers();
     model_.is_sharing = false;
-    model_.dirty("is_sharing");
 
     net_.send_message(protocol::ControlMessageType::CHANNEL_LEAVE, nullptr, 0);
 
-    for (auto& ch : model_.channels) {
+    auto& channels = model_.channels.silent();
+    for (auto& ch : channels) {
         if (ch.id == static_cast<int>(current_channel_)) {
             auto& u = ch.users;
             u.erase(std::remove_if(u.begin(), u.end(),
@@ -678,10 +641,8 @@ void AppCore::leave_channel()
     mixer_.clear();
 
     model_.current_channel = 0;
-    model_.current_channel_name.clear();
-    model_.dirty("current_channel");
-    model_.dirty("current_channel_name");
-    model_.dirty("channels");
+    model_.current_channel_name = "";
+    model_.channels.notify();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -705,7 +666,6 @@ void AppCore::watch_sharer(UserId id)
                       reinterpret_cast<const uint8_t*>(&id32), 4);
     send_pli(id);
     model_.viewing_sharer_id = static_cast<int>(id);
-    model_.dirty("viewing_sharer_id");
 }
 
 void AppCore::stop_watching()
@@ -718,7 +678,6 @@ void AppCore::stop_watching()
     net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_VIEW,
                       reinterpret_cast<const uint8_t*>(&zero), 4);
     model_.viewing_sharer_id = 0;
-    model_.dirty("viewing_sharer_id");
     if (bridge_.clear_video_element)
         bridge_.clear_video_element();
 }
@@ -737,12 +696,10 @@ void AppCore::clear_all_sharers()
     viewing_sharer_ = 0;
     awaiting_keyframe_ = false;
     active_sharers_.clear();
-    model_.sharers.clear();
+    model_.sharers.silent().clear();
+    model_.sharers.notify();
     model_.someone_sharing = false;
     model_.viewing_sharer_id = 0;
-    model_.dirty("sharers");
-    model_.dirty("someone_sharing");
-    model_.dirty("viewing_sharer_id");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -820,7 +777,6 @@ void AppCore::handle_server_message(protocol::ControlMessageType type,
             auto rtt = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - ping_sent_at_).count();
             model_.ping_ms = static_cast<int>(rtt);
-            model_.dirty("ping_ms");
         }
         break;
     default: break;
@@ -872,38 +828,25 @@ void AppCore::on_auth_response(const uint8_t* data, size_t len)
     chat_model_.can_manage_channels = model_.can_manage_channels;
     model_.can_kick             = (role_ <= static_cast<int>(parties::Role::Moderator));
     model_.can_manage_roles     = (role_ <= static_cast<int>(parties::Role::Admin));
-    model_.dirty("server_name");
-    model_.dirty("server_initials");
-    model_.dirty("server_color_index");
-    model_.dirty("username");
-    model_.dirty("my_color_index");
-    model_.dirty("is_connected");
-    model_.dirty("my_role");
-    model_.dirty("can_manage_channels");
-    chat_model_.dirty("can_manage_channels");
-    model_.dirty("can_kick");
-    model_.dirty("can_manage_roles");
 
     server_model_.connected_server_id = connecting_server_id_;
     server_model_.show_login          = false;
     server_model_.login_error         = "";
     server_model_.login_status        = "";
-    server_model_.dirty("connected_server_id");
-    server_model_.dirty("show_login");
-    server_model_.dirty("login_error");
-    server_model_.dirty("login_status");
 
     // Populate audio device lists
     auto caps = audio_.get_capture_devices();
-    model_.capture_devices.clear();
+    auto& cap_devices = model_.capture_devices.silent();
+    cap_devices.clear();
     for (auto& d : caps)
-        model_.capture_devices.push_back({Rml::String(d.name), d.index});
+        cap_devices.push_back({Rml::String(d.name), d.index});
     auto plays = audio_.get_playback_devices();
-    model_.playback_devices.clear();
+    auto& play_devices = model_.playback_devices.silent();
+    play_devices.clear();
     for (auto& d : plays)
-        model_.playback_devices.push_back({Rml::String(d.name), d.index});
-    model_.dirty("capture_devices");
-    model_.dirty("playback_devices");
+        play_devices.push_back({Rml::String(d.name), d.index});
+    model_.capture_devices.notify();
+    model_.playback_devices.notify();
 }
 
 void AppCore::on_channel_list(const uint8_t* data, size_t len)
@@ -912,11 +855,12 @@ void AppCore::on_channel_list(const uint8_t* data, size_t len)
     uint32_t count = reader.read_u32();
     if (reader.error()) return;
 
+    auto& channels = model_.channels.silent();
     std::unordered_map<int, Rml::Vector<ChannelUser>> old_users;
-    for (auto& ch : model_.channels)
+    for (auto& ch : channels)
         old_users[ch.id] = std::move(ch.users);
 
-    model_.channels.clear();
+    channels.clear();
     for (uint32_t i = 0; i < count; i++) {
         uint32_t ch_id    = reader.read_u32();
         std::string name  = reader.read_string();
@@ -940,9 +884,9 @@ void AppCore::on_channel_list(const uint8_t* data, size_t len)
             if (static_cast<uint32_t>(ch.id) == current_channel_)
                 ch.user_count = static_cast<int>(ch.users.size());
         }
-        model_.channels.push_back(std::move(ch));
+        channels.push_back(std::move(ch));
     }
-    model_.dirty("channels");
+    model_.channels.notify();
 }
 
 void AppCore::on_channel_user_list(const uint8_t* data, size_t len)
@@ -971,7 +915,8 @@ void AppCore::on_channel_user_list(const uint8_t* data, size_t len)
         users.push_back(u);
     }
 
-    for (auto& ch : model_.channels) {
+    auto& channels = model_.channels.silent();
+    for (auto& ch : channels) {
         if (ch.id == static_cast<int>(channel_id)) {
             ch.users      = users;
             ch.user_count = static_cast<int>(ch.users.size());
@@ -984,7 +929,7 @@ void AppCore::on_channel_user_list(const uint8_t* data, size_t len)
 
         // Remove self from old channel
         if (current_channel_ != 0 && current_channel_ != channel_id) {
-            for (auto& ch : model_.channels) {
+            for (auto& ch : channels) {
                 if (ch.id == static_cast<int>(current_channel_)) {
                     auto& u = ch.users;
                     u.erase(std::remove_if(u.begin(), u.end(),
@@ -999,7 +944,7 @@ void AppCore::on_channel_user_list(const uint8_t* data, size_t len)
         current_channel_ = channel_id;
         model_.current_channel = static_cast<int>(channel_id);
 
-        for (auto& ch : model_.channels) {
+        for (auto& ch : channels) {
             if (ch.id == static_cast<int>(channel_id)) {
                 model_.current_channel_name = ch.name;
                 for (auto& u : ch.users)
@@ -1008,13 +953,11 @@ void AppCore::on_channel_user_list(const uint8_t* data, size_t len)
                 break;
             }
         }
-        model_.dirty("current_channel");
-        model_.dirty("current_channel_name");
         audio_.start();
         if (bridge_.play_sound)
             bridge_.play_sound(SoundPlayer::Effect::JoinChannel);
     }
-    model_.dirty("channels");
+    model_.channels.notify();
 }
 
 void AppCore::on_user_joined(const uint8_t* data, size_t len)
@@ -1026,7 +969,8 @@ void AppCore::on_user_joined(const uint8_t* data, size_t len)
     uint8_t urole       = reader.has_remaining(1) ? reader.read_u8() : 3;
     if (reader.error()) return;
 
-    for (auto& ch : model_.channels) {
+    auto& channels = model_.channels.silent();
+    for (auto& ch : channels) {
         if (ch.id == static_cast<int>(channel_id)) {
             // Remove existing entry for this user (handles identity takeover / rejoin)
             auto& ul = ch.users;
@@ -1049,7 +993,7 @@ void AppCore::on_user_joined(const uint8_t* data, size_t len)
             bridge_.play_sound(SoundPlayer::Effect::UserJoined);
         apply_user_audio_prefs(uid);
     }
-    model_.dirty("channels");
+    model_.channels.notify();
 }
 
 void AppCore::on_user_left(const uint8_t* data, size_t len)
@@ -1061,7 +1005,8 @@ void AppCore::on_user_left(const uint8_t* data, size_t len)
 
     mixer_.remove_user(uid);
 
-    for (auto& ch : model_.channels) {
+    auto& channels = model_.channels.silent();
+    for (auto& ch : channels) {
         if (ch.id == static_cast<int>(channel_id)) {
             auto& u = ch.users;
             u.erase(std::remove_if(u.begin(), u.end(),
@@ -1074,7 +1019,7 @@ void AppCore::on_user_left(const uint8_t* data, size_t len)
     if (channel_id == current_channel_)
         if (bridge_.play_sound)
             bridge_.play_sound(SoundPlayer::Effect::UserLeft);
-    model_.dirty("channels");
+    model_.channels.notify();
 }
 
 void AppCore::on_user_voice_state(const uint8_t* data, size_t len)
@@ -1085,13 +1030,14 @@ void AppCore::on_user_voice_state(const uint8_t* data, size_t len)
     uint8_t deaf   = reader.read_u8();
     if (reader.error()) return;
 
-    for (auto& ch : model_.channels)
+    auto& channels = model_.channels.silent();
+    for (auto& ch : channels)
         for (auto& u : ch.users)
             if (u.id == static_cast<int>(uid)) {
                 u.muted    = (muted != 0);
                 u.deafened = (deaf  != 0);
             }
-    model_.dirty("channels");
+    model_.channels.notify();
 }
 
 void AppCore::on_user_role_changed(const uint8_t* data, size_t len)
@@ -1108,17 +1054,13 @@ void AppCore::on_user_role_changed(const uint8_t* data, size_t len)
         chat_model_.can_manage_channels = model_.can_manage_channels;
         model_.can_kick            = (new_role <= static_cast<int>(parties::Role::Moderator));
         model_.can_manage_roles    = (new_role <= static_cast<int>(parties::Role::Admin));
-        model_.dirty("my_role");
-        model_.dirty("can_manage_channels");
-        chat_model_.dirty("can_manage_channels");
-        model_.dirty("can_kick");
-        model_.dirty("can_manage_roles");
     }
-    for (auto& ch : model_.channels)
+    auto& channels = model_.channels.silent();
+    for (auto& ch : channels)
         for (auto& u : ch.users)
             if (u.id == static_cast<int>(uid))
                 u.role = new_role;
-    model_.dirty("channels");
+    model_.channels.notify();
 }
 
 void AppCore::on_channel_key(const uint8_t* data, size_t len)
@@ -1136,8 +1078,9 @@ void AppCore::on_screen_share_started(const uint8_t* data, size_t len)
     uint32_t sharer_id = reader.read_u32();
     if (reader.error()) return;
 
+    auto& channels = model_.channels.silent();
     std::string sharer_name = "Unknown";
-    for (auto& ch : model_.channels)
+    for (auto& ch : channels)
         if (ch.id == static_cast<int>(current_channel_))
             for (auto& u : ch.users)
                 if (u.id == static_cast<int>(sharer_id)) { sharer_name = u.name.c_str(); break; }
@@ -1146,20 +1089,20 @@ void AppCore::on_screen_share_started(const uint8_t* data, size_t len)
     s.id   = static_cast<int>(sharer_id);
     s.name = Rml::String(sharer_name);
 
-    auto it = std::remove_if(model_.sharers.begin(), model_.sharers.end(),
+    auto& sharers = model_.sharers.silent();
+    auto it = std::remove_if(sharers.begin(), sharers.end(),
         [sharer_id](const ActiveSharer& a) { return a.id == static_cast<int>(sharer_id); });
-    model_.sharers.erase(it, model_.sharers.end());
-    model_.sharers.push_back(s);
-    model_.someone_sharing = !model_.sharers.empty();
+    sharers.erase(it, sharers.end());
+    sharers.push_back(s);
+    model_.someone_sharing = !sharers.empty();
 
     // Mark user as streaming in channel user list
-    for (auto& ch : model_.channels)
+    for (auto& ch : channels)
         for (auto& u : ch.users)
             if (u.id == static_cast<int>(sharer_id)) u.streaming = true;
 
-    model_.dirty("sharers");
-    model_.dirty("someone_sharing");
-    model_.dirty("channels");
+    model_.sharers.notify();
+    model_.channels.notify();
 }
 
 void AppCore::on_screen_share_stopped(const uint8_t* data, size_t len)
@@ -1168,19 +1111,20 @@ void AppCore::on_screen_share_stopped(const uint8_t* data, size_t len)
     uint32_t sharer_id;
     std::memcpy(&sharer_id, data, 4);
 
-    auto it = std::remove_if(model_.sharers.begin(), model_.sharers.end(),
+    auto& sharers = model_.sharers.silent();
+    auto it = std::remove_if(sharers.begin(), sharers.end(),
         [sharer_id](const ActiveSharer& a) { return a.id == static_cast<int>(sharer_id); });
-    model_.sharers.erase(it, model_.sharers.end());
-    model_.someone_sharing = !model_.sharers.empty();
+    sharers.erase(it, sharers.end());
+    model_.someone_sharing = !sharers.empty();
 
     // Clear streaming flag on user
-    for (auto& ch : model_.channels)
+    auto& channels = model_.channels.silent();
+    for (auto& ch : channels)
         for (auto& u : ch.users)
             if (u.id == static_cast<int>(sharer_id)) u.streaming = false;
 
-    model_.dirty("sharers");
-    model_.dirty("someone_sharing");
-    model_.dirty("channels");
+    model_.sharers.notify();
+    model_.channels.notify();
 
     if (viewing_sharer_ == sharer_id)
         stop_watching();
@@ -1189,7 +1133,6 @@ void AppCore::on_screen_share_stopped(const uint8_t* data, size_t len)
 void AppCore::on_screen_share_denied(const uint8_t* /*data*/, size_t /*len*/)
 {
     model_.is_sharing = false;
-    model_.dirty("is_sharing");
     if (bridge_.stop_screen_share) bridge_.stop_screen_share();
     LOG_WARN("Screen share denied by server");
 }
@@ -1201,7 +1144,6 @@ void AppCore::on_admin_result(const uint8_t* data, size_t len)
     std::string msg = reader.read_string();
     if (!msg.empty()) {
         model_.admin_message = Rml::String(msg);
-        model_.dirty("admin_message");
     }
     (void)ok;
 }
@@ -1217,8 +1159,6 @@ void AppCore::on_server_error(const uint8_t* data, size_t len)
     if (server_model_.show_login) {
         server_model_.login_error  = Rml::String(msg);
         server_model_.login_status = "";
-        server_model_.dirty("login_error");
-        server_model_.dirty("login_status");
     }
 }
 
@@ -1237,7 +1177,8 @@ void AppCore::update_speaking_state()
     bool self_active = !model_.is_muted && audio_.is_transmitting();
     if (self_active) voice_last_active_[user_id_] = now;
 
-    for (auto& ch : model_.channels) {
+    auto& channels = model_.channels.silent();
+    for (auto& ch : channels) {
         for (auto& user : ch.users) {
             bool was_speaking = user.speaking;
             UserId uid = static_cast<UserId>(user.id);
@@ -1267,7 +1208,7 @@ void AppCore::update_speaking_state()
             if (user.speaking != was_speaking) changed = true;
         }
     }
-    if (changed) model_.dirty("channels");
+    if (changed) model_.channels.notify();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1328,13 +1269,13 @@ void AppCore::setup_model_callbacks()
     model_.on_toggle_mute = [this]() {
         bool muted = !model_.is_muted;
         model_.is_muted = muted;
-        model_.dirty("is_muted");
         // Effective audio mute: manually muted, or deafened, or PTT idle
         audio_.set_muted(muted || model_.is_deafened);
-        for (auto& ch : model_.channels)
+        auto& channels = model_.channels.silent();
+        for (auto& ch : channels)
             for (auto& u : ch.users)
                 if (u.id == static_cast<int>(user_id_)) u.muted = muted;
-        model_.dirty("channels");
+        model_.channels.notify();
         if (bridge_.play_sound)
             bridge_.play_sound(muted ? SoundPlayer::Effect::Mute : SoundPlayer::Effect::Unmute);
         send_voice_state();
@@ -1344,7 +1285,6 @@ void AppCore::setup_model_callbacks()
         bool deafened = !model_.is_deafened;
         audio_.set_deafened(deafened);
         model_.is_deafened = deafened;
-        model_.dirty("is_deafened");
         // Deafen implies mute at the audio level
         if (deafened) {
             audio_.set_muted(true);
@@ -1352,10 +1292,11 @@ void AppCore::setup_model_callbacks()
             // Restore: only unmute audio if not manually muted (and not PTT-idle)
             audio_.set_muted(model_.is_muted);
         }
-        for (auto& ch : model_.channels)
+        auto& channels = model_.channels.silent();
+        for (auto& ch : channels)
             for (auto& u : ch.users)
                 if (u.id == static_cast<int>(user_id_)) u.deafened = deafened;
-        model_.dirty("channels");
+        model_.channels.notify();
         if (bridge_.play_sound)
             bridge_.play_sound(deafened ? SoundPlayer::Effect::Deafen
                                         : SoundPlayer::Effect::Undeafen);
@@ -1385,21 +1326,18 @@ void AppCore::setup_model_callbacks()
 
     model_.on_toggle_ptt = [this]() {
         model_.ptt_enabled = !model_.ptt_enabled;
-        model_.dirty("ptt_enabled");
         settings_.set_pref("audio.ptt", model_.ptt_enabled ? "1" : "0");
         // PTT on: start with mic muted (key not held yet)
         // PTT off: restore audio mute to match manual mute state
         audio_.set_muted(model_.is_muted || model_.is_deafened || model_.ptt_enabled);
     };
-    model_.on_ptt_bind         = [this]() { model_.ptt_binding = true; model_.dirty("ptt_binding"); };
+    model_.on_ptt_bind         = [this]() { model_.ptt_binding = true; };
     model_.on_ptt_delay_changed = [this](float d) { save_pref_debounced("audio.ptt_delay", std::to_string(static_cast<int>(d))); };
     model_.on_mute_bind = [this]() {
         model_.mute_binding = true; model_.deafen_binding = false; model_.ptt_binding = false;
-        model_.dirty("mute_binding"); model_.dirty("deafen_binding"); model_.dirty("ptt_binding");
     };
     model_.on_deafen_bind = [this]() {
         model_.deafen_binding = true; model_.mute_binding = false; model_.ptt_binding = false;
-        model_.dirty("deafen_binding"); model_.dirty("mute_binding"); model_.dirty("ptt_binding");
     };
 
     model_.on_toggle_share = [this]() {
@@ -1411,7 +1349,6 @@ void AppCore::setup_model_callbacks()
     };
     model_.on_cancel_share = [this]() {
         model_.show_share_picker = false;
-        model_.dirty("show_share_picker");
     };
 
     model_.on_watch_sharer  = [this](int id) { watch_sharer(static_cast<UserId>(id)); };
@@ -1453,7 +1390,6 @@ void AppCore::setup_model_callbacks()
         net_.send_message(protocol::ControlMessageType::ADMIN_CREATE_CHANNEL,
                           w.data().data(), w.data().size());
         model_.show_create_channel = false;
-        model_.dirty("show_create_channel");
     };
 
     model_.on_delete_channel = [this](int id) {
@@ -1473,7 +1409,6 @@ void AppCore::setup_model_callbacks()
         net_.send_message(protocol::ControlMessageType::ADMIN_RENAME_CHANNEL,
                           w.data().data(), w.data().size());
         model_.show_rename_channel = false;
-        model_.dirty("show_rename_channel");
     };
 
     model_.on_show_user_menu = [this](int user_id, std::string name, int user_role) {
@@ -1488,11 +1423,6 @@ void AppCore::setup_model_callbacks()
         model_.menu_user_compress      = mixer_.get_user_compression(static_cast<UserId>(user_id));
         model_.menu_user_compress_target = mixer_.get_user_compression_target(static_cast<UserId>(user_id));
         model_.show_user_menu          = true;
-        model_.dirty("menu_user_id");        model_.dirty("menu_user_name");
-        model_.dirty("menu_user_role");      model_.dirty("menu_can_roles");
-        model_.dirty("menu_can_kick");       model_.dirty("menu_user_volume");
-        model_.dirty("menu_user_compress");  model_.dirty("menu_user_compress_target");
-        model_.dirty("show_user_menu");
     };
 
     model_.on_set_user_role = [this](int user_id, int new_role) {
@@ -1534,14 +1464,10 @@ void AppCore::setup_model_callbacks()
         if (model_.show_seed_phrase) {
             model_.show_seed_phrase = false;
             model_.identity_seed_phrase = "";
-            model_.dirty("show_seed_phrase");
-            model_.dirty("identity_seed_phrase");
             return;
         }
         model_.identity_seed_phrase = Rml::String(seed_phrase_);
         model_.show_seed_phrase = true;
-        model_.dirty("identity_seed_phrase");
-        model_.dirty("show_seed_phrase");
     };
 
     model_.on_copy_seed_phrase = [this]() {
@@ -1554,14 +1480,10 @@ void AppCore::setup_model_callbacks()
         if (model_.show_private_key) {
             model_.show_private_key = false;
             model_.identity_private_key = "";
-            model_.dirty("show_private_key");
-            model_.dirty("identity_private_key");
             return;
         }
         model_.identity_private_key = Rml::String(parties::secret_key_to_hex(secret_key_));
         model_.show_private_key = true;
-        model_.dirty("identity_private_key");
-        model_.dirty("show_private_key");
     };
 
     model_.on_copy_private_key = [this]() {
@@ -1573,9 +1495,6 @@ void AppCore::setup_model_callbacks()
         model_.show_import_identity = true;
         model_.import_phrase = "";
         model_.import_error  = "";
-        model_.dirty("show_import_identity");
-        model_.dirty("import_phrase");
-        model_.dirty("import_error");
     };
 
     model_.on_do_import = [this]() {
@@ -1585,34 +1504,30 @@ void AppCore::setup_model_callbacks()
         if (input.size() == 64 && parties::secret_key_from_hex(input, sk)) {
             if (!parties::derive_pubkey(sk, pk)) {
                 model_.import_error = "Failed to derive public key";
-                model_.dirty("import_error"); return;
+                return;
             }
         } else if (parties::validate_seed_phrase(input)) {
             if (!parties::derive_keypair(input, sk, pk)) {
                 model_.import_error = "Failed to derive keypair";
-                model_.dirty("import_error"); return;
+                return;
             }
             sp = input;
         } else {
             model_.import_error = "Enter a 12-word seed phrase or 64-char hex private key.";
-            model_.dirty("import_error"); return;
+            return;
         }
 
         if (!settings_.save_identity(sp, sk, pk)) {
             model_.import_error = "Failed to save identity";
-            model_.dirty("import_error"); return;
+            return;
         }
         secret_key_ = sk; public_key_ = pk; has_identity_ = true; seed_phrase_ = sp;
         server_model_.fingerprint   = Rml::String(parties::public_key_fingerprint(pk));
         server_model_.has_identity  = true;
-        server_model_.dirty("fingerprint"); server_model_.dirty("has_identity");
 
         model_.show_import_identity  = false; model_.import_phrase = ""; model_.import_error = "";
         model_.show_seed_phrase      = false; model_.identity_seed_phrase = "";
         model_.show_private_key      = false; model_.identity_private_key = "";
-        model_.dirty("show_import_identity"); model_.dirty("import_phrase"); model_.dirty("import_error");
-        model_.dirty("show_seed_phrase"); model_.dirty("identity_seed_phrase");
-        model_.dirty("show_private_key"); model_.dirty("identity_private_key");
 
         LOG_INFO("Identity imported: {}",
                     parties::public_key_fingerprint(pk));
@@ -1622,9 +1537,6 @@ void AppCore::setup_model_callbacks()
         model_.show_import_identity = false;
         model_.import_phrase = "";
         model_.import_error  = "";
-        model_.dirty("show_import_identity");
-        model_.dirty("import_phrase");
-        model_.dirty("import_error");
     };
 
     // on_select_share_target and on_start_native_share are platform-specific;
@@ -1638,7 +1550,6 @@ void AppCore::setup_server_model_callbacks()
         if (server_model_.show_login) return;
         if (!has_identity_) {
             server_model_.show_onboarding = true;
-            server_model_.dirty("show_onboarding");
             return;
         }
         auto saved = settings_.get_saved_servers();
@@ -1653,9 +1564,6 @@ void AppCore::setup_server_model_callbacks()
                 server_model_.login_status   = Rml::String(
                     srv.name + " - " + srv.host + ":" + std::to_string(srv.port));
                 server_model_.show_login = true;
-                server_model_.dirty("login_username"); server_model_.dirty("login_password");
-                server_model_.dirty("login_error");
-                server_model_.dirty("login_status");   server_model_.dirty("show_login");
                 break;
             }
         }
@@ -1667,21 +1575,20 @@ void AppCore::setup_server_model_callbacks()
     };
 
     server_model_.on_save_server = [this]() {
-        auto& host     = server_model_.edit_host;
-        auto& port_str = server_model_.edit_port;
+        const Rml::String& host     = server_model_.edit_host;
+        const Rml::String& port_str = server_model_.edit_port;
         if (host.empty() || port_str.empty()) {
             server_model_.edit_error = "Please fill in all fields";
-            server_model_.dirty("edit_error"); return;
+            return;
         }
         int port = std::atoi(port_str.c_str());
         if (port <= 0 || port > 65535) {
             server_model_.edit_error = "Invalid port number";
-            server_model_.dirty("edit_error"); return;
+            return;
         }
         std::string name = std::string(host) + ":" + std::string(port_str);
         settings_.save_server(name, std::string(host), port, "", "");
         server_model_.show_add_form = false;
-        server_model_.dirty("show_add_form");
         refresh_server_list();
     };
 
@@ -1689,7 +1596,6 @@ void AppCore::setup_server_model_callbacks()
 
     server_model_.on_cancel_login = [this]() {
         server_model_.show_login = false;
-        server_model_.dirty("show_login");
         net_.disconnect();
         awaiting_connection_ = false;
     };
@@ -1704,10 +1610,6 @@ void AppCore::setup_server_model_callbacks()
         server_model_.show_onboarding   = true;
         server_model_.show_restore      = false;
         server_model_.show_key_import   = false;
-        server_model_.dirty("seed_phrase");
-        server_model_.dirty("show_onboarding");
-        server_model_.dirty("show_restore");
-        server_model_.dirty("show_key_import");
     };
 
     server_model_.on_save_identity = [this]() {
@@ -1723,8 +1625,6 @@ void AppCore::setup_server_model_callbacks()
         server_model_.fingerprint   = Rml::String(parties::public_key_fingerprint(pk));
         server_model_.has_identity  = true;
         server_model_.show_onboarding = false;
-        server_model_.dirty("fingerprint"); server_model_.dirty("has_identity");
-        server_model_.dirty("show_onboarding");
         LOG_INFO("Identity saved: {}",
                     parties::public_key_fingerprint(pk));
     };
@@ -1733,16 +1633,16 @@ void AppCore::setup_server_model_callbacks()
         std::string phrase(server_model_.restore_phrase);
         if (!parties::validate_seed_phrase(phrase)) {
             server_model_.login_error = "Invalid seed phrase";
-            server_model_.dirty("login_error"); return;
+            return;
         }
         SecretKey sk{}; PublicKey pk{};
         if (!parties::derive_keypair(phrase, sk, pk)) {
             server_model_.login_error = "Failed to derive keypair";
-            server_model_.dirty("login_error"); return;
+            return;
         }
         if (!settings_.save_identity(phrase, sk, pk)) {
             server_model_.login_error = "Failed to save identity";
-            server_model_.dirty("login_error"); return;
+            return;
         }
         secret_key_ = sk; public_key_ = pk; has_identity_ = true; seed_phrase_ = phrase;
         server_model_.fingerprint     = Rml::String(parties::public_key_fingerprint(pk));
@@ -1750,18 +1650,12 @@ void AppCore::setup_server_model_callbacks()
         server_model_.show_onboarding = false;
         server_model_.show_restore    = false;
         server_model_.login_error     = "";
-        server_model_.dirty("fingerprint");  server_model_.dirty("has_identity");
-        server_model_.dirty("show_onboarding"); server_model_.dirty("show_restore");
-        server_model_.dirty("login_error");
     };
 
     server_model_.on_show_restore = [this]() {
         server_model_.show_restore    = true;
         server_model_.restore_phrase  = "";
         server_model_.login_error     = "";
-        server_model_.dirty("show_restore");
-        server_model_.dirty("restore_phrase");
-        server_model_.dirty("login_error");
     };
 
     server_model_.on_show_key_import = [this]() {
@@ -1769,8 +1663,6 @@ void AppCore::setup_server_model_callbacks()
         server_model_.show_restore    = false;
         server_model_.import_key_hex  = "";
         server_model_.login_error     = "";
-        server_model_.dirty("show_key_import"); server_model_.dirty("show_restore");
-        server_model_.dirty("import_key_hex");  server_model_.dirty("login_error");
     };
 
     server_model_.on_import_key = [this]() {
@@ -1778,15 +1670,15 @@ void AppCore::setup_server_model_callbacks()
         SecretKey sk{}; PublicKey pk{};
         if (!parties::secret_key_from_hex(hex, sk)) {
             server_model_.login_error = "Invalid private key. Must be 64 hex characters.";
-            server_model_.dirty("login_error"); return;
+            return;
         }
         if (!parties::derive_pubkey(sk, pk)) {
             server_model_.login_error = "Failed to derive public key";
-            server_model_.dirty("login_error"); return;
+            return;
         }
         if (!settings_.save_identity("", sk, pk)) {
             server_model_.login_error = "Failed to save identity";
-            server_model_.dirty("login_error"); return;
+            return;
         }
         secret_key_ = sk; public_key_ = pk; has_identity_ = true; seed_phrase_ = "";
         server_model_.fingerprint     = Rml::String(parties::public_key_fingerprint(pk));
@@ -1794,9 +1686,6 @@ void AppCore::setup_server_model_callbacks()
         server_model_.show_onboarding = false;
         server_model_.show_key_import = false;
         server_model_.login_error     = "";
-        server_model_.dirty("fingerprint");    server_model_.dirty("has_identity");
-        server_model_.dirty("show_onboarding"); server_model_.dirty("show_key_import");
-        server_model_.dirty("login_error");
     };
 
     server_model_.on_copy_fingerprint = [this]() {
@@ -1817,9 +1706,6 @@ void AppCore::setup_server_model_callbacks()
         server_model_.show_tofu_warning = false;
         server_model_.show_login        = true;
         server_model_.login_status      = "Authenticating...";
-        server_model_.dirty("show_tofu_warning");
-        server_model_.dirty("show_login");
-        server_model_.dirty("login_status");
         send_auth_identity();
     };
 
@@ -1827,8 +1713,6 @@ void AppCore::setup_server_model_callbacks()
         tofu_pending_ = false;
         server_model_.show_tofu_warning = false;
         server_model_.show_login        = false;
-        server_model_.dirty("show_tofu_warning");
-        server_model_.dirty("show_login");
         net_.disconnect();
     };
 }
@@ -1841,28 +1725,23 @@ void AppCore::setup_chat_model_callbacks()
     chat_model_.on_select_channel = [this](int channel_id) {
         chat_model_.active_channel = channel_id;
         // Find channel name
-        for (auto& tc : chat_model_.text_channels) {
+        auto& tchannels = chat_model_.text_channels.silent();
+        for (auto& tc : tchannels) {
             if (tc.id == channel_id) {
                 chat_model_.active_channel_name = tc.name;
                 tc.has_unread = false;
                 break;
             }
         }
-        chat_model_.messages.clear();
+        chat_model_.text_channels.notify();
+        chat_model_.messages.silent().clear();
+        chat_model_.messages.notify();
         chat_model_.has_more_history = false;
         chat_model_.show_search = false;
         chat_model_.show_pinned = false;
-        chat_model_.dirty("active_channel");
-        chat_model_.dirty("active_channel_name");
-        chat_model_.dirty("text_channels");
-        chat_model_.dirty("has_more_history");
-        chat_model_.dirty("show_search");
-        chat_model_.dirty("show_pinned");
-        chat_model_.dirty("messages");
 
         // Show chat view (keep voice channel connection intact)
         model_.show_chat = true;
-        model_.dirty("show_chat");
 
         // Request history
         BinaryWriter writer;
@@ -1875,13 +1754,13 @@ void AppCore::setup_chat_model_callbacks()
 
     chat_model_.on_send_message = [this]() {
         if (chat_model_.active_channel == 0) return;
-        bool has_text = !chat_model_.compose_text.empty();
-        bool has_files = !chat_model_.pending_files.empty();
+        bool has_text = !chat_model_.compose_text.get().empty();
+        bool has_files = !chat_model_.pending_files.get().empty();
         if (!has_text && !has_files) return;
 
         // Read pending files into memory before sending
         pending_uploads_.clear();
-        for (auto& pf : chat_model_.pending_files) {
+        for (auto& pf : chat_model_.pending_files.get()) {
             std::ifstream in(std::string(pf.path), std::ios::binary | std::ios::ate);
             if (!in) continue;
             auto sz = in.tellg();
@@ -1906,18 +1785,17 @@ void AppCore::setup_chat_model_callbacks()
                          writer.data().data(), writer.data().size());
 
         chat_model_.compose_text = "";
-        chat_model_.pending_files.clear();
-        chat_model_.dirty("compose_text");
-        chat_model_.dirty("pending_files");
+        chat_model_.pending_files.silent().clear();
+        chat_model_.pending_files.notify();
     };
 
     chat_model_.on_load_more_history = [this]() {
-        if (chat_model_.messages.empty() || !chat_model_.has_more_history)
+        if (chat_model_.messages.get().empty() || !chat_model_.has_more_history)
             return;
 
         BinaryWriter writer;
         writer.write_u32(static_cast<uint32_t>(chat_model_.active_channel));
-        writer.write_u64(static_cast<uint64_t>(chat_model_.messages.front().id));
+        writer.write_u64(static_cast<uint64_t>(chat_model_.messages.get().front().id));
         writer.write_u16(30);
         net_.send_message(protocol::ControlMessageType::CHAT_HISTORY_REQ,
                          writer.data().data(), writer.data().size());
@@ -1950,7 +1828,7 @@ void AppCore::setup_chat_model_callbacks()
     };
 
     chat_model_.on_do_search = [this]() {
-        if (chat_model_.search_query.empty() || chat_model_.active_channel == 0)
+        if (chat_model_.search_query.get().empty() || chat_model_.active_channel == 0)
             return;
 
         BinaryWriter writer;
@@ -1985,7 +1863,6 @@ void AppCore::setup_chat_model_callbacks()
                          writer.data().data(), writer.data().size());
 
         chat_model_.show_create_text_channel = false;
-        chat_model_.dirty("show_create_text_channel");
     };
 
     chat_model_.on_open_url = [](const std::string& url) {
@@ -2031,7 +1908,7 @@ void AppCore::setup_chat_model_callbacks()
                         pf.size_str = Rml::String(std::format("{:.1f} KB", sz / 1024.0));
                     else
                         pf.size_str = Rml::String(std::format("{:.1f} MB", sz / (1024.0 * 1024.0)));
-                    chat_model_.pending_files.push_back(std::move(pf));
+                    chat_model_.pending_files.silent().push_back(std::move(pf));
                     p += strlen(p) + 1;
                 }
             } else {
@@ -2047,9 +1924,9 @@ void AppCore::setup_chat_model_callbacks()
                     pf.size_str = Rml::String(std::format("{:.1f} KB", sz / 1024.0));
                 else
                     pf.size_str = Rml::String(std::format("{:.1f} MB", sz / (1024.0 * 1024.0)));
-                chat_model_.pending_files.push_back(std::move(pf));
+                chat_model_.pending_files.silent().push_back(std::move(pf));
             }
-            chat_model_.dirty("pending_files");
+            chat_model_.pending_files.notify();
         }
 #endif
     };
@@ -2221,15 +2098,16 @@ void AppCore::on_chat_channel_list(const uint8_t* data, size_t len) {
     uint32_t count = reader.read_u32();
     if (reader.error()) return;
 
-    chat_model_.text_channels.clear();
+    auto& channels = chat_model_.text_channels.silent();
+    channels.clear();
     for (uint32_t i = 0; i < count && !reader.error(); i++) {
         TextChannel tc;
         tc.id = static_cast<int>(reader.read_u32());
         tc.name = Rml::String(reader.read_string());
         reader.read_u32(); // sort_order
-        chat_model_.text_channels.push_back(std::move(tc));
+        channels.push_back(std::move(tc));
     }
-    chat_model_.dirty("text_channels");
+    chat_model_.text_channels.notify();
 }
 
 void AppCore::on_chat_message(const uint8_t* data, size_t len) {
@@ -2255,9 +2133,10 @@ void AppCore::on_chat_message(const uint8_t* data, size_t len) {
     }
 
     if (static_cast<int>(channel_id) == chat_model_.active_channel) {
+        auto& msgs = chat_model_.messages.silent();
         // Check if this is an update to an existing message (e.g., pin state change)
         bool found = false;
-        for (auto& m : chat_model_.messages) {
+        for (auto& m : msgs) {
             if (m.id == msg.id) {
                 m.pinned = msg.pinned;
                 m.text = msg.text;
@@ -2266,27 +2145,27 @@ void AppCore::on_chat_message(const uint8_t* data, size_t len) {
             }
         }
         if (!found)
-            chat_model_.messages.push_back(std::move(msg));
+            msgs.push_back(std::move(msg));
         // Keep at most 30 messages displayed
-        if (chat_model_.messages.size() > 30) {
-            chat_model_.messages.erase(
-                chat_model_.messages.begin(),
-                chat_model_.messages.begin() +
-                    static_cast<int>(chat_model_.messages.size() - 30));
+        if (msgs.size() > 30) {
+            msgs.erase(
+                msgs.begin(),
+                msgs.begin() +
+                    static_cast<int>(msgs.size() - 30));
             chat_model_.has_more_history = true;
-            chat_model_.dirty("has_more_history");
         }
-        assign_date_labels(chat_model_.messages);
-        chat_model_.dirty("messages");
+        assign_date_labels(msgs);
+        chat_model_.messages.notify();
     } else {
         // Mark channel as unread
-        for (auto& tc : chat_model_.text_channels) {
+        auto& channels = chat_model_.text_channels.silent();
+        for (auto& tc : channels) {
             if (tc.id == static_cast<int>(channel_id)) {
                 tc.has_unread = true;
                 break;
             }
         }
-        chat_model_.dirty("text_channels");
+        chat_model_.text_channels.notify();
     }
 }
 
@@ -2305,16 +2184,16 @@ void AppCore::on_chat_history_resp(const uint8_t* data, size_t len) {
     for (uint16_t i = 0; i < count && !reader.error(); i++)
         batch.push_back(parse_chat_message(reader, user_id_));
 
+    auto& msgs = chat_model_.messages.silent();
     // Prepend to existing messages (batch is oldest-first from server)
     if (!batch.empty()) {
-        batch.insert(batch.end(), chat_model_.messages.begin(), chat_model_.messages.end());
-        chat_model_.messages = std::move(batch);
+        batch.insert(batch.end(), msgs.begin(), msgs.end());
+        msgs = std::move(batch);
     }
 
     chat_model_.has_more_history = has_more != 0;
-    assign_date_labels(chat_model_.messages);
-    chat_model_.dirty("has_more_history");
-    chat_model_.dirty("messages");
+    assign_date_labels(msgs);
+    chat_model_.messages.notify();
 }
 
 void AppCore::on_chat_message_deleted(const uint8_t* data, size_t len) {
@@ -2324,13 +2203,13 @@ void AppCore::on_chat_message_deleted(const uint8_t* data, size_t len) {
     if (reader.error()) return;
 
     if (static_cast<int>(channel_id) == chat_model_.active_channel) {
-        auto& msgs = chat_model_.messages;
+        auto& msgs = chat_model_.messages.silent();
         msgs.erase(std::remove_if(msgs.begin(), msgs.end(),
             [message_id](const ChatMessage& m) { return m.id == static_cast<int64_t>(message_id); }),
             msgs.end());
         assign_date_labels(msgs);
         assign_date_labels(msgs);
-        chat_model_.dirty("messages");
+        chat_model_.messages.notify();
     }
 }
 
@@ -2340,10 +2219,11 @@ void AppCore::on_chat_search_resp(const uint8_t* data, size_t len) {
     uint16_t count = reader.read_u16();
     if (reader.error()) return;
 
-    chat_model_.search_results.clear();
+    auto& results = chat_model_.search_results.silent();
+    results.clear();
     for (uint16_t i = 0; i < count && !reader.error(); i++)
-        chat_model_.search_results.push_back(parse_chat_message(reader, user_id_));
-    chat_model_.dirty("search_results");
+        results.push_back(parse_chat_message(reader, user_id_));
+    chat_model_.search_results.notify();
 }
 
 void AppCore::on_chat_pinned_resp(const uint8_t* data, size_t len) {
@@ -2352,10 +2232,11 @@ void AppCore::on_chat_pinned_resp(const uint8_t* data, size_t len) {
     uint16_t count = reader.read_u16();
     if (reader.error()) return;
 
-    chat_model_.pinned_messages.clear();
+    auto& pinned = chat_model_.pinned_messages.silent();
+    pinned.clear();
     for (uint16_t i = 0; i < count && !reader.error(); i++)
-        chat_model_.pinned_messages.push_back(parse_chat_message(reader, user_id_));
-    chat_model_.dirty("pinned_messages");
+        pinned.push_back(parse_chat_message(reader, user_id_));
+    chat_model_.pinned_messages.notify();
 }
 
 void AppCore::on_chat_file_ready(const uint8_t* data, size_t len) {
@@ -2365,7 +2246,8 @@ void AppCore::on_chat_file_ready(const uint8_t* data, size_t len) {
     if (reader.error()) return;
 
     // Update attachment status in displayed messages
-    for (auto& msg : chat_model_.messages) {
+    auto& msgs = chat_model_.messages.silent();
+    for (auto& msg : msgs) {
         if (msg.id == static_cast<int64_t>(message_id)) {
             for (auto& att : msg.attachments) {
                 if (att.id == static_cast<int64_t>(attachment_id)) {
@@ -2376,7 +2258,7 @@ void AppCore::on_chat_file_ready(const uint8_t* data, size_t len) {
             break;
         }
     }
-    chat_model_.dirty("messages");
+    chat_model_.messages.notify();
 }
 
 } // namespace parties::client

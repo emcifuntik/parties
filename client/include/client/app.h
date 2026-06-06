@@ -5,6 +5,7 @@
 #include <client/screen_capture.h>
 #include <client/sound_player.h>
 #include <client/gradient_circle_element.h>
+#include <client/rml_elements.h>
 #include <client/stream_audio_capture.h>
 #include <parties/types.h>
 #include <parties/video_common.h>
@@ -35,9 +36,7 @@ namespace parties::client {
 class VideoEncoder;
 class VideoDecoder;
 class VideoElement;
-class VideoElementInstancer;
 class LevelMeterElement;
-class LevelMeterInstancer;
 
 class App {
 public:
@@ -99,9 +98,7 @@ private:
     std::unique_ptr<ScreenCapture> capture_;
     std::unique_ptr<VideoEncoder> encoder_;
     std::unique_ptr<VideoDecoder> decoder_;
-    std::unique_ptr<VideoElementInstancer> video_instancer_;
-    std::unique_ptr<LevelMeterInstancer>   level_meter_instancer_;
-    std::unique_ptr<GradientCircleInstancer> gradient_circle_instancer_;
+    parties::rml::ElementRegistry element_registry_;
     LevelMeterElement* level_meter_ = nullptr;  // owned by RmlUi document
     bool sharing_screen_ = false;
     bool stream_revealed_ = false;  // first decoded frame shown to UI

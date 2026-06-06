@@ -79,7 +79,6 @@ private:
     long saved_ex_style_ = 0;
     int saved_rect_[4]{};  // left, top, right, bottom before fullscreen
     class EventListenerInstancer;
-    class GenericEventListener;
 };
 
 } // namespace parties::client

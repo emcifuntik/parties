@@ -1,13 +1,16 @@
 #pragma once
 
+#include <client/rml_binding.h>
+
 #include <RmlUi/Core/Types.h>
-#include <RmlUi/Core/DataModelHandle.h>
 
 #include <functional>
 
 namespace Rml { class Context; }
 
 namespace parties::client {
+
+namespace rml = parties::rml;
 
 struct TextSegment {
     Rml::String text;
@@ -51,42 +54,36 @@ struct PendingFile {
     Rml::String path;       // local file path (for reading data on send)
 };
 
-class ChatModel {
+class ChatModel : public rml::Model {
 public:
-    ChatModel();
-    ~ChatModel();
+    // --- Bound state (Property<T> auto-dirties; arrays via silent()/notify()) ---
+    rml::Prop<Rml::Vector<TextChannel>> text_channels;
+    rml::Prop<int>         active_channel{0};
+    rml::Prop<Rml::String> active_channel_name;
 
-    bool init(Rml::Context* context);
-    void dirty(const Rml::String& variable);
-
-    // --- Bound state ---
-    Rml::Vector<TextChannel> text_channels;
-    int active_channel = 0;
-    Rml::String active_channel_name;
-
-    Rml::Vector<ChatMessage> messages;
-    bool loading_history = false;
-    bool has_more_history = false;
+    rml::Prop<Rml::Vector<ChatMessage>> messages;
+    rml::Prop<bool>        loading_history{false};
+    rml::Prop<bool>        has_more_history{false};
 
     // Compose
-    Rml::String compose_text;
+    rml::Prop<Rml::String> compose_text;
 
     // Search
-    bool show_search = false;
-    Rml::String search_query;
-    Rml::Vector<ChatMessage> search_results;
+    rml::Prop<bool>        show_search{false};
+    rml::Prop<Rml::String> search_query;
+    rml::Prop<Rml::Vector<ChatMessage>> search_results;
 
     // Pinned
-    bool show_pinned = false;
-    Rml::Vector<ChatMessage> pinned_messages;
+    rml::Prop<bool>        show_pinned{false};
+    rml::Prop<Rml::Vector<ChatMessage>> pinned_messages;
 
     // Pending file attachments
-    Rml::Vector<PendingFile> pending_files;
+    rml::Prop<Rml::Vector<PendingFile>> pending_files;
 
     // Create text channel
-    bool can_manage_channels = false;
-    bool show_create_text_channel = false;
-    Rml::String new_text_channel_name;
+    rml::Prop<bool>        can_manage_channels{false};
+    rml::Prop<bool>        show_create_text_channel{false};
+    rml::Prop<Rml::String> new_text_channel_name;
 
     // --- Callbacks ---
     std::function<void()>        on_send_message;
@@ -104,8 +101,9 @@ public:
     std::function<void()>        on_attach_file;
     std::function<void(const std::string&)> on_open_url;
 
-private:
-    Rml::DataModelHandle handle_;
+protected:
+    const char* model_name() const override { return "chat"; }
+    void build(rml::Builder& b) override;
 };
 
 } // namespace parties::client

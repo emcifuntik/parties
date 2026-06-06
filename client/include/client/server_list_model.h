@@ -1,13 +1,16 @@
 #pragma once
 
+#include <client/rml_binding.h>
+
 #include <RmlUi/Core/Types.h>
-#include <RmlUi/Core/DataModelHandle.h>
 
 #include <functional>
 
 namespace Rml { class Context; }
 
 namespace parties::client {
+
+namespace rml = parties::rml;
 
 struct ServerEntry {
     int id = 0;
@@ -19,48 +22,41 @@ struct ServerEntry {
     int color_index = 0;    // 0-4, derived from name hash for icon color
 };
 
-class ServerListModel {
+class ServerListModel : public rml::Model {
 public:
-    ServerListModel();
-    ~ServerListModel();
-
-    bool init(Rml::Context* context);
-
-    void dirty(const Rml::String& variable);
-
-    // --- Bound state ---
-    Rml::Vector<ServerEntry> servers;
-    Rml::String party_count_text;  // e.g. "2 parties"
+    // --- Bound state (Property<T> auto-dirties on assignment) ---
+    rml::Prop<Rml::Vector<ServerEntry>> servers;
+    rml::Prop<Rml::String> party_count_text;  // e.g. "2 parties"
 
     // Add server form
-    bool show_add_form = false;
-    Rml::String edit_host;
-    Rml::String edit_port;
-    Rml::String edit_error;
+    rml::Prop<bool>        show_add_form{false};
+    rml::Prop<Rml::String> edit_host;
+    rml::Prop<Rml::String> edit_port;
+    rml::Prop<Rml::String> edit_error;
 
     // Login overlay
-    bool show_login = false;
-    Rml::String login_username;
-    Rml::String login_password;
-    Rml::String login_error;
-    Rml::String login_status;
+    rml::Prop<bool>        show_login{false};
+    rml::Prop<Rml::String> login_username;
+    rml::Prop<Rml::String> login_password;
+    rml::Prop<Rml::String> login_error;
+    rml::Prop<Rml::String> login_status;
 
     // Identity / seed phrase onboarding
-    bool show_onboarding = false;
-    bool show_restore = false;
-    bool show_key_import = false;
-    Rml::String seed_phrase;
-    Rml::String restore_phrase;
-    Rml::String import_key_hex;
-    Rml::String fingerprint;
-    bool has_identity = false;
+    rml::Prop<bool>        show_onboarding{false};
+    rml::Prop<bool>        show_restore{false};
+    rml::Prop<bool>        show_key_import{false};
+    rml::Prop<Rml::String> seed_phrase;
+    rml::Prop<Rml::String> restore_phrase;
+    rml::Prop<Rml::String> import_key_hex;
+    rml::Prop<Rml::String> fingerprint;
+    rml::Prop<bool>        has_identity{false};
 
     // Active server tracking
-    int connected_server_id = 0;
+    rml::Prop<int>         connected_server_id{0};
 
     // TOFU certificate warning
-    bool show_tofu_warning = false;
-    Rml::String tofu_fingerprint;  // new (mismatched) fingerprint
+    rml::Prop<bool>        show_tofu_warning{false};
+    rml::Prop<Rml::String> tofu_fingerprint;  // new (mismatched) fingerprint
 
     // --- Callbacks (set by App) ---
     std::function<void(int)>  on_connect_server;
@@ -80,8 +76,9 @@ public:
     std::function<void()>     on_tofu_accept;       // trust new certificate
     std::function<void()>     on_tofu_reject;       // cancel connection
 
-private:
-    Rml::DataModelHandle handle_;
+protected:
+    const char* model_name() const override { return "serverlist"; }
+    void build(rml::Builder& b) override;
 };
 
 } // namespace parties::client

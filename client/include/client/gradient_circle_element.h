@@ -36,11 +36,4 @@ private:
     bool dirty_ = true;
 };
 
-class GradientCircleInstancer : public Rml::ElementInstancer {
-public:
-    Rml::ElementPtr InstanceElement(Rml::Element* parent, const Rml::String& tag,
-                                     const Rml::XMLAttributes& attributes) override;
-    void ReleaseElement(Rml::Element* element) override;
-};
-
 } // namespace parties::client

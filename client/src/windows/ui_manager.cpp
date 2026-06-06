@@ -1,4 +1,5 @@
 #include <client/ui_manager.h>
+#include <client/rml_elements.h>
 #include <client/slug_font_engine.h>
 #include <parties/profiler.h>
 
@@ -19,19 +20,6 @@
 #include <cstring>
 
 namespace parties::client {
-
-// ═══════════════════════════════════════════════════════════════════════
-// Event listener helper
-// ═══════════════════════════════════════════════════════════════════════
-
-class UiManager::GenericEventListener : public Rml::EventListener {
-public:
-    GenericEventListener(EventCallback cb) : callback_(std::move(cb)) {}
-    void ProcessEvent(Rml::Event& event) override { callback_(event); }
-
-private:
-    EventCallback callback_;
-};
 
 // ═══════════════════════════════════════════════════════════════════════
 // UiManager
@@ -248,7 +236,8 @@ void UiManager::bind_event(const std::string& element_id, const std::string& eve
         auto* doc = context_->GetDocument(i);
         auto* element = doc->GetElementById(element_id);
         if (element) {
-            auto* listener = new GenericEventListener(std::move(callback));
+            // OwnedListener deletes itself on detach (RmlUi never frees listeners).
+            auto* listener = new parties::rml::OwnedListener(std::move(callback));
             element->AddEventListener(event_type, listener);
             return;
         }

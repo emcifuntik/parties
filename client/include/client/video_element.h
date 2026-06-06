@@ -95,12 +95,4 @@ private:
     float geom_h_ = 0;
 };
 
-class VideoElementInstancer : public Rml::ElementInstancer {
-public:
-    VideoElementInstancer() = default;
-    Rml::ElementPtr InstanceElement(Rml::Element* parent, const Rml::String& tag,
-                                     const Rml::XMLAttributes& attributes) override;
-    void ReleaseElement(Rml::Element* element) override;
-};
-
 } // namespace parties::client

@@ -9,6 +9,7 @@
 #include <client/video_decoder.h>
 #include <client/video_element.h>
 #include <client/level_meter_element.h>
+#include <client/custom_elements.h>
 #include <parties/protocol.h>
 #include <parties/serialization.h>
 #include <parties/crypto.h>
@@ -135,10 +136,6 @@ bool App::init(HWND hwnd, int renderer_id) {
             core_.model_.rename_channel_name = name;
             core_.model_.new_rename_channel_name = name;
             core_.model_.show_rename_channel = true;
-            core_.model_.dirty("rename_channel_id");
-            core_.model_.dirty("rename_channel_name");
-            core_.model_.dirty("new_rename_channel_name");
-            core_.model_.dirty("show_rename_channel");
         } else if (cmd == ID_DELETE) {
             BinaryWriter writer;
             writer.write_u32(static_cast<uint32_t>(channel_id));
@@ -226,14 +223,12 @@ bool App::init(HWND hwnd, int renderer_id) {
     // Windows-only: select share target from DXGI list
     core_.model_.on_select_share_target = [this](int index) {
         core_.model_.show_share_picker = false;
-        core_.model_.dirty("show_share_picker");
         start_screen_share(index);
     };
 
     // Override on_cancel_share to also clear capture targets
     core_.model_.on_cancel_share = [this]() {
         core_.model_.show_share_picker = false;
-        core_.model_.dirty("show_share_picker");
         capture_targets_.clear();
     };
 
@@ -277,14 +272,14 @@ bool App::init(HWND hwnd, int renderer_id) {
             std::string vm = pref(kMods); mods = vm.empty() ? 0 : std::stoi(vm);
             name = Rml::String(combo_name(key, key2, mods).c_str());
         };
-        load_hotkey(core_.model_.ptt_key,    core_.model_.ptt_key2,    core_.model_.ptt_mods,
-                    core_.model_.ptt_key_name,
+        load_hotkey(core_.model_.ptt_key.silent(),    core_.model_.ptt_key2,    core_.model_.ptt_mods,
+                    core_.model_.ptt_key_name.silent(),
                     "audio.ptt_key",    "audio.ptt_key2",    "audio.ptt_mods");
-        load_hotkey(core_.model_.mute_key,   core_.model_.mute_key2,   core_.model_.mute_mods,
-                    core_.model_.mute_key_name,
+        load_hotkey(core_.model_.mute_key.silent(),   core_.model_.mute_key2,   core_.model_.mute_mods,
+                    core_.model_.mute_key_name.silent(),
                     "audio.mute_key",   "audio.mute_key2",   "audio.mute_mods");
-        load_hotkey(core_.model_.deafen_key, core_.model_.deafen_key2, core_.model_.deafen_mods,
-                    core_.model_.deafen_key_name,
+        load_hotkey(core_.model_.deafen_key.silent(), core_.model_.deafen_key2, core_.model_.deafen_mods,
+                    core_.model_.deafen_key_name.silent(),
                     "audio.deafen_key", "audio.deafen_key2", "audio.deafen_mods");
     }
 
@@ -292,12 +287,7 @@ bool App::init(HWND hwnd, int renderer_id) {
     sound_player_.init();
 
     // Register custom elements before loading document
-    video_instancer_       = std::make_unique<VideoElementInstancer>();
-    level_meter_instancer_ = std::make_unique<LevelMeterInstancer>();
-    gradient_circle_instancer_ = std::make_unique<GradientCircleInstancer>();
-    Rml::Factory::RegisterElementInstancer("video_frame", video_instancer_.get());
-    Rml::Factory::RegisterElementInstancer("level_meter", level_meter_instancer_.get());
-    Rml::Factory::RegisterElementInstancer("gradient_circle", gradient_circle_instancer_.get());
+    register_custom_elements(element_registry_);
 
     doc_ = ui_.load_document("ui/lobby.rml");
     if (doc_) {
@@ -312,8 +302,6 @@ bool App::init(HWND hwnd, int renderer_id) {
         core_.server_model_.has_identity = true;
         core_.server_model_.fingerprint  = Rml::String(
             parties::public_key_fingerprint(core_.public_key_));
-        core_.server_model_.dirty("has_identity");
-        core_.server_model_.dirty("fingerprint");
     }
 
     return true;
@@ -345,7 +333,6 @@ void App::poll_hotkeys() {
     if (any_binding) {
         if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) {
             core_.model_.ptt_binding = core_.model_.mute_binding = core_.model_.deafen_binding = false;
-            core_.model_.dirty("ptt_binding"); core_.model_.dirty("mute_binding"); core_.model_.dirty("deafen_binding");
             capture_peak_key_ = capture_peak_key2_ = capture_peak_mods_ = 0;
             capture_had_input_ = false;
         } else {
@@ -386,18 +373,18 @@ void App::poll_hotkeys() {
                     core_.model_.dirty(dirty_bind);
                 };
                 if (core_.model_.ptt_binding)
-                    finalize(core_.model_.ptt_key, core_.model_.ptt_key2, core_.model_.ptt_mods,
-                             core_.model_.ptt_key_name, core_.model_.ptt_binding,
+                    finalize(core_.model_.ptt_key.silent(), core_.model_.ptt_key2, core_.model_.ptt_mods,
+                             core_.model_.ptt_key_name.silent(), core_.model_.ptt_binding.silent(),
                              "audio.ptt_key", "audio.ptt_key2", "audio.ptt_mods",
                              "ptt_key", "ptt_key_name", "ptt_binding");
                 if (core_.model_.mute_binding)
-                    finalize(core_.model_.mute_key, core_.model_.mute_key2, core_.model_.mute_mods,
-                             core_.model_.mute_key_name, core_.model_.mute_binding,
+                    finalize(core_.model_.mute_key.silent(), core_.model_.mute_key2, core_.model_.mute_mods,
+                             core_.model_.mute_key_name.silent(), core_.model_.mute_binding.silent(),
                              "audio.mute_key", "audio.mute_key2", "audio.mute_mods",
                              "mute_key", "mute_key_name", "mute_binding");
                 if (core_.model_.deafen_binding)
-                    finalize(core_.model_.deafen_key, core_.model_.deafen_key2, core_.model_.deafen_mods,
-                             core_.model_.deafen_key_name, core_.model_.deafen_binding,
+                    finalize(core_.model_.deafen_key.silent(), core_.model_.deafen_key2, core_.model_.deafen_mods,
+                             core_.model_.deafen_key_name.silent(), core_.model_.deafen_binding.silent(),
                              "audio.deafen_key", "audio.deafen_key2", "audio.deafen_mods",
                              "deafen_key", "deafen_key_name", "deafen_binding");
                 capture_peak_key_ = capture_peak_key2_ = capture_peak_mods_ = 0;
@@ -473,7 +460,6 @@ void App::update() {
     // ESC exits fullscreen stream view
     if (core_.model_.stream_fullscreen && (GetAsyncKeyState(VK_ESCAPE) & 1)) {
         core_.model_.stream_fullscreen = false;
-        core_.model_.dirty("stream_fullscreen");
     }
 
     // Sync OS window fullscreen state with model
@@ -575,24 +561,24 @@ void App::show_share_picker() {
     }
 
     capture_targets_.clear();
-    core_.model_.share_targets.clear();
+    auto& targets = core_.model_.share_targets.silent();
+    targets.clear();
 
     for (auto& m : capture_->enumerate_monitors()) {
         int idx = static_cast<int>(capture_targets_.size());
         ShareTarget st; st.name = Rml::String(m.name); st.index = idx; st.is_monitor = true;
-        core_.model_.share_targets.push_back(std::move(st));
+        targets.push_back(std::move(st));
         capture_targets_.push_back(std::move(m));
     }
     for (auto& w : capture_->enumerate_windows()) {
         int idx = static_cast<int>(capture_targets_.size());
         ShareTarget st; st.name = Rml::String(w.name); st.index = idx; st.is_monitor = false;
-        core_.model_.share_targets.push_back(std::move(st));
+        targets.push_back(std::move(st));
         capture_targets_.push_back(std::move(w));
     }
 
+    core_.model_.share_targets.notify();
     core_.model_.show_share_picker = true;
-    core_.model_.dirty("share_targets");
-    core_.model_.dirty("show_share_picker");
 }
 
 void App::init_scale_pipeline(ID3D11Device* device) {
@@ -648,7 +634,7 @@ void App::start_screen_share(int target_index) {
     }
 
     constexpr uint32_t fps_presets[] = {15, 30, 60, 120};
-    int fps_idx = (std::max)(0, (std::min)(core_.model_.share_fps, 3));
+    int fps_idx = (std::max)(0, (std::min)(core_.model_.share_fps.get(), 3));
     encode_fps_ = fps_presets[fps_idx];
 
     if (!capture_->start(target, encode_fps_)) {
@@ -660,10 +646,10 @@ void App::start_screen_share(int target_index) {
     capture_->on_closed = [this]() { capture_lost_.store(true, std::memory_order_relaxed); };
     capture_targets_.clear();
 
-    core_.settings_.set_pref("video.share_bitrate", std::to_string(core_.model_.share_bitrate));
-    core_.settings_.set_pref("video.share_fps",     std::to_string(core_.model_.share_fps));
-    core_.settings_.set_pref("video.share_codec",   std::to_string(core_.model_.share_codec));
-    core_.settings_.set_pref("video.share_scale",   std::to_string(core_.model_.share_scale));
+    core_.settings_.set_pref("video.share_bitrate", std::to_string(core_.model_.share_bitrate.get()));
+    core_.settings_.set_pref("video.share_fps",     std::to_string(core_.model_.share_fps.get()));
+    core_.settings_.set_pref("video.share_codec",   std::to_string(core_.model_.share_codec.get()));
+    core_.settings_.set_pref("video.share_scale",   std::to_string(core_.model_.share_scale.get()));
 
     core_.video_frame_number_ = 0;
 
@@ -745,7 +731,7 @@ void App::start_screen_share(int target_index) {
 
         // Apply scale factor
         constexpr float scale_factors[] = {1.0f, 0.75f, 0.5f, 0.25f};
-        int scale_idx = (std::max)(0, (std::min)(core_.model_.share_scale, 3));
+        int scale_idx = (std::max)(0, (std::min)(core_.model_.share_scale.get(), 3));
         float sf = scale_factors[scale_idx];
         uint32_t tex_w = (static_cast<uint32_t>(cap_w * sf) + 1) & ~1u;
         uint32_t tex_h = (static_cast<uint32_t>(cap_h * sf) + 1) & ~1u;
@@ -856,7 +842,6 @@ void App::start_screen_share(int target_index) {
 
     sharing_screen_ = true;
     core_.model_.is_sharing = true;
-    core_.model_.dirty("is_sharing");
 
     BinaryWriter writer;
     writer.write_u8(0); writer.write_u16(0); writer.write_u16(0);
@@ -892,7 +877,6 @@ void App::stop_screen_share() {
     core_.video_frame_number_ = 0;
 
     core_.model_.is_sharing = false;
-    core_.model_.dirty("is_sharing");
 
     if (core_.authenticated_ && core_.current_channel_ != 0)
         core_.net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_STOP, nullptr, 0);

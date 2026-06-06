@@ -357,17 +357,4 @@ void VideoElement::OnRender() {
     }
 }
 
-// ── Instancer ───────────────────────────────────────────────────────
-
-Rml::ElementPtr VideoElementInstancer::InstanceElement(
-    Rml::Element* /*parent*/, const Rml::String& tag,
-    const Rml::XMLAttributes& /*attributes*/)
-{
-    return Rml::ElementPtr(new VideoElement(tag));
-}
-
-void VideoElementInstancer::ReleaseElement(Rml::Element* element) {
-    delete element;
-}
-
 } // namespace parties::client

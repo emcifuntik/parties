@@ -138,16 +138,4 @@ void LevelMeterElement::OnRender() {
     ri->RenderGeometry(geom_, offset, 0);
 }
 
-// ── Instancer ──────────────────────────────────────────────────────
-
-Rml::ElementPtr LevelMeterInstancer::InstanceElement(
-    Rml::Element* /*parent*/, const Rml::String& tag,
-    const Rml::XMLAttributes& /*attributes*/) {
-    return Rml::ElementPtr(new LevelMeterElement(tag));
-}
-
-void LevelMeterInstancer::ReleaseElement(Rml::Element* element) {
-    delete element;
-}
-
 } // namespace parties::client

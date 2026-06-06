@@ -45,6 +45,7 @@
 #include <client/video_element.h>
 #include <client/level_meter_element.h>
 #include <client/gradient_circle_element.h>
+#include <client/custom_elements.h>
 
 #ifdef SENTRY_COCOA_ENABLED
 #import <Sentry/Sentry.h>
@@ -242,9 +243,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     EmbeddedFileInterface _fileInterface;
 
     // Custom element instancers
-    VideoElementInstancer _videoInstancer;
-    LevelMeterInstancer   _levelMeterInstancer;
-    GradientCircleInstancer _gradientCircleInstancer;
+    parties::rml::ElementRegistry _elementRegistry;
     LevelMeterElement*    _levelMeter;
 
     // AppCore — all shared connection/audio/model logic
@@ -319,9 +318,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     Rml::StyleSheetSpecification::RegisterProperty("window-action", "none", true)
         .AddParser("keyword", "none, caption, close, minimize, maximize");
 
-    Rml::Factory::RegisterElementInstancer("video_frame", &_videoInstancer);
-    Rml::Factory::RegisterElementInstancer("level_meter", &_levelMeterInstancer);
-    Rml::Factory::RegisterElementInstancer("gradient_circle", &_gradientCircleInstancer);
+    parties::client::register_custom_elements(_elementRegistry);
 
     CGSize physical = _metalView.drawableSize;
     float  dpRatio  = (float)[[NSScreen mainScreen] backingScaleFactor];
@@ -487,7 +484,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
                 elem->SetInnerRML(Rml::String(std::to_string(fps) + " fps"));
             if (auto* elem = _doc->GetElementById("titlebar-ping")) {
                 if (_core.model_.is_connected)
-                    elem->SetInnerRML(Rml::String(std::to_string(_core.model_.ping_ms) + " ms"));
+                    elem->SetInnerRML(Rml::String(std::to_string(_core.model_.ping_ms.get()) + " ms"));
                 else
                     elem->SetInnerRML("");
             }
@@ -617,21 +614,18 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     NSLog(@"[ScreenShare] showSharePicker");
     _core.model_.use_native_picker  = true;
     _core.model_.show_share_picker  = true;
-    _core.model_.dirty("use_native_picker");
-    _core.model_.dirty("show_share_picker");
 }
 
 - (void)startNativeShare
 {
     NSLog(@"[ScreenShare] startNativeShare");
     _core.model_.show_share_picker = false;
-    _core.model_.dirty("show_share_picker");
 
     _capturer = std::make_unique<ScreenCaptureMac>();
     PartiesViewController* bself = self;
 
     static const uint32_t fps_table[] = { 15, 30, 60, 120 };
-    uint32_t capture_fps = fps_table[std::min(_core.model_.share_fps, 3)];
+    uint32_t capture_fps = fps_table[std::min(_core.model_.share_fps.get(), 3)];
 
     _capturer->pick_and_start(capture_fps, [bself](bool success) {
         NSLog(@"[ScreenShare] pick_and_start callback: success=%d", success);
@@ -655,7 +649,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         if (!bself->_encoderReady) {
             uint32_t bitrate = (uint32_t)(bself->_core.model_.share_bitrate * 1000000.0f);
             static const uint32_t fps_table[] = { 15, 30, 60, 120 };
-            uint32_t fps = fps_table[std::min(bself->_core.model_.share_fps, 3)];
+            uint32_t fps = fps_table[std::min(bself->_core.model_.share_fps.get(), 3)];
 
             // Codec selection: 0=AV1, 1=H265, 2=H264
             MacVideoCodec mac_codec = (bself->_core.model_.share_codec == 0) ? MacVideoCodec::AV1
@@ -664,7 +658,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
             // Apply scale factor
             static const float scale_factors[] = {1.0f, 0.75f, 0.5f, 0.25f};
-            int scale_idx = std::max(0, std::min(bself->_core.model_.share_scale, 3));
+            int scale_idx = std::max(0, std::min(bself->_core.model_.share_scale.get(), 3));
             float sf = scale_factors[scale_idx];
             uint32_t enc_w = ((uint32_t)(w * sf) + 1) & ~1u;
             uint32_t enc_h = ((uint32_t)(h * sf) + 1) & ~1u;
@@ -717,7 +711,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
             dispatch_async(dispatch_get_main_queue(), ^{
                 bself->_sharing = true;
                 bself->_core.model_.is_sharing = true;
-                bself->_core.model_.dirty("is_sharing");
                 // Server expects codec(1) + width(2) + height(2); placeholder values
                 // are updated by SCREEN_SHARE_UPDATE once the encoder produces real dims.
                 uint8_t payload[5] = {};
@@ -819,7 +812,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     _core.video_frame_number_ = 0;
 
     _core.model_.is_sharing = false;
-    _core.model_.dirty("is_sharing");
 
     if (_core.authenticated_)
         _core.net_.send_message(ControlMessageType::SCREEN_SHARE_STOP, nullptr, 0);
@@ -840,7 +832,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     _core.net_.send_message(ControlMessageType::SCREEN_SHARE_VIEW,
                              (const uint8_t*)&id32, sizeof(id32));
 
-    _core.model_.viewing_sharer_id = static_cast<int>(sharerId);
+    _core.model_.viewing_sharer_id.silent() = static_cast<int>(sharerId);
     _streamRevealed = false;
     // Don't dirty yet — onVideoDecoded dirties on first frame to avoid black flash
 }
@@ -857,7 +849,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
                              (const uint8_t*)&zero, sizeof(zero));
 
     _core.model_.viewing_sharer_id = 0;
-    _core.model_.dirty("viewing_sharer_id");
 
     if (_doc) {
         auto* el = dynamic_cast<VideoElement*>(_doc->GetElementById("screen-share"));

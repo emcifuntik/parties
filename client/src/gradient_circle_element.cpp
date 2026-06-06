@@ -173,16 +173,4 @@ void GradientCircleElement::OnRender() {
     ri->RenderGeometry(geom_, offset, 0);
 }
 
-// ── Instancer ──────────────────────────────────────────────────────
-
-Rml::ElementPtr GradientCircleInstancer::InstanceElement(
-    Rml::Element* /*parent*/, const Rml::String& tag,
-    const Rml::XMLAttributes& /*attributes*/) {
-    return Rml::ElementPtr(new GradientCircleElement(tag));
-}
-
-void GradientCircleInstancer::ReleaseElement(Rml::Element* element) {
-    delete element;
-}
-
 } // namespace parties::client
