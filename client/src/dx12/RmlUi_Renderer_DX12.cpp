@@ -638,6 +638,11 @@ struct GeometryData {
 	int num_indices = 0;
 	// Axis-aligned bounding box for CPU-side frustum culling
 	float min_x = 0, min_y = 0, max_x = 0, max_y = 0;
+	// Per-frame-in-flight vertex buffers for geometry updated via
+	// UpdateGeometryVertices. Built lazily on first dynamic update so the CPU
+	// never overwrites vertices the GPU may still be reading for an in-flight frame.
+	Microsoft::WRL::ComPtr<ID3D12Resource> vertex_buffer_ring[RenderInterface_DX12::NUM_BACK_BUFFERS];
+	UINT ring_vb_size = 0;
 };
 
 struct TextureData {
@@ -2999,6 +3004,7 @@ void RenderInterface_DX12::BeginFrame() {
 			static_cast<unsigned long>(hr));
 		return;
 	}
+	frame_active_ = true;
 
 	// Transition back buffer: PRESENT -> RENDER_TARGET
 	D3D12_RESOURCE_BARRIER barrier{};
@@ -3139,6 +3145,7 @@ void RenderInterface_DX12::EndFrame() {
 
 	// Close and execute
 	HRESULT hr = command_list_->Close();
+	frame_active_ = false;
 	if (FAILED(hr)) {
 		std::fprintf(stderr, "[DX12] CommandList::Close failed: 0x%08lX\n",
 			static_cast<unsigned long>(hr));
@@ -3344,12 +3351,45 @@ void RenderInterface_DX12::UpdateGeometryVertices(
 	if (!geometry || vertices.empty()) return;
 	auto* geom = reinterpret_cast<GeometryData*>(geometry);
 	const UINT vb_size = static_cast<UINT>(vertices.size() * sizeof(Rml::Vertex));
+
+	// Dynamic geometry: write into a per-frame-in-flight ring buffer instead of
+	// overwriting the single shared upload buffer in place. With multiple frames
+	// in flight the GPU may still be reading last frame's vertices from the same
+	// buffer, so an in-place memcpy is a CPU-write/GPU-read race (tearing/flicker).
+	// BeginFrame already waited on the fence for current_back_buffer_index_, so
+	// the ring slot for this back buffer is guaranteed idle.
+	if (geom->ring_vb_size < vb_size) {
+		D3D12_HEAP_PROPERTIES upload_heap{};
+		upload_heap.Type = D3D12_HEAP_TYPE_UPLOAD;
+		D3D12_RESOURCE_DESC buf_desc{};
+		buf_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+		buf_desc.Width = vb_size;
+		buf_desc.Height = 1;
+		buf_desc.DepthOrArraySize = 1;
+		buf_desc.MipLevels = 1;
+		buf_desc.Format = DXGI_FORMAT_UNKNOWN;
+		buf_desc.SampleDesc.Count = 1;
+		buf_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+		for (int i = 0; i < NUM_BACK_BUFFERS; i++) {
+			if (geom->vertex_buffer_ring[i])
+				DeferRelease(std::move(geom->vertex_buffer_ring[i]));
+			HRESULT chr = device_->CreateCommittedResource(
+				&upload_heap, D3D12_HEAP_FLAG_NONE, &buf_desc,
+				D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+				IID_PPV_ARGS(&geom->vertex_buffer_ring[i]));
+			if (FAILED(chr)) { geom->ring_vb_size = 0; return; }
+		}
+		geom->ring_vb_size = vb_size;
+	}
+
+	auto& buf = geom->vertex_buffer_ring[current_back_buffer_index_];
 	void* mapped = nullptr;
 	D3D12_RANGE read_range{0, 0};
-	HRESULT hr = geom->vertex_buffer->Map(0, &read_range, &mapped);
-	if (SUCCEEDED(hr)) {
+	if (SUCCEEDED(buf->Map(0, &read_range, &mapped))) {
 		std::memcpy(mapped, vertices.data(), vb_size);
-		geom->vertex_buffer->Unmap(0, nullptr);
+		buf->Unmap(0, nullptr);
+		geom->vbv.BufferLocation = buf->GetGPUVirtualAddress();
+		geom->vbv.SizeInBytes = vb_size;
 	}
 }
 
@@ -3453,6 +3493,9 @@ void RenderInterface_DX12::ReleaseGeometry(Rml::CompiledGeometryHandle geometry)
 	// Defer deletion — GPU may still be using these buffers
 	DeferRelease(std::move(geom->vertex_buffer));
 	DeferRelease(std::move(geom->index_buffer));
+	for (int i = 0; i < NUM_BACK_BUFFERS; i++)
+		if (geom->vertex_buffer_ring[i])
+			DeferRelease(std::move(geom->vertex_buffer_ring[i]));
 	delete geom;
 }
 
@@ -3837,7 +3880,7 @@ void RenderInterface_DX12::UpdateYUVTexture(uintptr_t handle,
 	uint32_t width, uint32_t height) {
 	ZoneScopedN("DX12::UpdateYUVTexture");
 
-	if (!handle) return;
+	if (!handle || !frame_active_) return;
 	auto* yuv = reinterpret_cast<YUVTextureData*>(handle);
 
 	int half_w = static_cast<int>(width / 2);
@@ -3886,7 +3929,7 @@ void RenderInterface_DX12::RenderYUVGeometry(
 	Rml::Vector2f translation, uintptr_t yuv_handle) {
 	ZoneScopedN("DX12::RenderYUVGeometry");
 
-	if (!geometry || !yuv_handle) return;
+	if (!geometry || !yuv_handle || !frame_active_) return;
 	auto* geom = reinterpret_cast<GeometryData*>(geometry);
 	auto* yuv = reinterpret_cast<YUVTextureData*>(yuv_handle);
 
@@ -4113,7 +4156,7 @@ void RenderInterface_DX12::UpdateNV12Texture(uintptr_t handle,
 	uint32_t width, uint32_t height) {
 	ZoneScopedN("DX12::UpdateNV12Texture");
 
-	if (!handle) return;
+	if (!handle || !frame_active_) return;
 	auto* nv12 = reinterpret_cast<NV12TextureData*>(handle);
 
 	int half_w = static_cast<int>(width / 2);
@@ -4157,7 +4200,7 @@ void RenderInterface_DX12::RenderNV12Geometry(
 	Rml::Vector2f translation, uintptr_t nv12_handle) {
 	ZoneScopedN("DX12::RenderNV12Geometry");
 
-	if (!geometry || !nv12_handle) return;
+	if (!geometry || !nv12_handle || !frame_active_) return;
 	auto* geom = reinterpret_cast<GeometryData*>(geometry);
 	auto* nv12 = reinterpret_cast<NV12TextureData*>(nv12_handle);
 

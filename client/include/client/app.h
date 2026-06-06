@@ -47,12 +47,25 @@ public:
     bool init(HWND hwnd, int renderer_id = 0);
     void shutdown();
 
-    // Main loop tick (called each frame)
-    void update();
+    // Per-iteration logic tick on the message thread (network, hotkeys,
+    // fullscreen sync). Rendering runs on a dedicated render thread (render_loop)
+    // so the picture keeps updating even while the OS modal move/resize loop
+    // parks the message thread.
+    void tick_message_thread();
 
-    // Lightweight tick for global hotkeys (PTT, mute, deafen).
-    // Called even when minimized.
+    // Lightweight tick for global hotkeys (PTT, mute, deafen). Called from
+    // tick_message_thread under ui_mutex_.
     void poll_hotkeys();
+
+    // Defer a window resize / DPI change to the render thread, which owns the
+    // GPU swap chain and the RmlUi context dimensions.
+    void defer_resize(int width, int height);
+    void defer_dpi(float scale);
+
+    // Guards all RmlUi context + data-model access (render thread vs. the
+    // message thread's input/tick). Recursive so a modal handler that re-enters
+    // WndProc while already holding it (e.g. a native dialog) won't self-deadlock.
+    std::recursive_mutex& ui_mutex() { return ui_mutex_; }
 
     // Public accessor for WndProc
     UiManager* ui_manager() { return &ui_; }
@@ -75,9 +88,24 @@ private:
 
     void update_voice_level();
 
+    // Render thread: owns the GPU swap chain + per-frame rendering and decoded-
+    // video delivery, paced by vsync. Independent of the Win32 message loop.
+    void render_loop();
+    void render_frame();
+
     HWND hwnd_ = nullptr;
     SoundPlayer sound_player_;
     UiManager ui_;
+
+    // ── Render thread + UI synchronization ───────────────────────────────
+    std::recursive_mutex ui_mutex_;            // guards RmlUi context + data model
+    std::thread          render_thread_;
+    std::atomic<bool>    render_running_{false};
+    std::atomic<bool>    resize_pending_{false};
+    std::atomic<int>     pending_w_{0};
+    std::atomic<int>     pending_h_{0};
+    std::atomic<bool>    dpi_pending_{false};
+    std::atomic<float>   pending_dpi_{1.0f};
 
     // PTT release delay
     std::chrono::steady_clock::time_point ptt_release_time_{};

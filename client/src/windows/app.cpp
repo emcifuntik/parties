@@ -304,10 +304,21 @@ bool App::init(HWND hwnd, int renderer_id) {
             parties::public_key_fingerprint(core_.public_key_));
     }
 
+    // Start the render thread last: the document is loaded and models are
+    // initialized, so it is safe for it to begin touching the RmlUi context.
+    render_running_.store(true, std::memory_order_release);
+    render_thread_ = std::thread([this] { render_loop(); });
+
     return true;
 }
 
 void App::shutdown() {
+    // Stop the render thread first so nothing renders or touches the RmlUi
+    // context concurrently while the rest of the app tears down.
+    render_running_.store(false, std::memory_order_release);
+    if (render_thread_.joinable())
+        render_thread_.join();
+
     if (stream_audio_capture_) { stream_audio_capture_->stop(); stream_audio_capture_.reset(); }
     if (capture_) { capture_->stop(); capture_->shutdown(); capture_.reset(); }
     if (encode_thread_.joinable()) {
@@ -443,98 +454,157 @@ void App::poll_hotkeys() {
     }
 }
 
-void App::update() {
-    ZoneScopedN("App::update");
+// ─────────────────────────────────────────────────────────────────────────────
+// Render thread — owns the GPU swap chain, per-frame rendering and decoded-video
+// delivery. Runs independently of the Win32 message loop so the picture keeps
+// updating even while the OS modal move/resize loop parks the message thread.
+// ─────────────────────────────────────────────────────────────────────────────
 
-    // Check if captured window was closed
-    if (capture_lost_.exchange(false, std::memory_order_relaxed)) {
+void App::render_loop() {
+    TracySetThreadName("Render");
+    while (render_running_.load(std::memory_order_acquire)) {
+        // Apply deferred resize / DPI on the render thread (it owns the GPU swap
+        // chain and the RmlUi context dimensions).
+        if (resize_pending_.exchange(false, std::memory_order_acquire)) {
+            int w = pending_w_.load(std::memory_order_relaxed);
+            int h = pending_h_.load(std::memory_order_relaxed);
+            std::lock_guard<std::recursive_mutex> lock(ui_mutex_);
+            ui_.on_resize(w, h);
+        }
+        if (dpi_pending_.exchange(false, std::memory_order_acquire)) {
+            float scale = pending_dpi_.load(std::memory_order_relaxed);
+            std::lock_guard<std::recursive_mutex> lock(ui_mutex_);
+            ui_.on_dpi_change(scale);
+        }
+        if (ui_.is_minimized()) {
+            Sleep(16);          // nothing to draw — don't spin
+            continue;
+        }
+        render_frame();         // self-paced by vsync (BeginFrame wait + present)
+    }
+}
+
+void App::render_frame() {
+    ZoneScopedN("App::render_frame");
+
+    ui_.render_begin();         // BeginFrame: GPU/vsync wait — no context, no lock
+    {
+        std::lock_guard<std::recursive_mutex> lock(ui_mutex_);
+
+        // Deliver latest decoded video frame to VideoElement for GPU rendering
+        if (new_frame_available_ && doc_) {
+            ZoneScopedN("App::deliver_video_frame");
+            std::vector<uint8_t> y, u, v;
+            uint32_t w = 0, h = 0, ys = 0, uvs = 0;
+            bool nv12 = false;
+            {
+                std::lock_guard<std::mutex> flock(frame_mutex_);
+                if (new_frame_available_) {
+                    y.swap(shared_y_); u.swap(shared_u_); v.swap(shared_v_);
+                    w = shared_width_; h = shared_height_;
+                    ys = shared_y_stride_; uvs = shared_uv_stride_;
+                    nv12 = shared_nv12_;
+                    new_frame_available_ = false;
+                }
+            }
+            if (!y.empty() && w > 0 && h > 0) {
+                // Reveal video area on first frame (deferred from watch_sharer)
+                if (!stream_revealed_) {
+                    stream_revealed_ = true;
+                    core_.model_.dirty("viewing_sharer_id");
+                }
+                core_.stream_frame_count_.fetch_add(1, std::memory_order_relaxed);
+                auto* elem = doc_->GetElementById("screen-share");
+                if (elem) {
+                    auto* ve = static_cast<VideoElement*>(elem);
+                    if (nv12)
+                        ve->UpdateNV12Frame(y, ys, u, uvs, w, h);
+                    else
+                        ve->UpdateYUVFrame(y.data(), ys, u.data(), v.data(), uvs, w, h);
+                }
+            }
+            // Return spent buffers so staging_ can reuse them
+            {
+                std::lock_guard<std::mutex> flock(frame_mutex_);
+                if (!new_frame_available_) {
+                    shared_y_.swap(y); shared_u_.swap(u); shared_v_.swap(v);
+                }
+            }
+        }
+
+        // Update voice level meter
+        update_voice_level();
+
+        // Update FPS + ping in titlebar (once per second)
+        fps_frame_count_++;
+        auto now_fps = std::chrono::steady_clock::now();
+        float elapsed_fps = std::chrono::duration<float>(now_fps - fps_last_update_).count();
+        if (elapsed_fps >= 1.0f) {
+            int fps = static_cast<int>(fps_frame_count_ / elapsed_fps);
+            fps_frame_count_ = 0;
+            fps_last_update_ = now_fps;
+            if (doc_) {
+                if (auto* elem = doc_->GetElementById("titlebar-fps"))
+                    elem->SetInnerRML(Rml::String(std::to_string(fps) + " fps"));
+                if (auto* elem = doc_->GetElementById("titlebar-ping")) {
+                    if (core_.model_.is_connected)
+                        elem->SetInnerRML(Rml::String(std::to_string(core_.model_.ping_ms.get()) + " ms"));
+                    else
+                        elem->SetInnerRML("");
+                }
+            }
+        }
+
+        ui_.update();
+        ui_.render_body();
+    }
+    ui_.render_end();           // EndFrame: present (+ DwmFlush) — no context, no lock
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Message-thread logic tick (network, hotkeys, fullscreen). Paused while the OS
+// modal move/resize loop runs — harmless, since rendering is on its own thread.
+// ─────────────────────────────────────────────────────────────────────────────
+
+void App::tick_message_thread() {
+    ZoneScopedN("App::tick_message_thread");
+
+    // Captured window closed (local screen share). Read the flag before locking;
+    // stop_screen_share joins the encode thread, which never takes ui_mutex_.
+    bool capture_lost = capture_lost_.exchange(false, std::memory_order_relaxed);
+
+    std::lock_guard<std::recursive_mutex> lock(ui_mutex_);
+
+    if (capture_lost) {
         LOG_WARN("Capture target lost, stopping screen share");
         stop_screen_share();
     }
 
-    // Tick shared logic (network messages, speaking state, FPS counter, etc.)
+    // Tick shared logic (network messages, speaking state, model updates, etc.)
     core_.tick();
 
     poll_hotkeys();
 
     // ESC exits fullscreen stream view
-    if (core_.model_.stream_fullscreen && (GetAsyncKeyState(VK_ESCAPE) & 1)) {
+    if (core_.model_.stream_fullscreen && (GetAsyncKeyState(VK_ESCAPE) & 1))
         core_.model_.stream_fullscreen = false;
-    }
 
-    // Sync OS window fullscreen state with model
+    // Sync OS window fullscreen state with the model. set_fullscreen performs
+    // window ops (SetWindowPos) and must run on the message thread.
     if (ui_.is_fullscreen() != core_.model_.stream_fullscreen)
         ui_.set_fullscreen(core_.model_.stream_fullscreen);
+}
 
-    // Deliver latest decoded video frame to VideoElement for GPU rendering
-    if (new_frame_available_ && doc_) {
-        ZoneScopedN("App::deliver_video_frame");
-        std::vector<uint8_t> y, u, v;
-        uint32_t w = 0, h = 0, ys = 0, uvs = 0;
-        bool nv12 = false;
-        {
-            std::lock_guard<std::mutex> lock(frame_mutex_);
-            if (new_frame_available_) {
-                y.swap(shared_y_); u.swap(shared_u_); v.swap(shared_v_);
-                w = shared_width_; h = shared_height_;
-                ys = shared_y_stride_; uvs = shared_uv_stride_;
-                nv12 = shared_nv12_;
-                new_frame_available_ = false;
-            }
-        }
-        if (!y.empty() && w > 0 && h > 0) {
-            // Reveal video area on first frame (deferred from watch_sharer)
-            if (!stream_revealed_) {
-                stream_revealed_ = true;
-                core_.model_.dirty("viewing_sharer_id");
-            }
-            core_.stream_frame_count_.fetch_add(1, std::memory_order_relaxed);
-            auto* elem = doc_->GetElementById("screen-share");
-            if (elem) {
-                auto* ve = static_cast<VideoElement*>(elem);
-                if (nv12)
-                    ve->UpdateNV12Frame(y, ys, u, uvs, w, h);
-                else
-                    ve->UpdateYUVFrame(y.data(), ys, u.data(), v.data(), uvs, w, h);
-            }
-        }
-        // Return spent buffers so staging_ can reuse them
-        {
-            std::lock_guard<std::mutex> lock(frame_mutex_);
-            if (!new_frame_available_) {
-                shared_y_.swap(y); shared_u_.swap(u); shared_v_.swap(v);
-            }
-        }
-    }
+void App::defer_resize(int width, int height) {
+    if (width <= 0 || height <= 0) return;
+    pending_w_.store(width, std::memory_order_relaxed);
+    pending_h_.store(height, std::memory_order_relaxed);
+    resize_pending_.store(true, std::memory_order_release);
+}
 
-    // Update voice level meter
-    update_voice_level();
-
-    // Update FPS + ping in titlebar (once per second)
-    fps_frame_count_++;
-    auto now_fps = std::chrono::steady_clock::now();
-    float elapsed_fps = std::chrono::duration<float>(now_fps - fps_last_update_).count();
-    if (elapsed_fps >= 1.0f) {
-        int fps = static_cast<int>(fps_frame_count_ / elapsed_fps);
-        fps_frame_count_ = 0;
-        fps_last_update_ = now_fps;
-        if (doc_) {
-            if (auto* elem = doc_->GetElementById("titlebar-fps"))
-                elem->SetInnerRML(Rml::String(std::to_string(fps) + " fps"));
-            if (auto* elem = doc_->GetElementById("titlebar-ping")) {
-                if (core_.model_.is_connected)
-                    elem->SetInnerRML(Rml::String(std::to_string(core_.model_.ping_ms) + " ms"));
-                else
-                    elem->SetInnerRML("");
-            }
-        }
-    }
-
-    // Update + render UI
-    ui_.update();
-    ui_.render_begin();
-    ui_.render_body();
-    ui_.render_end();
+void App::defer_dpi(float scale) {
+    pending_dpi_.store(scale, std::memory_order_relaxed);
+    dpi_pending_.store(true, std::memory_order_release);
 }
 
 void App::update_voice_level() {

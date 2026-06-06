@@ -220,6 +220,9 @@ private:
 	// --- State ---
 	bool valid_ = false;
 	bool vsync_ = true;
+	// True between BeginFrame and EndFrame (command list open + recordable).
+	// Guards Extended (YUV/NV12) entry points that record onto command_list_.
+	bool frame_active_ = false;
 	uint32_t msaa_samples_ = 1;
 	uint32_t msaa_quality_ = 0;
 	int width_ = 0;

@@ -88,6 +88,9 @@ public:
     std::atomic<uint32_t> stream_frame_count_{0};
     std::string tofu_pending_fingerprint_;
     bool        tofu_pending_ = false;
+    // Set on the MsQuic worker thread when the connection drops; the actual
+    // cleanup (which mutates the RmlUi data model) runs on the main thread in tick().
+    std::atomic<bool> disconnect_pending_{false};
 
     // Actions
     void watch_sharer(UserId id);

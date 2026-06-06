@@ -60,7 +60,9 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
     };
 
     // Wire net callbacks
-    net_.on_disconnected = [this]() { on_disconnect_cleanup(); };
+    // on_disconnected fires on the MsQuic worker thread, but on_disconnect_cleanup
+    // mutates the RmlUi data model — marshal it to the main thread (tick()).
+    net_.on_disconnected = [this]() { disconnect_pending_.store(true, std::memory_order_release); };
 
     net_.on_data_received = [this](const uint8_t* data, size_t len) {
         if (len < 1) return;
@@ -154,6 +156,8 @@ void AppCore::shutdown()
 
 void AppCore::tick()
 {
+    if (disconnect_pending_.exchange(false, std::memory_order_acquire))
+        on_disconnect_cleanup();
     if (awaiting_connection_) poll_connecting();
     process_server_messages();
     update_speaking_state();

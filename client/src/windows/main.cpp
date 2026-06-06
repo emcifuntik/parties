@@ -37,7 +37,6 @@ enum WindowAction {
 
 static constexpr int RESIZE_BORDER_PX = 8;
 static bool s_was_minimized = false;
-static bool s_in_sizemove = false;
 
 // ═══════════════════════════════════════════════════════════════════════
 // WndProc — custom titlebar, resize borders, RmlUi input forwarding
@@ -103,6 +102,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         // Query RmlUi element under cursor for window-action property
         auto* ctx = ui->context();
         if (ctx) {
+            // Context is owned by the render thread; lock for this synchronous read.
+            std::lock_guard<std::recursive_mutex> lock(app->ui_mutex());
             auto* elem = ctx->GetElementAtPoint(
                 Rml::Vector2f(static_cast<float>(pt.x), static_cast<float>(pt.y)));
             if (elem) {
@@ -123,9 +124,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
     // Forward non-client mouse movement to RmlUi so :hover works on titlebar
     case WM_NCMOUSEMOVE: {
-        if (!ui || !ui->context()) break;
+        if (!app || !ui || !ui->context()) break;
         POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         ScreenToClient(hwnd, &pt);
+        std::lock_guard<std::recursive_mutex> lock(app->ui_mutex());
         ui->context()->ProcessMouseMove(pt.x, pt.y, 0);
         break;
     }
@@ -179,20 +181,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         return 0;
     }
 
-    // Keep app running during the modal move/resize loop.
-    // DefWindowProcW blocks our main loop, so we render from WM_MOVING/WM_SIZING
-    // which fire on every mouse move during drag. WM_TIMER is too low priority
-    // (only dispatched when the queue is empty, which rarely happens during drag).
-    case WM_ENTERSIZEMOVE:
-        s_in_sizemove = true;
-        return 0;
-    case WM_EXITSIZEMOVE:
-        s_in_sizemove = false;
-        return 0;
-    case WM_MOVING:
-    case WM_SIZING:
-        if (app) app->update();
-        break;  // let DefWindowProc handle the actual move/size
+    // No special move/resize handling needed: rendering runs on App's dedicated
+    // render thread, so it keeps going while the OS modal move/resize loop parks
+    // this (message) thread. The old WM_MOVING/WM_SIZING re-render workaround is
+    // gone — it only rendered while the mouse was actually moving.
 
     case WM_SIZE: {
         int w = LOWORD(lParam);
@@ -200,13 +192,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         if (wParam == SIZE_MINIMIZED) {
             s_was_minimized = true;
             if (ui) ui->on_minimize();
-        } else if (ui) {
+        } else if (app) {
             bool restoring = s_was_minimized;
             s_was_minimized = false;
-            ui->on_resize(w, h);
+            // Defer the swap-chain + context resize to the render thread, which
+            // owns the GPU. on_resize there also clears the minimized flag.
+            app->defer_resize(w, h);
             if (restoring) {
                 // Force DWM to re-register the window surface immediately
-                // (before the next render) to avoid a white frame flash.
+                // to avoid a white frame flash on restore.
                 MARGINS margins = {0, 0, 0, 1};
                 DwmExtendFrameIntoClientArea(hwnd, &margins);
                 SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
@@ -217,9 +211,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     }
 
     case WM_DPICHANGED: {
-        if (ui) {
+        if (app) {
             UINT dpi = HIWORD(wParam);
-            ui->on_dpi_change(static_cast<float>(dpi) / 96.0f);
+            app->defer_dpi(static_cast<float>(dpi) / 96.0f);
         }
         auto* rect = reinterpret_cast<RECT*>(lParam);
         SetWindowPos(hwnd, nullptr, rect->left, rect->top,
@@ -232,7 +226,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     // F8 toggles RmlUi debugger
     case WM_KEYDOWN:
         if (wParam == VK_F8) {
-            Rml::Debugger::SetVisible(!Rml::Debugger::IsVisible());
+            if (app) {
+                std::lock_guard<std::recursive_mutex> lock(app->ui_mutex());
+                Rml::Debugger::SetVisible(!Rml::Debugger::IsVisible());
+            }
             return 0;
         }
         break;
@@ -246,8 +243,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 #endif
     }
 
-    // Forward input events to RmlUi via vendored Win32 platform layer
-    if (ui && ui->context()) {
+    // Forward input events to RmlUi via vendored Win32 platform layer.
+    // Context is owned by the render thread, so serialize input application.
+    if (app && ui && ui->context()) {
+        std::lock_guard<std::recursive_mutex> lock(app->ui_mutex());
         bool propagating = RmlWin32::WindowProcedure(
             ui->context(), ui->text_input_editor(), hwnd, msg, wParam, lParam);
         if (!propagating)
@@ -385,7 +384,10 @@ int main(int argc, char* argv[]) {
     SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
 
-    // Main loop
+    // Main loop — the message thread. Rendering runs on App's dedicated render
+    // thread, so it continues even while the OS parks us in the modal
+    // move/resize loop. Here we only pump Win32 messages and run the per-frame
+    // logic tick (network, hotkeys, fullscreen sync).
     bool running = true;
     MSG msg{};
     while (running) {
@@ -399,17 +401,12 @@ int main(int argc, char* argv[]) {
         }
         if (!running) break;
 
-        // Global hotkeys (PTT, mute, deafen) must run even when minimized
-        app.poll_hotkeys();
+        // Logic tick (also drives sounds/hotkeys regardless of window state).
+        app.tick_message_thread();
 
-        // When minimized, no rendering occurs and the vsync wait is skipped,
-        // so throttle the loop to avoid spinning the CPU.
-        if (app.ui_manager()->is_minimized())
-            Sleep(16);
-
-        // Always tick even when minimized: processes network messages so that
-        // sounds (user joined/left, etc.) play regardless of window state.
-        app.update();
+        // Block until input arrives or a short timeout (~8 ms logic cadence),
+        // without spinning. Rendering is paced separately on the render thread.
+        MsgWaitForMultipleObjectsEx(0, nullptr, 8, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     }
 
     // Cleanup (order matters: app before window destruction)
