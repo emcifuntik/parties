@@ -202,7 +202,7 @@ index a60a588..385edfa 100644
  } QUIC_LISTENER_EVENT_TYPE;
  
  typedef struct QUIC_LISTENER_EVENT {
-@@ -1243,6 +1244,22 @@ typedef struct QUIC_LISTENER_EVENT {
+@@ -1243,5 +1244,21 @@ typedef struct QUIC_LISTENER_EVENT {
              BOOLEAN DosModeEnabled : 1;
              BOOLEAN RESERVED       : 7;
          } DOS_MODE_CHANGED;
@@ -224,4 +224,29 @@ index a60a588..385edfa 100644
 +        } UNCONNECTED_QUERY;
      };
  } QUIC_LISTENER_EVENT;
+diff --git a/src/core/listener.h b/src/core/listener.h
+index 1111111..2222222 100644
+--- a/src/core/listener.h
++++ b/src/core/listener.h
+@@ -211,6 +211,20 @@
+     _In_ BOOLEAN IndicateEvent
+     );
  
++//
++// Indicates an event to the listener's application callback. (parties patch)
++// Upstream defines this with external linkage in listener.c but never declares
++// it in a header. The connectionless server-query path in binding.c calls it,
++// and clang/gcc reject the resulting implicit declaration under -Werror (only
++// MSVC tolerates it), which broke the macOS and Linux builds.
++//
++_IRQL_requires_max_(PASSIVE_LEVEL)
++QUIC_STATUS
++QuicListenerIndicateEvent(
++    _In_ QUIC_LISTENER* Listener,
++    _Inout_ QUIC_LISTENER_EVENT* Event
++    );
++
+     _IRQL_requires_max_(DISPATCH_LEVEL)
+ void
+ QuicListenerReference(
+
