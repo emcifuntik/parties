@@ -318,6 +318,42 @@ jobs:
           echo "── appcast.xml ──"
           cat appcast.xml
 
+      # End-to-end guard: prove the signature embedded in the appcast actually
+      # validates against the SUPublicEDKey shipped inside the app bundle, over
+      # the real DMG bytes. If the SPARKLE_ED_PRIVATE_KEY secret does not match
+      # the app's public key, Sparkle silently rejects every update as
+      # "improperly signed" at the very end of the flow — this catches it in CI.
+      - name: Verify appcast signature matches the app's public key
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet --disable-pip-version-check pynacl
+          DMG="parties-client-macos-${{ github.ref_name }}.dmg" \
+          PLIST="build-macos-release/client/Parties.app/Contents/Info.plist" \
+          python3 - <<'PY'
+          import base64, glob, os, plistlib, re, sys
+          info = plistlib.load(open(os.environ["PLIST"], "rb"))
+          pub = info["SUPublicEDKey"].strip()
+          xml = open("appcast.xml").read()
+          m = re.search(r'sparkle:edSignature="([^"]+)"', xml)
+          if not m:
+              sys.exit("::error::no sparkle:edSignature found in appcast.xml")
+          sig_b64 = m.group(1)
+          try:
+              sig = base64.b64decode(sig_b64, validate=True)
+          except Exception:
+              sys.exit(f'::error::edSignature is not valid base64: {sig_b64!r}')
+          if len(sig) != 64:
+              sys.exit(f"::error::edSignature is {len(sig)} bytes, expected 64 (Ed25519)")
+          from nacl.signing import VerifyKey
+          from nacl.exceptions import BadSignatureError
+          try:
+              VerifyKey(base64.b64decode(pub)).verify(open(os.environ["DMG"], "rb").read(), sig)
+          except BadSignatureError:
+              sys.exit(f"::error::appcast signature does NOT validate against SUPublicEDKey ({pub}). "
+                       f"The SPARKLE_ED_PRIVATE_KEY secret does not match the app's public key.")
+          print(f"OK: appcast signature validates against SUPublicEDKey ({pub})")
+          PY
+
       - name: Clean up keychain
         if: always()
         run: security delete-keychain "$KEYCHAIN_PATH" || true
