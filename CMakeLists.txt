@@ -59,6 +59,9 @@ if(BUILD_IN_RETAIL)
     set(ENABLE_TRACY OFF CACHE BOOL "" FORCE)
 endif()
 option(ENABLE_SENTRY "Enable Sentry crash reporting" OFF)
+# Heap allocation tracker (leak hunting): replaces global new/delete with a
+# size-bucketed, stack-capturing tracking allocator. Windows client only.
+option(PARTIES_ALLOC_TRACKER "Enable heap allocation tracker" OFF)
 set(SENTRY_DSN_CLIENT "" CACHE STRING "Sentry DSN for the client (per-platform)")
 set(SENTRY_DSN_SERVER "" CACHE STRING "Sentry DSN for the server")
 if(ENABLE_ASAN)

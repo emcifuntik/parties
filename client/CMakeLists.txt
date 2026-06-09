@@ -141,6 +141,15 @@ if(NOT APPLE)
     set_target_properties(parties_client PROPERTIES LINK_FLAGS "/MANIFEST:NO")
 endif()
 
+# Heap allocation tracker: the TU defining the new/delete overrides must be an
+# explicit object of the EXE (not inside a static lib) so the linker picks it
+# over the CRT's operators.
+if(PARTIES_ALLOC_TRACKER AND NOT APPLE)
+    target_sources(parties_client PRIVATE ${CMAKE_SOURCE_DIR}/common/src/alloc_tracker.cpp)
+    target_compile_definitions(parties_client PRIVATE PARTIES_ALLOC_TRACKER)
+    target_link_libraries(parties_client PRIVATE dbghelp)
+endif()
+
 # #embed dependencies — recompile when embedded files change
 file(GLOB EMBED_UI_RESOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/ui/*.rml

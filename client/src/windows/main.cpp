@@ -7,6 +7,7 @@
 #include <parties/profiler.h>
 #include <parties/log.h>
 #include <parties/crash_reporter.h>
+#include <parties/alloc_tracker.h>
 
 #include "RmlUi_Platform_Win32.h"
 
@@ -272,6 +273,7 @@ int main(int argc, char* argv[]) {
 #endif
     parties::log_init(parties::LogTarget::Client);
     LOG_INFO("{} Client v{}", parties::APP_NAME, parties::APP_VERSION);
+    parties::alloctrack::start_reporting(10);
 
     // Handle auto-updater lifecycle args (--update-replace, --update-cleanup)
     AutoUpdater::handle_update_args(argc, argv);
@@ -417,6 +419,7 @@ int main(int argc, char* argv[]) {
     parties::quic_cleanup();
     parties::net_cleanup();
     parties::crypto_cleanup();
+    parties::alloctrack::stop_reporting();
     parties::log_shutdown();
     parties::crash_reporter_shutdown();
     return 0;

@@ -507,6 +507,21 @@ int SlugFontEngine::GenerateString(
 	}
 
 	if (glyph_count > 0) {
+		// Safety net: batches are normally consumed (and erased) by the
+		// renderer's CompileGeometry in the same OnRender call. Batches go
+		// stale when RmlUi discards generated text geometry without
+		// compiling it (e.g. relayout from SetInnerRML), or under renderers
+		// without Slug support. Age them out by id; the window is generous —
+		// legitimate batches live for well under one frame of generation.
+		if (pending_batches_.size() > 64) {
+			for (auto it = pending_batches_.begin(); it != pending_batches_.end();) {
+				if (it->first + 256 < next_batch_id_)
+					it = pending_batches_.erase(it);
+				else
+					++it;
+			}
+		}
+
 		// Register the pending batch
 		pending_batches_[batch_id] = std::move(batch);
 
@@ -537,9 +552,11 @@ void SlugFontEngine::ReleaseFontResources() {
 	version_++;
 }
 
-SlugBatchData* SlugFontEngine::ConsumePendingBatch(uint32_t batch_id) {
+std::unique_ptr<SlugBatchData> SlugFontEngine::ConsumePendingBatch(uint32_t batch_id) {
 	auto it = pending_batches_.find(batch_id);
 	if (it == pending_batches_.end())
 		return nullptr;
-	return it->second.get();
+	std::unique_ptr<SlugBatchData> batch = std::move(it->second);
+	pending_batches_.erase(it);
+	return batch;
 }

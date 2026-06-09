@@ -74,8 +74,9 @@ public:
 	// --- Slug-specific access (for renderer) ---
 	SlugGlyphCache& GetGlyphCache() { return glyph_cache_; }
 
-	// Consume a pending batch by ID (called by renderer during CompileGeometry)
-	SlugBatchData* ConsumePendingBatch(uint32_t batch_id);
+	// Consume a pending batch by ID (called by renderer during CompileGeometry).
+	// Transfers ownership and removes the batch from the pending map.
+	std::unique_ptr<SlugBatchData> ConsumePendingBatch(uint32_t batch_id);
 
 
 private:

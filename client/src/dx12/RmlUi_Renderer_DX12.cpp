@@ -3298,7 +3298,7 @@ Rml::CompiledGeometryHandle RenderInterface_DX12::CompileGeometry(
 			uint32_t batch_id;
 			std::memcpy(&batch_id, &vertices[0].tex_coord.y, sizeof(uint32_t));
 
-			SlugBatchData* batch = slug_font_engine_->ConsumePendingBatch(batch_id);
+			std::unique_ptr<SlugBatchData> batch = slug_font_engine_->ConsumePendingBatch(batch_id);
 			if (batch && !batch->vertices.empty()) {
 				// Upload Slug vertex buffer (80 bytes/vertex)
 				auto gpu_batch = std::make_unique<SlugGPUBatch>();
