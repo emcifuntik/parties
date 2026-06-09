@@ -61,8 +61,8 @@ private:
     uint32_t height_ = 0;
     uint32_t fps_ = 30;
     bool initialized_ = false;
+    bool mf_started_ = false;  // MFStartup succeeded — MFShutdown owed even if init() failed later
     bool force_keyframe_ = false;
-    bool encoder_provides_samples_ = false;
 };
 
 } // namespace parties::encdec::mft

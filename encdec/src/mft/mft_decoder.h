@@ -32,6 +32,7 @@ private:
     uint32_t height_ = 0;
     uint32_t nv12_stride_ = 0;
     bool initialized_ = false;
+    bool mf_started_ = false;  // MFStartup succeeded — MFShutdown owed even if init() failed later
 
     std::vector<uint8_t> i420_buffer_;
 };

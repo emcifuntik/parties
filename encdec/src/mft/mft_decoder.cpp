@@ -17,7 +17,7 @@ MftDecoder::~MftDecoder() {
         mft_->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0);
         mft_.Reset();
     }
-    if (initialized_)
+    if (mf_started_)
         MFShutdown();
 }
 
@@ -35,6 +35,7 @@ bool MftDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height) {
         LOG_ERROR("MFStartup failed: {:#010x}", hr);
         return false;
     }
+    mf_started_ = true;
 
     GUID subtype = (codec == VideoCodecId::H265) ? MFVideoFormat_HEVC
                                                   : MFVideoFormat_H264;
@@ -141,6 +142,7 @@ void MftDecoder::collect_output() {
             break;
 
         if (hr == MF_E_TRANSFORM_STREAM_CHANGE) {
+            if (output.pEvents) output.pEvents->Release();
             // Re-negotiate output type after format change
             for (DWORD i = 0; ; i++) {
                 ComPtr<IMFMediaType> avail;
@@ -232,6 +234,9 @@ void MftDecoder::collect_output() {
         }
 
         if (output.pEvents) output.pEvents->Release();
+        // When the MFT allocates its own output samples, ownership transfers
+        // to us on ProcessOutput success — release or it leaks per frame.
+        if (provides_samples_ && output.pSample) output.pSample->Release();
     }
 }
 

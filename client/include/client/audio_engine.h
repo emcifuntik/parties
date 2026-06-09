@@ -118,9 +118,11 @@ private:
     // SpeexDSP echo canceller
     SpeexEchoState* aec_ = nullptr;
     SpeexPreprocessState* aec_preprocess_ = nullptr;
-    std::vector<spx_int16_t> aec_ref_buf_;     // playback reference ring buffer
-    size_t aec_ref_write_ = 0;
-    size_t aec_ref_read_ = 0;
+    // Playback reference ring buffer for AEC. Written by the playback thread,
+    // read by the capture thread — indices must be atomic.
+    std::vector<spx_int16_t> aec_ref_buf_;
+    std::atomic<size_t> aec_ref_write_{0};
+    std::atomic<size_t> aec_ref_read_{0};
 
     // Opus encoder
     OpusCodec encoder_;

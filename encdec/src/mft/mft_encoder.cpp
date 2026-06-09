@@ -13,8 +13,8 @@ using Microsoft::WRL::ComPtr;
 namespace parties::encdec::mft {
 
 MftEncoder::~MftEncoder() {
-    if (!initialized_) return;
-
+    // No early-out on !initialized_: a failed init() may still owe MFShutdown
+    // and have partially constructed members; everything below is null-safe.
     encoder_running_ = false;
     queue_cv_.notify_all();
 
@@ -38,7 +38,8 @@ MftEncoder::~MftEncoder() {
     context_.Reset();
     device_.Reset();
 
-    MFShutdown();
+    if (mf_started_)
+        MFShutdown();
 }
 
 bool MftEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
@@ -60,6 +61,7 @@ bool MftEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
         LOG_ERROR("MFStartup failed: {:#010x}", hr);
         return false;
     }
+    mf_started_ = true;
 
     // Create DXGI device manager
     hr = MFCreateDXGIDeviceManager(&dxgi_reset_token_, &dxgi_manager_);
@@ -116,10 +118,6 @@ bool MftEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
 
     encoder_->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);
     encoder_->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0);
-
-    MFT_OUTPUT_STREAM_INFO stream_info = {};
-    if (SUCCEEDED(encoder_->GetOutputStreamInfo(0, &stream_info)))
-        encoder_provides_samples_ = (stream_info.dwFlags & MFT_OUTPUT_STREAM_PROVIDES_SAMPLES) != 0;
 
     if (async_mode_ && encoder_events_) {
         encoder_running_ = true;
@@ -393,8 +391,10 @@ bool MftEncoder::encode(ID3D11Texture2D* bgra_texture, int64_t timestamp_100ns) 
     MFT_OUTPUT_DATA_BUFFER conv_output = {};
     DWORD conv_status = 0;
     hr = converter_->ProcessOutput(0, 1, &conv_output, &conv_status);
+    if (conv_output.pEvents) conv_output.pEvents->Release();
     if (FAILED(hr)) {
         LOG_ERROR("Converter ProcessOutput failed: {:#010x}", hr);
+        if (conv_output.pSample) conv_output.pSample->Release();
         return false;
     }
 
@@ -478,9 +478,13 @@ bool MftEncoder::collect_output() {
             buf->Unlock();
             collected++;
 
-            if (encoder_provides_samples_)
-                output_data.pSample->Release();
+            // We always pass pSample = null in, so any sample here was
+            // allocated by the MFT and is ours to release — regardless of
+            // what GetOutputStreamInfo reported.
+            output_data.pSample->Release();
         }
+
+        if (output_data.pEvents) output_data.pEvents->Release();
     }
 
     return collected > 0;

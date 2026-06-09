@@ -544,13 +544,21 @@ void App::render_frame() {
             fps_frame_count_ = 0;
             fps_last_update_ = now_fps;
             if (doc_) {
-                if (auto* elem = doc_->GetElementById("titlebar-fps"))
-                    elem->SetInnerRML(Rml::String(std::to_string(fps) + " fps"));
-                if (auto* elem = doc_->GetElementById("titlebar-ping")) {
-                    if (core_.model_.is_connected)
-                        elem->SetInnerRML(Rml::String(std::to_string(core_.model_.ping_ms.get()) + " ms"));
-                    else
-                        elem->SetInnerRML("");
+                Rml::String fps_text(std::to_string(fps) + " fps");
+                if (fps_text != titlebar_fps_last_) {
+                    if (auto* elem = doc_->GetElementById("titlebar-fps")) {
+                        elem->SetInnerRML(fps_text);
+                        titlebar_fps_last_ = std::move(fps_text);
+                    }
+                }
+                Rml::String ping_text = core_.model_.is_connected
+                    ? Rml::String(std::to_string(core_.model_.ping_ms.get()) + " ms")
+                    : Rml::String();
+                if (ping_text != titlebar_ping_last_) {
+                    if (auto* elem = doc_->GetElementById("titlebar-ping")) {
+                        elem->SetInnerRML(ping_text);
+                        titlebar_ping_last_ = std::move(ping_text);
+                    }
                 }
             }
         }

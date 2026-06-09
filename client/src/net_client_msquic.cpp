@@ -487,6 +487,9 @@ bool NetClient::upload_file(uint64_t attachment_id, const uint8_t* data, size_t 
     auto* qb = new QUIC_BUFFER{ static_cast<uint32_t>(total), buf };
     if (QUIC_FAILED(impl_->api->StreamSend(stream, qb, 1, QUIC_SEND_FLAG_FIN, qb))) {
         delete[] buf; delete qb;
+        // Abort the already-started stream; SHUTDOWN_COMPLETE closes it and
+        // frees fctx. Without this both stay alive until connection teardown.
+        impl_->api->StreamShutdown(stream, QUIC_STREAM_SHUTDOWN_FLAG_ABORT, 0);
         return false;
     }
     return true;
@@ -519,6 +522,9 @@ bool NetClient::download_file(uint64_t attachment_id)
     auto* qb = new QUIC_BUFFER{ static_cast<uint32_t>(total), buf };
     if (QUIC_FAILED(impl_->api->StreamSend(stream, qb, 1, QUIC_SEND_FLAG_FIN, qb))) {
         delete[] buf; delete qb;
+        // Abort the already-started stream; SHUTDOWN_COMPLETE closes it and
+        // frees fctx. Without this both stay alive until connection teardown.
+        impl_->api->StreamShutdown(stream, QUIC_STREAM_SHUTDOWN_FLAG_ABORT, 0);
         return false;
     }
     return true;

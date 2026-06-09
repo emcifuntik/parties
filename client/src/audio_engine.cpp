@@ -299,14 +299,17 @@ void AudioEngine::playback_callback(ma_device* device, void* output,
     if (engine->aec_enabled_ && engine->aec_) {
         auto* out_f = static_cast<const float*>(output);
         size_t cap = engine->aec_ref_buf_.size();
+        size_t w = engine->aec_ref_write_.load(std::memory_order_relaxed);
         for (ma_uint32 i = 0; i < frame_count; i++) {
             float s = out_f[i * 2];  // left channel
             if (s > 1.0f) s = 1.0f;
             else if (s < -1.0f) s = -1.0f;
-            engine->aec_ref_buf_[engine->aec_ref_write_ % cap] =
+            engine->aec_ref_buf_[(w + i) % cap] =
                 static_cast<spx_int16_t>(s * 32767.0f);
-            engine->aec_ref_write_++;
         }
+        // Publish after the samples are written so the capture thread
+        // never reads slots ahead of the data.
+        engine->aec_ref_write_.store(w + frame_count, std::memory_order_release);
     }
 }
 
@@ -330,7 +333,17 @@ void AudioEngine::process_capture(const float* input, ma_uint32 frame_count) {
             // AEC: cancel echo from capture using playback reference
             if (aec_enabled_ && aec_) {
                 size_t cap = aec_ref_buf_.size();
-                size_t avail = aec_ref_write_ - aec_ref_read_;
+                size_t w = aec_ref_write_.load(std::memory_order_acquire);
+                size_t r = aec_ref_read_.load(std::memory_order_relaxed);
+                size_t avail = w - r;
+                // Resync after the reader stalls (muted skips this whole
+                // path while playback keeps writing) or clock drift: samples
+                // older than half the ring are stale or already overwritten,
+                // so jump to the freshest full frame.
+                if (avail > cap / 2 && w >= static_cast<size_t>(audio::FRAME_SIZE)) {
+                    r = w - audio::FRAME_SIZE;
+                    avail = audio::FRAME_SIZE;
+                }
                 if (avail >= static_cast<size_t>(audio::FRAME_SIZE)) {
                     spx_int16_t mic[audio::FRAME_SIZE];
                     spx_int16_t ref[audio::FRAME_SIZE];
@@ -341,9 +354,9 @@ void AudioEngine::process_capture(const float* input, ma_uint32 frame_count) {
                         if (s > 1.0f) s = 1.0f;
                         else if (s < -1.0f) s = -1.0f;
                         mic[i] = static_cast<spx_int16_t>(s * 32767.0f);
-                        ref[i] = aec_ref_buf_[(aec_ref_read_ + i) % cap];
+                        ref[i] = aec_ref_buf_[(r + i) % cap];
                     }
-                    aec_ref_read_ += audio::FRAME_SIZE;
+                    aec_ref_read_.store(r + audio::FRAME_SIZE, std::memory_order_relaxed);
 
                     speex_echo_cancellation(aec_, mic, ref, out);
 

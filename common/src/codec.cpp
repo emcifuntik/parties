@@ -13,17 +13,32 @@ OpusCodec::~OpusCodec() {
 }
 
 bool OpusCodec::init_encoder(int sample_rate, int channels, int bitrate) {
+    if (encoder_) {
+        opus_encoder_destroy(encoder_);
+        encoder_ = nullptr;
+    }
     int err;
     encoder_ = opus_encoder_create(sample_rate, channels, OPUS_APPLICATION_VOIP, &err);
-    if (err != OPUS_OK) return false;
+    if (err != OPUS_OK) {
+        encoder_ = nullptr;
+        return false;
+    }
     opus_encoder_ctl(encoder_, OPUS_SET_BITRATE(bitrate));
     return true;
 }
 
 bool OpusCodec::init_decoder(int sample_rate, int channels) {
+    if (decoder_) {
+        opus_decoder_destroy(decoder_);
+        decoder_ = nullptr;
+    }
     int err;
     decoder_ = opus_decoder_create(sample_rate, channels, &err);
-    return err == OPUS_OK;
+    if (err != OPUS_OK) {
+        decoder_ = nullptr;
+        return false;
+    }
+    return true;
 }
 
 int OpusCodec::encode(const float* pcm_in, int frame_size,
