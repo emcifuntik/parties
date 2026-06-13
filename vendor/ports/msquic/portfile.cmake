@@ -80,14 +80,15 @@ if(VCPKG_TARGET_IS_WINDOWS)
     endif()]]
     )
 
-    # Disable /analyze for clang-cl (MSVC is TRUE for clang-cl but /analyze is MSVC-only)
+    # Disable /analyze for Windows package builds. VS 17.14 emits analyzer
+    # warnings in upstream MsQuic that are promoted to errors by /WX.
     vcpkg_replace_string("${QUIC_SOURCE_PATH}/src/platform/CMakeLists.txt"
     [[if (MSVC AND (QUIC_TLS_LIB STREQUAL "quictls" OR QUIC_TLS_LIB STREQUAL "schannel") AND NOT QUIC_SANITIZER_ACTIVE)]]
-    [[if (MSVC AND NOT (CMAKE_C_COMPILER_ID STREQUAL "Clang") AND (QUIC_TLS_LIB STREQUAL "quictls" OR QUIC_TLS_LIB STREQUAL "schannel" OR QUIC_TLS_LIB STREQUAL "openssl") AND NOT QUIC_SANITIZER_ACTIVE)]]
+    [[if (FALSE)]]
     )
     vcpkg_replace_string("${QUIC_SOURCE_PATH}/src/core/CMakeLists.txt"
     [[if (MSVC AND NOT QUIC_SANITIZER_ACTIVE)]]
-    [[if (MSVC AND NOT (CMAKE_C_COMPILER_ID STREQUAL "Clang") AND NOT QUIC_SANITIZER_ACTIVE)]]
+    [[if (FALSE)]]
     )
 
 endif() # VCPKG_TARGET_IS_WINDOWS

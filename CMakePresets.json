@@ -98,6 +98,21 @@
         "CMAKE_C_COMPILER": "gcc",
         "BUILD_CLIENT": "OFF"
       }
+    },
+    {
+      "name": "windows-server-msvc",
+      "displayName": "Windows Server (MSVC Debug)",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/build-server-msvc",
+      "architecture": "x64",
+      "toolset": "host=x64",
+      "cacheVariables": {
+        "BUILD_CLIENT": "OFF",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/vendor/ports",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vendor/triplets",
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static-mt"
+      }
     }
   ],
   "buildPresets": [
@@ -128,6 +143,12 @@
     {
       "name": "linux-release",
       "configurePreset": "linux-release"
+    },
+    {
+      "name": "windows-server-msvc",
+      "configurePreset": "windows-server-msvc",
+      "configuration": "Debug",
+      "targets": ["parties_server"]
     }
   ]
 }
