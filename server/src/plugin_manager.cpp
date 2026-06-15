@@ -76,6 +76,7 @@ struct PluginManager::Bot : plugin::Bot {
     plugin::ChannelId voice_channel_id = 0;
     std::string display_name;
     bool destroyed = false;
+    bool delete_user_on_init_failure = false;
 };
 
 struct PluginManager::PluginGrant {
@@ -106,6 +107,22 @@ namespace {
 
 constexpr size_t MAX_LIVE_BOTS_PER_PLUGIN = 64;
 constexpr auto PLUGIN_CALLBACK_WARN_AFTER = std::chrono::milliseconds(250);
+
+const std::unordered_set<std::string>& known_plugin_permissions() {
+    static const std::unordered_set<std::string> permissions = {
+        "read_sessions",
+        "read_users",
+        "read_channels",
+        "read_chat",
+        "moderate_chat",
+        "create_chat_commands",
+        "create_bot_users",
+        "send_bot_chat",
+        "join_bot_voice",
+        "send_bot_audio",
+    };
+    return permissions;
+}
 
 template <typename T>
 bool valid_abi_header(const plugin::AbiHeader& abi) {
@@ -202,6 +219,41 @@ void PluginManager::disable_plugin(Plugin& plugin, std::string_view reason) {
         [&](const ChatCommand& command) { return command.plugin_id == plugin.id; }),
         chat_commands_.end());
     LOG_ERROR("Plugin '{}' disabled: {}", plugin.id, reason);
+}
+
+void PluginManager::cleanup_plugin_bots(Plugin& plugin, bool delete_users) {
+    struct BotCleanup {
+        plugin::UserId user_id = 0;
+        plugin::ChannelId voice_channel_id = 0;
+        std::string display_name;
+        bool delete_user = false;
+    };
+
+    std::vector<BotCleanup> bots;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        bots.reserve(plugin.bots.size());
+        for (const auto& bot : plugin.bots) {
+            if (!bot->destroyed) {
+                bots.push_back(BotCleanup{
+                    bot->user_id,
+                    bot->voice_channel_id,
+                    bot->display_name,
+                    bot->delete_user_on_init_failure,
+                });
+            }
+            bot->destroyed = true;
+            bot->voice_channel_id = 0;
+        }
+        reap_destroyed_bots(plugin);
+    }
+
+    for (const auto& bot : bots) {
+        if (bot.voice_channel_id != 0 && services_.leave_bot_voice)
+            services_.leave_bot_voice(bot.user_id, bot.display_name, bot.voice_channel_id);
+        if (delete_users && bot.delete_user && services_.delete_bot_user)
+            services_.delete_bot_user(bot.user_id);
+    }
 }
 
 template <typename Fn>
@@ -743,8 +795,14 @@ bool PluginManager::load(const PluginConfig& cfg) {
     for (const auto& allow : cfg.allow) {
         PluginGrant grant;
         grant.enabled = allow.enabled;
-        for (const auto& permission : allow.permissions)
+        for (const auto& permission : allow.permissions) {
+            if (known_plugin_permissions().find(permission) == known_plugin_permissions().end()) {
+                LOG_WARN("Plugin allow entry '{}' contains unknown permission '{}'",
+                         allow.id, permission);
+                continue;
+            }
             grant.permissions.insert(permission);
+        }
         grants_[allow.id] = std::move(grant);
     }
     if (grants_.empty())
@@ -786,6 +844,7 @@ void PluginManager::shutdown() {
                 LOG_ERROR("Plugin '{}' shutdown threw unknown exception", plugin.id);
             }
         }
+        cleanup_plugin_bots(plugin, false);
     }
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -847,6 +906,10 @@ bool PluginManager::load_manifest(const std::filesystem::path& manifest_path) {
 
     auto requested_permissions = read_string_array(manifest, "permissions");
     for (auto& perm : requested_permissions) {
+        if (known_plugin_permissions().find(perm) == known_plugin_permissions().end()) {
+            LOG_WARN("Plugin '{}' requested unknown permission '{}'", plugin->id, perm);
+            continue;
+        }
         if (grant_it->second.permissions.find(perm) != grant_it->second.permissions.end()) {
             plugin->permissions.insert(std::move(perm));
         } else {
@@ -980,13 +1043,16 @@ bool PluginManager::load_manifest(const std::filesystem::path& manifest_path) {
                      plugin->manifest_path.string(),
                      plugin->library_path.string());
         }
+        cleanup_plugin_bots(*plugin, true);
         return false;
     }
 
     if (plugin->registration.abi.api_major != plugin::API_VERSION_MAJOR ||
         plugin->registration.abi.size != sizeof(plugin::Registration)) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        chat_commands_.resize(commands_before_init);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            chat_commands_.resize(commands_before_init);
+        }
         LOG_WARN("Plugin '{}' returned incompatible registration ABI "
                  "(size={}, major={}, expected size={}, major={})",
                  plugin->id,
@@ -994,6 +1060,7 @@ bool PluginManager::load_manifest(const std::filesystem::path& manifest_path) {
                  plugin->registration.abi.api_major,
                  sizeof(plugin::Registration),
                  plugin::API_VERSION_MAJOR);
+        cleanup_plugin_bots(*plugin, true);
         return false;
     }
 
@@ -1077,6 +1144,17 @@ uint32_t PluginManager::bot_voice_count(plugin::ChannelId channel_id) const {
         }
     }
     return count;
+}
+
+bool PluginManager::bot_in_voice_channel(plugin::UserId user_id, plugin::ChannelId channel_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& owner : plugins_) {
+        for (const auto& bot : owner->bots) {
+            if (!bot->destroyed && bot->user_id == user_id && bot->voice_channel_id == channel_id)
+                return true;
+        }
+    }
+    return false;
 }
 
 void PluginManager::clear_bot_voice_channel(plugin::ChannelId channel_id) {
@@ -1308,8 +1386,8 @@ bool PluginManager::host_create_bot_user(void* context,
         return false;
     }
 
-    auto user_id = manager->services_.create_bot_user(plugin_id, key, display_name);
-    if (!user_id || *user_id == 0) {
+    auto user = manager->services_.create_bot_user(plugin_id, key, display_name);
+    if (!user || user->user_id == 0) {
         LOG_WARN("Plugin '{}' failed to create bot user '{}' ('{}')",
                  plugin_id, key, display_name);
         return false;
@@ -1317,8 +1395,9 @@ bool PluginManager::host_create_bot_user(void* context,
 
     auto bot = std::make_unique<Bot>();
     bot->owner = plugin;
-    bot->user_id = *user_id;
+    bot->user_id = user->user_id;
     bot->display_name = display_name;
+    bot->delete_user_on_init_failure = user->created;
 
     plugin::BotHandle handle = static_cast<plugin::BotHandle>(bot.get());
     {
@@ -1328,9 +1407,9 @@ bool PluginManager::host_create_bot_user(void* context,
     }
 
     if (out_bot) *out_bot = handle;
-    if (out_user_id) *out_user_id = *user_id;
+    if (out_user_id) *out_user_id = user->user_id;
     LOG_INFO("Plugin '{}' created bot user '{}' (user_id={})",
-             plugin_id, display_name, *user_id);
+             plugin_id, display_name, user->user_id);
     return true;
 }
 

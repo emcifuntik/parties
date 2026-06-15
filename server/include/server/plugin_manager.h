@@ -25,9 +25,15 @@ public:
     PluginManager& operator=(const PluginManager&) = delete;
 
     struct HostServices {
-        std::function<std::optional<plugin::UserId>(std::string_view plugin_id,
-                                                    std::string_view key,
-                                                    std::string_view display_name)> create_bot_user;
+        struct BotUserResult {
+            plugin::UserId user_id = 0;
+            bool created = false;
+        };
+
+        std::function<std::optional<BotUserResult>(std::string_view plugin_id,
+                                                   std::string_view key,
+                                                   std::string_view display_name)> create_bot_user;
+        std::function<bool(plugin::UserId user_id)> delete_bot_user;
         std::function<bool(plugin::UserId user_id,
                            std::string_view display_name)> set_bot_display_name;
         std::function<std::optional<plugin::MessageId>(plugin::UserId user_id,
@@ -119,6 +125,7 @@ public:
     bool enabled() const { return enabled_; }
     std::vector<BotVoiceParticipant> bot_voice_participants(plugin::ChannelId channel_id = 0) const;
     uint32_t bot_voice_count(plugin::ChannelId channel_id) const;
+    bool bot_in_voice_channel(plugin::UserId user_id, plugin::ChannelId channel_id) const;
     void clear_bot_voice_channel(plugin::ChannelId channel_id);
 
 private:
@@ -190,6 +197,7 @@ private:
     bool register_chat_commands(Plugin& plugin,
                                 const plugin::CommandDefinition* commands,
                                 size_t command_count);
+    void cleanup_plugin_bots(Plugin& plugin, bool delete_users);
     Bot* get_owned_bot(Plugin& plugin, plugin::BotHandle bot) const;
     void reap_destroyed_bots(Plugin& plugin);
     std::optional<plugin::ChannelId> bot_voice_channel(plugin::UserId user_id) const;

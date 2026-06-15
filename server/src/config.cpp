@@ -161,14 +161,6 @@ Config Config::load(const std::string& toml_path) {
     e = env("PARTIES_LOG_LEVEL");
     if (!e.empty()) cfg.log_level = e;
 
-    e = env("PARTIES_PLUGINS_ENABLED");
-    if (!e.empty()) {
-        cfg.plugins.enabled = (e == "1" || e == "true" || e == "TRUE" || e == "yes" || e == "YES");
-    }
-
-    e = env("PARTIES_PLUGINS_DIR");
-    if (!e.empty()) cfg.plugins.directory = e;
-
     return cfg;
 }
 

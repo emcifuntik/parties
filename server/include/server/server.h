@@ -51,9 +51,12 @@ private:
     void send_channel_list(uint32_t session_id);
     void send_text_channel_list(uint32_t session_id);
     void send_chat_command_list(uint32_t session_id);
-    std::optional<UserId> create_plugin_bot_user(std::string_view plugin_id,
-                                                 std::string_view key,
-                                                 std::string_view display_name);
+    std::optional<PluginManager::HostServices::BotUserResult> create_plugin_bot_user(
+        std::string_view plugin_id,
+        std::string_view key,
+        std::string_view display_name);
+    bool delete_plugin_bot_user(UserId user_id);
+    bool bot_display_name_available(std::string_view display_name, UserId self_user_id = 0);
     std::optional<uint64_t> store_and_broadcast_chat_message(UserId sender_id,
                                                              std::string_view sender_name,
                                                              uint32_t channel_id,

@@ -33,6 +33,21 @@ static void copy_plugin_string(char (&dst)[N], std::string_view src) {
     dst[n] = '\0';
 }
 
+static bool valid_display_name(std::string_view name) {
+    if (name.empty() || name.size() >= plugin::MAX_NAME_LEN)
+        return false;
+    return std::all_of(name.begin(), name.end(), [](char c) {
+        unsigned char uc = static_cast<unsigned char>(c);
+        return uc >= 0x20 && uc != 0x7f;
+    });
+}
+
+static size_t max_chat_message_length(const Config& config) {
+    return config.chat.max_message_length > 0
+        ? static_cast<size_t>(config.chat.max_message_length)
+        : 0;
+}
+
 Server::Server() = default;
 Server::~Server() { stop(); }
 
@@ -114,11 +129,20 @@ bool Server::start(const Config& cfg) {
             return create_plugin_bot_user(plugin_id, key, display_name);
         });
     };
+    plugin_services.delete_bot_user = [this](UserId user_id) {
+        return invoke_on_server_thread([this, user_id]() {
+            return delete_plugin_bot_user(user_id);
+        });
+    };
     plugin_services.set_bot_display_name = [this](UserId user_id,
                                                   std::string_view display_name) {
         return invoke_on_server_thread([this,
                                         user_id,
                                         display_name = std::string(display_name)]() {
+            if (!valid_display_name(display_name) ||
+                !bot_display_name_available(display_name, user_id)) {
+                return false;
+            }
             return db_.update_display_name(user_id, display_name);
         });
     };
@@ -517,20 +541,23 @@ void Server::send_error(uint32_t session_id, const std::string& message,
                  writer.data().data(), writer.data().size());
 }
 
-std::optional<UserId> Server::create_plugin_bot_user(std::string_view plugin_id,
-                                                     std::string_view key,
-                                                     std::string_view display_name) {
-    if (key.empty() || display_name.empty())
+std::optional<PluginManager::HostServices::BotUserResult> Server::create_plugin_bot_user(
+    std::string_view plugin_id,
+    std::string_view key,
+    std::string_view display_name) {
+    if (key.empty() || !valid_display_name(display_name))
         return std::nullopt;
 
     if (auto existing = db_.get_bot_user(std::string(plugin_id), std::string(key))) {
+        if (!bot_display_name_available(display_name, existing->id))
+            return std::nullopt;
         if (existing->display_name != display_name)
             db_.update_display_name(existing->id, std::string(display_name));
         if (existing->role != static_cast<int>(Role::Bot))
             db_.set_user_role(existing->id, Role::Bot);
         LOG_INFO("Reusing bot user '{}' (key='{}') for plugin '{}' (user_id={})",
                  display_name, key, plugin_id, existing->id);
-        return existing->id;
+        return PluginManager::HostServices::BotUserResult{existing->id, false};
     }
 
     std::string identity;
@@ -544,19 +571,24 @@ std::optional<UserId> Server::create_plugin_bot_user(std::string_view plugin_id,
     SHA256(reinterpret_cast<const uint8_t*>(identity.data()), identity.size(), public_key.data());
 
     if (auto existing = db_.get_user_by_pubkey(public_key)) {
+        if (!bot_display_name_available(display_name, existing->id))
+            return std::nullopt;
         if (existing->display_name != display_name)
             db_.update_display_name(existing->id, std::string(display_name));
         if (existing->role != static_cast<int>(Role::Bot))
             db_.set_user_role(existing->id, Role::Bot);
         LOG_INFO("Reusing bot user '{}' (key='{}') for plugin '{}' (user_id={})",
                  display_name, key, plugin_id, existing->id);
-        return existing->id;
+        return PluginManager::HostServices::BotUserResult{existing->id, false};
     }
 
     std::string fingerprint = "bot:";
     fingerprint += plugin_id;
     fingerprint += ":";
     fingerprint += public_key_fingerprint(public_key);
+
+    if (!bot_display_name_available(display_name))
+        return std::nullopt;
 
     if (!db_.create_bot_user(public_key, std::string(display_name), fingerprint,
                              std::string(plugin_id), std::string(key), Role::Bot)) {
@@ -565,7 +597,7 @@ std::optional<UserId> Server::create_plugin_bot_user(std::string_view plugin_id,
                 db_.set_user_role(existing->id, Role::Bot);
             LOG_INFO("Reusing bot user '{}' (key='{}') for plugin '{}' (user_id={})",
                      display_name, key, plugin_id, existing->id);
-            return existing->id;
+            return PluginManager::HostServices::BotUserResult{existing->id, false};
         }
         LOG_ERROR("Failed to persist bot user '{}' (key='{}') for plugin '{}'",
                   display_name, key, plugin_id);
@@ -576,7 +608,21 @@ std::optional<UserId> Server::create_plugin_bot_user(std::string_view plugin_id,
     if (!user)
         return std::nullopt;
 
-    return user->id;
+    return PluginManager::HostServices::BotUserResult{user->id, true};
+}
+
+bool Server::delete_plugin_bot_user(UserId user_id) {
+    auto user = db_.get_user_by_id(user_id);
+    if (!user || !user->is_bot)
+        return false;
+    return db_.delete_user(user_id);
+}
+
+bool Server::bot_display_name_available(std::string_view display_name, UserId self_user_id) {
+    auto users = db_.get_all_users();
+    return std::none_of(users.begin(), users.end(), [&](const UserRow& user) {
+        return user.id != self_user_id && user.display_name == display_name;
+    });
 }
 
 std::optional<uint64_t> Server::store_and_broadcast_chat_message(UserId sender_id,
@@ -587,7 +633,7 @@ std::optional<uint64_t> Server::store_and_broadcast_chat_message(UserId sender_i
     if (!ch)
         return std::nullopt;
 
-    if (static_cast<int>(text.size()) > config_.chat.max_message_length)
+    if (text.size() > max_chat_message_length(config_))
         return std::nullopt;
 
     auto now = static_cast<uint64_t>(std::time(nullptr));
@@ -683,6 +729,8 @@ bool Server::send_plugin_bot_voice_packet(UserId user_id,
         opus_payload_len > static_cast<size_t>(audio::MAX_OPUS_PACKET)) {
         return false;
     }
+    if (!plugins_.bot_in_voice_channel(user_id, voice_channel_id))
+        return false;
 
     std::vector<uint8_t> fwd;
     fwd.reserve(1 + 4 + 2 + opus_payload_len);
@@ -801,6 +849,11 @@ void Server::handle_message(const IncomingMessage& msg) {
                        protocol::ServerErrorCode::BadAuth);
             break;
         }
+        if (!valid_display_name(display_name)) {
+            send_error(msg.session_id, "Invalid display name",
+                       protocol::ServerErrorCode::BadAuth);
+            break;
+        }
 
         // Verify timestamp freshness (±30s window).
         constexpr int64_t kAuthWindowSec = 30;
@@ -893,6 +946,11 @@ void Server::handle_message(const IncomingMessage& msg) {
             }
             LOG_INFO("New identity registered: '{}' (id={})", display_name, user->id);
         } else {
+            if (user->is_bot) {
+                send_error(msg.session_id, "Bot users cannot authenticate",
+                           protocol::ServerErrorCode::BadAuth);
+                break;
+            }
             // Update display name if changed
             if (user->display_name != display_name) {
                 db_.update_display_name(user->id, display_name);
@@ -1646,7 +1704,7 @@ void Server::handle_message(const IncomingMessage& msg) {
         }
 
         // Validate message length
-        if (static_cast<int>(text.size()) > config_.chat.max_message_length) {
+        if (text.size() > max_chat_message_length(config_)) {
             send_error(msg.session_id, "Message too long");
             break;
         }
@@ -1695,7 +1753,7 @@ void Server::handle_message(const IncomingMessage& msg) {
             break;
         }
 
-        if (static_cast<int>(text.size()) > config_.chat.max_message_length) {
+        if (text.size() > max_chat_message_length(config_)) {
             send_error(msg.session_id, "Message too long");
             break;
         }

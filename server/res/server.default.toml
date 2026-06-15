@@ -36,6 +36,8 @@ directory = "plugins"
 #   "read_sessions",
 #   "read_users",
 #   "read_channels",
+#   "read_chat",
+#   "moderate_chat",
 #   "create_chat_commands",
 #   "create_bot_users",
 #   "send_bot_chat",
