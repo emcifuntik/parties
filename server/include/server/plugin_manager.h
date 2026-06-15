@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -112,7 +113,7 @@ public:
         std::string display_name;
     };
 
-    const std::vector<ChatCommand>& chat_commands() const { return chat_commands_; }
+    std::vector<ChatCommand> chat_commands() const;
     bool enabled() const { return enabled_; }
     std::vector<BotVoiceParticipant> bot_voice_participants(plugin::ChannelId channel_id = 0) const;
     uint32_t bot_voice_count(plugin::ChannelId channel_id) const;
@@ -196,6 +197,7 @@ private:
     HostServices services_;
     std::unordered_map<std::string, PluginGrant> grants_;
     bool enabled_ = false;
+    mutable std::mutex mutex_;
     std::vector<std::unique_ptr<Plugin>> plugins_;
     std::vector<ChatCommand> chat_commands_;
 };

@@ -38,6 +38,7 @@ Server::~Server() { stop(); }
 
 bool Server::start(const Config& cfg) {
 	ZoneScopedN("Server::start");
+    server_thread_id_ = std::this_thread::get_id();
     config_ = cfg;
 
     // Open database
@@ -106,52 +107,84 @@ bool Server::start(const Config& cfg) {
     plugin_services.create_bot_user = [this](std::string_view plugin_id,
                                              std::string_view key,
                                              std::string_view display_name) {
-        return create_plugin_bot_user(plugin_id, key, display_name);
+        return invoke_on_server_thread([this,
+                                        plugin_id = std::string(plugin_id),
+                                        key = std::string(key),
+                                        display_name = std::string(display_name)]() {
+            return create_plugin_bot_user(plugin_id, key, display_name);
+        });
     };
     plugin_services.set_bot_display_name = [this](UserId user_id,
                                                   std::string_view display_name) {
-        return db_.update_display_name(user_id, std::string(display_name));
+        return invoke_on_server_thread([this,
+                                        user_id,
+                                        display_name = std::string(display_name)]() {
+            return db_.update_display_name(user_id, display_name);
+        });
     };
     plugin_services.send_bot_chat = [this](UserId user_id,
                                            std::string_view display_name,
                                            ChannelId text_channel_id,
                                            std::string_view text) {
-        return store_and_broadcast_chat_message(user_id, display_name, text_channel_id, text);
+        return invoke_on_server_thread([this,
+                                        user_id,
+                                        display_name = std::string(display_name),
+                                        text_channel_id,
+                                        text = std::string(text)]() {
+            return store_and_broadcast_chat_message(user_id, display_name, text_channel_id, text);
+        });
     };
     plugin_services.join_bot_voice = [this](UserId user_id,
                                             std::string_view display_name,
                                             ChannelId voice_channel_id) {
-        return join_plugin_bot_voice(user_id, display_name, voice_channel_id);
+        return invoke_on_server_thread([this,
+                                        user_id,
+                                        display_name = std::string(display_name),
+                                        voice_channel_id]() {
+            return join_plugin_bot_voice(user_id, display_name, voice_channel_id);
+        });
     };
     plugin_services.leave_bot_voice = [this](UserId user_id,
                                              std::string_view display_name,
                                              ChannelId voice_channel_id) {
-        return leave_plugin_bot_voice(user_id, display_name, voice_channel_id);
+        return invoke_on_server_thread([this,
+                                        user_id,
+                                        display_name = std::string(display_name),
+                                        voice_channel_id]() {
+            return leave_plugin_bot_voice(user_id, display_name, voice_channel_id);
+        });
     };
     plugin_services.send_bot_voice_packet = [this](UserId user_id,
                                                    ChannelId voice_channel_id,
                                                    uint16_t sequence,
                                                    const uint8_t* opus_payload,
                                                    size_t opus_payload_len) {
-        return send_plugin_bot_voice_packet(user_id, voice_channel_id, sequence,
-                                            opus_payload, opus_payload_len);
+        std::vector<uint8_t> payload;
+        if (opus_payload && opus_payload_len > 0)
+            payload.assign(opus_payload, opus_payload + opus_payload_len);
+        return invoke_on_server_thread([this,
+                                        user_id,
+                                        voice_channel_id,
+                                        sequence,
+                                        payload = std::move(payload)]() {
+            return send_plugin_bot_voice_packet(user_id, voice_channel_id, sequence,
+                                                payload.data(), payload.size());
+        });
     };
     plugin_services.user_voice_channel = [this](UserId user_id) -> std::optional<ChannelId> {
-        auto sessions = quic_.get_sessions();
-        for (const auto& session : sessions) {
-            if (session->authenticated && session->user_id == user_id)
-                return session->channel_id;
-        }
-        return std::nullopt;
+        return invoke_on_server_thread([this, user_id]() -> std::optional<ChannelId> {
+            return quic_.user_voice_channel(user_id);
+        });
     };
     plugin_services.get_session_info = [this](plugin::SessionId session_id) -> std::optional<plugin::SessionInfo> {
-        auto session = quic_.get_session(session_id);
+        return invoke_on_server_thread([this, session_id]() -> std::optional<plugin::SessionInfo> {
+        auto session = quic_.session_snapshot(session_id);
         if (!session)
             return std::nullopt;
 
         plugin::SessionInfo info{};
         info.abi = plugin::make_abi_header<plugin::SessionInfo>();
-        info.session_id = session->id;
+        info.session_id = session->session_id;
         info.user_id = session->user_id;
         info.voice_channel_id = session->channel_id;
         info.role = static_cast<uint8_t>(session->role);
@@ -160,8 +193,10 @@ bool Server::start(const Config& cfg) {
         info.deafened = session->deafened ? 1 : 0;
         copy_plugin_string(info.username, session->username);
         return info;
+        });
     };
     plugin_services.get_user_info = [this](plugin::UserId user_id) -> std::optional<plugin::UserInfo> {
+        return invoke_on_server_thread([this, user_id]() -> std::optional<plugin::UserInfo> {
         auto user = db_.get_user_by_id(user_id);
         if (!user)
             return std::nullopt;
@@ -176,8 +211,11 @@ bool Server::start(const Config& cfg) {
         copy_plugin_string(info.bot_owner_plugin, user->bot_owner_plugin);
         copy_plugin_string(info.bot_key, user->bot_key);
         return info;
+        });
     };
     plugin_services.find_user_by_name = [this](std::string_view display_name) -> std::optional<plugin::UserId> {
+        return invoke_on_server_thread([this,
+                                        display_name = std::string(display_name)]() -> std::optional<plugin::UserId> {
         auto users = db_.get_all_users();
         auto it = std::find_if(users.begin(), users.end(), [&](const UserRow& user) {
             return user.display_name == display_name;
@@ -185,18 +223,17 @@ bool Server::start(const Config& cfg) {
         if (it == users.end())
             return std::nullopt;
         return it->id;
+        });
     };
     auto voice_user_count = [this](ChannelId channel_id) {
         uint32_t count = plugins_.bot_voice_count(channel_id);
-        auto sessions = quic_.get_sessions();
-        for (const auto& session : sessions) {
-            if (session->authenticated && session->channel_id == channel_id)
-                ++count;
-        }
+        count += quic_.voice_user_count(channel_id);
         return count;
     };
     plugin_services.get_voice_channel_info = [this, voice_user_count](plugin::ChannelId channel_id)
         -> std::optional<plugin::ChannelInfo> {
+        return invoke_on_server_thread([this, voice_user_count, channel_id]()
+            -> std::optional<plugin::ChannelInfo> {
         auto channel = db_.get_channel(channel_id);
         if (!channel)
             return std::nullopt;
@@ -209,9 +246,11 @@ bool Server::start(const Config& cfg) {
         info.sort_order = channel->sort_order;
         copy_plugin_string(info.name, channel->name);
         return info;
+        });
     };
     plugin_services.get_text_channel_info = [this](plugin::ChannelId channel_id)
         -> std::optional<plugin::ChannelInfo> {
+        return invoke_on_server_thread([this, channel_id]() -> std::optional<plugin::ChannelInfo> {
         auto channel = db_.get_text_channel(channel_id);
         if (!channel)
             return std::nullopt;
@@ -222,8 +261,10 @@ bool Server::start(const Config& cfg) {
         info.sort_order = channel->sort_order;
         copy_plugin_string(info.name, channel->name);
         return info;
+        });
     };
     plugin_services.list_voice_channels = [this, voice_user_count]() {
+        return invoke_on_server_thread([this, voice_user_count]() {
         std::vector<plugin::ChannelInfo> result;
         auto channels = db_.get_all_channels();
         result.reserve(channels.size());
@@ -238,8 +279,10 @@ bool Server::start(const Config& cfg) {
             result.push_back(info);
         }
         return result;
+        });
     };
     plugin_services.list_text_channels = [this]() {
+        return invoke_on_server_thread([this]() {
         std::vector<plugin::ChannelInfo> result;
         auto channels = db_.get_all_text_channels();
         result.reserve(channels.size());
@@ -252,6 +295,7 @@ bool Server::start(const Config& cfg) {
             result.push_back(info);
         }
         return result;
+        });
     };
     plugins_.set_host_services(std::move(plugin_services));
 
@@ -267,15 +311,18 @@ bool Server::start(const Config& cfg) {
 }
 
 void Server::run() {
+    server_thread_id_ = std::this_thread::get_id();
     auto last_retention_check = std::chrono::steady_clock::now();
     uint64_t last_send_failures_ = 0;
 
     while (running_) {
         ZoneScopedN("Server::run");
+        process_plugin_host_calls();
         process_control_messages();
         process_data_packets();
         process_file_transfers();
         process_disconnects();
+        process_plugin_host_calls();
 
         // Periodic retention enforcement (every 60 seconds)
         auto now = std::chrono::steady_clock::now();
@@ -316,10 +363,18 @@ void Server::run() {
 void Server::stop() {
     if (!running_) return;
     running_ = false;
+    if (is_server_thread())
+        process_plugin_host_calls();
     plugins_.shutdown();
     quic_.stop();
     db_.close();
     LOG_INFO("Server stopped");
+}
+
+void Server::process_plugin_host_calls() {
+    auto calls = plugin_host_calls_.drain();
+    for (auto& call : calls)
+        call();
 }
 
 void Server::process_control_messages() {
@@ -334,7 +389,7 @@ void Server::process_data_packets() {
     auto packets = quic_.data_incoming().drain();
     for (auto& pkt : packets) {
         if (pkt.packet_type == protocol::VOICE_PACKET_TYPE) {
-            auto session = quic_.get_session(pkt.session_id);
+            auto session = quic_.session_snapshot(pkt.session_id);
             if (!session || !session->authenticated || session->channel_id == 0)
                 continue;
 
@@ -347,16 +402,7 @@ void Server::process_data_packets() {
                        reinterpret_cast<uint8_t*>(&uid) + 4);
             fwd.insert(fwd.end(), pkt.data.begin(), pkt.data.end());
 
-            auto all_sessions = quic_.get_sessions();
-            std::vector<uint32_t> targets;
-            for (auto& s : all_sessions) {
-                if (s->id != pkt.session_id &&
-                    s->authenticated &&
-                    s->channel_id == session->channel_id &&
-                    !s->deafened) {
-                    targets.push_back(s->id);
-                }
-            }
+            auto targets = quic_.voice_targets(session->channel_id, pkt.session_id);
             if (!targets.empty())
                 quic_.send_to_many(targets, fwd.data(), fwd.size());
         }
@@ -647,15 +693,7 @@ bool Server::send_plugin_bot_voice_packet(UserId user_id,
                reinterpret_cast<uint8_t*>(&sequence) + 2);
     fwd.insert(fwd.end(), opus_payload, opus_payload + opus_payload_len);
 
-    auto all = quic_.get_sessions();
-    std::vector<uint32_t> targets;
-    for (auto& s : all) {
-        if (s->authenticated &&
-            s->channel_id == voice_channel_id &&
-            !s->deafened) {
-            targets.push_back(s->id);
-        }
-    }
+    auto targets = quic_.voice_targets(voice_channel_id);
     if (!targets.empty())
         quic_.send_to_many(targets, fwd.data(), fwd.size());
 

@@ -104,6 +104,11 @@ void PluginManager::set_host_services(HostServices services) {
     services_ = std::move(services);
 }
 
+std::vector<PluginManager::ChatCommand> PluginManager::chat_commands() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return chat_commands_;
+}
+
 static bool valid_command_name(std::string_view name) {
     if (name.empty() || name.size() > 64) return false;
     for (char c : name) {
@@ -638,7 +643,8 @@ bool PluginManager::load(const PluginConfig& cfg) {
             ++loaded;
     }
 
-    LOG_INFO("Loaded {} plugin(s), {} chat command(s)", loaded, chat_commands_.size());
+    const size_t command_count = chat_commands().size();
+    LOG_INFO("Loaded {} plugin(s), {} chat command(s)", loaded, command_count);
     return true;
 }
 
@@ -650,10 +656,13 @@ void PluginManager::shutdown() {
         if (plugin.shutdown)
             plugin.shutdown();
     }
-    plugins_.clear();
-    chat_commands_.clear();
-    grants_.clear();
-    enabled_ = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        plugins_.clear();
+        chat_commands_.clear();
+        grants_.clear();
+        enabled_ = false;
+    }
 }
 
 bool PluginManager::load_manifest(const std::filesystem::path& manifest_path) {
@@ -759,13 +768,22 @@ bool PluginManager::load_manifest(const std::filesystem::path& manifest_path) {
     plugin->registration = {};
     plugin->registration.abi = plugin::make_abi_header<plugin::Registration>();
 
-    const size_t commands_before_init = chat_commands_.size();
+    size_t commands_before_init = 0;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        commands_before_init = chat_commands_.size();
+    }
     if (!init(&host, &plugin->registration)) {
-        chat_commands_.resize(commands_before_init);
-        if (!plugin->last_error.empty()) {
+        std::string last_error;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            chat_commands_.resize(commands_before_init);
+            last_error = plugin->last_error;
+        }
+        if (!last_error.empty()) {
             LOG_WARN("Plugin '{}' init failed: {} (manifest='{}', library='{}')",
                      plugin->id,
-                     plugin->last_error,
+                     last_error,
                      plugin->manifest_path.string(),
                      plugin->library_path.string());
         } else {
@@ -779,7 +797,10 @@ bool PluginManager::load_manifest(const std::filesystem::path& manifest_path) {
     }
 
     LOG_INFO("Loaded plugin '{}' ({})", plugin->id, plugin->name);
-    plugins_.push_back(std::move(plugin));
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        plugins_.push_back(std::move(plugin));
+    }
     return true;
 }
 
@@ -815,6 +836,7 @@ void PluginManager::on_session_disconnected(plugin::SessionId session,
 
 std::vector<PluginManager::BotVoiceParticipant> PluginManager::bot_voice_participants(
     plugin::ChannelId channel_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
     std::vector<BotVoiceParticipant> result;
     for (const auto& owner : plugins_) {
         for (const auto& bot : owner->bots) {
@@ -833,6 +855,7 @@ std::vector<PluginManager::BotVoiceParticipant> PluginManager::bot_voice_partici
 }
 
 uint32_t PluginManager::bot_voice_count(plugin::ChannelId channel_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
     uint32_t count = 0;
     for (const auto& owner : plugins_) {
         for (const auto& bot : owner->bots) {
@@ -844,6 +867,7 @@ uint32_t PluginManager::bot_voice_count(plugin::ChannelId channel_id) const {
 }
 
 void PluginManager::clear_bot_voice_channel(plugin::ChannelId channel_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
     for (const auto& owner : plugins_) {
         for (const auto& bot : owner->bots) {
             if (!bot->destroyed && bot->voice_channel_id == channel_id)
@@ -862,16 +886,21 @@ bool PluginManager::dispatch_chat_command(plugin::SessionId session,
     if (error_message)
         error_message->clear();
 
-    auto command = std::find_if(chat_commands_.begin(), chat_commands_.end(),
-        [&](const ChatCommand& cmd) { return cmd.name == command_name; });
-    if (command == chat_commands_.end())
-        return false;
-
+    ChatCommand command_copy;
     Plugin* owner = nullptr;
-    for (const auto& plugin : plugins_) {
-        if (plugin->id == command->plugin_id) {
-            owner = plugin.get();
-            break;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto command = std::find_if(chat_commands_.begin(), chat_commands_.end(),
+            [&](const ChatCommand& cmd) { return cmd.name == command_name; });
+        if (command == chat_commands_.end())
+            return false;
+
+        command_copy = *command;
+        for (const auto& plugin : plugins_) {
+            if (plugin->id == command_copy.plugin_id) {
+                owner = plugin.get();
+                break;
+            }
         }
     }
     if (!owner)
@@ -886,7 +915,7 @@ bool PluginManager::dispatch_chat_command(plugin::SessionId session,
     std::vector<plugin::CommandArgumentValue> parsed_args;
     std::vector<std::string> string_storage;
     std::string parse_error;
-    if (!parse_invocation_arguments(command->arguments, args, parsed_args, string_storage, parse_error)) {
+    if (!parse_invocation_arguments(command_copy.arguments, args, parsed_args, string_storage, parse_error)) {
         if (error_message)
             *error_message = parse_error;
         return true;
@@ -1018,26 +1047,32 @@ bool PluginManager::host_create_bot_user(void* context,
 
     auto* plugin = static_cast<Plugin*>(context);
     if (!plugin || !plugin->manager) return false;
-    if (!plugin->manager->check_host_permission(*plugin, "create_bot_users", "create bot users"))
-        return false;
+    auto* manager = plugin->manager;
+    std::string plugin_id;
+    {
+        std::lock_guard<std::mutex> lock(manager->mutex_);
+        if (!manager->check_host_permission(*plugin, "create_bot_users", "create bot users"))
+            return false;
+        plugin_id = plugin->id;
+    }
 
     if (!key || !key[0]) {
-        LOG_WARN("Plugin '{}' tried to create a bot user with an empty key", plugin->id);
+        LOG_WARN("Plugin '{}' tried to create a bot user with an empty key", plugin_id);
         return false;
     }
     if (!display_name || !display_name[0]) {
-        LOG_WARN("Plugin '{}' tried to create bot user '{}' with an empty display name", plugin->id, key);
+        LOG_WARN("Plugin '{}' tried to create bot user '{}' with an empty display name", plugin_id, key);
         return false;
     }
-    if (!plugin->manager->services_.create_bot_user) {
-        LOG_WARN("Plugin '{}' tried to create a bot user, but bot user creation is unavailable", plugin->id);
+    if (!manager->services_.create_bot_user) {
+        LOG_WARN("Plugin '{}' tried to create a bot user, but bot user creation is unavailable", plugin_id);
         return false;
     }
 
-    auto user_id = plugin->manager->services_.create_bot_user(plugin->id, key, display_name);
+    auto user_id = manager->services_.create_bot_user(plugin_id, key, display_name);
     if (!user_id || *user_id == 0) {
         LOG_WARN("Plugin '{}' failed to create bot user '{}' ('{}')",
-                 plugin->id, key, display_name);
+                 plugin_id, key, display_name);
         return false;
     }
 
@@ -1047,22 +1082,28 @@ bool PluginManager::host_create_bot_user(void* context,
     bot->display_name = display_name;
 
     plugin::BotHandle handle = static_cast<plugin::BotHandle>(bot.get());
-    plugin->bots.push_back(std::move(bot));
+    {
+        std::lock_guard<std::mutex> lock(manager->mutex_);
+        plugin->bots.push_back(std::move(bot));
+    }
 
     if (out_bot) *out_bot = handle;
     if (out_user_id) *out_user_id = *user_id;
     LOG_INFO("Plugin '{}' created bot user '{}' (user_id={})",
-             plugin->id, display_name, *user_id);
+             plugin_id, display_name, *user_id);
     return true;
 }
 
 bool PluginManager::host_destroy_bot_user(void* context, plugin::BotHandle bot_handle) {
     auto* plugin = static_cast<Plugin*>(context);
     if (!plugin || !plugin->manager) return false;
-    if (!plugin->manager->check_host_permission(*plugin, "create_bot_users", "destroy bot users"))
+    auto* manager = plugin->manager;
+
+    std::lock_guard<std::mutex> lock(manager->mutex_);
+    if (!manager->check_host_permission(*plugin, "create_bot_users", "destroy bot users"))
         return false;
 
-    Bot* bot = plugin->manager->get_owned_bot(*plugin, bot_handle);
+    Bot* bot = manager->get_owned_bot(*plugin, bot_handle);
     if (!bot) return false;
 
     bot->destroyed = true;
@@ -1077,26 +1118,41 @@ bool PluginManager::host_set_bot_display_name(void* context,
                                               const char* display_name) {
     auto* plugin = static_cast<Plugin*>(context);
     if (!plugin || !plugin->manager) return false;
-    if (!plugin->manager->check_host_permission(*plugin, "create_bot_users", "rename bot users"))
-        return false;
-
-    Bot* bot = plugin->manager->get_owned_bot(*plugin, bot_handle);
-    if (!bot) return false;
+    auto* manager = plugin->manager;
     if (!display_name || !display_name[0]) {
         LOG_WARN("Plugin '{}' tried to rename a bot user to an empty display name", plugin->id);
         return false;
     }
-    if (!plugin->manager->services_.set_bot_display_name) {
+
+    plugin::UserId user_id = 0;
+    std::string plugin_id;
+    {
+        std::lock_guard<std::mutex> lock(manager->mutex_);
+        if (!manager->check_host_permission(*plugin, "create_bot_users", "rename bot users"))
+            return false;
+
+        Bot* bot = manager->get_owned_bot(*plugin, bot_handle);
+        if (!bot) return false;
+        user_id = bot->user_id;
+        plugin_id = plugin->id;
+    }
+
+    if (!manager->services_.set_bot_display_name) {
         LOG_WARN("Plugin '{}' tried to rename a bot user, but bot user updates are unavailable", plugin->id);
         return false;
     }
-    if (!plugin->manager->services_.set_bot_display_name(bot->user_id, display_name)) {
+    if (!manager->services_.set_bot_display_name(user_id, display_name)) {
         LOG_WARN("Plugin '{}' failed to rename bot user {} to '{}'",
-                 plugin->id, bot->user_id, display_name);
+                 plugin_id, user_id, display_name);
         return false;
     }
 
-    bot->display_name = display_name;
+    {
+        std::lock_guard<std::mutex> lock(manager->mutex_);
+        Bot* bot = manager->get_owned_bot(*plugin, bot_handle);
+        if (!bot) return false;
+        bot->display_name = display_name;
+    }
     return true;
 }
 
@@ -1109,22 +1165,34 @@ bool PluginManager::host_send_bot_chat(void* context,
 
     auto* plugin = static_cast<Plugin*>(context);
     if (!plugin || !plugin->manager) return false;
-    if (!plugin->manager->check_host_permission(*plugin, "send_bot_chat", "send bot chat"))
-        return false;
-
-    Bot* bot = plugin->manager->get_owned_bot(*plugin, bot_handle);
-    if (!bot) return false;
+    auto* manager = plugin->manager;
     if (!text) text = "";
-    if (!plugin->manager->services_.send_bot_chat) {
+
+    plugin::UserId user_id = 0;
+    std::string display_name;
+    std::string plugin_id;
+    {
+        std::lock_guard<std::mutex> lock(manager->mutex_);
+        if (!manager->check_host_permission(*plugin, "send_bot_chat", "send bot chat"))
+            return false;
+
+        Bot* bot = manager->get_owned_bot(*plugin, bot_handle);
+        if (!bot) return false;
+        user_id = bot->user_id;
+        display_name = bot->display_name;
+        plugin_id = plugin->id;
+    }
+
+    if (!manager->services_.send_bot_chat) {
         LOG_WARN("Plugin '{}' tried to send bot chat, but bot chat is unavailable", plugin->id);
         return false;
     }
 
-    auto message_id = plugin->manager->services_.send_bot_chat(
-        bot->user_id, bot->display_name, text_channel_id, text);
+    auto message_id = manager->services_.send_bot_chat(
+        user_id, display_name, text_channel_id, text);
     if (!message_id || *message_id == 0) {
         LOG_WARN("Plugin '{}' failed to send bot chat as '{}' (user_id={})",
-                 plugin->id, bot->display_name, bot->user_id);
+                 plugin_id, display_name, user_id);
         return false;
     }
 
@@ -1137,52 +1205,83 @@ bool PluginManager::host_join_bot_voice(void* context,
                                         plugin::ChannelId voice_channel_id) {
     auto* plugin = static_cast<Plugin*>(context);
     if (!plugin || !plugin->manager) return false;
-    if (!plugin->manager->check_host_permission(*plugin, "join_bot_voice", "join bot voice"))
-        return false;
+    auto* manager = plugin->manager;
 
-    Bot* bot = plugin->manager->get_owned_bot(*plugin, bot_handle);
-    if (!bot) return false;
-    if (bot->voice_channel_id == voice_channel_id)
-        return true;
-    if (!plugin->manager->services_.join_bot_voice) {
+    plugin::UserId user_id = 0;
+    plugin::ChannelId old_channel_id = 0;
+    std::string display_name;
+    {
+        std::lock_guard<std::mutex> lock(manager->mutex_);
+        if (!manager->check_host_permission(*plugin, "join_bot_voice", "join bot voice"))
+            return false;
+
+        Bot* bot = manager->get_owned_bot(*plugin, bot_handle);
+        if (!bot) return false;
+        if (bot->voice_channel_id == voice_channel_id)
+            return true;
+        user_id = bot->user_id;
+        old_channel_id = bot->voice_channel_id;
+        display_name = bot->display_name;
+    }
+
+    if (!manager->services_.join_bot_voice) {
         LOG_WARN("Plugin '{}' tried to join bot voice, but bot voice is unavailable", plugin->id);
         return false;
     }
 
-    plugin::ChannelId old_channel_id = bot->voice_channel_id;
     if (old_channel_id != 0) {
-        if (plugin->manager->services_.leave_bot_voice)
-            plugin->manager->services_.leave_bot_voice(bot->user_id, bot->display_name, old_channel_id);
-        bot->voice_channel_id = 0;
+        if (manager->services_.leave_bot_voice)
+            manager->services_.leave_bot_voice(user_id, display_name, old_channel_id);
     }
 
-    if (!plugin->manager->services_.join_bot_voice(bot->user_id, bot->display_name, voice_channel_id))
+    if (!manager->services_.join_bot_voice(user_id, display_name, voice_channel_id))
         return false;
 
-    bot->voice_channel_id = voice_channel_id;
+    {
+        std::lock_guard<std::mutex> lock(manager->mutex_);
+        Bot* bot = manager->get_owned_bot(*plugin, bot_handle);
+        if (!bot) return false;
+        bot->voice_channel_id = voice_channel_id;
+    }
     return true;
 }
 
 bool PluginManager::host_leave_bot_voice(void* context, plugin::BotHandle bot_handle) {
     auto* plugin = static_cast<Plugin*>(context);
     if (!plugin || !plugin->manager) return false;
-    if (!plugin->manager->check_host_permission(*plugin, "join_bot_voice", "leave bot voice"))
-        return false;
+    auto* manager = plugin->manager;
 
-    Bot* bot = plugin->manager->get_owned_bot(*plugin, bot_handle);
-    if (!bot) return false;
-    if (bot->voice_channel_id == 0)
-        return true;
-    if (!plugin->manager->services_.leave_bot_voice) {
+    plugin::UserId user_id = 0;
+    plugin::ChannelId old_channel_id = 0;
+    std::string display_name;
+    {
+        std::lock_guard<std::mutex> lock(manager->mutex_);
+        if (!manager->check_host_permission(*plugin, "join_bot_voice", "leave bot voice"))
+            return false;
+
+        Bot* bot = manager->get_owned_bot(*plugin, bot_handle);
+        if (!bot) return false;
+        if (bot->voice_channel_id == 0)
+            return true;
+        user_id = bot->user_id;
+        old_channel_id = bot->voice_channel_id;
+        display_name = bot->display_name;
+    }
+
+    if (!manager->services_.leave_bot_voice) {
         LOG_WARN("Plugin '{}' tried to leave bot voice, but bot voice is unavailable", plugin->id);
         return false;
     }
 
-    plugin::ChannelId old_channel_id = bot->voice_channel_id;
-    if (!plugin->manager->services_.leave_bot_voice(bot->user_id, bot->display_name, old_channel_id))
+    if (!manager->services_.leave_bot_voice(user_id, display_name, old_channel_id))
         return false;
 
-    bot->voice_channel_id = 0;
+    {
+        std::lock_guard<std::mutex> lock(manager->mutex_);
+        Bot* bot = manager->get_owned_bot(*plugin, bot_handle);
+        if (!bot) return false;
+        bot->voice_channel_id = 0;
+    }
     return true;
 }
 
@@ -1193,20 +1292,30 @@ bool PluginManager::host_send_bot_voice_packet(void* context,
                                                size_t opus_payload_len) {
     auto* plugin = static_cast<Plugin*>(context);
     if (!plugin || !plugin->manager) return false;
-    if (!plugin->manager->check_host_permission(*plugin, "send_bot_audio", "send bot audio"))
-        return false;
+    auto* manager = plugin->manager;
 
-    Bot* bot = plugin->manager->get_owned_bot(*plugin, bot_handle);
-    if (!bot) return false;
-    if (bot->voice_channel_id == 0 || !opus_payload || opus_payload_len == 0)
-        return false;
-    if (!plugin->manager->services_.send_bot_voice_packet) {
+    plugin::UserId user_id = 0;
+    plugin::ChannelId voice_channel_id = 0;
+    {
+        std::lock_guard<std::mutex> lock(manager->mutex_);
+        if (!manager->check_host_permission(*plugin, "send_bot_audio", "send bot audio"))
+            return false;
+
+        Bot* bot = manager->get_owned_bot(*plugin, bot_handle);
+        if (!bot) return false;
+        if (bot->voice_channel_id == 0 || !opus_payload || opus_payload_len == 0)
+            return false;
+        user_id = bot->user_id;
+        voice_channel_id = bot->voice_channel_id;
+    }
+
+    if (!manager->services_.send_bot_voice_packet) {
         LOG_WARN("Plugin '{}' tried to send bot audio, but bot audio is unavailable", plugin->id);
         return false;
     }
 
-    return plugin->manager->services_.send_bot_voice_packet(
-        bot->user_id, bot->voice_channel_id, sequence, opus_payload, opus_payload_len);
+    return manager->services_.send_bot_voice_packet(
+        user_id, voice_channel_id, sequence, opus_payload, opus_payload_len);
 }
 
 bool PluginManager::host_user_voice_channel(void* context,
@@ -1218,21 +1327,25 @@ bool PluginManager::host_user_voice_channel(void* context,
     auto* plugin = static_cast<Plugin*>(context);
     if (!plugin || !plugin->manager || !out_voice_channel_id || user_id == 0)
         return false;
-    if (!plugin->manager->check_host_permission(*plugin, "read_sessions", "read user voice channel"))
-        return false;
+    auto* manager = plugin->manager;
+    {
+        std::lock_guard<std::mutex> lock(manager->mutex_);
+        if (!manager->check_host_permission(*plugin, "read_sessions", "read user voice channel"))
+            return false;
+    }
 
-    if (auto channel = plugin->manager->bot_voice_channel(user_id)) {
+    if (auto channel = manager->bot_voice_channel(user_id)) {
         *out_voice_channel_id = *channel;
         return true;
     }
 
-    if (!plugin->manager->services_.user_voice_channel) {
+    if (!manager->services_.user_voice_channel) {
         LOG_WARN("Plugin '{}' tried to read user voice channel, but session lookup is unavailable",
                  plugin->id);
         return false;
     }
 
-    auto channel = plugin->manager->services_.user_voice_channel(user_id);
+    auto channel = manager->services_.user_voice_channel(user_id);
     if (!channel)
         return false;
 
@@ -1268,12 +1381,16 @@ bool PluginManager::host_get_session_info(void* context,
     auto* plugin = static_cast<Plugin*>(context);
     if (!plugin || !plugin->manager || !out_info || session == 0)
         return false;
-    if (!plugin->manager->check_host_permission(*plugin, "read_sessions", "read session info"))
-        return false;
-    if (!plugin->manager->services_.get_session_info)
+    auto* manager = plugin->manager;
+    {
+        std::lock_guard<std::mutex> lock(manager->mutex_);
+        if (!manager->check_host_permission(*plugin, "read_sessions", "read session info"))
+            return false;
+    }
+    if (!manager->services_.get_session_info)
         return false;
 
-    auto info = plugin->manager->services_.get_session_info(session);
+    auto info = manager->services_.get_session_info(session);
     if (!info)
         return false;
 
@@ -1290,12 +1407,16 @@ bool PluginManager::host_get_user_info(void* context,
     auto* plugin = static_cast<Plugin*>(context);
     if (!plugin || !plugin->manager || !out_info || user_id == 0)
         return false;
-    if (!plugin->manager->check_host_permission(*plugin, "read_users", "read user info"))
-        return false;
-    if (!plugin->manager->services_.get_user_info)
+    auto* manager = plugin->manager;
+    {
+        std::lock_guard<std::mutex> lock(manager->mutex_);
+        if (!manager->check_host_permission(*plugin, "read_users", "read user info"))
+            return false;
+    }
+    if (!manager->services_.get_user_info)
         return false;
 
-    auto info = plugin->manager->services_.get_user_info(user_id);
+    auto info = manager->services_.get_user_info(user_id);
     if (!info)
         return false;
 
@@ -1312,12 +1433,16 @@ bool PluginManager::host_find_user_by_name(void* context,
     auto* plugin = static_cast<Plugin*>(context);
     if (!plugin || !plugin->manager || !out_user_id || !display_name || !display_name[0])
         return false;
-    if (!plugin->manager->check_host_permission(*plugin, "read_users", "find user by name"))
-        return false;
-    if (!plugin->manager->services_.find_user_by_name)
+    auto* manager = plugin->manager;
+    {
+        std::lock_guard<std::mutex> lock(manager->mutex_);
+        if (!manager->check_host_permission(*plugin, "read_users", "find user by name"))
+            return false;
+    }
+    if (!manager->services_.find_user_by_name)
         return false;
 
-    auto user_id = plugin->manager->services_.find_user_by_name(display_name);
+    auto user_id = manager->services_.find_user_by_name(display_name);
     if (!user_id || *user_id == 0)
         return false;
 
@@ -1334,12 +1459,16 @@ bool PluginManager::host_get_voice_channel_info(void* context,
     auto* plugin = static_cast<Plugin*>(context);
     if (!plugin || !plugin->manager || !out_info || channel_id == 0)
         return false;
-    if (!plugin->manager->check_host_permission(*plugin, "read_channels", "read voice channel info"))
-        return false;
-    if (!plugin->manager->services_.get_voice_channel_info)
+    auto* manager = plugin->manager;
+    {
+        std::lock_guard<std::mutex> lock(manager->mutex_);
+        if (!manager->check_host_permission(*plugin, "read_channels", "read voice channel info"))
+            return false;
+    }
+    if (!manager->services_.get_voice_channel_info)
         return false;
 
-    auto info = plugin->manager->services_.get_voice_channel_info(channel_id);
+    auto info = manager->services_.get_voice_channel_info(channel_id);
     if (!info)
         return false;
 
@@ -1356,12 +1485,16 @@ bool PluginManager::host_get_text_channel_info(void* context,
     auto* plugin = static_cast<Plugin*>(context);
     if (!plugin || !plugin->manager || !out_info || channel_id == 0)
         return false;
-    if (!plugin->manager->check_host_permission(*plugin, "read_channels", "read text channel info"))
-        return false;
-    if (!plugin->manager->services_.get_text_channel_info)
+    auto* manager = plugin->manager;
+    {
+        std::lock_guard<std::mutex> lock(manager->mutex_);
+        if (!manager->check_host_permission(*plugin, "read_channels", "read text channel info"))
+            return false;
+    }
+    if (!manager->services_.get_text_channel_info)
         return false;
 
-    auto info = plugin->manager->services_.get_text_channel_info(channel_id);
+    auto info = manager->services_.get_text_channel_info(channel_id);
     if (!info)
         return false;
 
@@ -1375,12 +1508,16 @@ bool PluginManager::host_list_voice_channels(void* context,
     auto* plugin = static_cast<Plugin*>(context);
     if (!plugin || !plugin->manager || !inout_count)
         return false;
-    if (!plugin->manager->check_host_permission(*plugin, "read_channels", "list voice channels"))
-        return false;
-    if (!plugin->manager->services_.list_voice_channels)
+    auto* manager = plugin->manager;
+    {
+        std::lock_guard<std::mutex> lock(manager->mutex_);
+        if (!manager->check_host_permission(*plugin, "read_channels", "list voice channels"))
+            return false;
+    }
+    if (!manager->services_.list_voice_channels)
         return false;
 
-    return copy_channel_list(plugin->manager->services_.list_voice_channels(),
+    return copy_channel_list(manager->services_.list_voice_channels(),
                              out_channels, inout_count);
 }
 
@@ -1390,12 +1527,16 @@ bool PluginManager::host_list_text_channels(void* context,
     auto* plugin = static_cast<Plugin*>(context);
     if (!plugin || !plugin->manager || !inout_count)
         return false;
-    if (!plugin->manager->check_host_permission(*plugin, "read_channels", "list text channels"))
-        return false;
-    if (!plugin->manager->services_.list_text_channels)
+    auto* manager = plugin->manager;
+    {
+        std::lock_guard<std::mutex> lock(manager->mutex_);
+        if (!manager->check_host_permission(*plugin, "read_channels", "list text channels"))
+            return false;
+    }
+    if (!manager->services_.list_text_channels)
         return false;
 
-    return copy_channel_list(plugin->manager->services_.list_text_channels(),
+    return copy_channel_list(manager->services_.list_text_channels(),
                              out_channels, inout_count);
 }
 
@@ -1408,8 +1549,10 @@ bool PluginManager::host_bot_voice_channel(void* context,
     auto* plugin = static_cast<Plugin*>(context);
     if (!plugin || !plugin->manager || !out_voice_channel_id)
         return false;
+    auto* manager = plugin->manager;
 
-    Bot* bot = plugin->manager->get_owned_bot(*plugin, bot_handle);
+    std::lock_guard<std::mutex> lock(manager->mutex_);
+    Bot* bot = manager->get_owned_bot(*plugin, bot_handle);
     if (!bot)
         return false;
 
@@ -1423,16 +1566,20 @@ bool PluginManager::host_move_bot_to_user_voice(void* context,
     auto* plugin = static_cast<Plugin*>(context);
     if (!plugin || !plugin->manager || user_id == 0)
         return false;
-    if (!plugin->manager->check_host_permission(*plugin, "read_sessions", "resolve user voice channel"))
-        return false;
+    auto* manager = plugin->manager;
+    {
+        std::lock_guard<std::mutex> lock(manager->mutex_);
+        if (!manager->check_host_permission(*plugin, "read_sessions", "resolve user voice channel"))
+            return false;
+    }
 
     plugin::ChannelId voice_channel_id = 0;
-    if (auto channel = plugin->manager->bot_voice_channel(user_id)) {
+    if (auto channel = manager->bot_voice_channel(user_id)) {
         voice_channel_id = *channel;
     } else {
-        if (!plugin->manager->services_.user_voice_channel)
+        if (!manager->services_.user_voice_channel)
             return false;
-        auto session_channel = plugin->manager->services_.user_voice_channel(user_id);
+        auto session_channel = manager->services_.user_voice_channel(user_id);
         if (!session_channel)
             return false;
         voice_channel_id = *session_channel;
@@ -1447,6 +1594,7 @@ bool PluginManager::host_move_bot_to_user_voice(void* context,
 bool PluginManager::register_chat_commands(Plugin& plugin,
                                            const plugin::CommandDefinition* commands,
                                            size_t command_count) {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (!check_host_permission(plugin, "create_chat_commands", "register chat commands"))
         return false;
     if (!commands && command_count != 0) {
@@ -1516,6 +1664,7 @@ PluginManager::Bot* PluginManager::get_owned_bot(Plugin& plugin, plugin::BotHand
 }
 
 std::optional<plugin::ChannelId> PluginManager::bot_voice_channel(plugin::UserId user_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
     for (const auto& owner : plugins_) {
         for (const auto& bot : owner->bots) {
             if (!bot->destroyed && bot->user_id == user_id)
@@ -1545,6 +1694,7 @@ bool PluginManager::has_permission(const Plugin& plugin, std::string_view permis
 }
 
 PluginManager::Plugin* PluginManager::find_command_owner(std::string_view command_name) const {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = std::find_if(chat_commands_.begin(), chat_commands_.end(),
         [&](const ChatCommand& cmd) { return cmd.name == command_name; });
     if (it == chat_commands_.end())

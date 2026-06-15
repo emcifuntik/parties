@@ -221,6 +221,74 @@ std::vector<std::shared_ptr<Session>> QuicServer::get_sessions() {
     return result;
 }
 
+static SessionSnapshot make_session_snapshot(const Session& session) {
+    SessionSnapshot snapshot;
+    snapshot.session_id = session.id;
+    snapshot.user_id = session.user_id;
+    snapshot.channel_id = session.channel_id;
+    snapshot.role = session.role;
+    snapshot.authenticated = session.authenticated;
+    snapshot.muted = session.muted;
+    snapshot.deafened = session.deafened;
+    snapshot.alive = session.alive.load(std::memory_order_relaxed);
+    snapshot.username = session.username;
+    return snapshot;
+}
+
+std::optional<SessionSnapshot> QuicServer::session_snapshot(uint32_t session_id) {
+    std::lock_guard<std::mutex> lock(sessions_mutex_);
+    auto it = sessions_.find(session_id);
+    if (it == sessions_.end())
+        return std::nullopt;
+    return make_session_snapshot(*it->second);
+}
+
+std::vector<SessionSnapshot> QuicServer::session_snapshots() {
+    std::lock_guard<std::mutex> lock(sessions_mutex_);
+    std::vector<SessionSnapshot> result;
+    result.reserve(sessions_.size());
+    for (const auto& [id, session] : sessions_)
+        result.push_back(make_session_snapshot(*session));
+    return result;
+}
+
+std::optional<ChannelId> QuicServer::user_voice_channel(UserId user_id) {
+    std::lock_guard<std::mutex> lock(sessions_mutex_);
+    for (const auto& [id, session] : sessions_) {
+        if (session->authenticated && session->user_id == user_id)
+            return session->channel_id;
+    }
+    return std::nullopt;
+}
+
+uint32_t QuicServer::voice_user_count(ChannelId channel_id) {
+    std::lock_guard<std::mutex> lock(sessions_mutex_);
+    uint32_t count = 0;
+    for (const auto& [id, session] : sessions_) {
+        if (session->authenticated && session->channel_id == channel_id)
+            ++count;
+    }
+    return count;
+}
+
+std::vector<uint32_t> QuicServer::voice_targets(ChannelId channel_id,
+                                                uint32_t excluded_session_id,
+                                                bool include_deafened) {
+    std::lock_guard<std::mutex> lock(sessions_mutex_);
+    std::vector<uint32_t> result;
+    result.reserve(sessions_.size());
+    for (const auto& [id, session] : sessions_) {
+        if (id == excluded_session_id)
+            continue;
+        if (!session->authenticated || session->channel_id != channel_id)
+            continue;
+        if (!include_deafened && session->deafened)
+            continue;
+        result.push_back(id);
+    }
+    return result;
+}
+
 // ── Data plane ──
 
 bool QuicServer::send_datagram(uint32_t session_id, const uint8_t* data, size_t len) {

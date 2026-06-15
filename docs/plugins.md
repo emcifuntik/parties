@@ -868,11 +868,21 @@ Required manifest/server permissions:
 Plugin lifecycle, chat, command, and session callbacks are dispatched from the
 server main loop.
 
-Host calls are synchronous. Plugins should return quickly from callbacks. If a
-plugin owns worker threads, it must coordinate its own synchronization when
-calling host functions from those threads. Bot audio pacing can happen on a
-plugin-owned worker thread, but the plugin remains responsible for timing and
-backpressure behavior.
+Host calls are synchronous and may be called from plugin-owned worker threads.
+When a worker thread calls a host function that touches server state, the server
+marshals that request onto the server main loop and blocks the caller until the
+result is available. Calls made from server-dispatched plugin callbacks execute
+inline on the main loop.
+
+Plugins are still responsible for their own memory and thread ownership:
+
+- Do not unload or free plugin-owned data while a worker thread might still use
+  it.
+- Stop and join plugin-owned worker threads from `parties_plugin_shutdown`.
+- Treat host calls as blocking calls. Bot audio workers should pace packets and
+  avoid unbounded buffering if the server loop is busy.
+- Host-provided callback pointers remain valid only for the duration documented
+  by the specific callback.
 
 ## Failure Behavior
 
