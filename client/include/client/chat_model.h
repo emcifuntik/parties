@@ -48,6 +48,12 @@ struct TextChannel {
     bool has_unread = false;
 };
 
+struct ChatCommandDefinition {
+    Rml::String name;
+    Rml::String description;
+    Rml::String usage;
+};
+
 struct PendingFile {
     Rml::String name;       // display name
     Rml::String size_str;   // formatted size
@@ -58,6 +64,7 @@ class ChatModel : public rml::Model {
 public:
     // --- Bound state (Property<T> auto-dirties; arrays via silent()/notify()) ---
     rml::Prop<Rml::Vector<TextChannel>> text_channels;
+    rml::Prop<Rml::Vector<ChatCommandDefinition>> commands;
     rml::Prop<int>         active_channel{0};
     rml::Prop<Rml::String> active_channel_name;
 

@@ -990,6 +990,11 @@ gradient_circle.user-dot {
     background-color: #7CC4FA20;
 }
 
+.role-badge.role-bot {
+    color: #F2C94C;
+    background-color: #F2C94C20;
+}
+
 /* ── User island (bottom of sidebar, single card) ──── */
 
 .user-island {

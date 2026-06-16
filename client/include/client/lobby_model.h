@@ -136,7 +136,7 @@ public:
     rml::Prop<Rml::String> update_version;
 
     // Admin / permissions
-    rml::Prop<int>         my_role{3};                  // current user's role (0=Owner..3=User)
+    rml::Prop<int>         my_role{3};                  // current user's role (0=Owner..3=User, 4=Bot)
     rml::Prop<bool>        can_manage_channels{false};  // derived from role
     rml::Prop<bool>        can_kick{false};             // derived from role
     rml::Prop<bool>        can_manage_roles{false};     // derived from role

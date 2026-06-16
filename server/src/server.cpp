@@ -1,5 +1,6 @@
 #include <server/server.h>
 #include <parties/crypto.h>
+#include <parties/audio_common.h>
 #include <parties/protocol.h>
 #include <parties/serialization.h>
 #include <parties/types.h>
@@ -16,15 +17,43 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <string_view>
 #include <thread>
 
+#include <openssl/sha.h>
+
 namespace parties::server {
+
+template <size_t N>
+static void copy_plugin_string(char (&dst)[N], std::string_view src) {
+    static_assert(N > 0);
+    const size_t max_len = N - 1;
+    const size_t n = src.size() < max_len ? src.size() : max_len;
+    std::memcpy(dst, src.data(), n);
+    dst[n] = '\0';
+}
+
+static bool valid_display_name(std::string_view name) {
+    if (name.empty() || name.size() >= plugin::MAX_NAME_LEN)
+        return false;
+    return std::all_of(name.begin(), name.end(), [](char c) {
+        unsigned char uc = static_cast<unsigned char>(c);
+        return uc >= 0x20 && uc != 0x7f;
+    });
+}
+
+static size_t max_chat_message_length(const Config& config) {
+    return config.chat.max_message_length > 0
+        ? static_cast<size_t>(config.chat.max_message_length)
+        : 0;
+}
 
 Server::Server() = default;
 Server::~Server() { stop(); }
 
 bool Server::start(const Config& cfg) {
 	ZoneScopedN("Server::start");
+    server_thread_id_ = std::this_thread::get_id();
     config_ = cfg;
 
     // Open database
@@ -89,21 +118,235 @@ bool Server::start(const Config& cfg) {
         return false;
     }
 
+    PluginManager::HostServices plugin_services;
+    plugin_services.create_bot_user = [this](std::string_view plugin_id,
+                                             std::string_view key,
+                                             std::string_view display_name) {
+        return invoke_on_server_thread([this,
+                                        plugin_id = std::string(plugin_id),
+                                        key = std::string(key),
+                                        display_name = std::string(display_name)]() {
+            return create_plugin_bot_user(plugin_id, key, display_name);
+        });
+    };
+    plugin_services.delete_bot_user = [this](UserId user_id) {
+        return invoke_on_server_thread([this, user_id]() {
+            return delete_plugin_bot_user(user_id);
+        });
+    };
+    plugin_services.set_bot_display_name = [this](UserId user_id,
+                                                  std::string_view display_name) {
+        return invoke_on_server_thread([this,
+                                        user_id,
+                                        display_name = std::string(display_name)]() {
+            if (!valid_display_name(display_name) ||
+                !bot_display_name_available(display_name, user_id)) {
+                return false;
+            }
+            return db_.update_display_name(user_id, display_name);
+        });
+    };
+    plugin_services.send_bot_chat = [this](UserId user_id,
+                                           std::string_view display_name,
+                                           ChannelId text_channel_id,
+                                           std::string_view text) {
+        return invoke_on_server_thread([this,
+                                        user_id,
+                                        display_name = std::string(display_name),
+                                        text_channel_id,
+                                        text = std::string(text)]() {
+            return store_and_broadcast_chat_message(user_id, display_name, text_channel_id, text);
+        });
+    };
+    plugin_services.join_bot_voice = [this](UserId user_id,
+                                            std::string_view display_name,
+                                            ChannelId voice_channel_id) {
+        return invoke_on_server_thread([this,
+                                        user_id,
+                                        display_name = std::string(display_name),
+                                        voice_channel_id]() {
+            return join_plugin_bot_voice(user_id, display_name, voice_channel_id);
+        });
+    };
+    plugin_services.leave_bot_voice = [this](UserId user_id,
+                                             std::string_view display_name,
+                                             ChannelId voice_channel_id) {
+        return invoke_on_server_thread([this,
+                                        user_id,
+                                        display_name = std::string(display_name),
+                                        voice_channel_id]() {
+            return leave_plugin_bot_voice(user_id, display_name, voice_channel_id);
+        });
+    };
+    plugin_services.send_bot_voice_packet = [this](UserId user_id,
+                                                   ChannelId voice_channel_id,
+                                                   uint16_t sequence,
+                                                   const uint8_t* opus_payload,
+                                                   size_t opus_payload_len) {
+        std::vector<uint8_t> payload;
+        if (opus_payload && opus_payload_len > 0)
+            payload.assign(opus_payload, opus_payload + opus_payload_len);
+        return invoke_on_server_thread([this,
+                                        user_id,
+                                        voice_channel_id,
+                                        sequence,
+                                        payload = std::move(payload)]() {
+            return send_plugin_bot_voice_packet(user_id, voice_channel_id, sequence,
+                                                payload.data(), payload.size());
+        });
+    };
+    plugin_services.user_voice_channel = [this](UserId user_id) -> std::optional<ChannelId> {
+        return invoke_on_server_thread([this, user_id]() -> std::optional<ChannelId> {
+            return quic_.user_voice_channel(user_id);
+        });
+    };
+    plugin_services.get_session_info = [this](plugin::SessionId session_id) -> std::optional<plugin::SessionInfo> {
+        return invoke_on_server_thread([this, session_id]() -> std::optional<plugin::SessionInfo> {
+        auto session = quic_.session_snapshot(session_id);
+        if (!session)
+            return std::nullopt;
+
+        plugin::SessionInfo info{};
+        info.abi = plugin::make_abi_header<plugin::SessionInfo>();
+        info.session_id = session->session_id;
+        info.user_id = session->user_id;
+        info.voice_channel_id = session->channel_id;
+        info.role = static_cast<uint8_t>(session->role);
+        info.authenticated = session->authenticated ? 1 : 0;
+        info.muted = session->muted ? 1 : 0;
+        info.deafened = session->deafened ? 1 : 0;
+        copy_plugin_string(info.username, session->username);
+        return info;
+        });
+    };
+    plugin_services.get_user_info = [this](plugin::UserId user_id) -> std::optional<plugin::UserInfo> {
+        return invoke_on_server_thread([this, user_id]() -> std::optional<plugin::UserInfo> {
+        auto user = db_.get_user_by_id(user_id);
+        if (!user)
+            return std::nullopt;
+
+        plugin::UserInfo info{};
+        info.abi = plugin::make_abi_header<plugin::UserInfo>();
+        info.user_id = user->id;
+        info.role = static_cast<uint8_t>(user->role);
+        info.is_bot = user->is_bot ? 1 : 0;
+        copy_plugin_string(info.display_name, user->display_name);
+        copy_plugin_string(info.fingerprint, user->fingerprint);
+        copy_plugin_string(info.bot_owner_plugin, user->bot_owner_plugin);
+        copy_plugin_string(info.bot_key, user->bot_key);
+        return info;
+        });
+    };
+    plugin_services.find_user_by_name = [this](std::string_view display_name) -> std::optional<plugin::UserId> {
+        return invoke_on_server_thread([this,
+                                        display_name = std::string(display_name)]() -> std::optional<plugin::UserId> {
+        auto users = db_.get_all_users();
+        auto it = std::find_if(users.begin(), users.end(), [&](const UserRow& user) {
+            return user.display_name == display_name;
+        });
+        if (it == users.end())
+            return std::nullopt;
+        return it->id;
+        });
+    };
+    auto voice_user_count = [this](ChannelId channel_id) {
+        uint32_t count = plugins_.bot_voice_count(channel_id);
+        count += quic_.voice_user_count(channel_id);
+        return count;
+    };
+    plugin_services.get_voice_channel_info = [this, voice_user_count](plugin::ChannelId channel_id)
+        -> std::optional<plugin::ChannelInfo> {
+        return invoke_on_server_thread([this, voice_user_count, channel_id]()
+            -> std::optional<plugin::ChannelInfo> {
+        auto channel = db_.get_channel(channel_id);
+        if (!channel)
+            return std::nullopt;
+
+        plugin::ChannelInfo info{};
+        info.abi = plugin::make_abi_header<plugin::ChannelInfo>();
+        info.channel_id = channel->id;
+        info.user_count = voice_user_count(channel->id);
+        info.max_users = channel->max_users;
+        info.sort_order = channel->sort_order;
+        copy_plugin_string(info.name, channel->name);
+        return info;
+        });
+    };
+    plugin_services.get_text_channel_info = [this](plugin::ChannelId channel_id)
+        -> std::optional<plugin::ChannelInfo> {
+        return invoke_on_server_thread([this, channel_id]() -> std::optional<plugin::ChannelInfo> {
+        auto channel = db_.get_text_channel(channel_id);
+        if (!channel)
+            return std::nullopt;
+
+        plugin::ChannelInfo info{};
+        info.abi = plugin::make_abi_header<plugin::ChannelInfo>();
+        info.channel_id = channel->id;
+        info.sort_order = channel->sort_order;
+        copy_plugin_string(info.name, channel->name);
+        return info;
+        });
+    };
+    plugin_services.list_voice_channels = [this, voice_user_count]() {
+        return invoke_on_server_thread([this, voice_user_count]() {
+        std::vector<plugin::ChannelInfo> result;
+        auto channels = db_.get_all_channels();
+        result.reserve(channels.size());
+        for (const auto& channel : channels) {
+            plugin::ChannelInfo info{};
+            info.abi = plugin::make_abi_header<plugin::ChannelInfo>();
+            info.channel_id = channel.id;
+            info.user_count = voice_user_count(channel.id);
+            info.max_users = channel.max_users;
+            info.sort_order = channel.sort_order;
+            copy_plugin_string(info.name, channel.name);
+            result.push_back(info);
+        }
+        return result;
+        });
+    };
+    plugin_services.list_text_channels = [this]() {
+        return invoke_on_server_thread([this]() {
+        std::vector<plugin::ChannelInfo> result;
+        auto channels = db_.get_all_text_channels();
+        result.reserve(channels.size());
+        for (const auto& channel : channels) {
+            plugin::ChannelInfo info{};
+            info.abi = plugin::make_abi_header<plugin::ChannelInfo>();
+            info.channel_id = channel.id;
+            info.sort_order = channel.sort_order;
+            copy_plugin_string(info.name, channel.name);
+            result.push_back(info);
+        }
+        return result;
+        });
+    };
+    plugins_.set_host_services(std::move(plugin_services));
+
+    if (!plugins_.load(config_.plugins)) {
+        LOG_ERROR("Failed to load plugins");
+        return false;
+    }
+
     running_ = true;
+    plugins_.on_server_started();
     LOG_INFO("{} started successfully", config_.server_name);
     return true;
 }
 
 void Server::run() {
+    server_thread_id_ = std::this_thread::get_id();
     auto last_retention_check = std::chrono::steady_clock::now();
     uint64_t last_send_failures_ = 0;
 
     while (running_) {
         ZoneScopedN("Server::run");
+        process_plugin_host_calls();
         process_control_messages();
         process_data_packets();
         process_file_transfers();
         process_disconnects();
+        process_plugin_host_calls();
 
         // Periodic retention enforcement (every 60 seconds)
         auto now = std::chrono::steady_clock::now();
@@ -144,9 +387,18 @@ void Server::run() {
 void Server::stop() {
     if (!running_) return;
     running_ = false;
+    if (is_server_thread())
+        process_plugin_host_calls();
+    plugins_.shutdown();
     quic_.stop();
     db_.close();
     LOG_INFO("Server stopped");
+}
+
+void Server::process_plugin_host_calls() {
+    auto calls = plugin_host_calls_.drain();
+    for (auto& call : calls)
+        call();
 }
 
 void Server::process_control_messages() {
@@ -161,7 +413,7 @@ void Server::process_data_packets() {
     auto packets = quic_.data_incoming().drain();
     for (auto& pkt : packets) {
         if (pkt.packet_type == protocol::VOICE_PACKET_TYPE) {
-            auto session = quic_.get_session(pkt.session_id);
+            auto session = quic_.session_snapshot(pkt.session_id);
             if (!session || !session->authenticated || session->channel_id == 0)
                 continue;
 
@@ -174,16 +426,7 @@ void Server::process_data_packets() {
                        reinterpret_cast<uint8_t*>(&uid) + 4);
             fwd.insert(fwd.end(), pkt.data.begin(), pkt.data.end());
 
-            auto all_sessions = quic_.get_sessions();
-            std::vector<uint32_t> targets;
-            for (auto& s : all_sessions) {
-                if (s->id != pkt.session_id &&
-                    s->authenticated &&
-                    s->channel_id == session->channel_id &&
-                    !s->deafened) {
-                    targets.push_back(s->id);
-                }
-            }
+            auto targets = quic_.voice_targets(session->channel_id, pkt.session_id);
             if (!targets.empty())
                 quic_.send_to_many(targets, fwd.data(), fwd.size());
         }
@@ -298,6 +541,213 @@ void Server::send_error(uint32_t session_id, const std::string& message,
                  writer.data().data(), writer.data().size());
 }
 
+std::optional<PluginManager::HostServices::BotUserResult> Server::create_plugin_bot_user(
+    std::string_view plugin_id,
+    std::string_view key,
+    std::string_view display_name) {
+    if (key.empty() || !valid_display_name(display_name))
+        return std::nullopt;
+
+    if (auto existing = db_.get_bot_user(std::string(plugin_id), std::string(key))) {
+        if (!bot_display_name_available(display_name, existing->id))
+            return std::nullopt;
+        if (existing->display_name != display_name)
+            db_.update_display_name(existing->id, std::string(display_name));
+        if (existing->role != static_cast<int>(Role::Bot))
+            db_.set_user_role(existing->id, Role::Bot);
+        LOG_INFO("Reusing bot user '{}' (key='{}') for plugin '{}' (user_id={})",
+                 display_name, key, plugin_id, existing->id);
+        return PluginManager::HostServices::BotUserResult{existing->id, false};
+    }
+
+    std::string identity;
+    identity.reserve(plugin_id.size() + key.size() + 24);
+    identity += "parties-plugin-bot:";
+    identity += plugin_id;
+    identity.push_back('\0');
+    identity += key;
+
+    PublicKey public_key{};
+    SHA256(reinterpret_cast<const uint8_t*>(identity.data()), identity.size(), public_key.data());
+
+    if (auto existing = db_.get_user_by_pubkey(public_key)) {
+        if (!bot_display_name_available(display_name, existing->id))
+            return std::nullopt;
+        if (existing->display_name != display_name)
+            db_.update_display_name(existing->id, std::string(display_name));
+        if (existing->role != static_cast<int>(Role::Bot))
+            db_.set_user_role(existing->id, Role::Bot);
+        LOG_INFO("Reusing bot user '{}' (key='{}') for plugin '{}' (user_id={})",
+                 display_name, key, plugin_id, existing->id);
+        return PluginManager::HostServices::BotUserResult{existing->id, false};
+    }
+
+    std::string fingerprint = "bot:";
+    fingerprint += plugin_id;
+    fingerprint += ":";
+    fingerprint += public_key_fingerprint(public_key);
+
+    if (!bot_display_name_available(display_name))
+        return std::nullopt;
+
+    if (!db_.create_bot_user(public_key, std::string(display_name), fingerprint,
+                             std::string(plugin_id), std::string(key), Role::Bot)) {
+        if (auto existing = db_.get_bot_user(std::string(plugin_id), std::string(key))) {
+            if (existing->role != static_cast<int>(Role::Bot))
+                db_.set_user_role(existing->id, Role::Bot);
+            LOG_INFO("Reusing bot user '{}' (key='{}') for plugin '{}' (user_id={})",
+                     display_name, key, plugin_id, existing->id);
+            return PluginManager::HostServices::BotUserResult{existing->id, false};
+        }
+        LOG_ERROR("Failed to persist bot user '{}' (key='{}') for plugin '{}'",
+                  display_name, key, plugin_id);
+        return std::nullopt;
+    }
+
+    auto user = db_.get_user_by_pubkey(public_key);
+    if (!user)
+        return std::nullopt;
+
+    return PluginManager::HostServices::BotUserResult{user->id, true};
+}
+
+bool Server::delete_plugin_bot_user(UserId user_id) {
+    auto user = db_.get_user_by_id(user_id);
+    if (!user || !user->is_bot)
+        return false;
+    return db_.delete_user(user_id);
+}
+
+bool Server::bot_display_name_available(std::string_view display_name, UserId self_user_id) {
+    auto users = db_.get_all_users();
+    return std::none_of(users.begin(), users.end(), [&](const UserRow& user) {
+        return user.id != self_user_id && user.display_name == display_name;
+    });
+}
+
+std::optional<uint64_t> Server::store_and_broadcast_chat_message(UserId sender_id,
+                                                                 std::string_view sender_name,
+                                                                 uint32_t channel_id,
+                                                                 std::string_view text) {
+    auto ch = db_.get_text_channel(channel_id);
+    if (!ch)
+        return std::nullopt;
+
+    if (text.size() > max_chat_message_length(config_))
+        return std::nullopt;
+
+    auto now = static_cast<uint64_t>(std::time(nullptr));
+    uint64_t msg_id = db_.insert_message(channel_id, sender_id,
+                                         std::string(sender_name),
+                                         std::string(text), now);
+    if (msg_id == 0)
+        return std::nullopt;
+
+    BinaryWriter writer;
+    writer.write_u64(msg_id);
+    writer.write_u32(channel_id);
+    writer.write_u32(sender_id);
+    writer.write_string(std::string(sender_name));
+    writer.write_u64(now);
+    writer.write_string(std::string(text));
+    writer.write_u8(0); // pinned = false
+    writer.write_u8(0); // attachment count
+
+    auto all = quic_.get_sessions();
+    for (auto& s : all) {
+        if (s->authenticated)
+            quic_.send_to(s->id, protocol::ControlMessageType::CHAT_MESSAGE,
+                          writer.data().data(), writer.data().size());
+    }
+
+    return msg_id;
+}
+
+bool Server::join_plugin_bot_voice(UserId user_id,
+                                   std::string_view display_name,
+                                   ChannelId voice_channel_id) {
+    auto channel = db_.get_channel(voice_channel_id);
+    if (!channel)
+        return false;
+
+    int max = channel->max_users > 0 ? channel->max_users : config_.max_users_per_channel;
+    if (max > 0) {
+        uint32_t count = plugins_.bot_voice_count(voice_channel_id);
+        auto all = quic_.get_sessions();
+        for (auto& s : all) {
+            if (s->authenticated && s->channel_id == voice_channel_id)
+                ++count;
+        }
+        if (static_cast<int>(count) >= max)
+            return false;
+    }
+
+    BinaryWriter writer;
+    writer.write_u32(user_id);
+    writer.write_string(std::string(display_name));
+    writer.write_u32(voice_channel_id);
+    writer.write_u8(static_cast<uint8_t>(Role::Bot));
+
+    auto all = quic_.get_sessions();
+    for (auto& s : all) {
+        if (s->authenticated)
+            quic_.send_to(s->id, protocol::ControlMessageType::USER_JOINED_CHANNEL,
+                          writer.data().data(), writer.data().size());
+    }
+
+    LOG_INFO("Bot '{}' joined channel '{}' ({})", display_name, channel->name, voice_channel_id);
+    return true;
+}
+
+bool Server::leave_plugin_bot_voice(UserId user_id,
+                                    std::string_view display_name,
+                                    ChannelId voice_channel_id) {
+    if (voice_channel_id == 0)
+        return true;
+
+    BinaryWriter writer;
+    writer.write_u32(user_id);
+    writer.write_u32(voice_channel_id);
+
+    auto all = quic_.get_sessions();
+    for (auto& s : all) {
+        if (s->authenticated)
+            quic_.send_to(s->id, protocol::ControlMessageType::USER_LEFT_CHANNEL,
+                          writer.data().data(), writer.data().size());
+    }
+
+    LOG_INFO("Bot '{}' left channel {}", display_name, voice_channel_id);
+    return true;
+}
+
+bool Server::send_plugin_bot_voice_packet(UserId user_id,
+                                          ChannelId voice_channel_id,
+                                          uint16_t sequence,
+                                          const uint8_t* opus_payload,
+                                          size_t opus_payload_len) {
+    if (voice_channel_id == 0 || !opus_payload || opus_payload_len == 0 ||
+        opus_payload_len > static_cast<size_t>(audio::MAX_OPUS_PACKET)) {
+        return false;
+    }
+    if (!plugins_.bot_in_voice_channel(user_id, voice_channel_id))
+        return false;
+
+    std::vector<uint8_t> fwd;
+    fwd.reserve(1 + 4 + 2 + opus_payload_len);
+    fwd.push_back(protocol::VOICE_PACKET_TYPE);
+    fwd.insert(fwd.end(), reinterpret_cast<uint8_t*>(&user_id),
+               reinterpret_cast<uint8_t*>(&user_id) + 4);
+    fwd.insert(fwd.end(), reinterpret_cast<uint8_t*>(&sequence),
+               reinterpret_cast<uint8_t*>(&sequence) + 2);
+    fwd.insert(fwd.end(), opus_payload, opus_payload + opus_payload_len);
+
+    auto targets = quic_.voice_targets(voice_channel_id);
+    if (!targets.empty())
+        quic_.send_to_many(targets, fwd.data(), fwd.size());
+
+    return true;
+}
+
 void Server::send_channel_list(uint32_t session_id) {
 	ZoneScopedN("Server::send_channel_list");
     auto channels = db_.get_all_channels();
@@ -317,6 +767,7 @@ void Server::send_channel_list(uint32_t session_id) {
             if (s->authenticated && s->channel_id == ch.id)
                 user_count++;
         }
+        user_count += plugins_.bot_voice_count(ch.id);
         writer.write_u32(user_count);
     }
 
@@ -336,6 +787,23 @@ void Server::send_text_channel_list(uint32_t session_id) {
     }
 
     quic_.send_to(session_id, protocol::ControlMessageType::CHAT_CHANNEL_LIST,
+                 writer.data().data(), writer.data().size());
+}
+
+void Server::send_chat_command_list(uint32_t session_id) {
+    const auto& commands = plugins_.chat_commands();
+
+    BinaryWriter writer;
+    writer.write_u16(static_cast<uint16_t>(std::min<size_t>(commands.size(), UINT16_MAX)));
+    size_t count = 0;
+    for (const auto& cmd : commands) {
+        if (count++ >= UINT16_MAX) break;
+        writer.write_string(cmd.name);
+        writer.write_string(cmd.description);
+        writer.write_string(cmd.usage);
+    }
+
+    quic_.send_to(session_id, protocol::ControlMessageType::CHAT_COMMAND_LIST,
                  writer.data().data(), writer.data().size());
 }
 
@@ -378,6 +846,11 @@ void Server::handle_message(const IncomingMessage& msg) {
         reader.read_bytes(sig.data(), 64);
         if (reader.error()) {
             send_error(msg.session_id, "Malformed auth message",
+                       protocol::ServerErrorCode::BadAuth);
+            break;
+        }
+        if (!valid_display_name(display_name)) {
+            send_error(msg.session_id, "Invalid display name",
                        protocol::ServerErrorCode::BadAuth);
             break;
         }
@@ -473,6 +946,11 @@ void Server::handle_message(const IncomingMessage& msg) {
             }
             LOG_INFO("New identity registered: '{}' (id={})", display_name, user->id);
         } else {
+            if (user->is_bot) {
+                send_error(msg.session_id, "Bot users cannot authenticate",
+                           protocol::ServerErrorCode::BadAuth);
+                break;
+            }
             // Update display name if changed
             if (user->display_name != display_name) {
                 db_.update_display_name(user->id, display_name);
@@ -537,6 +1015,8 @@ void Server::handle_message(const IncomingMessage& msg) {
         // Send channel list immediately after auth
         send_channel_list(msg.session_id);
         send_text_channel_list(msg.session_id);
+        send_chat_command_list(msg.session_id);
+        plugins_.on_session_authenticated(msg.session_id);
 
         // Send user lists for all channels so the client can see who's online
         {
@@ -550,6 +1030,8 @@ void Server::handle_message(const IncomingMessage& msg) {
                     if (s->authenticated && s->channel_id == ch.id)
                         count++;
                 }
+                auto bots = plugins_.bot_voice_participants(ch.id);
+                count += static_cast<uint32_t>(bots.size());
                 list_writer.write_u32(count);
                 for (auto& s : all_sessions) {
                     if (s->authenticated && s->channel_id == ch.id) {
@@ -559,6 +1041,13 @@ void Server::handle_message(const IncomingMessage& msg) {
                         list_writer.write_u8(s->muted ? 1 : 0);
                         list_writer.write_u8(s->deafened ? 1 : 0);
                     }
+                }
+                for (const auto& bot : bots) {
+                    list_writer.write_u32(bot.user_id);
+                    list_writer.write_string(bot.display_name);
+                    list_writer.write_u8(static_cast<uint8_t>(Role::Bot));
+                    list_writer.write_u8(0);
+                    list_writer.write_u8(0);
                 }
                 if (count > 0) {
                     quic_.send_to(msg.session_id, protocol::ControlMessageType::CHANNEL_USER_LIST,
@@ -610,6 +1099,8 @@ void Server::handle_message(const IncomingMessage& msg) {
                 if (s->authenticated && s->channel_id == channel_id)
                     count++;
             }
+            auto bots = plugins_.bot_voice_participants(channel_id);
+            count += static_cast<uint32_t>(bots.size());
             if (static_cast<int>(count) >= max) {
                 send_error(msg.session_id, "Channel is full");
                 break;
@@ -645,6 +1136,8 @@ void Server::handle_message(const IncomingMessage& msg) {
                 if (s->authenticated && s->channel_id == channel_id)
                     count++;
             }
+            auto bots = plugins_.bot_voice_participants(channel_id);
+            count += static_cast<uint32_t>(bots.size());
             list_writer.write_u32(channel_id);
             list_writer.write_u32(count);
             for (auto& s : all) {
@@ -655,6 +1148,13 @@ void Server::handle_message(const IncomingMessage& msg) {
                     list_writer.write_u8(s->muted ? 1 : 0);
                     list_writer.write_u8(s->deafened ? 1 : 0);
                 }
+            }
+            for (const auto& bot : bots) {
+                list_writer.write_u32(bot.user_id);
+                list_writer.write_string(bot.display_name);
+                list_writer.write_u8(static_cast<uint8_t>(Role::Bot));
+                list_writer.write_u8(0);
+                list_writer.write_u8(0);
             }
             quic_.send_to(msg.session_id, protocol::ControlMessageType::CHANNEL_USER_LIST,
                          list_writer.data().data(), list_writer.data().size());
@@ -816,6 +1316,18 @@ void Server::handle_message(const IncomingMessage& msg) {
                                leave_writer.data().data(), leave_writer.data().size());
             }
         }
+        auto bots = plugins_.bot_voice_participants(channel_id);
+        for (const auto& bot : bots) {
+            BinaryWriter leave_writer;
+            leave_writer.write_u32(bot.user_id);
+            leave_writer.write_u32(channel_id);
+            for (auto& s : all) {
+                if (s->authenticated)
+                    quic_.send_to(s->id, protocol::ControlMessageType::USER_LEFT_CHANNEL,
+                                  leave_writer.data().data(), leave_writer.data().size());
+            }
+        }
+        plugins_.clear_bot_voice_channel(channel_id);
 
         if (!db_.delete_channel(channel_id)) {
             send_error(msg.session_id, "Failed to delete channel");
@@ -890,9 +1402,13 @@ void Server::handle_message(const IncomingMessage& msg) {
 
         Role target_new_role = static_cast<Role>(new_role);
 
-        // Owner role is assigned only via server config — never through API
+        // Owner role is assigned only via server config; Bot only via plugin bot creation.
         if (target_new_role == Role::Owner) {
             send_error(msg.session_id, "Owner role can only be set in server config");
+            break;
+        }
+        if (target_new_role == Role::Bot) {
+            send_error(msg.session_id, "Bot role can only be assigned to plugin bots");
             break;
         }
 
@@ -1188,7 +1704,56 @@ void Server::handle_message(const IncomingMessage& msg) {
         }
 
         // Validate message length
-        if (static_cast<int>(text.size()) > config_.chat.max_message_length) {
+        if (text.size() > max_chat_message_length(config_)) {
+            send_error(msg.session_id, "Message too long");
+            break;
+        }
+
+        if (text.size() > 1 && text[0] == '/') {
+            size_t name_start = 1;
+            size_t name_end = text.find_first_of(" \t\r\n", name_start);
+            std::string_view command_name(text.data() + name_start,
+                (name_end == std::string::npos ? text.size() : name_end) - name_start);
+            size_t args_start = name_end == std::string::npos ? text.size() : name_end;
+            while (args_start < text.size() &&
+                   (text[args_start] == ' ' || text[args_start] == '\t' ||
+                    text[args_start] == '\r' || text[args_start] == '\n')) {
+                ++args_start;
+            }
+            std::string_view args(text.data() + args_start, text.size() - args_start);
+
+            if (command_name.empty()) {
+                send_error(msg.session_id, "Unknown chat command");
+                break;
+            }
+
+            std::string command_error;
+            if (plugins_.dispatch_chat_command(msg.session_id, session->user_id, channel_id,
+                                               static_cast<uint8_t>(session->role),
+                                               command_name, args, text, &command_error)) {
+                if (!command_error.empty())
+                    send_error(msg.session_id, command_error);
+                break;
+            }
+
+            send_error(msg.session_id, "Unknown chat command");
+            break;
+        }
+
+        auto chat_result = plugins_.process_chat_message(
+            msg.session_id,
+            session->user_id,
+            channel_id,
+            session->username,
+            text,
+            attachment_count);
+        if (chat_result.code == PluginManager::ChatResultCode::Reject) {
+            send_error(msg.session_id, chat_result.error_message,
+                       protocol::ServerErrorCode::PermissionDenied);
+            break;
+        }
+
+        if (text.size() > max_chat_message_length(config_)) {
             send_error(msg.session_id, "Message too long");
             break;
         }
@@ -1500,6 +2065,7 @@ void Server::process_disconnects() {
 
 void Server::process_disconnect(uint32_t session_id, UserId user_id, ChannelId channel_id) {
 	ZoneScopedN("Server::process_disconnect");
+    plugins_.on_session_disconnected(session_id, user_id, channel_id);
     if (channel_id == 0)
         return;
 

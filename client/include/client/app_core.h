@@ -209,6 +209,7 @@ private:
     void on_chat_search_resp(const uint8_t* data, size_t len);
     void on_chat_pinned_resp(const uint8_t* data, size_t len);
     void on_chat_file_ready(const uint8_t* data, size_t len);
+    void on_chat_command_list(const uint8_t* data, size_t len);
 
     void update_speaking_state();
     void generate_identity();

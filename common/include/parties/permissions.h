@@ -10,6 +10,7 @@ enum class Role : uint8_t {
     Admin     = 1,
     Moderator = 2,
     User      = 3,
+    Bot       = 4,
 };
 
 enum class Permission : uint32_t {

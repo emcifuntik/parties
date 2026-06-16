@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <mutex>
 #include <optional>
 
 struct sqlite3;
@@ -20,6 +21,9 @@ struct UserRow {
     int         role = 3;
     std::string created_at;
     std::string last_login;
+    bool        is_bot = false;
+    std::string bot_owner_plugin;
+    std::string bot_key;
 };
 
 struct ChannelRow {
@@ -67,7 +71,12 @@ public:
     // --- Users ---
     bool create_user(const PublicKey& pubkey, const std::string& display_name,
                      const std::string& fingerprint, Role role = Role::User);
+    bool create_bot_user(const PublicKey& pubkey, const std::string& display_name,
+                         const std::string& fingerprint, const std::string& owner_plugin,
+                         const std::string& bot_key, Role role = Role::Bot);
     std::optional<UserRow> get_user_by_pubkey(const PublicKey& pubkey);
+    std::optional<UserRow> get_bot_user(const std::string& owner_plugin,
+                                        const std::string& bot_key);
     std::optional<UserRow> get_user_by_id(UserId id);
     bool update_last_login(UserId id);
     bool update_display_name(UserId id, const std::string& display_name);
@@ -127,10 +136,12 @@ public:
     bool has_any_users();
 
 private:
+    void close_unlocked();
     bool exec(const std::string& sql);
     bool create_schema();
 
     sqlite3* db_ = nullptr;
+    std::mutex mutex_;
 };
 
 } // namespace parties::server
