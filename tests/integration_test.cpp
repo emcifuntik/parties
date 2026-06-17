@@ -31,6 +31,8 @@
 
 #include <client/net_client.h>
 
+#include <sqlite3.h>
+
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -187,6 +189,72 @@ static bool expect_chat_text(NetClient& client,
     }                                                             \
 } while(0)
 
+static bool exec_sql(sqlite3* db, const char* sql) {
+    char* error = nullptr;
+    bool ok = sqlite3_exec(db, sql, nullptr, nullptr, &error) == SQLITE_OK;
+    if (!ok) {
+        LOG("SQL setup error: %s\n", error ? error : "unknown");
+        sqlite3_free(error);
+    }
+    return ok;
+}
+
+static bool create_legacy_database(const fs::path& path) {
+    sqlite3* db = nullptr;
+    if (sqlite3_open(path.string().c_str(), &db) != SQLITE_OK) {
+        if (db)
+            sqlite3_close(db);
+        return false;
+    }
+
+    const bool ok = exec_sql(db, R"SQL(
+        CREATE TABLE users (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            public_key    BLOB NOT NULL UNIQUE,
+            display_name  TEXT NOT NULL DEFAULT '',
+            fingerprint   TEXT NOT NULL,
+            role          INTEGER NOT NULL DEFAULT 3,
+            created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+            last_login    TEXT
+        );
+
+        CREATE TABLE channels (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            name       TEXT NOT NULL UNIQUE,
+            max_users  INTEGER NOT NULL DEFAULT 0,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+    )SQL");
+
+    sqlite3_close(db);
+    return ok;
+}
+
+static bool test_legacy_database_migration(const fs::path& tmp) {
+    fs::path db_path = tmp / "legacy-parties.db";
+    fs::remove(db_path);
+    fs::remove(db_path.string() + "-shm");
+    fs::remove(db_path.string() + "-wal");
+
+    if (!create_legacy_database(db_path))
+        return false;
+
+    Database db;
+    if (!db.open(db_path.string()))
+        return false;
+
+    PublicKey key{};
+    key[0] = 42;
+    if (!db.create_bot_user(key, "Migration Bot", "migration-fingerprint",
+                            "parties.test", "migration"))
+        return false;
+
+    auto bot = db.get_bot_user("parties.test", "migration");
+    return bot && bot->is_bot && bot->bot_owner_plugin == "parties.test" &&
+           bot->bot_key == "migration";
+}
+
 static bool wait_for_connect(NetClient& client, int timeout_ms = TIMEOUT_MS) {
     auto deadline = std::chrono::steady_clock::now() +
                     std::chrono::milliseconds(timeout_ms);
@@ -263,6 +331,7 @@ int main() {
     auto tmp = fs::temp_directory_path() / "parties_integration_test";
     fs::remove_all(tmp);
     fs::create_directories(tmp);
+    TEST_ASSERT(test_legacy_database_migration(tmp), "legacy database migration");
 
     std::string db_path   = (tmp / "test.db").string();
     std::string cert_path = (tmp / "server.der").string();
