@@ -170,10 +170,13 @@ void VoiceMixer::mix_output(float* output, int frame_count) {
         written += chunk;
     }
 
-    // Soft-clip the mixed output to [-1, 1]
+    // Apply master makeup gain (received voice is low at unity), then clip.
+    const float master = audio::db_to_gain(audio::VOICE_OUTPUT_GAIN_DB);
     for (int i = 0; i < frame_count; i++) {
-        if (output[i] > 1.0f) output[i] = 1.0f;
-        else if (output[i] < -1.0f) output[i] = -1.0f;
+        float s = output[i] * master;
+        if (s > 1.0f) s = 1.0f;
+        else if (s < -1.0f) s = -1.0f;
+        output[i] = s;
     }
 }
 

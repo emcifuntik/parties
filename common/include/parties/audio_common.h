@@ -28,6 +28,15 @@ inline float perceptual_to_rms(float p) {
     return std::pow(10.0f, db / 20.0f);
 }
 
+// dB → linear amplitude gain.
+inline float db_to_gain(float db) { return std::pow(10.0f, db / 20.0f); }
+
+// Master makeup gain applied to the mixed received voice. Decoded voice sits
+// well below full scale, so at unity per-user volume everyone is too quiet;
+// this raises the whole mix to a comfortable default. The per-user volume
+// slider trims on top of this. Tune here if voices are too quiet/loud.
+constexpr float VOICE_OUTPUT_GAIN_DB = 6.0f;   // +6 dB ≈ 2x
+
 // Volume control: bottom-of-slider attenuation and top-of-slider boost (dB).
 constexpr float VOLUME_FLOOR_DB     = -40.0f;  // pos→0 attenuation before mute
 constexpr float VOLUME_MAX_BOOST_DB =  6.0f;   // +6 dB ≈ 2x amplitude at pos 2.0
