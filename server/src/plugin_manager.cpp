@@ -108,6 +108,45 @@ namespace {
 constexpr size_t MAX_LIVE_BOTS_PER_PLUGIN = 64;
 constexpr auto PLUGIN_CALLBACK_WARN_AFTER = std::chrono::milliseconds(250);
 
+bool parse_u16_decimal(std::string_view text, uint16_t& out) {
+    if (text.empty())
+        return false;
+
+    unsigned value = 0;
+    for (char c : text) {
+        if (!std::isdigit(static_cast<unsigned char>(c)))
+            return false;
+        value = value * 10u + static_cast<unsigned>(c - '0');
+        if (value > (std::numeric_limits<uint16_t>::max)())
+            return false;
+    }
+
+    out = static_cast<uint16_t>(value);
+    return true;
+}
+
+bool parse_plugin_api_version(std::string_view version,
+                              uint16_t& major,
+                              uint16_t& minor) {
+    size_t dot = version.find('.');
+    if (dot == std::string_view::npos ||
+        version.find('.', dot + 1) != std::string_view::npos)
+        return false;
+
+    return parse_u16_decimal(version.substr(0, dot), major) &&
+           parse_u16_decimal(version.substr(dot + 1), minor);
+}
+
+bool supported_plugin_api_version(std::string_view version) {
+    uint16_t major = 0;
+    uint16_t minor = 0;
+    if (!parse_plugin_api_version(version, major, minor))
+        return false;
+
+    return major == plugin::API_VERSION_MAJOR &&
+           minor <= plugin::API_VERSION_MINOR;
+}
+
 const std::unordered_set<std::string>& known_plugin_permissions() {
     static const std::unordered_set<std::string> permissions = {
         "read_sessions",
@@ -946,8 +985,13 @@ bool PluginManager::load_manifest(const std::filesystem::path& manifest_path) {
         LOG_WARN("Plugin manifest '{}' is missing id or library", manifest_path.string());
         return false;
     }
-    if (api_version != "1.0") {
-        LOG_WARN("Plugin '{}' has unsupported api_version '{}'", plugin->id, api_version);
+    if (!supported_plugin_api_version(api_version)) {
+        LOG_WARN("Plugin '{}' has unsupported api_version '{}' (supported: {}.0 through {}.{})",
+                 plugin->id,
+                 api_version,
+                 plugin::API_VERSION_MAJOR,
+                 plugin::API_VERSION_MAJOR,
+                 plugin::API_VERSION_MINOR);
         return false;
     }
     {

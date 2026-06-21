@@ -245,6 +245,45 @@ int main() {
     }
 
     {
+        fs::path root = tmp / "api_version_1_1";
+        fs::path plugin_dir = prepare_plugin_copy(source, root, "bot_echo");
+        replace_text(plugin_dir / "plugin.toml", "api_version = \"1.0\"", "api_version = \"1.1\"");
+
+        PluginManager plugins;
+        PluginConfig cfg;
+        cfg.enabled = true;
+        cfg.directory = root.string();
+        cfg.allow.push_back(PluginConfig::Allow{
+            "parties.example.bot_echo",
+            true,
+            {"create_chat_commands"}
+        });
+        TEST_ASSERT(plugins.load(cfg), "load manifest with api_version 1.1");
+        TEST_ASSERT(command_count(plugins) == 10, "api_version 1.1 loads plugin");
+        plugins.shutdown();
+        fs::remove_all(root);
+    }
+
+    {
+        fs::path root = tmp / "api_version_1_2";
+        fs::path plugin_dir = prepare_plugin_copy(source, root, "bot_echo");
+        replace_text(plugin_dir / "plugin.toml", "api_version = \"1.0\"", "api_version = \"1.2\"");
+
+        PluginManager plugins;
+        PluginConfig cfg;
+        cfg.enabled = true;
+        cfg.directory = root.string();
+        cfg.allow.push_back(PluginConfig::Allow{
+            "parties.example.bot_echo",
+            true,
+            {"create_chat_commands"}
+        });
+        TEST_ASSERT(plugins.load(cfg), "load manifest with api_version 1.2");
+        TEST_ASSERT(plugins.chat_commands().empty(), "api_version 1.2 skips plugin");
+        fs::remove_all(root);
+    }
+
+    {
         fs::path root = tmp / "api_version_missing";
         fs::path plugin_dir = prepare_plugin_copy(source, root, "bot_echo");
         replace_text(plugin_dir / "plugin.toml", "api_version = \"1.0\"\n", "");

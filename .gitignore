@@ -5,3 +5,10 @@ out/
 vcpkg_installed/
 CMakeUserPresets.json
 .DS_Store
+
+/parties.db
+/parties.db-shm
+/parties.db-wal
+/parties_server.log
+/server.key.pem
+/server.pem

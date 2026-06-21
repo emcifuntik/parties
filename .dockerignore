@@ -3,6 +3,7 @@ build-*/
 vcpkg/
 .git/
 .claude/
+.codex_tmp/
 *.exe
 *.dll
 *.pdb
