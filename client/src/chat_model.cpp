@@ -54,42 +54,8 @@ void ChatModel::build(rml::Builder& b) {
     });
     b.register_array<Rml::Vector<PendingFile>>();
 
-    b.register_struct<ChatCommandDefinition::Input>([](auto& s) {
-        s.member("argument_name", &ChatCommandDefinition::Input::argument_name)
-         .member("mode",          &ChatCommandDefinition::Input::mode)
-         .member("min_chars",     &ChatCommandDefinition::Input::min_chars)
-         .member("debounce_ms",   &ChatCommandDefinition::Input::debounce_ms)
-         .member("max_results",   &ChatCommandDefinition::Input::max_results)
-         .member("placeholder",   &ChatCommandDefinition::Input::placeholder);
-    });
-    b.register_array<Rml::Vector<ChatCommandDefinition::Input>>();
-
-    b.register_struct<ChatCommandDefinition>([](auto& s) {
-        s.member("name",        &ChatCommandDefinition::name)
-         .member("description", &ChatCommandDefinition::description)
-         .member("usage",       &ChatCommandDefinition::usage)
-         .member("inputs",      &ChatCommandDefinition::inputs);
-    });
-    b.register_array<Rml::Vector<ChatCommandDefinition>>();
-
-    b.register_struct<ChatCommandQueryResult>([](auto& s) {
-        s.member("id",            &ChatCommandQueryResult::id)
-         .member("title",         &ChatCommandQueryResult::title)
-         .member("subtitle",      &ChatCommandQueryResult::subtitle)
-         .member("value",         &ChatCommandQueryResult::value)
-         .member("kind",          &ChatCommandQueryResult::kind)
-         .member("duration_ms",   &ChatCommandQueryResult::duration_ms)
-         .member("thumbnail_url", &ChatCommandQueryResult::thumbnail_url);
-    });
-    b.register_array<Rml::Vector<ChatCommandQueryResult>>();
-
     // Bind state.
     b.bind("text_channels",          text_channels)
-     .bind("commands",               commands)
-     .bind("command_query_results",  command_query_results)
-     .bind("command_query_request_id", command_query_request_id)
-     .bind("command_query_status",   command_query_status)
-     .bind("command_query_message",  command_query_message)
      .bind("active_channel",         active_channel)
      .bind("active_channel_name",    active_channel_name)
      .bind("messages",               messages)

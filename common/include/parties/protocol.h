@@ -12,7 +12,7 @@ constexpr uint16_t DEFAULT_PORT = 7800;
 // in AUTH_IDENTITY. The server rejects only on a MAJOR mismatch, so a minor
 // bump doesn't lock out older clients.
 constexpr uint8_t  PROTOCOL_VERSION_MAJOR = 1;
-constexpr uint8_t  PROTOCOL_VERSION_MINOR = 1;
+constexpr uint8_t  PROTOCOL_VERSION_MINOR = 0;
 constexpr uint16_t PROTOCOL_VERSION =
     (static_cast<uint16_t>(PROTOCOL_VERSION_MAJOR) << 8) | PROTOCOL_VERSION_MINOR;
 
@@ -86,7 +86,6 @@ enum class ControlMessageType : uint16_t {
     CHAT_FILE_DOWNLOAD_REQ= 0x0407,  // [file_id(8)]
     CHAT_SEARCH           = 0x0408,  // [channel_id(4)][query(string)][before_id(8)][limit(2)]
     CHAT_PINNED_REQ       = 0x0409,  // [channel_id(4)]
-    CHAT_COMMAND_QUERY    = 0x040C,  // [channel_id(4)][request_id(8)][command][argument][query][cursor_pos(2)]
 
     // Server -> Client
     CHAT_MESSAGE          = 0x0501,  // [msg_id(8)][channel_id(4)][sender_id(4)][sender_name][timestamp(8)][text][pinned(1)][attachments...]
@@ -98,8 +97,6 @@ enum class ControlMessageType : uint16_t {
     CHAT_PINNED_RESP      = 0x0507,  // [channel_id(4)][count(2)][messages...]
     CHAT_CHANNEL_LIST     = 0x0508,  // [count(4)][channel_id(4), name(string), sort_order(4)]...
     CHAT_COMMAND_LIST     = 0x0509,  // [count(2)][name(string), description(string), usage(string)]...
-    CHAT_COMMAND_INPUT_LIST = 0x050A, // [count(2)][command, input_count(2), input metadata...]...
-    CHAT_COMMAND_QUERY_RESP = 0x050B, // [request_id(8)][command][argument][status(1)][message][results...]
 
     // Admin text channels (client -> server)
     ADMIN_CREATE_TEXT_CHANNEL = 0x040A,  // [name(string)]

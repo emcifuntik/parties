@@ -1,19 +1,14 @@
 #include <server/plugin_manager.h>
 
-#include <atomic>
-#include <chrono>
 #include <cstdlib>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
-#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
-#include <thread>
 
 namespace fs = std::filesystem;
-namespace plugin = parties::plugin;
 using namespace parties::server;
 
 #define TEST_ASSERT(cond, msg) do {                               \
@@ -33,15 +28,6 @@ static bool has_command(const PluginManager& plugins, const char* name) {
 
 static size_t command_count(const PluginManager& plugins) {
     return plugins.chat_commands().size();
-}
-
-static std::optional<PluginManager::ChatCommand> find_command(const PluginManager& plugins,
-                                                              const char* name) {
-    for (const auto& command : plugins.chat_commands()) {
-        if (command.name == name)
-            return command;
-    }
-    return std::nullopt;
 }
 
 static void write_text(const fs::path& path, const std::string& text) {
@@ -106,32 +92,6 @@ int main() {
 
     {
         PluginManager plugins;
-        std::atomic<bool> async_seen{false};
-        std::mutex async_mutex;
-        plugin::SessionId async_session_id = 0;
-        uint64_t async_request_id = 0;
-        std::string async_command_name;
-        std::string async_argument_name;
-        PluginManager::CommandQueryResponse async_response;
-
-        PluginManager::HostServices services;
-        services.respond_to_command_query =
-            [&](plugin::SessionId session_id,
-                uint64_t request_id,
-                std::string_view command_name,
-                std::string_view argument_name,
-                const PluginManager::CommandQueryResponse& response) {
-                std::lock_guard<std::mutex> lock(async_mutex);
-                async_session_id = session_id;
-                async_request_id = request_id;
-                async_command_name = std::string(command_name);
-                async_argument_name = std::string(argument_name);
-                async_response = response;
-                async_seen = true;
-                return true;
-            };
-        plugins.set_host_services(std::move(services));
-
         PluginConfig cfg;
         cfg.enabled = true;
         cfg.directory = (tmp / "plugins").string();
@@ -147,36 +107,6 @@ int main() {
         TEST_ASSERT(has_command(plugins, "bottypes"), "allowed plugin registers bottypes");
         TEST_ASSERT(has_command(plugins, "botvars"), "allowed plugin registers botvars");
         TEST_ASSERT(has_command(plugins, "botworker"), "allowed plugin registers botworker");
-        auto botquery = find_command(plugins, "botquery");
-        TEST_ASSERT(botquery.has_value(), "allowed plugin registers botquery");
-        TEST_ASSERT(botquery->inputs.size() == 1, "botquery advertises one live query input");
-        TEST_ASSERT(botquery->inputs[0].argument_name == "query", "botquery query input is named");
-        auto query_response = plugins.dispatch_chat_command_query(
-            1, 7, 3, 3, 42, "botquery", "query", "abc", 3);
-        TEST_ASSERT(query_response.status == 0, "botquery query callback succeeds");
-        TEST_ASSERT(query_response.results.size() == 3, "botquery query callback returns choices");
-
-        auto pending_response = plugins.dispatch_chat_command_query(
-            9, 7, 3, 3, 43, "botquery", "query", "async", 5);
-        TEST_ASSERT(pending_response.status ==
-                        static_cast<uint8_t>(plugin::CommandQueryStatus::Pending),
-                    "botquery async query returns pending");
-
-        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-        while (!async_seen && std::chrono::steady_clock::now() < deadline)
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        TEST_ASSERT(async_seen, "botquery async query completes through host response");
-        {
-            std::lock_guard<std::mutex> lock(async_mutex);
-            TEST_ASSERT(async_session_id == 9, "async query preserves session id");
-            TEST_ASSERT(async_request_id == 43, "async query preserves request id");
-            TEST_ASSERT(async_command_name == "botquery", "async query preserves command name");
-            TEST_ASSERT(async_argument_name == "query", "async query preserves argument name");
-            TEST_ASSERT(async_response.status == 0, "async query response status ok");
-            TEST_ASSERT(async_response.results.size() == 1, "async query response has one choice");
-            TEST_ASSERT(async_response.results[0].value == "async-choice",
-                        "async query response choice copied");
-        }
     }
 
     {
@@ -221,7 +151,7 @@ int main() {
             {"create_chat_commands"}
         });
         TEST_ASSERT(plugins.load(cfg), "load duplicate plugin ids");
-        TEST_ASSERT(command_count(plugins) == 10, "duplicate plugin id is rejected after first load");
+        TEST_ASSERT(command_count(plugins) == 9, "duplicate plugin id is rejected after first load");
         fs::remove_all(duplicate);
     }
 

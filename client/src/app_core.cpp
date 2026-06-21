@@ -1043,10 +1043,6 @@ void AppCore::handle_server_message(protocol::ControlMessageType type,
         on_chat_channel_list(data, len); break;
     case protocol::ControlMessageType::CHAT_COMMAND_LIST:
         on_chat_command_list(data, len); break;
-    case protocol::ControlMessageType::CHAT_COMMAND_INPUT_LIST:
-        on_chat_command_input_list(data, len); break;
-    case protocol::ControlMessageType::CHAT_COMMAND_QUERY_RESP:
-        on_chat_command_query_resp(data, len); break;
     case protocol::ControlMessageType::CHAT_MESSAGE:
         on_chat_message(data, len); break;
     case protocol::ControlMessageType::CHAT_HISTORY_RESP:
@@ -2401,28 +2397,6 @@ static ChatMessage parse_chat_message(BinaryReader& reader, uint32_t my_user_id 
     return msg;
 }
 
-void AppCore::request_chat_command_query(uint64_t request_id,
-                                         ChannelId text_channel_id,
-                                         const std::string& command_name,
-                                         const std::string& argument_name,
-                                         const std::string& query,
-                                         uint16_t cursor_pos) {
-    if (!authenticated_ || text_channel_id == 0 || command_name.empty() || argument_name.empty())
-        return;
-
-    BinaryWriter writer;
-    writer.write_u32(static_cast<uint32_t>(text_channel_id));
-    writer.write_u64(request_id);
-    writer.write_string(command_name);
-    writer.write_string(argument_name);
-    writer.write_string(query);
-    writer.write_u16(cursor_pos);
-    net_.send_message(protocol::ControlMessageType::CHAT_COMMAND_QUERY,
-                     writer.data().data(), writer.data().size());
-
-    chat_model_.command_query_request_id = request_id;
-}
-
 void AppCore::on_chat_channel_list(const uint8_t* data, size_t len) {
     BinaryReader reader(data, len);
     uint32_t count = reader.read_u32();
@@ -2456,76 +2430,6 @@ void AppCore::on_chat_command_list(const uint8_t* data, size_t len) {
         commands.push_back(std::move(cmd));
     }
     chat_model_.commands.notify();
-}
-
-void AppCore::on_chat_command_input_list(const uint8_t* data, size_t len) {
-    BinaryReader reader(data, len);
-    uint16_t command_count = reader.read_u16();
-    if (reader.error()) return;
-
-    auto& commands = chat_model_.commands.silent();
-    for (uint16_t i = 0; i < command_count && !reader.error(); ++i) {
-        std::string command_name = reader.read_string();
-        uint16_t input_count = reader.read_u16();
-
-        auto command = std::find_if(commands.begin(), commands.end(),
-            [&](const ChatCommandDefinition& candidate) {
-                return candidate.name == command_name;
-            });
-
-        Rml::Vector<ChatCommandDefinition::Input> inputs;
-        for (uint16_t j = 0; j < input_count && !reader.error(); ++j) {
-            ChatCommandDefinition::Input input;
-            input.argument_name = Rml::String(reader.read_string());
-            input.mode = static_cast<int>(reader.read_u8());
-            input.min_chars = static_cast<int>(reader.read_u16());
-            input.debounce_ms = static_cast<int>(reader.read_u16());
-            input.max_results = static_cast<int>(reader.read_u16());
-            input.placeholder = Rml::String(reader.read_string());
-            inputs.push_back(std::move(input));
-        }
-
-        if (command != commands.end())
-            command->inputs = std::move(inputs);
-    }
-
-    if (!reader.error())
-        chat_model_.commands.notify();
-}
-
-void AppCore::on_chat_command_query_resp(const uint8_t* data, size_t len) {
-    BinaryReader reader(data, len);
-    uint64_t request_id = reader.read_u64();
-    reader.read_string(); // command_name
-    reader.read_string(); // argument_name
-    uint8_t status = reader.read_u8();
-    std::string message = reader.read_string();
-    uint16_t result_count = reader.read_u16();
-    if (reader.error()) return;
-
-    if (request_id != chat_model_.command_query_request_id.get())
-        return;
-
-    auto& results = chat_model_.command_query_results.silent();
-    results.clear();
-    for (uint16_t i = 0; i < result_count && !reader.error(); ++i) {
-        ChatCommandQueryResult result;
-        result.id = Rml::String(reader.read_string());
-        result.title = Rml::String(reader.read_string());
-        result.subtitle = Rml::String(reader.read_string());
-        result.value = Rml::String(reader.read_string());
-        result.kind = Rml::String(reader.read_string());
-        result.duration_ms = static_cast<int>(reader.read_u32());
-        result.thumbnail_url = Rml::String(reader.read_string());
-        results.push_back(std::move(result));
-    }
-
-    if (reader.error())
-        return;
-
-    chat_model_.command_query_status = static_cast<int>(status);
-    chat_model_.command_query_message = Rml::String(message);
-    chat_model_.command_query_results.notify();
 }
 
 void AppCore::on_chat_message(const uint8_t* data, size_t len) {

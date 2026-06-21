@@ -4,7 +4,6 @@
 
 #include <RmlUi/Core/Types.h>
 
-#include <cstdint>
 #include <functional>
 
 namespace Rml { class Context; }
@@ -50,29 +49,9 @@ struct TextChannel {
 };
 
 struct ChatCommandDefinition {
-    struct Input {
-        Rml::String argument_name;
-        int mode = 0;
-        int min_chars = 0;
-        int debounce_ms = 0;
-        int max_results = 0;
-        Rml::String placeholder;
-    };
-
     Rml::String name;
     Rml::String description;
     Rml::String usage;
-    Rml::Vector<Input> inputs;
-};
-
-struct ChatCommandQueryResult {
-    Rml::String id;
-    Rml::String title;
-    Rml::String subtitle;
-    Rml::String value;
-    Rml::String kind;
-    int duration_ms = 0;
-    Rml::String thumbnail_url;
 };
 
 struct PendingFile {
@@ -86,10 +65,6 @@ public:
     // --- Bound state (Property<T> auto-dirties; arrays via silent()/notify()) ---
     rml::Prop<Rml::Vector<TextChannel>> text_channels;
     rml::Prop<Rml::Vector<ChatCommandDefinition>> commands;
-    rml::Prop<Rml::Vector<ChatCommandQueryResult>> command_query_results;
-    rml::Prop<uint64_t>    command_query_request_id{0};
-    rml::Prop<int>         command_query_status{0};
-    rml::Prop<Rml::String> command_query_message;
     rml::Prop<int>         active_channel{0};
     rml::Prop<Rml::String> active_channel_name;
 

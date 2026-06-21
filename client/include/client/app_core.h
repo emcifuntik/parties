@@ -151,12 +151,6 @@ public:
     // Channel operations (public so platform can call join_channel if needed)
     void join_channel(ChannelId id);
     void leave_channel();
-    void request_chat_command_query(uint64_t request_id,
-                                    ChannelId text_channel_id,
-                                    const std::string& command_name,
-                                    const std::string& argument_name,
-                                    const std::string& query,
-                                    uint16_t cursor_pos);
 
 private:
     PlatformBridge bridge_;
@@ -216,8 +210,6 @@ private:
     void on_chat_pinned_resp(const uint8_t* data, size_t len);
     void on_chat_file_ready(const uint8_t* data, size_t len);
     void on_chat_command_list(const uint8_t* data, size_t len);
-    void on_chat_command_input_list(const uint8_t* data, size_t len);
-    void on_chat_command_query_resp(const uint8_t* data, size_t len);
 
     void update_speaking_state();
     void generate_identity();

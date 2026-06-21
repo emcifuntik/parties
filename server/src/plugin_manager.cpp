@@ -146,73 +146,14 @@ bool command_def_has_min_role(const plugin::CommandDefinition& command) {
         offsetof(plugin::CommandDefinition, min_role) + sizeof(command.min_role);
 }
 
-bool command_def_has_inputs(const plugin::CommandDefinition& command) {
-    return command.abi.size >=
-        offsetof(plugin::CommandDefinition, input_count) + sizeof(command.input_count);
-}
-
 constexpr size_t MIN_COMMAND_DEFINITION_SIZE =
     offsetof(plugin::CommandDefinition, usage) + sizeof(const char*);
-
-constexpr size_t MIN_COMMAND_INPUT_DEFINITION_SIZE =
-    offsetof(plugin::CommandInputDefinition, placeholder) + sizeof(const char*);
-
-constexpr size_t MIN_REGISTRATION_SIZE =
-    offsetof(plugin::Registration, on_chat_command) +
-    sizeof(void (*)(const plugin::ChatCommandInvocation*));
 
 const plugin::CommandDefinition* command_at(const plugin::CommandDefinition* commands,
                                             size_t index,
                                             size_t stride) {
     auto* base = reinterpret_cast<const unsigned char*>(commands);
     return reinterpret_cast<const plugin::CommandDefinition*>(base + index * stride);
-}
-
-const plugin::CommandInputDefinition* command_input_at(
-    const plugin::CommandInputDefinition* inputs,
-    size_t index,
-    size_t stride) {
-    auto* base = reinterpret_cast<const unsigned char*>(inputs);
-    return reinterpret_cast<const plugin::CommandInputDefinition*>(base + index * stride);
-}
-
-bool registration_has_chat_command_query(const plugin::Registration& registration) {
-    return registration.abi.size >=
-        offsetof(plugin::Registration, on_chat_command_query) +
-            sizeof(void (*)(const plugin::CommandQueryRequest*, plugin::CommandQueryResponse*));
-}
-
-PluginManager::CommandQueryResponse copy_plugin_query_response(
-    const plugin::CommandQueryResponse& plugin_response,
-    size_t max_results) {
-    PluginManager::CommandQueryResponse response;
-    response.status = plugin_response.status;
-    if (plugin_response.message)
-        response.message = plugin_response.message;
-
-    max_results = std::min<size_t>(max_results == 0 ? 10 : max_results, 25);
-    const size_t result_count = std::min<size_t>(plugin_response.result_count, max_results);
-    if (result_count > 0 && !plugin_response.results) {
-        response.status = static_cast<uint8_t>(plugin::CommandQueryStatus::PluginError);
-        response.message = "Plugin returned null query results";
-        return response;
-    }
-
-    response.results.reserve(result_count);
-    for (size_t i = 0; i < result_count; ++i) {
-        const auto& result = plugin_response.results[i];
-        response.results.push_back(PluginManager::CommandQueryResult{
-            result.id ? result.id : "",
-            result.title ? result.title : "",
-            result.subtitle ? result.subtitle : "",
-            result.value ? result.value : "",
-            result.kind ? result.kind : "",
-            result.duration_ms,
-            result.thumbnail_url ? result.thumbnail_url : "",
-        });
-    }
-
-    return response;
 }
 
 std::string normalize_sha256(std::string value) {
@@ -1063,7 +1004,6 @@ bool PluginManager::load_manifest(const std::filesystem::path& manifest_path) {
     host.list_text_channels = &PluginManager::host_list_text_channels;
     host.bot_voice_channel = &PluginManager::host_bot_voice_channel;
     host.move_bot_to_user_voice = &PluginManager::host_move_bot_to_user_voice;
-    host.respond_to_command_query = &PluginManager::host_respond_to_command_query;
     host.variables = plugin->host_variables.empty() ? nullptr : plugin->host_variables.data();
     host.variable_count = plugin->host_variables.size();
 
@@ -1118,23 +1058,21 @@ bool PluginManager::load_manifest(const std::filesystem::path& manifest_path) {
     }
 
     if (plugin->registration.abi.api_major != plugin::API_VERSION_MAJOR ||
-        plugin->registration.abi.size < MIN_REGISTRATION_SIZE) {
+        plugin->registration.abi.size != sizeof(plugin::Registration)) {
         {
             std::lock_guard<std::mutex> lock(mutex_);
             chat_commands_.resize(commands_before_init);
         }
         LOG_WARN("Plugin '{}' returned incompatible registration ABI "
-                 "(size={}, major={}, expected at least size={}, major={})",
+                 "(size={}, major={}, expected size={}, major={})",
                  plugin->id,
                  plugin->registration.abi.size,
                  plugin->registration.abi.api_major,
-                 MIN_REGISTRATION_SIZE,
+                 sizeof(plugin::Registration),
                  plugin::API_VERSION_MAJOR);
         cleanup_plugin_bots(*plugin, true);
         return false;
     }
-    if (!registration_has_chat_command_query(plugin->registration))
-        plugin->registration.on_chat_command_query = nullptr;
 
     LOG_INFO("Loaded plugin '{}' ({})", plugin->id, plugin->name);
     {
@@ -1313,105 +1251,6 @@ bool PluginManager::dispatch_chat_command(plugin::SessionId session,
         owner->registration.on_chat_command(&invocation);
     });
     return true;
-}
-
-PluginManager::CommandQueryResponse PluginManager::dispatch_chat_command_query(
-    plugin::SessionId session,
-    plugin::UserId user_id,
-    plugin::ChannelId text_channel_id,
-    uint8_t caller_role,
-    uint64_t request_id,
-    std::string_view command_name,
-    std::string_view argument_name,
-    std::string_view query,
-    uint16_t cursor_pos) {
-    CommandQueryResponse response;
-
-    ChatCommand command_copy;
-    Plugin* owner = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        auto command = std::find_if(chat_commands_.begin(), chat_commands_.end(),
-            [&](const ChatCommand& cmd) { return cmd.name == command_name; });
-        if (command == chat_commands_.end()) {
-            response.status = static_cast<uint8_t>(plugin::CommandQueryStatus::NoResults);
-            response.message = "Unknown command";
-            return response;
-        }
-
-        command_copy = *command;
-        for (const auto& plugin : plugins_) {
-            if (plugin->id == command_copy.plugin_id) {
-                owner = plugin.get();
-                break;
-            }
-        }
-    }
-
-    if (!owner || owner->disabled) {
-        response.status = static_cast<uint8_t>(plugin::CommandQueryStatus::PluginError);
-        response.message = "Command unavailable";
-        return response;
-    }
-
-    if (caller_role > command_copy.min_role) {
-        response.status = static_cast<uint8_t>(plugin::CommandQueryStatus::PermissionDenied);
-        response.message = "Permission denied";
-        return response;
-    }
-
-    auto input = std::find_if(command_copy.inputs.begin(), command_copy.inputs.end(),
-        [&](const ChatCommand::Input& candidate) {
-            return candidate.argument_name == argument_name &&
-                   candidate.mode == plugin::CommandInputMode::LiveQuery;
-        });
-    if (input == command_copy.inputs.end()) {
-        response.status = static_cast<uint8_t>(plugin::CommandQueryStatus::NoResults);
-        response.message = "Argument does not support live query";
-        return response;
-    }
-
-    if (query.size() < input->min_chars) {
-        response.status = static_cast<uint8_t>(plugin::CommandQueryStatus::TooShort);
-        response.message = "Query is too short";
-        return response;
-    }
-
-    if (!owner->registration.on_chat_command_query) {
-        response.status = static_cast<uint8_t>(plugin::CommandQueryStatus::PluginError);
-        response.message = "Plugin does not handle command queries";
-        return response;
-    }
-
-    std::string command_name_copy(command_name);
-    std::string argument_name_copy(argument_name);
-    std::string query_copy(query);
-
-    plugin::CommandQueryRequest request{};
-    request.abi = plugin::make_abi_header<plugin::CommandQueryRequest>();
-    request.session_id = session;
-    request.user_id = user_id;
-    request.text_channel_id = text_channel_id;
-    request.caller_role = caller_role;
-    request.request_id = request_id;
-    request.command_name = command_name_copy.c_str();
-    request.argument_name = argument_name_copy.c_str();
-    request.query = query_copy.c_str();
-    request.cursor_pos = cursor_pos;
-
-    plugin::CommandQueryResponse plugin_response{};
-    plugin_response.abi = plugin::make_abi_header<plugin::CommandQueryResponse>();
-    plugin_response.status = static_cast<uint8_t>(plugin::CommandQueryStatus::NoResults);
-
-    if (!invoke_plugin_callback(*owner, "on_chat_command_query", [&]() {
-            owner->registration.on_chat_command_query(&request, &plugin_response);
-        })) {
-        response.status = static_cast<uint8_t>(plugin::CommandQueryStatus::PluginError);
-        response.message = "Plugin callback failed";
-        return response;
-    }
-
-    return copy_plugin_query_response(plugin_response, input->max_results);
 }
 
 PluginManager::ChatResult PluginManager::process_chat_message(
@@ -2086,64 +1925,6 @@ bool PluginManager::host_move_bot_to_user_voice(void* context,
     return host_join_bot_voice(context, bot_handle, voice_channel_id);
 }
 
-bool PluginManager::host_respond_to_command_query(
-    void* context,
-    plugin::SessionId session_id,
-    uint64_t request_id,
-    const char* command_name,
-    const char* argument_name,
-    const plugin::CommandQueryResponse* plugin_response) {
-    auto* plugin = static_cast<Plugin*>(context);
-    if (!plugin || !plugin->manager || !command_name || !argument_name || !plugin_response)
-        return false;
-    auto* manager = plugin->manager;
-
-    uint16_t max_results = 0;
-    {
-        std::lock_guard<std::mutex> lock(manager->mutex_);
-        if (plugin->disabled)
-            return false;
-
-        auto command = std::find_if(manager->chat_commands_.begin(), manager->chat_commands_.end(),
-            [&](const ChatCommand& candidate) {
-                return candidate.name == command_name && candidate.plugin_id == plugin->id;
-            });
-        if (command == manager->chat_commands_.end()) {
-            LOG_WARN("Plugin '{}' tried to respond to unowned command query '{}'",
-                     plugin->id, command_name);
-            return false;
-        }
-
-        auto input = std::find_if(command->inputs.begin(), command->inputs.end(),
-            [&](const ChatCommand::Input& candidate) {
-                return candidate.argument_name == argument_name &&
-                       candidate.mode == plugin::CommandInputMode::LiveQuery;
-            });
-        if (input == command->inputs.end()) {
-            LOG_WARN("Plugin '{}' tried to respond to invalid command query '{}.{}'",
-                     plugin->id, command_name, argument_name);
-            return false;
-        }
-        max_results = input->max_results;
-    }
-
-    if (!manager->services_.respond_to_command_query)
-        return false;
-
-    auto response = copy_plugin_query_response(*plugin_response, max_results);
-    if (response.status == static_cast<uint8_t>(plugin::CommandQueryStatus::Pending)) {
-        response.status = static_cast<uint8_t>(plugin::CommandQueryStatus::PluginError);
-        response.message = "Async query response cannot be pending";
-    }
-
-    return manager->services_.respond_to_command_query(
-        session_id,
-        request_id,
-        command_name,
-        argument_name,
-        response);
-}
-
 bool PluginManager::register_chat_commands(Plugin& plugin,
                                            const plugin::CommandDefinition* commands,
                                            size_t command_count) {
@@ -2190,82 +1971,6 @@ bool PluginManager::register_chat_commands(Plugin& plugin,
             all_ok = false;
             continue;
         }
-        std::vector<ChatCommand::Input> inputs;
-        if (command_def_has_inputs(cmd) && cmd.inputs && cmd.input_count > 0) {
-            if (cmd.input_count > 16) {
-                LOG_WARN("Plugin '{}' provided too many inputs for command '{}'", plugin.id, cmd.name);
-                if (plugin.last_error.empty()) {
-                    plugin.last_error = "too many inputs for command '" + std::string(cmd.name) + "'";
-                }
-                all_ok = false;
-                continue;
-            }
-
-            size_t input_stride = cmd.inputs[0].abi.size;
-            if (cmd.inputs[0].abi.api_major != plugin::API_VERSION_MAJOR ||
-                input_stride < MIN_COMMAND_INPUT_DEFINITION_SIZE) {
-                input_stride = sizeof(plugin::CommandInputDefinition);
-            }
-
-            bool inputs_ok = true;
-            std::unordered_set<std::string> seen_inputs;
-            for (size_t input_index = 0; input_index < cmd.input_count; ++input_index) {
-                const auto& input = *command_input_at(cmd.inputs, input_index, input_stride);
-                if (!valid_abi_header<plugin::CommandInputDefinition>(input.abi) ||
-                    input.abi.size != input_stride ||
-                    input.abi.size < MIN_COMMAND_INPUT_DEFINITION_SIZE ||
-                    !input.argument_name || !input.argument_name[0]) {
-                    LOG_WARN("Plugin '{}' provided invalid input metadata for command '{}' at index {}",
-                             plugin.id, cmd.name, input_index);
-                    inputs_ok = false;
-                    break;
-                }
-
-                auto argument = std::find_if(arguments->begin(), arguments->end(),
-                    [&](const ChatCommand::Argument& arg) { return arg.name == input.argument_name; });
-                if (argument == arguments->end()) {
-                    LOG_WARN("Plugin '{}' provided input metadata for unknown argument '{}.{}'",
-                             plugin.id, cmd.name, input.argument_name);
-                    inputs_ok = false;
-                    break;
-                }
-
-                if (!seen_inputs.insert(input.argument_name).second) {
-                    LOG_WARN("Plugin '{}' provided duplicate input metadata for '{}.{}'",
-                             plugin.id, cmd.name, input.argument_name);
-                    inputs_ok = false;
-                    break;
-                }
-
-                auto mode = static_cast<plugin::CommandInputMode>(input.mode);
-                if (mode == plugin::CommandInputMode::None)
-                    continue;
-                if (mode != plugin::CommandInputMode::LiveQuery) {
-                    LOG_WARN("Plugin '{}' provided unsupported input mode {} for '{}.{}'",
-                             plugin.id, input.mode, cmd.name, input.argument_name);
-                    inputs_ok = false;
-                    break;
-                }
-
-                inputs.push_back(ChatCommand::Input{
-                    input.argument_name,
-                    mode,
-                    input.min_chars,
-                    input.debounce_ms,
-                    input.max_results,
-                    input.placeholder ? input.placeholder : "",
-                });
-            }
-
-            if (!inputs_ok) {
-                if (plugin.last_error.empty()) {
-                    plugin.last_error = "invalid input metadata for command '" +
-                        std::string(cmd.name) + "'";
-                }
-                all_ok = false;
-                continue;
-            }
-        }
         auto duplicate = std::find_if(chat_commands_.begin(), chat_commands_.end(),
             [&](const ChatCommand& existing) { return existing.name == cmd.name; });
         if (duplicate != chat_commands_.end()) {
@@ -2283,7 +1988,6 @@ bool PluginManager::register_chat_commands(Plugin& plugin,
             cmd.usage,
             command_def_has_min_role(cmd) ? cmd.min_role : uint8_t{3},
             std::move(*arguments),
-            std::move(inputs),
         });
         LOG_INFO("Plugin '{}' registered chat command /{}", plugin.id, cmd.name);
     }

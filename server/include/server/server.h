@@ -9,8 +9,6 @@
 
 #include <array>
 #include <atomic>
-#include <chrono>
-#include <deque>
 #include <functional>
 #include <future>
 #include <set>
@@ -20,7 +18,6 @@
 #include <optional>
 #include <string_view>
 #include <utility>
-#include <vector>
 
 namespace parties::server {
 
@@ -54,26 +51,6 @@ private:
     void send_channel_list(uint32_t session_id);
     void send_text_channel_list(uint32_t session_id);
     void send_chat_command_list(uint32_t session_id);
-    void send_chat_command_input_list(uint32_t session_id);
-    bool send_chat_command_query_response(uint32_t session_id,
-                                          uint64_t request_id,
-                                          std::string_view command_name,
-                                          std::string_view argument_name,
-                                          const PluginManager::CommandQueryResponse& response);
-    bool allow_chat_command_query(uint32_t session_id,
-                                  std::chrono::steady_clock::time_point now);
-    void remember_pending_chat_command_query(uint32_t session_id,
-                                             uint64_t request_id,
-                                             std::string_view command_name,
-                                             std::string_view argument_name,
-                                             std::chrono::steady_clock::time_point now);
-    bool consume_pending_chat_command_query(uint32_t session_id,
-                                            uint64_t request_id,
-                                            std::string_view command_name,
-                                            std::string_view argument_name,
-                                            std::chrono::steady_clock::time_point now);
-    void prune_pending_chat_command_queries(std::chrono::steady_clock::time_point now);
-    void clear_chat_command_query_state(uint32_t session_id);
     std::optional<PluginManager::HostServices::BotUserResult> create_plugin_bot_user(
         std::string_view plugin_id,
         std::string_view key,
@@ -146,21 +123,6 @@ private:
     // AUTH_IDENTITY whose signed blob we've already seen inside the freshness
     // window, defeating replay of a captured handshake. Pruned by timestamp.
     std::unordered_map<Fingerprint, uint64_t> recent_auth_;
-
-    struct PendingChatCommandQuery {
-        uint64_t request_id = 0;
-        std::string command_name;
-        std::string argument_name;
-        std::chrono::steady_clock::time_point expires_at;
-    };
-
-    struct ChatCommandQueryRateLimit {
-        double tokens = 5.0;
-        std::chrono::steady_clock::time_point updated_at{};
-    };
-
-    std::unordered_map<uint32_t, std::vector<PendingChatCommandQuery>> pending_chat_command_queries_;
-    std::unordered_map<uint32_t, ChatCommandQueryRateLimit> chat_command_query_rate_limits_;
 };
 
 } // namespace parties::server

@@ -24,14 +24,6 @@
 
 namespace parties::server {
 
-namespace {
-constexpr double CHAT_COMMAND_QUERY_BURST = 5.0;
-constexpr double CHAT_COMMAND_QUERY_REFILL_PER_SEC = 2.0;
-constexpr auto CHAT_COMMAND_QUERY_PENDING_TTL = std::chrono::seconds(10);
-constexpr size_t CHAT_COMMAND_QUERY_MAX_PENDING_PER_SESSION = 64;
-constexpr size_t CHAT_COMMAND_QUERY_MAX_RESPONSE_BYTES = 64 * 1024;
-}
-
 template <size_t N>
 static void copy_plugin_string(char (&dst)[N], std::string_view src) {
     static_assert(N > 0);
@@ -327,31 +319,6 @@ bool Server::start(const Config& cfg) {
             result.push_back(info);
         }
         return result;
-        });
-    };
-    plugin_services.respond_to_command_query = [this](plugin::SessionId session_id,
-                                                       uint64_t request_id,
-                                                       std::string_view command_name,
-                                                       std::string_view argument_name,
-                                                       const PluginManager::CommandQueryResponse& response) {
-        return invoke_on_server_thread([this,
-                                        session_id,
-                                        request_id,
-                                        command_name = std::string(command_name),
-                                        argument_name = std::string(argument_name),
-                                        response]() {
-            if (!consume_pending_chat_command_query(session_id,
-                                                    request_id,
-                                                    command_name,
-                                                    argument_name,
-                                                    std::chrono::steady_clock::now())) {
-                return false;
-            }
-            return send_chat_command_query_response(session_id,
-                                                    request_id,
-                                                    command_name,
-                                                    argument_name,
-                                                    response);
         });
     };
     plugins_.set_host_services(std::move(plugin_services));
@@ -840,204 +807,6 @@ void Server::send_chat_command_list(uint32_t session_id) {
                  writer.data().data(), writer.data().size());
 }
 
-void Server::send_chat_command_input_list(uint32_t session_id) {
-    auto session = quic_.get_session(session_id);
-    if (!session ||
-        protocol::protocol_minor(session->client_protocol_version) < 1)
-        return;
-
-    const auto commands = plugins_.chat_commands();
-    size_t command_count = 0;
-    for (const auto& cmd : commands) {
-        if (!cmd.inputs.empty() && command_count < UINT16_MAX)
-            ++command_count;
-    }
-
-    BinaryWriter writer;
-    writer.write_u16(static_cast<uint16_t>(command_count));
-    size_t written_commands = 0;
-    for (const auto& cmd : commands) {
-        if (cmd.inputs.empty())
-            continue;
-        if (written_commands++ >= UINT16_MAX)
-            break;
-
-        writer.write_string(cmd.name);
-        writer.write_u16(static_cast<uint16_t>(std::min<size_t>(cmd.inputs.size(), UINT16_MAX)));
-        size_t input_count = 0;
-        for (const auto& input : cmd.inputs) {
-            if (input_count++ >= UINT16_MAX)
-                break;
-            writer.write_string(input.argument_name);
-            writer.write_u8(static_cast<uint8_t>(input.mode));
-            writer.write_u16(input.min_chars);
-            writer.write_u16(input.debounce_ms);
-            writer.write_u16(input.max_results);
-            writer.write_string(input.placeholder);
-        }
-    }
-
-    quic_.send_to(session_id, protocol::ControlMessageType::CHAT_COMMAND_INPUT_LIST,
-                 writer.data().data(), writer.data().size());
-}
-
-bool Server::allow_chat_command_query(uint32_t session_id,
-                                      std::chrono::steady_clock::time_point now) {
-    auto& state = chat_command_query_rate_limits_[session_id];
-    if (state.updated_at.time_since_epoch().count() == 0) {
-        state.tokens = CHAT_COMMAND_QUERY_BURST;
-        state.updated_at = now;
-    }
-
-    const auto elapsed = std::chrono::duration<double>(now - state.updated_at).count();
-    if (elapsed > 0.0) {
-        state.tokens = (std::min)(CHAT_COMMAND_QUERY_BURST,
-                                  state.tokens + elapsed * CHAT_COMMAND_QUERY_REFILL_PER_SEC);
-        state.updated_at = now;
-    }
-
-    if (state.tokens < 1.0)
-        return false;
-
-    state.tokens -= 1.0;
-    return true;
-}
-
-void Server::remember_pending_chat_command_query(
-    uint32_t session_id,
-    uint64_t request_id,
-    std::string_view command_name,
-    std::string_view argument_name,
-    std::chrono::steady_clock::time_point now) {
-    prune_pending_chat_command_queries(now);
-
-    auto& pending = pending_chat_command_queries_[session_id];
-    auto existing = std::find_if(pending.begin(), pending.end(),
-        [&](const PendingChatCommandQuery& query) {
-            return query.request_id == request_id &&
-                   query.command_name == command_name &&
-                   query.argument_name == argument_name;
-        });
-
-    PendingChatCommandQuery entry{
-        request_id,
-        std::string(command_name),
-        std::string(argument_name),
-        now + CHAT_COMMAND_QUERY_PENDING_TTL,
-    };
-
-    if (existing != pending.end()) {
-        *existing = std::move(entry);
-        return;
-    }
-
-    if (pending.size() >= CHAT_COMMAND_QUERY_MAX_PENDING_PER_SESSION)
-        pending.erase(pending.begin());
-    pending.push_back(std::move(entry));
-}
-
-bool Server::consume_pending_chat_command_query(
-    uint32_t session_id,
-    uint64_t request_id,
-    std::string_view command_name,
-    std::string_view argument_name,
-    std::chrono::steady_clock::time_point now) {
-    prune_pending_chat_command_queries(now);
-
-    auto session_it = pending_chat_command_queries_.find(session_id);
-    if (session_it == pending_chat_command_queries_.end())
-        return false;
-
-    auto& pending = session_it->second;
-    auto query_it = std::find_if(pending.begin(), pending.end(),
-        [&](const PendingChatCommandQuery& query) {
-            return query.request_id == request_id &&
-                   query.command_name == command_name &&
-                   query.argument_name == argument_name;
-        });
-    if (query_it == pending.end())
-        return false;
-
-    pending.erase(query_it);
-    if (pending.empty())
-        pending_chat_command_queries_.erase(session_it);
-    return true;
-}
-
-void Server::prune_pending_chat_command_queries(std::chrono::steady_clock::time_point now) {
-    for (auto session_it = pending_chat_command_queries_.begin();
-         session_it != pending_chat_command_queries_.end();) {
-        auto& pending = session_it->second;
-        pending.erase(std::remove_if(pending.begin(), pending.end(),
-            [&](const PendingChatCommandQuery& query) {
-                return query.expires_at <= now;
-            }), pending.end());
-
-        if (pending.empty())
-            session_it = pending_chat_command_queries_.erase(session_it);
-        else
-            ++session_it;
-    }
-}
-
-void Server::clear_chat_command_query_state(uint32_t session_id) {
-    pending_chat_command_queries_.erase(session_id);
-    chat_command_query_rate_limits_.erase(session_id);
-}
-
-bool Server::send_chat_command_query_response(
-    uint32_t session_id,
-    uint64_t request_id,
-    std::string_view command_name,
-    std::string_view argument_name,
-    const PluginManager::CommandQueryResponse& response) {
-    auto session = quic_.get_session(session_id);
-    if (!session || !session->authenticated)
-        return false;
-
-    auto clipped = [](std::string_view value, size_t max_len) {
-        return std::string(value.substr(0, max_len));
-    };
-
-    BinaryWriter header;
-    header.write_u64(request_id);
-    header.write_string(clipped(command_name, 64));
-    header.write_string(clipped(argument_name, 64));
-    header.write_u8(response.status);
-    header.write_string(clipped(response.message, 512));
-
-    std::vector<std::vector<uint8_t>> encoded_results;
-    encoded_results.reserve(std::min<size_t>(response.results.size(), 25));
-    size_t payload_size = header.size() + sizeof(uint16_t);
-    for (const auto& result : response.results) {
-        if (encoded_results.size() >= 25)
-            break;
-
-        BinaryWriter item;
-        item.write_string(clipped(result.id, 512));
-        item.write_string(clipped(result.title, 512));
-        item.write_string(clipped(result.subtitle, 512));
-        item.write_string(clipped(result.value, 512));
-        item.write_string(clipped(result.kind, 64));
-        item.write_u32(result.duration_ms);
-        item.write_string(clipped(result.thumbnail_url, 2048));
-        if (payload_size + item.size() > CHAT_COMMAND_QUERY_MAX_RESPONSE_BYTES)
-            break;
-
-        payload_size += item.size();
-        encoded_results.push_back(item.data());
-    }
-
-    BinaryWriter writer;
-    writer.write_bytes(header.data().data(), header.data().size());
-    writer.write_u16(static_cast<uint16_t>(encoded_results.size()));
-    for (const auto& item : encoded_results)
-        writer.write_bytes(item.data(), item.size());
-
-    return quic_.send_to(session_id, protocol::ControlMessageType::CHAT_COMMAND_QUERY_RESP,
-                         writer.data().data(), writer.data().size());
-}
-
 void Server::handle_message(const IncomingMessage& msg) {
 	ZoneScopedN("Server::handle_message");
     auto session = quic_.get_session(msg.session_id);
@@ -1223,7 +992,6 @@ void Server::handle_message(const IncomingMessage& msg) {
 
         // Auth success
         session->authenticated = true;
-        session->client_protocol_version = client_version;
         session->user_id = user->id;
         session->username = user->display_name;
         session->role = user->role;
@@ -1248,7 +1016,6 @@ void Server::handle_message(const IncomingMessage& msg) {
         send_channel_list(msg.session_id);
         send_text_channel_list(msg.session_id);
         send_chat_command_list(msg.session_id);
-        send_chat_command_input_list(msg.session_id);
         plugins_.on_session_authenticated(msg.session_id);
 
         // Send user lists for all channels so the client can see who's online
@@ -2249,71 +2016,6 @@ void Server::handle_message(const IncomingMessage& msg) {
         break;
     }
 
-    // ── Chat command live query/autocomplete ─────────────────────────
-    case protocol::ControlMessageType::CHAT_COMMAND_QUERY: {
-        if (!session->authenticated) break;
-
-        BinaryReader reader(msg.payload.data(), msg.payload.size());
-        uint32_t channel_id = reader.read_u32();
-        uint64_t request_id = reader.read_u64();
-        std::string command_name = reader.read_string();
-        std::string argument_name = reader.read_string();
-        std::string query = reader.read_string();
-        uint16_t cursor_pos = reader.read_u16();
-        if (reader.error()) break;
-
-        if (command_name.size() > 64 || argument_name.size() > 64 || query.size() > 512) {
-            PluginManager::CommandQueryResponse response;
-            response.status = static_cast<uint8_t>(plugin::CommandQueryStatus::TooShort);
-            response.message = "Invalid command query";
-            send_chat_command_query_response(msg.session_id,
-                                             request_id,
-                                             command_name,
-                                             argument_name,
-                                             response);
-            break;
-        }
-
-        auto now = std::chrono::steady_clock::now();
-        if (!allow_chat_command_query(msg.session_id, now)) {
-            PluginManager::CommandQueryResponse response;
-            response.status = static_cast<uint8_t>(plugin::CommandQueryStatus::RateLimited);
-            response.message = "Too many command queries";
-            send_chat_command_query_response(msg.session_id,
-                                             request_id,
-                                             command_name,
-                                             argument_name,
-                                             response);
-            break;
-        }
-
-        auto response = plugins_.dispatch_chat_command_query(
-            msg.session_id,
-            session->user_id,
-            channel_id,
-            static_cast<uint8_t>(session->role),
-            request_id,
-            command_name,
-            argument_name,
-            query,
-            cursor_pos);
-
-        if (response.status != static_cast<uint8_t>(plugin::CommandQueryStatus::Pending)) {
-            send_chat_command_query_response(msg.session_id,
-                                             request_id,
-                                             command_name,
-                                             argument_name,
-                                             response);
-        } else {
-            remember_pending_chat_command_query(msg.session_id,
-                                                request_id,
-                                                command_name,
-                                                argument_name,
-                                                now);
-        }
-        break;
-    }
-
     // ── Chat: search ──────────────────────────────────────────────────
     case protocol::ControlMessageType::CHAT_SEARCH: {
         if (!session->authenticated) break;
@@ -2363,7 +2065,6 @@ void Server::process_disconnects() {
 
 void Server::process_disconnect(uint32_t session_id, UserId user_id, ChannelId channel_id) {
 	ZoneScopedN("Server::process_disconnect");
-    clear_chat_command_query_state(session_id);
     plugins_.on_session_disconnected(session_id, user_id, channel_id);
     if (channel_id == 0)
         return;

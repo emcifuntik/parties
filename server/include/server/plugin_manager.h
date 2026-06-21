@@ -24,22 +24,6 @@ public:
     PluginManager(const PluginManager&) = delete;
     PluginManager& operator=(const PluginManager&) = delete;
 
-    struct CommandQueryResult {
-        std::string id;
-        std::string title;
-        std::string subtitle;
-        std::string value;
-        std::string kind;
-        uint32_t duration_ms = 0;
-        std::string thumbnail_url;
-    };
-
-    struct CommandQueryResponse {
-        uint8_t status = static_cast<uint8_t>(plugin::CommandQueryStatus::NoResults);
-        std::string message;
-        std::vector<CommandQueryResult> results;
-    };
-
     struct HostServices {
         struct BotUserResult {
             plugin::UserId user_id = 0;
@@ -75,11 +59,6 @@ public:
         std::function<std::optional<plugin::ChannelInfo>(plugin::ChannelId channel_id)> get_text_channel_info;
         std::function<std::vector<plugin::ChannelInfo>()> list_voice_channels;
         std::function<std::vector<plugin::ChannelInfo>()> list_text_channels;
-        std::function<bool(plugin::SessionId session_id,
-                           uint64_t request_id,
-                           std::string_view command_name,
-                           std::string_view argument_name,
-                           const CommandQueryResponse& response)> respond_to_command_query;
     };
 
     void set_host_services(HostServices services);
@@ -102,16 +81,6 @@ public:
                                std::string_view args,
                                std::string_view raw_text,
                                std::string* error_message = nullptr);
-
-    CommandQueryResponse dispatch_chat_command_query(plugin::SessionId session,
-                                                     plugin::UserId user_id,
-                                                     plugin::ChannelId text_channel_id,
-                                                     uint8_t caller_role,
-                                                     uint64_t request_id,
-                                                     std::string_view command_name,
-                                                     std::string_view argument_name,
-                                                     std::string_view query,
-                                                     uint16_t cursor_pos);
 
     enum class ChatResultCode {
         Continue,
@@ -138,22 +107,12 @@ public:
             bool rest = false;
         };
 
-        struct Input {
-            std::string argument_name;
-            plugin::CommandInputMode mode = plugin::CommandInputMode::None;
-            uint16_t min_chars = 0;
-            uint16_t debounce_ms = 0;
-            uint16_t max_results = 0;
-            std::string placeholder;
-        };
-
         std::string plugin_id;
         std::string name;
         std::string description;
         std::string usage;
         uint8_t min_role = 3;
         std::vector<Argument> arguments;
-        std::vector<Input> inputs;
     };
 
     struct BotVoiceParticipant {
@@ -233,12 +192,6 @@ private:
     static bool host_move_bot_to_user_voice(void* context,
                                             plugin::BotHandle bot,
                                             plugin::UserId user_id);
-    static bool host_respond_to_command_query(void* context,
-                                              plugin::SessionId session_id,
-                                              uint64_t request_id,
-                                              const char* command_name,
-                                              const char* argument_name,
-                                              const plugin::CommandQueryResponse* response);
 
     bool load_manifest(const std::filesystem::path& manifest_path);
     bool register_chat_commands(Plugin& plugin,

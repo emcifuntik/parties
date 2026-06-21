@@ -438,7 +438,6 @@ int main() {
         bool found_bottypes = false;
         bool found_botvars = false;
         bool found_botworker = false;
-        bool found_botquery = false;
         for (uint16_t i = 0; i < command_count; ++i) {
             std::string name = cr.read_string();
             std::string description = cr.read_string();
@@ -455,8 +454,6 @@ int main() {
                 found_botvars = true;
             if (name == "botworker")
                 found_botworker = true;
-            if (name == "botquery")
-                found_botquery = true;
         }
         TEST_ASSERT(!cr.error(), "client A command list parse");
         TEST_ASSERT(found_botping, "botping command advertised");
@@ -464,109 +461,6 @@ int main() {
         TEST_ASSERT(found_bottypes, "bottypes command advertised");
         TEST_ASSERT(found_botvars, "botvars command advertised");
         TEST_ASSERT(found_botworker, "botworker command advertised");
-        TEST_ASSERT(found_botquery, "botquery command advertised");
-
-        std::vector<uint8_t> input_payload;
-        TEST_ASSERT(wait_for_message(client_a, ControlMessageType::CHAT_COMMAND_INPUT_LIST, input_payload),
-                    "client A chat command input list");
-        BinaryReader ir(input_payload.data(), input_payload.size());
-        uint16_t input_command_count = ir.read_u16();
-        bool found_botquery_input = false;
-        for (uint16_t i = 0; i < input_command_count; ++i) {
-            std::string command_name = ir.read_string();
-            uint16_t input_count = ir.read_u16();
-            for (uint16_t j = 0; j < input_count; ++j) {
-                std::string argument_name = ir.read_string();
-                uint8_t mode = ir.read_u8();
-                uint16_t min_chars = ir.read_u16();
-                uint16_t debounce_ms = ir.read_u16();
-                uint16_t max_results = ir.read_u16();
-                std::string placeholder = ir.read_string();
-                (void)debounce_ms;
-                (void)placeholder;
-                if (command_name == "botquery" &&
-                    argument_name == "query" &&
-                    mode == 1 &&
-                    min_chars == 1 &&
-                    max_results == 3) {
-                    found_botquery_input = true;
-                }
-            }
-        }
-        TEST_ASSERT(!ir.error(), "client A command input list parse");
-        TEST_ASSERT(found_botquery_input, "botquery live query input advertised");
-
-        constexpr uint64_t query_request_id = 0xC0FFEE42ULL;
-        BinaryWriter qw;
-        qw.write_u32(1);
-        qw.write_u64(query_request_id);
-        qw.write_string("botquery");
-        qw.write_string("query");
-        qw.write_string("abc");
-        qw.write_u16(3);
-        TEST_ASSERT(client_a.send_message(ControlMessageType::CHAT_COMMAND_QUERY,
-                    qw.data().data(), qw.data().size()), "client A send command query");
-
-        std::vector<uint8_t> query_payload;
-        TEST_ASSERT(wait_for_message(client_a, ControlMessageType::CHAT_COMMAND_QUERY_RESP, query_payload),
-                    "client A command query response");
-        BinaryReader qr(query_payload.data(), query_payload.size());
-        TEST_ASSERT(qr.read_u64() == query_request_id, "query response echoes client request id");
-        TEST_ASSERT(qr.read_string() == "botquery", "query response command name");
-        TEST_ASSERT(qr.read_string() == "query", "query response argument name");
-        TEST_ASSERT(qr.read_u8() == 0, "query response status ok");
-        (void)qr.read_string();
-        uint16_t result_count = qr.read_u16();
-        TEST_ASSERT(result_count == 3, "query response returns choices");
-        bool found_typed_choice = false;
-        for (uint16_t i = 0; i < result_count; ++i) {
-            (void)qr.read_string();
-            std::string title = qr.read_string();
-            std::string subtitle = qr.read_string();
-            std::string value = qr.read_string();
-            (void)qr.read_string();
-            (void)qr.read_u32();
-            (void)qr.read_string();
-            if (title == "Use typed query" && subtitle == "abc" && value == "abc")
-                found_typed_choice = true;
-        }
-        TEST_ASSERT(!qr.error(), "query response parse");
-        TEST_ASSERT(found_typed_choice, "query response includes typed choice");
-
-        constexpr uint64_t async_query_request_id = 0xC0FFEE43ULL;
-        BinaryWriter aqw;
-        aqw.write_u32(1);
-        aqw.write_u64(async_query_request_id);
-        aqw.write_string("botquery");
-        aqw.write_string("query");
-        aqw.write_string("async");
-        aqw.write_u16(5);
-        TEST_ASSERT(client_a.send_message(ControlMessageType::CHAT_COMMAND_QUERY,
-                    aqw.data().data(), aqw.data().size()), "client A send async command query");
-
-        std::vector<uint8_t> async_query_payload;
-        TEST_ASSERT(wait_for_message(client_a, ControlMessageType::CHAT_COMMAND_QUERY_RESP,
-                                     async_query_payload),
-                    "client A async command query response");
-        BinaryReader aqr(async_query_payload.data(), async_query_payload.size());
-        TEST_ASSERT(aqr.read_u64() == async_query_request_id,
-                    "async query response echoes client request id");
-        TEST_ASSERT(aqr.read_string() == "botquery", "async query response command name");
-        TEST_ASSERT(aqr.read_string() == "query", "async query response argument name");
-        TEST_ASSERT(aqr.read_u8() == 0, "async query response status ok");
-        (void)aqr.read_string();
-        uint16_t async_result_count = aqr.read_u16();
-        TEST_ASSERT(async_result_count == 1, "async query response returns one choice");
-        (void)aqr.read_string();
-        TEST_ASSERT(aqr.read_string() == "Async bot query suggestion",
-                    "async query response title");
-        (void)aqr.read_string();
-        TEST_ASSERT(aqr.read_string() == "async-choice",
-                    "async query response value");
-        (void)aqr.read_string();
-        (void)aqr.read_u32();
-        (void)aqr.read_string();
-        TEST_ASSERT(!aqr.error(), "async query response parse");
 
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         drain_messages(client_a);
@@ -623,103 +517,6 @@ int main() {
         drain_messages(client_b);
     }
     LOG("[4/15] Client B authenticated (user_id=%u)\n", user_b_id);
-
-    LOG("[plugin] Testing concurrent async command queries...\n");
-    {
-        auto send_botquery = [](NetClient& client, uint64_t request_id, const std::string& query) {
-            BinaryWriter w;
-            w.write_u32(1);
-            w.write_u64(request_id);
-            w.write_string("botquery");
-            w.write_string("query");
-            w.write_string(query);
-            w.write_u16(static_cast<uint16_t>(query.size()));
-            return client.send_message(ControlMessageType::CHAT_COMMAND_QUERY,
-                                       w.data().data(),
-                                       w.data().size());
-        };
-
-        constexpr uint64_t shared_async_request_id = 0xC0FFEE70ULL;
-        TEST_ASSERT(send_botquery(client_a, shared_async_request_id, "async"),
-                    "client A send concurrent async query");
-        TEST_ASSERT(send_botquery(client_b, shared_async_request_id, "async"),
-                    "client B send concurrent async query");
-
-        std::vector<uint8_t> payload_a;
-        std::vector<uint8_t> payload_b;
-        TEST_ASSERT(wait_for_message(client_a, ControlMessageType::CHAT_COMMAND_QUERY_RESP, payload_a),
-                    "client A concurrent async query response");
-        TEST_ASSERT(wait_for_message(client_b, ControlMessageType::CHAT_COMMAND_QUERY_RESP, payload_b),
-                    "client B concurrent async query response");
-
-        for (auto* payload : {&payload_a, &payload_b}) {
-            BinaryReader r(payload->data(), payload->size());
-            TEST_ASSERT(r.read_u64() == shared_async_request_id,
-                        "concurrent async response echoes shared request id");
-            TEST_ASSERT(r.read_string() == "botquery", "concurrent async response command");
-            TEST_ASSERT(r.read_string() == "query", "concurrent async response argument");
-            TEST_ASSERT(r.read_u8() == 0, "concurrent async response status ok");
-            (void)r.read_string();
-            TEST_ASSERT(r.read_u16() == 1, "concurrent async response result count");
-            (void)r.read_string();
-            (void)r.read_string();
-            (void)r.read_string();
-            TEST_ASSERT(r.read_string() == "async-choice",
-                        "concurrent async response value");
-            (void)r.read_string();
-            (void)r.read_u32();
-            (void)r.read_string();
-            TEST_ASSERT(!r.error(), "concurrent async response parse");
-        }
-    }
-    LOG("[plugin] Concurrent async command queries verified\n");
-
-    LOG("[plugin] Testing command query rate limiting...\n");
-    {
-        constexpr uint64_t burst_base_request_id = 0xC0FFEF00ULL;
-        for (uint64_t i = 0; i < 8; ++i) {
-            BinaryWriter w;
-            w.write_u32(1);
-            w.write_u64(burst_base_request_id + i);
-            w.write_string("botquery");
-            w.write_string("query");
-            w.write_string("burst");
-            w.write_u16(5);
-            TEST_ASSERT(client_a.send_message(ControlMessageType::CHAT_COMMAND_QUERY,
-                        w.data().data(), w.data().size()), "client A send burst query");
-        }
-
-        bool saw_rate_limited = false;
-        for (uint64_t i = 0; i < 8; ++i) {
-            std::vector<uint8_t> payload;
-            TEST_ASSERT(wait_for_message(client_a, ControlMessageType::CHAT_COMMAND_QUERY_RESP, payload),
-                        "client A burst query response");
-            BinaryReader r(payload.data(), payload.size());
-            uint64_t request_id = r.read_u64();
-            TEST_ASSERT(request_id >= burst_base_request_id &&
-                        request_id < burst_base_request_id + 8,
-                        "burst query response request id");
-            TEST_ASSERT(r.read_string() == "botquery", "burst query response command");
-            TEST_ASSERT(r.read_string() == "query", "burst query response argument");
-            uint8_t status = r.read_u8();
-            if (status == static_cast<uint8_t>(parties::plugin::CommandQueryStatus::RateLimited))
-                saw_rate_limited = true;
-            (void)r.read_string();
-            uint16_t count = r.read_u16();
-            for (uint16_t j = 0; j < count; ++j) {
-                (void)r.read_string();
-                (void)r.read_string();
-                (void)r.read_string();
-                (void)r.read_string();
-                (void)r.read_string();
-                (void)r.read_u32();
-                (void)r.read_string();
-            }
-            TEST_ASSERT(!r.error(), "burst query response parse");
-        }
-        TEST_ASSERT(saw_rate_limited, "burst command queries hit rate limit");
-    }
-    LOG("[plugin] Command query rate limiting verified\n");
 
     // ── Plugin command: /botping should create/reuse a bot and send bot chat ──
     LOG("[plugin] Testing /botping command...\n");

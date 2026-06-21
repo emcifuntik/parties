@@ -6,7 +6,7 @@
 namespace parties::plugin {
 
 constexpr uint16_t API_VERSION_MAJOR = 1;
-constexpr uint16_t API_VERSION_MINOR = 1;
+constexpr uint16_t API_VERSION_MINOR = 0;
 
 struct AbiHeader {
     uint32_t size;
@@ -92,29 +92,12 @@ struct CommandArgumentValue {
     const char* string_value;
 };
 
-enum class CommandInputMode : uint8_t {
-    None = 0,
-    LiveQuery = 1,
-};
-
-struct CommandInputDefinition {
-    AbiHeader abi;
-    const char* argument_name;
-    uint8_t mode;
-    uint16_t min_chars;
-    uint16_t debounce_ms;
-    uint16_t max_results;
-    const char* placeholder;
-};
-
 struct CommandDefinition {
     AbiHeader abi;
     const char* name;
     const char* description;
     const char* usage;
     uint8_t min_role = 3; // Role::User by numeric convention; lower is more privileged.
-    const CommandInputDefinition* inputs = nullptr;
-    size_t input_count = 0;
 };
 
 struct PluginVariable {
@@ -134,48 +117,6 @@ struct ChatCommandInvocation {
     const char* raw_text;
     const CommandArgumentValue* parsed_args;
     size_t parsed_arg_count;
-};
-
-enum class CommandQueryStatus : uint8_t {
-    Ok = 0,
-    NoResults = 1,
-    TooShort = 2,
-    RateLimited = 3,
-    PluginError = 4,
-    PermissionDenied = 5,
-    Pending = 6,
-};
-
-struct CommandQueryRequest {
-    AbiHeader abi;
-    SessionId session_id;
-    UserId user_id;
-    ChannelId text_channel_id;
-    uint8_t caller_role;
-    uint64_t request_id;
-    const char* command_name;
-    const char* argument_name;
-    const char* query;
-    uint16_t cursor_pos;
-};
-
-struct CommandQueryResult {
-    AbiHeader abi;
-    const char* id;
-    const char* title;
-    const char* subtitle;
-    const char* value;
-    const char* kind;
-    uint32_t duration_ms;
-    const char* thumbnail_url;
-};
-
-struct CommandQueryResponse {
-    AbiHeader abi;
-    uint8_t status;
-    const char* message;
-    const CommandQueryResult* results;
-    size_t result_count;
 };
 
 struct ChatMessage {
@@ -272,13 +213,6 @@ struct Host {
                                    BotHandle bot,
                                    UserId user_id);
 
-    bool (*respond_to_command_query)(void* context,
-                                     SessionId session_id,
-                                     uint64_t request_id,
-                                     const char* command_name,
-                                     const char* argument_name,
-                                     const CommandQueryResponse* response);
-
     const PluginVariable* variables;
     size_t variable_count;
 };
@@ -296,8 +230,6 @@ struct Registration {
 
     void (*on_chat_message)(const ChatMessage* message, ChatDecision* decision);
     void (*on_chat_command)(const ChatCommandInvocation* invocation);
-    void (*on_chat_command_query)(const CommandQueryRequest* request,
-                                  CommandQueryResponse* response);
 };
 
 using InitFn = bool (*)(const Host* host, Registration* registration);

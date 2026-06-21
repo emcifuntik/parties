@@ -19,7 +19,6 @@ Implemented plugin features:
 - Lifecycle callbacks.
 - Session authenticated/disconnected callbacks.
 - Chat command registration and client advertisement.
-- Live command query metadata and plugin-provided autocomplete responses.
 - Chat command dispatch from normal chat input.
 - Chat message observation, rejection, and replacement.
 - Server-owned persistent bot users.
@@ -985,7 +984,6 @@ runtime plugin directory. It registers these commands:
 - `/bottypes {flag:bool} {i8:int8} {u8:uint8} {i16:int16} {u16:uint16} {i32:int32} {u32:uint32} {i64:int64} {u64:uint64} {f:float} {d:double} [note:string...]`
 - `/botvars`
 - `/botworker`
-- `/botquery {query:string...}`
 
 `/botapi` is an integration-test command that exercises the read-only lookup
 host APIs and bot voice helper APIs through the real plugin boundary.
@@ -998,8 +996,3 @@ argument parser through the real plugin boundary.
 
 `/botworker` is an integration-test command that exercises a host call from a
 plugin-owned worker thread.
-
-`/botquery` is an integration-test command that advertises live-query metadata
-for its `query` argument and returns sample autocomplete choices through
-`on_chat_command_query`. The special query text `async` exercises worker-thread
-completion through `respond_to_command_query`.

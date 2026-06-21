@@ -1,15 +1,10 @@
 #include <parties/plugin_api.h>
 
-#include <array>
 #include <atomic>
-#include <chrono>
 #include <cstdio>
 #include <cstring>
-#include <memory>
 #include <mutex>
-#include <string>
 #include <thread>
-#include <vector>
 
 #ifdef _WIN32
 #define PARTIES_PLUGIN_EXPORT extern "C" __declspec(dllexport)
@@ -24,27 +19,8 @@ parties::plugin::BotHandle g_bot = nullptr;
 parties::plugin::UserId g_bot_user_id = 0;
 std::mutex g_bot_mutex;
 std::thread g_worker;
-struct QueryWorker {
-    std::thread thread;
-    std::shared_ptr<std::atomic<bool>> done;
-};
-std::mutex g_query_workers_mutex;
-std::vector<QueryWorker> g_query_workers;
 std::atomic<bool> g_worker_running{false};
 char g_echo_prefix[64] = "unset";
-thread_local std::array<parties::plugin::CommandQueryResult, 3> g_query_results{};
-
-void prune_query_workers_locked() {
-    for (auto it = g_query_workers.begin(); it != g_query_workers.end();) {
-        if (it->done && it->done->load(std::memory_order_acquire)) {
-            if (it->thread.joinable())
-                it->thread.join();
-            it = g_query_workers.erase(it);
-        } else {
-            ++it;
-        }
-    }
-}
 
 void log_info(const char* message) {
     if (g_host.log)
@@ -390,115 +366,6 @@ void on_chat_command(const parties::plugin::ChatCommandInvocation* invocation) {
         });
         return;
     }
-
-    if (std::strcmp(invocation->command_name, "botquery") == 0) {
-        const auto* query_arg = find_arg(invocation, "query");
-        const char* query = query_arg && query_arg->present && query_arg->string_value
-            ? query_arg->string_value
-            : "";
-        char msg[192];
-        std::snprintf(msg, sizeof(msg), "query-selected %s", query);
-        send_bot_text(invocation->text_channel_id, msg);
-        return;
-    }
-}
-
-void on_chat_command_query(const parties::plugin::CommandQueryRequest* request,
-                           parties::plugin::CommandQueryResponse* response) {
-    if (!request || !response || !request->command_name || !request->argument_name)
-        return;
-
-    if (std::strcmp(request->command_name, "botquery") != 0 ||
-        std::strcmp(request->argument_name, "query") != 0) {
-        response->status = static_cast<uint8_t>(parties::plugin::CommandQueryStatus::NoResults);
-        response->message = "No matching query handler";
-        return;
-    }
-
-    if (request->query && std::strcmp(request->query, "async") == 0 &&
-        g_host.respond_to_command_query) {
-        const auto session_id = request->session_id;
-        const auto request_id = request->request_id;
-        std::lock_guard<std::mutex> lock(g_query_workers_mutex);
-        prune_query_workers_locked();
-        if (g_query_workers.size() >= 64) {
-            response->status = static_cast<uint8_t>(parties::plugin::CommandQueryStatus::RateLimited);
-            response->message = "Too many async query workers";
-            return;
-        }
-        auto done = std::make_shared<std::atomic<bool>>(false);
-        g_query_workers.push_back(QueryWorker{
-            std::thread([session_id, request_id, done]() {
-            std::this_thread::sleep_for(std::chrono::milliseconds(25));
-            std::array<parties::plugin::CommandQueryResult, 1> async_results{};
-            async_results[0] = parties::plugin::CommandQueryResult{
-                parties::plugin::make_abi_header<parties::plugin::CommandQueryResult>(),
-                "botquery:async",
-                "Async bot query suggestion",
-                "Echo plugin worker",
-                "async-choice",
-                "example",
-                0,
-                "",
-            };
-
-            parties::plugin::CommandQueryResponse async_response{};
-            async_response.abi = parties::plugin::make_abi_header<parties::plugin::CommandQueryResponse>();
-            async_response.status = static_cast<uint8_t>(parties::plugin::CommandQueryStatus::Ok);
-            async_response.message = "";
-            async_response.results = async_results.data();
-            async_response.result_count = async_results.size();
-            g_host.respond_to_command_query(g_host.context,
-                                            session_id,
-                                            request_id,
-                                            "botquery",
-                                            "query",
-                                            &async_response);
-            done->store(true, std::memory_order_release);
-            }),
-            done,
-        });
-
-        response->status = static_cast<uint8_t>(parties::plugin::CommandQueryStatus::Pending);
-        response->message = "";
-        return;
-    }
-
-    g_query_results[0] = parties::plugin::CommandQueryResult{
-        parties::plugin::make_abi_header<parties::plugin::CommandQueryResult>(),
-        "botquery:first",
-        "First bot query suggestion",
-        "Echo plugin",
-        "first-choice",
-        "example",
-        0,
-        "",
-    };
-    g_query_results[1] = parties::plugin::CommandQueryResult{
-        parties::plugin::make_abi_header<parties::plugin::CommandQueryResult>(),
-        "botquery:second",
-        "Second bot query suggestion",
-        "Echo plugin",
-        "second-choice",
-        "example",
-        0,
-        "",
-    };
-    g_query_results[2] = parties::plugin::CommandQueryResult{
-        parties::plugin::make_abi_header<parties::plugin::CommandQueryResult>(),
-        "botquery:typed",
-        "Use typed query",
-        request->query ? request->query : "",
-        request->query ? request->query : "",
-        "typed",
-        0,
-        "",
-    };
-
-    response->status = static_cast<uint8_t>(parties::plugin::CommandQueryStatus::Ok);
-    response->message = "";
-    response->results = g_query_results.data();
-    response->result_count = g_query_results.size();
 }
 
 void on_chat_message(const parties::plugin::ChatMessage* message,
@@ -528,16 +395,7 @@ PARTIES_PLUGIN_EXPORT bool parties_plugin_init(const parties::plugin::Host* host
     if (const char* echo_prefix = find_variable(host, "echo_prefix"))
         std::snprintf(g_echo_prefix, sizeof(g_echo_prefix), "%s", echo_prefix);
 
-    parties::plugin::CommandInputDefinition botquery_input{};
-    botquery_input.abi = parties::plugin::make_abi_header<parties::plugin::CommandInputDefinition>();
-    botquery_input.argument_name = "query";
-    botquery_input.mode = static_cast<uint8_t>(parties::plugin::CommandInputMode::LiveQuery);
-    botquery_input.min_chars = 1;
-    botquery_input.debounce_ms = 250;
-    botquery_input.max_results = 3;
-    botquery_input.placeholder = "Type anything";
-
-    parties::plugin::CommandDefinition commands[10]{};
+    parties::plugin::CommandDefinition commands[9]{};
     commands[0].abi = parties::plugin::make_abi_header<parties::plugin::CommandDefinition>();
     commands[0].name = "botping";
     commands[0].description = "Send a test message as a server bot.";
@@ -574,14 +432,8 @@ PARTIES_PLUGIN_EXPORT bool parties_plugin_init(const parties::plugin::Host* host
     commands[8].name = "botworker";
     commands[8].description = "Exercise worker-thread host calls.";
     commands[8].usage = "/botworker";
-    commands[9].abi = parties::plugin::make_abi_header<parties::plugin::CommandDefinition>();
-    commands[9].name = "botquery";
-    commands[9].description = "Exercise live command query metadata and callbacks.";
-    commands[9].usage = "/botquery {query:string...}";
-    commands[9].inputs = &botquery_input;
-    commands[9].input_count = 1;
 
-    if (!g_host.create_chat_commands(g_host.context, commands, 10))
+    if (!g_host.create_chat_commands(g_host.context, commands, 9))
         return false;
 
     if (const char* mode = find_variable(host, "mode")) {
@@ -596,7 +448,6 @@ PARTIES_PLUGIN_EXPORT bool parties_plugin_init(const parties::plugin::Host* host
 
     registration->abi = parties::plugin::make_abi_header<parties::plugin::Registration>();
     registration->on_chat_command = &on_chat_command;
-    registration->on_chat_command_query = &on_chat_command_query;
     registration->on_chat_message = &on_chat_message;
 
     log_info("bot_echo initialized");
@@ -604,15 +455,6 @@ PARTIES_PLUGIN_EXPORT bool parties_plugin_init(const parties::plugin::Host* host
 }
 
 PARTIES_PLUGIN_EXPORT void parties_plugin_shutdown() {
-    std::vector<QueryWorker> query_workers;
-    {
-        std::lock_guard<std::mutex> lock(g_query_workers_mutex);
-        query_workers.swap(g_query_workers);
-    }
-    for (auto& worker : query_workers) {
-        if (worker.thread.joinable())
-            worker.thread.join();
-    }
     if (g_worker.joinable())
         g_worker.join();
     parties::plugin::BotHandle bot = nullptr;
