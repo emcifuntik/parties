@@ -107,8 +107,9 @@ bool AudioEngine::init() {
     aec_ref_write_ = 0;
     aec_ref_read_ = 0;
 
-    // Initialize Opus encoder
-    if (!encoder_.init_encoder(audio::SAMPLE_RATE, audio::CHANNELS, audio::OPUS_BITRATE)) {
+    // Initialize Opus encoder with in-band FEC for packet-loss resilience.
+    if (!encoder_.init_encoder(audio::SAMPLE_RATE, audio::CHANNELS, audio::OPUS_BITRATE,
+                               /*inband_fec=*/true, audio::OPUS_EXPECTED_LOSS_PCT)) {
         LOG_ERROR("Failed to create Opus encoder");
         rnnoise_destroy(rnn_);
         rnn_ = nullptr;

@@ -9,8 +9,11 @@ constexpr int SAMPLE_RATE      = 48000;
 constexpr int CHANNELS         = 1;
 constexpr int FRAME_SIZE       = 480;     // 10ms at 48kHz (matches RNNoise)
 constexpr int OPUS_FRAME_SIZE  = 960;     // 20ms at 48kHz (2x RNNoise frames)
-constexpr int OPUS_BITRATE     = 32000;   // 32 kbps default
-constexpr int MAX_OPUS_PACKET  = 512;     // max bytes per opus frame
+constexpr int OPUS_BITRATE     = 40000;   // 40 kbps: +8k over the old 32k funds the
+                                          // in-band FEC (LBRR) copy so primary quality
+                                          // stays ~32k-equivalent under loss
+constexpr int OPUS_EXPECTED_LOSS_PCT = 15; // size LBRR for the 10% target with burst headroom
+constexpr int MAX_OPUS_PACKET  = 512;     // max bytes per opus frame (~100B at 40kbps/20ms)
 
 constexpr float DB_FLOOR = -60.0f;        // dB floor for display/VAD mapping
 

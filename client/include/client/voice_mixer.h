@@ -52,6 +52,18 @@ public:
     // Returns map of user_id -> level for all active streams.
     std::unordered_map<UserId, float> get_user_levels() const;
 
+    // Cumulative decode-path counters across all streams (observability + tests).
+    // normal = in-order decode; fec = a lost frame recovered from the next
+    // packet's in-band FEC; plc = a frame concealed (no data/no successor);
+    // resync = playout clock snapped forward over an unrecoverable gap.
+    struct DecodeStats {
+        uint64_t normal = 0;
+        uint64_t fec = 0;
+        uint64_t plc = 0;
+        uint64_t resync = 0;
+    };
+    DecodeStats decode_stats() const;
+
 private:
     struct JitterPacket {
         uint16_t seq;
@@ -89,14 +101,19 @@ private:
 
     mutable std::mutex mutex_;
     std::unordered_map<UserId, UserStream> streams_;
+    DecodeStats stats_;   // guarded by mutex_ (updated inside mix_output)
 
     // Temporary mix buffer (avoids allocation in audio callback)
     std::vector<float> mix_buf_;
     std::vector<float> user_buf_;
 
-    static constexpr int MAX_JITTER_PACKETS = 10;   // Max queued packets per user
-    static constexpr int JITTER_PRE_BUFFER  = 3;    // Buffer this many before starting playback
-    static constexpr int PLC_MAX_FRAMES     = 10;   // After this many PLC frames, go silent
+    static constexpr int MAX_JITTER_PACKETS = 10;   // Max queued packets per user (~200ms cap)
+    static constexpr int JITTER_PRE_BUFFER  = 4;    // ~80ms pre-buffer — deep enough that a lost
+                                                    // frame's successor is queued in time for FEC
+    static constexpr int PLC_MAX_FRAMES     = 10;   // After this many concealed frames, go silent
+    static constexpr int RESYNC_GAP         = 32;   // ~640ms: a forward gap this large isn't
+                                                    // recoverable loss (seq reset / pathological
+                                                    // burst) — snap the playout clock forward
 };
 
 } // namespace parties::client
