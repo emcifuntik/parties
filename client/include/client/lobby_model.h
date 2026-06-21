@@ -21,6 +21,7 @@ struct ChannelUser {
     bool deafened = false;
     bool speaking = false;
     bool streaming = false;
+    bool camera_streaming = false;
     int color_index = 0;  // 0-11, generated from name hash for avatar color
 };
 
@@ -120,6 +121,16 @@ public:
     rml::Prop<bool>        stream_fullscreen{false};    // double-click toggles fullscreen stream view
     rml::Prop<int>         stream_fps{0};               // current stream FPS (encode or decode)
 
+    // Webcam
+    rml::Prop<bool>        is_camera{false};            // am I streaming my camera?
+    rml::Prop<bool>        someone_camera{false};       // convenience: !camera_sharers.empty()
+    rml::Prop<Rml::Vector<ActiveSharer>> camera_sharers; // all active camera streamers in channel
+    rml::Prop<int>         viewing_camera_id{0};        // whose camera we're subscribed to (0 = none)
+    rml::Prop<bool>        camera_fullscreen{false};
+    rml::Prop<int>         camera_fps{0};
+    rml::Prop<Rml::Vector<AudioDevice>> camera_devices; // available cameras (name + index)
+    rml::Prop<int>         selected_camera_device{0};   // index into camera_devices
+
     // Share picker
     rml::Prop<bool>        show_share_picker{false};
     rml::Prop<bool>        use_native_picker{false};  // true on macOS (native picker, no target list)
@@ -205,6 +216,12 @@ public:
     std::function<void()>      on_stop_watching;
     std::function<void(float)> on_stream_volume_changed;
     std::function<void()>      on_stream_tap_fullscreen;  // iOS: single tap toggles fullscreen
+    // Webcam
+    std::function<void()>      on_toggle_camera;
+    std::function<void(int)>   on_watch_camera;
+    std::function<void(int)>   on_select_camera;
+    std::function<void()>      on_stop_watching_camera;
+    std::function<void(int)>   on_select_camera_device;
 
     // Auto-update
     std::function<void()>      on_apply_update;

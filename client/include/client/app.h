@@ -37,6 +37,7 @@ class VideoEncoder;
 class VideoDecoder;
 class VideoElement;
 class LevelMeterElement;
+class WebcamCapture;
 
 class App {
 public:
@@ -85,6 +86,16 @@ private:
     void decode_loop();
     void on_video_decoded(const encdec::DecodedFrame& frame);
     void encode_loop();
+
+    // Webcam
+    void start_camera_share();
+    void stop_camera_share();
+    void on_camera_captured(const uint8_t* bgra, uint32_t width, uint32_t height, uint32_t stride);
+    void on_camera_frame_received(uint32_t sender_id, const uint8_t* data, size_t len);
+    void start_camera_decode_thread();
+    void stop_camera_decode_thread();
+    void camera_decode_loop();
+    void on_camera_decoded(const encdec::DecodedFrame& frame);
 
     void update_voice_level();
 
@@ -193,6 +204,34 @@ private:
     uint32_t shared_width_ = 0, shared_height_ = 0;
     uint32_t shared_y_stride_ = 0, shared_uv_stride_ = 0;
     bool shared_nv12_ = false;
+
+    // Webcam pipeline
+    // Capture + encode (camera frames are encoded inline on the capture worker)
+    std::unique_ptr<WebcamCapture> cam_capture_;
+    std::unique_ptr<VideoEncoder>  cam_encoder_;
+    bool sharing_camera_ = false;
+    std::mutex cam_encode_mutex_;
+    Microsoft::WRL::ComPtr<ID3D11Device>        cam_device_;
+    Microsoft::WRL::ComPtr<ID3D11DeviceContext> cam_context_;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D>     cam_upload_tex_;  // BGRA upload target
+    uint32_t cam_tex_w_ = 0, cam_tex_h_ = 0;
+
+    // Camera decode thread (mirrors the screen-share decode thread)
+    std::unique_ptr<VideoDecoder> cam_decoder_;
+    std::thread cam_decode_thread_;
+    std::atomic<bool> cam_decode_running_{false};
+    std::mutex cam_decode_queue_mutex_;
+    std::condition_variable cam_decode_queue_cv_;
+    std::queue<DecodeWork> cam_decode_queue_;
+    bool cam_stream_revealed_ = false;
+
+    std::mutex cam_frame_mutex_;
+    std::atomic<bool> cam_new_frame_available_{false};
+    std::vector<uint8_t> cam_shared_y_, cam_shared_u_, cam_shared_v_;
+    std::vector<uint8_t> cam_staging_y_, cam_staging_u_, cam_staging_v_;
+    uint32_t cam_shared_width_ = 0, cam_shared_height_ = 0;
+    uint32_t cam_shared_y_stride_ = 0, cam_shared_uv_stride_ = 0;
+    bool cam_shared_nv12_ = false;
 
     // FPS counters (render + stream)
     uint32_t fps_frame_count_ = 0;

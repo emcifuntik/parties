@@ -37,8 +37,16 @@ struct Session {
     uint16_t         share_width = 0;
     uint16_t         share_height = 0;
 
+    // Webcam metadata
+    uint8_t          camera_codec = 0;
+    uint16_t         camera_width = 0;
+    uint16_t         camera_height = 0;
+
     // Subscribe state: whose video stream this viewer is watching (0 = none)
     UserId           subscribed_sharer = 0;
+
+    // Subscribe state: whose camera stream this viewer is watching (0 = none)
+    UserId           subscribed_camera = 0;
 
     // Connection state
     std::atomic<bool> alive{true};

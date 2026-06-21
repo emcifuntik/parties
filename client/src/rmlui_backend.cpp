@@ -107,6 +107,14 @@ static constexpr unsigned char embed_icon_trash[] = {
     #embed "../ui/icon-trash.svg"
 };
 
+static constexpr unsigned char embed_icon_camera[] = {
+    #embed "../ui/icon-camera.svg"
+};
+
+static constexpr unsigned char embed_icon_camera_on[] = {
+    #embed "../ui/icon-camera-on.svg"
+};
+
 static constexpr unsigned char embed_font_regular[] = {
     #embed "../ui/fonts/Inter-Regular.ttf"
 };
@@ -157,6 +165,8 @@ EmbeddedFileInterface::EmbeddedFileInterface() {
     entries_["ui/icon-pin-add.svg"] = { embed_icon_pin_add, sizeof(embed_icon_pin_add) };
     entries_["ui/icon-pin-remove.svg"] = { embed_icon_pin_remove, sizeof(embed_icon_pin_remove) };
     entries_["ui/icon-trash.svg"] = { embed_icon_trash, sizeof(embed_icon_trash) };
+    entries_["ui/icon-camera.svg"] = { embed_icon_camera, sizeof(embed_icon_camera) };
+    entries_["ui/icon-camera-on.svg"] = { embed_icon_camera_on, sizeof(embed_icon_camera_on) };
     entries_["ui/fonts/Inter-Regular.ttf"] = { embed_font_regular, sizeof(embed_font_regular) };
     entries_["ui/fonts/Inter-Medium.ttf"] = { embed_font_medium, sizeof(embed_font_medium) };
     entries_["ui/fonts/Inter-Bold.ttf"] = { embed_font_bold, sizeof(embed_font_bold) };
