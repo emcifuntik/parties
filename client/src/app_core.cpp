@@ -957,6 +957,10 @@ void AppCore::stop_watching()
     net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_VIEW,
                       reinterpret_cast<const uint8_t*>(&zero), 4);
     model_.viewing_sharer_id = 0;
+    // Leaving the stream view must also drop fullscreen, or the window stays
+    // borderless-fullscreen with nothing to show (the app.cpp tick syncs the OS
+    // window fullscreen to this flag).
+    model_.stream_fullscreen = false;
     if (bridge_.clear_video_element)
         bridge_.clear_video_element();
 }
@@ -979,6 +983,7 @@ void AppCore::clear_all_sharers()
     model_.sharers.notify();
     model_.someone_sharing = false;
     model_.viewing_sharer_id = 0;
+    model_.stream_fullscreen = false;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

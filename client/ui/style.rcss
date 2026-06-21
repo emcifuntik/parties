@@ -2333,6 +2333,12 @@ input.range.stream-volume-slider sliderbar:hover {
     margin-top: 2dp;
 }
 
+/* Selectable message text (custom element defaults to inline — force block). */
+selectable_text {
+    display: block;
+    cursor: text;
+}
+
 .msg-link {
     color: #7C9BFC;
     cursor: pointer;

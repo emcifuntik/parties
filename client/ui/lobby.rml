@@ -665,12 +665,12 @@
                         <span class="msg-sender">{{ msg.sender_name }}</span>
                         <span class="msg-you" data-if="msg.is_own">(you)</span>
                         <span class="msg-time">{{ msg.timestamp_str }}</span>
-                        <div class="msg-text" data-if="msg.has_url == false">{{ msg.text }}</div>
-                        <div class="msg-text" data-if="msg.has_url">
+                        <selectable_text class="msg-text" data-attr-msgid="msg.id" data-if="msg.has_url == false">{{ msg.text }}</selectable_text>
+                        <selectable_text class="msg-text" data-attr-msgid="msg.id" data-if="msg.has_url">
                             <span data-for="seg : msg.segments"
                                   data-class-msg-link="seg.is_url"
                                   data-event-click="open_url(seg.text)">{{ seg.text }}</span>
-                        </div>
+                        </selectable_text>
                         <div data-for="att : msg.attachments" class="att-card">
                             <svg class="att-icon" src="icon-file.svg" width="16" height="16" />
                             <span class="att-name">{{ att.file_name }}</span>

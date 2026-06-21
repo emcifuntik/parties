@@ -70,6 +70,10 @@ public:
     // Public accessor for WndProc
     UiManager* ui_manager() { return &ui_; }
 
+    // Chat text selection (drag-select + Ctrl+C copy). Called from WndProc with
+    // ui_mutex_ held. Returns true only when the event is fully consumed (Ctrl+C).
+    bool handle_chat_input(unsigned int msg, WPARAM wParam, LPARAM lParam);
+
 private:
     // ── Shared logic (platform-independent) ──────────────────────────────
     AppCore core_;
@@ -99,6 +103,10 @@ private:
 
     // ── Render thread + UI synchronization ───────────────────────────────
     std::recursive_mutex ui_mutex_;            // guards RmlUi context + data model
+
+    // Chat drag-select tracking (message thread, under ui_mutex_).
+    POINT chat_drag_start_{};
+    bool  chat_drag_moved_ = false;
     std::thread          render_thread_;
     std::atomic<bool>    render_running_{false};
     std::atomic<bool>    resize_pending_{false};

@@ -248,6 +248,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     // Context is owned by the render thread, so serialize input application.
     if (app && ui && ui->context()) {
         std::lock_guard<std::recursive_mutex> lock(app->ui_mutex());
+        // Chat drag-select + Ctrl+C copy. Updates selection state; only fully
+        // consumes Ctrl+C (returns true), letting RmlUi still see mouse events.
+        if (app->handle_chat_input(msg, wParam, lParam))
+            return 0;
         bool propagating = RmlWin32::WindowProcedure(
             ui->context(), ui->text_input_editor(), hwnd, msg, wParam, lParam);
         if (!propagating)

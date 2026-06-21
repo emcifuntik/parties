@@ -18,11 +18,14 @@
 #include <parties/log.h>
 
 #include <RmlUi/Core/Factory.h>
+#include <RmlUi/Core/Context.h>
+#include <RmlUi/Core/Element.h>
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <windowsx.h>
 
 #include <algorithm>
 #include <cstdlib>
@@ -94,6 +97,95 @@ static std::string combo_name(int key, int key2, int mods) {
 // App — Windows platform wrapper around AppCore
 // ═══════════════════════════════════════════════════════════════════════
 
+// Put UTF-8 text on the clipboard as CF_UNICODETEXT (CF_TEXT would mangle any
+// non-ASCII — emoji, accents — which chat messages routinely contain).
+static void set_clipboard_text(HWND hwnd, const std::string& utf8) {
+    if (utf8.empty() || !OpenClipboard(hwnd)) return;
+    EmptyClipboard();
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(),
+                                   static_cast<int>(utf8.size()), nullptr, 0);
+    if (wlen > 0) {
+        HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, (static_cast<size_t>(wlen) + 1) * sizeof(wchar_t));
+        if (hMem) {
+            auto* dst = static_cast<wchar_t*>(GlobalLock(hMem));
+            MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(),
+                                static_cast<int>(utf8.size()), dst, wlen);
+            dst[wlen] = L'\0';
+            GlobalUnlock(hMem);
+            SetClipboardData(CF_UNICODETEXT, hMem);
+        }
+    }
+    CloseClipboard();
+}
+
+// Walk up to the enclosing <selectable_text> element, if any.
+static SelectableTextElement* find_selectable(Rml::Element* el) {
+    while (el) {
+        if (el->GetTagName() == "selectable_text")
+            return rmlui_dynamic_cast<SelectableTextElement*>(el);
+        el = el->GetParentNode();
+    }
+    return nullptr;
+}
+
+bool App::handle_chat_input(unsigned int msg, WPARAM wParam, LPARAM lParam) {
+    auto* ctx = ui_.context();
+    if (!ctx) return false;
+    auto& sel = ChatSelection::instance();
+
+    switch (msg) {
+    case WM_LBUTTONDOWN: {
+        POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        Rml::Vector2f fp(static_cast<float>(pt.x), static_cast<float>(pt.y));
+        if (auto* se = find_selectable(ctx->GetElementAtPoint(fp))) {
+            ChatSelection::Point p;
+            se->HitTest(fp, p);
+            sel.begin(p);
+            chat_drag_start_ = pt;
+            chat_drag_moved_ = false;
+        } else {
+            sel.clear();  // click elsewhere drops the selection
+        }
+        return false;  // let RmlUi also handle (hover, links, context menu)
+    }
+    case WM_MOUSEMOVE: {
+        if (!(wParam & MK_LBUTTON) || !sel.dragging()) return false;
+        POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        if (std::abs(pt.x - chat_drag_start_.x) > 3 || std::abs(pt.y - chat_drag_start_.y) > 3)
+            chat_drag_moved_ = true;
+        Rml::Vector2f fp(static_cast<float>(pt.x), static_cast<float>(pt.y));
+        if (auto* se = find_selectable(ctx->GetElementAtPoint(fp))) {
+            ChatSelection::Point p;
+            se->HitTest(fp, p);
+            sel.extend(p);
+        }
+        return false;
+    }
+    case WM_LBUTTONUP: {
+        if (sel.dragging()) {
+            sel.end_drag();
+            if (!chat_drag_moved_) sel.clear();  // a plain click deselects
+        }
+        return false;
+    }
+    case WM_KEYDOWN: {
+        if (wParam == 'C' && (GetKeyState(VK_CONTROL) & 0x8000) && sel.has_selection()) {
+            // Don't steal Ctrl+C from a focused text field (e.g. the compose box).
+            Rml::Element* focus = ctx->GetFocusElement();
+            if (focus) {
+                const Rml::String& tag = focus->GetTagName();
+                if (tag == "input" || tag == "textarea") return false;
+            }
+            std::string text = sel.selected_text();
+            if (!text.empty()) set_clipboard_text(hwnd_, text);
+            return true;  // consumed
+        }
+        return false;
+    }
+    }
+    return false;
+}
+
 App::App() = default;
 App::~App() { shutdown(); }
 
@@ -104,17 +196,7 @@ bool App::init(HWND hwnd, int renderer_id) {
     PlatformBridge bridge;
 
     bridge.copy_to_clipboard = [this](const std::string& text) {
-        if (text.empty()) return;
-        if (!OpenClipboard(hwnd_)) return;
-        EmptyClipboard();
-        HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, text.size() + 1);
-        if (hMem) {
-            char* dst = static_cast<char*>(GlobalLock(hMem));
-            std::memcpy(dst, text.c_str(), text.size() + 1);
-            GlobalUnlock(hMem);
-            SetClipboardData(CF_TEXT, hMem);
-        }
-        CloseClipboard();
+        set_clipboard_text(hwnd_, text);
     };
 
     bridge.play_sound = [this](SoundPlayer::Effect e) {
@@ -156,13 +238,25 @@ bool App::init(HWND hwnd, int renderer_id) {
     };
 
     bridge.show_message_menu = [this](int64_t msg_id) {
-        constexpr int ID_PIN    = 1;
-        constexpr int ID_DELETE = 2;
+        constexpr int ID_COPY   = 1;
+        constexpr int ID_PIN    = 2;
+        constexpr int ID_DELETE = 3;
+
+        // Fetch the message text up front (the menu runs a nested modal loop).
+        std::string text;
+        for (const auto& m : core_.chat_model_.messages.get()) {
+            if (m.id == msg_id) { text = std::string(m.text); break; }
+        }
+
         std::vector<ContextMenu::Item> items;
+        if (!text.empty())
+            items.push_back({L"Copy Text", ID_COPY, false});
         items.push_back({L"Pin Message",    ID_PIN,    false});
         items.push_back({L"Delete Message", ID_DELETE, true});
         int cmd = ContextMenu::show(hwnd_, items);
-        if (cmd == ID_PIN) {
+        if (cmd == ID_COPY) {
+            set_clipboard_text(hwnd_, text);
+        } else if (cmd == ID_PIN) {
             if (core_.chat_model_.on_pin_message)
                 core_.chat_model_.on_pin_message(msg_id);
         } else if (cmd == ID_DELETE) {
@@ -214,6 +308,15 @@ bool App::init(HWND hwnd, int renderer_id) {
     // Init AppCore (wires audio, net callbacks, model callbacks)
     if (!core_.init("parties_client.db", std::move(bridge), ui_.context()))
         return false;
+
+    // Feed the chat text selection the ordered message list (id + raw text) so
+    // copy and cross-message ordering survive scrolling / element recycling.
+    ChatSelection::instance().get_messages = [this]() {
+        std::vector<std::pair<int64_t, std::string>> out;
+        for (const auto& m : core_.chat_model_.messages.get())
+            out.emplace_back(static_cast<int64_t>(m.id), std::string(m.text));
+        return out;
+    };
 
     // Wire video frame reception to local on_video_frame_received
     core_.on_video_frame_received = [this](uint32_t sender_id, const uint8_t* data, size_t len) {

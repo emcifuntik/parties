@@ -6,7 +6,7 @@
 [ ] Make support of sending and playing multiple VOIP streams (for plugins in future)
 [ ] Implement plugins SDK (as dynamic libraries). As initial functionality plugins should have a possibility to create custom page in "Plugins". Plugins page should also be implemented in Parties client UI. Example Karaoke plugin should provide possibility to select .WAV file to stream it as extra audio track to server and broadcast to channel members. 
 [ ] I don't like our UI management and user config store. I think we need to do UI refactor as well and improve it to be Enterprise grade
-[ ] Fix issues in macOS stream encoding. Streams from macOS with M2 CPU looks very bad and like a lowbitrate stream with actual 20mb/s bitrate.
-[ ] Overhaul Metal renderer and implement Slug font rasterizer there as well. Get rid of any font texture copying and implement font rendering using Slug in the best possible way
-[ ] Fix bug when stream ends and user was watching stream in fullscreen mode - Parties window still stays in fullscreen
-[ ] Selection and copy in chat
+[x] Fix issues in macOS stream encoding. Streams from macOS with M2 CPU looks very bad and like a lowbitrate stream with actual 20mb/s bitrate.
+[x] Overhaul Metal renderer and implement Slug font rasterizer there as well. Get rid of any font texture copying and implement font rendering using Slug in the best possible way
+[x] Fix bug when stream ends and user was watching stream in fullscreen mode - Parties window still stays in fullscreen (stop_watching/clear_all_sharers now reset model_.stream_fullscreen)
+[x] Selection and copy in chat (right-click message -> Copy Text, UTF-8/CF_UNICODETEXT clipboard; true drag-selection not supported by RmlUi text engine)
