@@ -8,7 +8,6 @@ uint32_t default_permissions(Role role) {
         case Role::Admin:     return DEFAULT_ADMIN_PERMS;
         case Role::Moderator: return DEFAULT_MODERATOR_PERMS;
         case Role::User:      return DEFAULT_USER_PERMS;
-        case Role::Bot:       return 0;
     }
     return 0;
 }

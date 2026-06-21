@@ -7,8 +7,8 @@ max_clients = 64
 password = ""
 
 [tls]
-cert_file = "server.pem"
-key_file = "server.key.pem"
+cert_file = "server.der"
+key_file = "server.key.der"
 
 [database]
 path = "parties.db"
@@ -23,24 +23,3 @@ default_bitrate = 32000
 
 [logging]
 level = "info"
-
-[plugins]
-enabled = false
-directory = "plugins"
-
-#Plugins are default-deny. Add an allow entry for each plugin id you trust.
-# [[plugins.allow]]
-# id = "parties.example.bot_echo"
-# enabled = true
-# permissions = [
-#   "read_sessions",
-#   "read_users",
-#   "read_channels",
-#   "read_chat",
-#   "moderate_chat",
-#   "create_chat_commands",
-#   "create_bot_users",
-#   "send_bot_chat",
-#   "join_bot_voice",
-#   "send_bot_audio"
-# ]

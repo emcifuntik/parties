@@ -145,7 +145,6 @@
                     <span class="role-badge" data-if="user.role == 0">OWNER</span>
                     <span class="role-badge role-admin" data-if="user.role == 1">ADMIN</span>
                     <span class="role-badge role-mod" data-if="user.role == 2">MOD</span>
-                    <span class="role-badge role-bot" data-if="user.role == 4">BOT</span>
                 </div>
             </div>
 

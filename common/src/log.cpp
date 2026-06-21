@@ -3,8 +3,6 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/sinks/rotating_file_sink.h>
 
-#include <string>
-
 #ifdef _WIN32
 #include <spdlog/sinks/msvc_sink.h>
 #elif defined(__APPLE__)

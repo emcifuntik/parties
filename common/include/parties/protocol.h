@@ -96,7 +96,6 @@ enum class ControlMessageType : uint16_t {
     CHAT_SEARCH_RESP      = 0x0506,  // [channel_id(4)][count(2)][messages...]
     CHAT_PINNED_RESP      = 0x0507,  // [channel_id(4)][count(2)][messages...]
     CHAT_CHANNEL_LIST     = 0x0508,  // [count(4)][channel_id(4), name(string), sort_order(4)]...
-    CHAT_COMMAND_LIST     = 0x0509,  // [count(2)][name(string), description(string), usage(string)]...
 
     // Admin text channels (client -> server)
     ADMIN_CREATE_TEXT_CHANNEL = 0x040A,  // [name(string)]

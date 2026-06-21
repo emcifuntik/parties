@@ -8,7 +8,6 @@
 #include <string>
 #include <cstdint>
 #include <memory>
-#include <optional>
 #include <vector>
 #include <mutex>
 #include <atomic>
@@ -55,18 +54,6 @@ struct SessionDisconnect {
     ChannelId channel_id;   // 0 if the session wasn't in a channel
 };
 
-struct SessionSnapshot {
-    uint32_t session_id = 0;
-    UserId user_id = 0;
-    ChannelId channel_id = 0;
-    int role = 3;
-    bool authenticated = false;
-    bool muted = false;
-    bool deafened = false;
-    bool alive = false;
-    std::string username;
-};
-
 class QuicServer {
 public:
     QuicServer();
@@ -100,15 +87,6 @@ public:
 
     // Get all sessions (snapshot)
     std::vector<std::shared_ptr<Session>> get_sessions();
-
-    // Snapshot mutable session fields while holding sessions_mutex_.
-    std::optional<SessionSnapshot> session_snapshot(uint32_t session_id);
-    std::vector<SessionSnapshot> session_snapshots();
-    std::optional<ChannelId> user_voice_channel(UserId user_id);
-    uint32_t voice_user_count(ChannelId channel_id);
-    std::vector<uint32_t> voice_targets(ChannelId channel_id,
-                                        uint32_t excluded_session_id = 0,
-                                        bool include_deafened = false);
 
     // Set the info reported to connectionless server queries (game-server-browser
     // style, served by the MsQuic unconnected-query patch). Call before start();

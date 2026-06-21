@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
-#include <mutex>
 
 namespace parties::server {
 
@@ -16,8 +15,6 @@ Database::~Database() {
 }
 
 bool Database::open(const std::string& path) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     if (sqlite3_open(path.c_str(), &db_) != SQLITE_OK) {
         LOG_ERROR("Failed to open {}: {}", path, sqlite3_errmsg(db_));
         return false;
@@ -29,7 +26,7 @@ bool Database::open(const std::string& path) {
 
     if (!create_schema()) {
         LOG_ERROR("Failed to create schema");
-        close_unlocked();
+        close();
         return false;
     }
 
@@ -38,11 +35,6 @@ bool Database::open(const std::string& path) {
 }
 
 void Database::close() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    close_unlocked();
-}
-
-void Database::close_unlocked() {
     if (db_) {
         sqlite3_close(db_);
         db_ = nullptr;
@@ -68,15 +60,8 @@ bool Database::create_schema() {
             fingerprint   TEXT NOT NULL,
             role          INTEGER NOT NULL DEFAULT 3,
             created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-            last_login    TEXT,
-            is_bot        INTEGER NOT NULL DEFAULT 0,
-            bot_owner_plugin TEXT,
-            bot_key       TEXT
+            last_login    TEXT
         );
-
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_users_bot_identity
-            ON users(bot_owner_plugin, bot_key)
-            WHERE is_bot = 1;
 
         CREATE TABLE IF NOT EXISTS channels (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -161,46 +146,13 @@ bool Database::create_schema() {
         END;
     )SQL";
 
-    if (!exec(schema))
-        return false;
-
-    auto column_exists = [&](const char* table, const char* column) {
-        sqlite3_stmt* stmt = nullptr;
-        std::string sql = std::string("PRAGMA table_info(") + table + ")";
-        if (sqlite3_prepare_v2(db_, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK)
-            return false;
-        bool found = false;
-        while (sqlite3_step(stmt) == SQLITE_ROW) {
-            auto* name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-            if (name && std::strcmp(name, column) == 0) {
-                found = true;
-                break;
-            }
-        }
-        sqlite3_finalize(stmt);
-        return found;
-    };
-
-    if (!column_exists("users", "is_bot") &&
-        !exec("ALTER TABLE users ADD COLUMN is_bot INTEGER NOT NULL DEFAULT 0;"))
-        return false;
-    if (!column_exists("users", "bot_owner_plugin") &&
-        !exec("ALTER TABLE users ADD COLUMN bot_owner_plugin TEXT;"))
-        return false;
-    if (!column_exists("users", "bot_key") &&
-        !exec("ALTER TABLE users ADD COLUMN bot_key TEXT;"))
-        return false;
-
-    return exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_bot_identity "
-                "ON users(bot_owner_plugin, bot_key) WHERE is_bot = 1;");
+    return exec(schema);
 }
 
 // --- Users ---
 
 bool Database::create_user(const PublicKey& pubkey, const std::string& display_name,
                            const std::string& fingerprint, Role role) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "INSERT INTO users (public_key, display_name, fingerprint, role) "
                       "VALUES (?, ?, ?, ?)";
@@ -212,31 +164,6 @@ bool Database::create_user(const PublicKey& pubkey, const std::string& display_n
     sqlite3_bind_text(stmt, 2, display_name.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 3, fingerprint.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int(stmt, 4, static_cast<int>(role));
-
-    bool ok = sqlite3_step(stmt) == SQLITE_DONE;
-    sqlite3_finalize(stmt);
-    return ok;
-}
-
-bool Database::create_bot_user(const PublicKey& pubkey, const std::string& display_name,
-                               const std::string& fingerprint, const std::string& owner_plugin,
-                               const std::string& bot_key, Role role) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
-    sqlite3_stmt* stmt = nullptr;
-    const char* sql = "INSERT INTO users "
-                      "(public_key, display_name, fingerprint, role, is_bot, bot_owner_plugin, bot_key) "
-                      "VALUES (?, ?, ?, ?, 1, ?, ?)";
-
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
-        return false;
-
-    sqlite3_bind_blob(stmt, 1, pubkey.data(), static_cast<int>(pubkey.size()), SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 2, display_name.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 3, fingerprint.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt, 4, static_cast<int>(role));
-    sqlite3_bind_text(stmt, 5, owner_plugin.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 6, bot_key.c_str(), -1, SQLITE_TRANSIENT);
 
     bool ok = sqlite3_step(stmt) == SQLITE_DONE;
     sqlite3_finalize(stmt);
@@ -258,22 +185,13 @@ static UserRow read_user_row(sqlite3_stmt* stmt) {
     row.created_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
     if (sqlite3_column_type(stmt, 6) != SQLITE_NULL)
         row.last_login = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
-    if (sqlite3_column_count(stmt) > 7)
-        row.is_bot = sqlite3_column_int(stmt, 7) != 0;
-    if (sqlite3_column_count(stmt) > 8 && sqlite3_column_type(stmt, 8) != SQLITE_NULL)
-        row.bot_owner_plugin = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 8));
-    if (sqlite3_column_count(stmt) > 9 && sqlite3_column_type(stmt, 9) != SQLITE_NULL)
-        row.bot_key = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 9));
 
     return row;
 }
 
 std::optional<UserRow> Database::get_user_by_pubkey(const PublicKey& pubkey) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
-    const char* sql = "SELECT id, public_key, display_name, fingerprint, role, created_at, last_login, "
-                      "is_bot, bot_owner_plugin, bot_key "
+    const char* sql = "SELECT id, public_key, display_name, fingerprint, role, created_at, last_login "
                       "FROM users WHERE public_key = ?";
 
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
@@ -292,11 +210,8 @@ std::optional<UserRow> Database::get_user_by_pubkey(const PublicKey& pubkey) {
 }
 
 std::optional<UserRow> Database::get_user_by_id(UserId id) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
-    const char* sql = "SELECT id, public_key, display_name, fingerprint, role, created_at, last_login, "
-                      "is_bot, bot_owner_plugin, bot_key "
+    const char* sql = "SELECT id, public_key, display_name, fingerprint, role, created_at, last_login "
                       "FROM users WHERE id = ?";
 
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
@@ -314,34 +229,7 @@ std::optional<UserRow> Database::get_user_by_id(UserId id) {
     return row;
 }
 
-std::optional<UserRow> Database::get_bot_user(const std::string& owner_plugin,
-                                              const std::string& bot_key) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
-    sqlite3_stmt* stmt = nullptr;
-    const char* sql = "SELECT id, public_key, display_name, fingerprint, role, created_at, last_login, "
-                      "is_bot, bot_owner_plugin, bot_key "
-                      "FROM users WHERE is_bot = 1 AND bot_owner_plugin = ? AND bot_key = ?";
-
-    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
-        return std::nullopt;
-
-    sqlite3_bind_text(stmt, 1, owner_plugin.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 2, bot_key.c_str(), -1, SQLITE_TRANSIENT);
-
-    if (sqlite3_step(stmt) != SQLITE_ROW) {
-        sqlite3_finalize(stmt);
-        return std::nullopt;
-    }
-
-    auto row = read_user_row(stmt);
-    sqlite3_finalize(stmt);
-    return row;
-}
-
 bool Database::update_last_login(UserId id) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "UPDATE users SET last_login = datetime('now') WHERE id = ?";
 
@@ -355,8 +243,6 @@ bool Database::update_last_login(UserId id) {
 }
 
 bool Database::update_display_name(UserId id, const std::string& display_name) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "UPDATE users SET display_name = ? WHERE id = ?";
 
@@ -371,8 +257,6 @@ bool Database::update_display_name(UserId id, const std::string& display_name) {
 }
 
 bool Database::set_user_role(UserId id, Role role) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "UPDATE users SET role = ? WHERE id = ?";
 
@@ -387,12 +271,9 @@ bool Database::set_user_role(UserId id, Role role) {
 }
 
 std::vector<UserRow> Database::get_all_users() {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     std::vector<UserRow> result;
     sqlite3_stmt* stmt = nullptr;
-    const char* sql = "SELECT id, public_key, display_name, fingerprint, role, created_at, last_login, "
-                      "is_bot, bot_owner_plugin, bot_key "
+    const char* sql = "SELECT id, public_key, display_name, fingerprint, role, created_at, last_login "
                       "FROM users ORDER BY id";
 
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
@@ -406,8 +287,6 @@ std::vector<UserRow> Database::get_all_users() {
 }
 
 bool Database::delete_user(UserId id) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "DELETE FROM users WHERE id = ?";
 
@@ -423,8 +302,6 @@ bool Database::delete_user(UserId id) {
 // --- Channels ---
 
 bool Database::create_channel(const std::string& name, int max_users, int sort_order) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "INSERT INTO channels (name, max_users, sort_order) VALUES (?, ?, ?)";
 
@@ -441,8 +318,6 @@ bool Database::create_channel(const std::string& name, int max_users, int sort_o
 }
 
 std::optional<ChannelRow> Database::get_channel(ChannelId id) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "SELECT id, name, max_users, sort_order FROM channels WHERE id = ?";
 
@@ -467,8 +342,6 @@ std::optional<ChannelRow> Database::get_channel(ChannelId id) {
 }
 
 std::vector<ChannelRow> Database::get_all_channels() {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     std::vector<ChannelRow> result;
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "SELECT id, name, max_users, sort_order FROM channels ORDER BY sort_order, id";
@@ -490,8 +363,6 @@ std::vector<ChannelRow> Database::get_all_channels() {
 }
 
 bool Database::delete_channel(ChannelId id) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "DELETE FROM channels WHERE id = ?";
 
@@ -505,8 +376,6 @@ bool Database::delete_channel(ChannelId id) {
 }
 
 bool Database::rename_channel(ChannelId id, const std::string& new_name) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "UPDATE channels SET name = ? WHERE id = ?";
 
@@ -523,8 +392,6 @@ bool Database::rename_channel(ChannelId id, const std::string& new_name) {
 // --- Channel permissions ---
 
 bool Database::set_channel_permission(ChannelId channel_id, Role role, uint32_t permissions) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "INSERT OR REPLACE INTO channel_permissions (channel_id, role, permission) "
                       "VALUES (?, ?, ?)";
@@ -542,8 +409,6 @@ bool Database::set_channel_permission(ChannelId channel_id, Role role, uint32_t 
 }
 
 std::optional<uint32_t> Database::get_channel_permission(ChannelId channel_id, Role role) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "SELECT permission FROM channel_permissions "
                       "WHERE channel_id = ? AND role = ?";
@@ -567,8 +432,6 @@ std::optional<uint32_t> Database::get_channel_permission(ChannelId channel_id, R
 // --- Server metadata ---
 
 bool Database::set_meta(const std::string& key, const std::string& value) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "INSERT OR REPLACE INTO server_meta (key, value) VALUES (?, ?)";
 
@@ -584,8 +447,6 @@ bool Database::set_meta(const std::string& key, const std::string& value) {
 }
 
 std::optional<std::string> Database::get_meta(const std::string& key) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "SELECT value FROM server_meta WHERE key = ?";
 
@@ -607,8 +468,6 @@ std::optional<std::string> Database::get_meta(const std::string& key) {
 // --- Text channels ---
 
 bool Database::create_text_channel(const std::string& name, int sort_order) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "INSERT INTO text_channels (name, sort_order) VALUES (?, ?)";
 
@@ -624,8 +483,6 @@ bool Database::create_text_channel(const std::string& name, int sort_order) {
 }
 
 std::optional<TextChannelRow> Database::get_text_channel(uint32_t id) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "SELECT id, name, sort_order FROM text_channels WHERE id = ?";
 
@@ -649,8 +506,6 @@ std::optional<TextChannelRow> Database::get_text_channel(uint32_t id) {
 }
 
 std::vector<TextChannelRow> Database::get_all_text_channels() {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     std::vector<TextChannelRow> result;
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "SELECT id, name, sort_order FROM text_channels ORDER BY sort_order, id";
@@ -671,8 +526,6 @@ std::vector<TextChannelRow> Database::get_all_text_channels() {
 }
 
 bool Database::delete_text_channel(uint32_t id) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "DELETE FROM text_channels WHERE id = ?";
 
@@ -690,8 +543,6 @@ bool Database::delete_text_channel(uint32_t id) {
 uint64_t Database::insert_message(uint32_t channel_id, uint32_t sender_id,
                                    const std::string& sender_name, const std::string& text,
                                    uint64_t timestamp) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "INSERT INTO messages (channel_id, sender_id, sender_name, text, created_at) "
                       "VALUES (?, ?, ?, ?, ?)";
@@ -728,8 +579,6 @@ static MessageRow read_message_row(sqlite3_stmt* stmt) {
 }
 
 std::vector<MessageRow> Database::get_messages(uint32_t channel_id, uint64_t before_id, int limit) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
     const char* sql;
 
@@ -766,8 +615,6 @@ std::vector<MessageRow> Database::get_messages(uint32_t channel_id, uint64_t bef
 }
 
 std::optional<MessageRow> Database::get_message(uint64_t message_id) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "SELECT id, channel_id, sender_id, sender_name, text, pinned, created_at "
                       "FROM messages WHERE id = ? AND deleted = 0";
@@ -788,8 +635,6 @@ std::optional<MessageRow> Database::get_message(uint64_t message_id) {
 }
 
 bool Database::soft_delete_message(uint64_t message_id) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "UPDATE messages SET deleted = 1 WHERE id = ?";
 
@@ -803,8 +648,6 @@ bool Database::soft_delete_message(uint64_t message_id) {
 }
 
 bool Database::pin_message(uint64_t message_id) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "UPDATE messages SET pinned = 1 WHERE id = ? AND deleted = 0";
 
@@ -818,8 +661,6 @@ bool Database::pin_message(uint64_t message_id) {
 }
 
 bool Database::unpin_message(uint64_t message_id) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "UPDATE messages SET pinned = 0 WHERE id = ?";
 
@@ -833,8 +674,6 @@ bool Database::unpin_message(uint64_t message_id) {
 }
 
 std::vector<MessageRow> Database::get_pinned_messages(uint32_t channel_id) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "SELECT id, channel_id, sender_id, sender_name, text, pinned, created_at "
                       "FROM messages WHERE channel_id = ? AND pinned = 1 AND deleted = 0 "
@@ -855,8 +694,6 @@ std::vector<MessageRow> Database::get_pinned_messages(uint32_t channel_id) {
 
 std::vector<MessageRow> Database::search_messages(uint32_t channel_id, const std::string& query,
                                                    uint64_t before_id, int limit) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
     const char* sql;
 
@@ -899,8 +736,6 @@ std::vector<MessageRow> Database::search_messages(uint32_t channel_id, const std
 uint64_t Database::insert_attachment(uint64_t message_id, const std::string& file_name,
                                       int64_t file_size, const std::string& mime_type,
                                       const std::string& disk_path) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "INSERT INTO file_attachments (message_id, file_name, file_size, mime_type, disk_path) "
                       "VALUES (?, ?, ?, ?, ?)";
@@ -925,8 +760,6 @@ uint64_t Database::insert_attachment(uint64_t message_id, const std::string& fil
 }
 
 bool Database::mark_attachment_uploaded(uint64_t attachment_id) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "UPDATE file_attachments SET uploaded = 1 WHERE id = ?";
 
@@ -940,8 +773,6 @@ bool Database::mark_attachment_uploaded(uint64_t attachment_id) {
 }
 
 std::optional<AttachmentRow> Database::get_attachment(uint64_t file_id) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "SELECT id, message_id, file_name, file_size, mime_type, disk_path, uploaded "
                       "FROM file_attachments WHERE id = ?";
@@ -970,8 +801,6 @@ std::optional<AttachmentRow> Database::get_attachment(uint64_t file_id) {
 }
 
 std::vector<AttachmentRow> Database::get_attachments_for_message(uint64_t message_id) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "SELECT id, message_id, file_name, file_size, mime_type, disk_path, uploaded "
                       "FROM file_attachments WHERE message_id = ? ORDER BY id";
@@ -1001,8 +830,6 @@ std::vector<AttachmentRow> Database::get_attachments_for_message(uint64_t messag
 // --- Retention ---
 
 int Database::purge_old_messages(int days) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "UPDATE messages SET deleted = 1 "
                       "WHERE deleted = 0 AND created_at < unixepoch() - ? * 86400";
@@ -1018,8 +845,6 @@ int Database::purge_old_messages(int days) {
 }
 
 int Database::purge_old_files(int days, const std::string& storage_path) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     // Get files to delete
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "SELECT id, disk_path FROM file_attachments "
@@ -1053,8 +878,6 @@ int Database::purge_old_files(int days, const std::string& storage_path) {
 }
 
 int64_t Database::get_total_file_size() {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "SELECT COALESCE(SUM(file_size), 0) FROM file_attachments WHERE uploaded = 1";
 
@@ -1070,8 +893,6 @@ int64_t Database::get_total_file_size() {
 }
 
 int Database::purge_oldest_files(int64_t max_size, const std::string& storage_path) {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     int64_t total = get_total_file_size();
     if (total <= max_size) return 0;
 
@@ -1108,8 +929,6 @@ int Database::purge_oldest_files(int64_t max_size, const std::string& storage_pa
 // --- Admin ---
 
 bool Database::has_any_users() {
-    std::lock_guard<std::mutex> lock(mutex_);
-
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "SELECT COUNT(*) FROM users";
 
