@@ -130,6 +130,10 @@ private:
     void handle_video_control(const DataPacket& pkt);
     void stop_screen_share(ChannelId channel_id, UserId user_id);
 
+    // Camera/webcam (parallel to screen sharing, independent stream)
+    void forward_camera_frame(uint32_t session_id, const uint8_t* data, size_t len);
+    void stop_camera_share(ChannelId channel_id, UserId user_id);
+
     Config config_;
     Database db_;
     QuicServer quic_;
@@ -141,6 +145,9 @@ private:
     // Screen share state: channel_id -> set of sharer user_ids
     std::mutex sharers_mutex_;
     std::unordered_map<ChannelId, std::set<UserId>> channel_screen_sharers_;
+
+    // Camera share state: channel_id -> set of camera-streaming user_ids
+    std::unordered_map<ChannelId, std::set<UserId>> channel_camera_sharers_;
 
     // Auth replay guard: recently-accepted (pubkey, timestamp) pairs. Drops an
     // AUTH_IDENTITY whose signed blob we've already seen inside the freshness

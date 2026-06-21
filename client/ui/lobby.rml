@@ -202,6 +202,11 @@
                         <svg class="voice-icon" src="icon-share.svg" width="18" height="18" data-if="is_sharing == false" />
                         <svg class="voice-icon" src="icon-sharing.svg" width="18" height="18" data-if="is_sharing" />
                     </div>
+                    <div class="voice-btn" data-class-active="is_camera"
+                         data-event-click="toggle_camera">
+                        <svg class="voice-icon" src="icon-camera.svg" width="18" height="18" data-if="is_camera == false" />
+                        <svg class="voice-icon" src="icon-camera-on.svg" width="18" height="18" data-if="is_camera" />
+                    </div>
                     <div class="voice-btn btn-disconnect"
                          data-event-click="leave_channel">
                         <svg class="voice-icon" src="icon-leave.svg" width="18" height="18" />
@@ -256,6 +261,22 @@
                          data-class-selected="dev.index == selected_playback"
                          data-event-click="select_playback(dev.index)">
                         {{ dev.name }}
+                    </div>
+                </div>
+            </div>
+
+            <!-- Camera device -->
+            <div class="settings-section">
+                <div class="settings-label">Camera</div>
+                <div class="device-list">
+                    <div data-for="dev : camera_devices"
+                         class="device-item"
+                         data-class-selected="dev.index == selected_camera_device"
+                         data-event-click="select_camera_device(dev.index)">
+                        {{ dev.name }}
+                    </div>
+                    <div class="device-item" data-if="camera_devices.size == 0">
+                        No cameras found
                     </div>
                 </div>
             </div>
@@ -577,6 +598,43 @@
                 <video_frame id="screen-share"
                              data-event-dblclick="toggle_stream_fullscreen"
                              data-event-click="stream_tap_fullscreen" />
+            </div>
+
+            <!-- Camera tiles (cameras streaming but not watching) -->
+            <div class="sharer-cards" data-if="someone_camera && viewing_camera_id == 0">
+                <div data-for="sharer : camera_sharers">
+                    <div class="sharer-card" data-event-click="watch_camera(sharer.id)">
+                        <div class="sharer-card-icon">
+                            <div class="sharer-card-screen"></div>
+                            <div class="sharer-card-stand"></div>
+                        </div>
+                        <span class="sharer-card-name">{{ sharer.name }}</span>
+                        <span class="sharer-card-action">Camera</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Active camera viewer (subscribed to a camera) -->
+            <div class="screen-share-area" data-if="viewing_camera_id > 0"
+                 data-class-fullscreen="camera_fullscreen">
+                <div class="screen-share-header">
+                    <div class="sharer-tabs">
+                        <div data-for="sharer : camera_sharers">
+                            <div class="sharer-tab"
+                                 data-class-active="sharer.id == viewing_camera_id"
+                                 data-event-click="select_camera(sharer.id)">
+                                {{ sharer.name }}
+                            </div>
+                        </div>
+                    </div>
+                    <div class="stream-fps">{{ camera_fps }} fps</div>
+                    <div class="sharer-close" data-event-click="stop_watching_camera">
+                        <div class="close-icon-a"></div>
+                        <div class="close-icon-b"></div>
+                    </div>
+                </div>
+                <video_frame id="camera-video"
+                             data-event-dblclick="toggle_camera_fullscreen" />
             </div>
 
         </div>

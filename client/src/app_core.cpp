@@ -95,6 +95,14 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
             if (sender_id == user_id_) return;
             if (on_video_frame_received)
                 on_video_frame_received(sender_id, data + 5, len - 5);
+        } else if (type == protocol::CAMERA_FRAME_PACKET_TYPE) {
+            // [type(1)][sender_id(4)][fn(4)][ts(4)][flags(1)][w(2)][h(2)][codec(1)][data(N)]
+            if (len < 19) return;
+            uint32_t sender_id;
+            std::memcpy(&sender_id, data + 1, 4);
+            if (sender_id == user_id_) return;
+            if (on_camera_frame_received)
+                on_camera_frame_received(sender_id, data + 5, len - 5);
         } else if (type == protocol::STREAM_AUDIO_PACKET_TYPE) {
             // [type(1)][sender_id(4)][opus(N)]
             if (len < 6) return;
@@ -106,6 +114,8 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
         } else if (type == protocol::VIDEO_CONTROL_TYPE) {
             if (len >= 2 && data[1] == protocol::VIDEO_CTL_PLI && bridge_.request_keyframe)
                 bridge_.request_keyframe();
+            else if (len >= 2 && data[1] == protocol::VIDEO_CTL_CAMERA_PLI && bridge_.request_camera_keyframe)
+                bridge_.request_camera_keyframe();
         }
     };
 
@@ -278,6 +288,11 @@ void AppCore::tick()
         int sfps = static_cast<int>(sc / elapsed);
         if (sfps != model_.stream_fps) {
             model_.stream_fps = sfps;
+        }
+        uint32_t cc = camera_frame_count_.exchange(0, std::memory_order_relaxed);
+        int cfps = static_cast<int>(cc / elapsed);
+        if (cfps != model_.camera_fps) {
+            model_.camera_fps = cfps;
         }
         stream_fps_last_update_ = now;
     }
@@ -690,6 +705,9 @@ void AppCore::on_disconnect_cleanup()
     viewing_sharer_ = 0;
     awaiting_keyframe_ = false;
     video_frame_number_ = 0;
+    viewing_camera_ = 0;
+    awaiting_camera_keyframe_ = false;
+    camera_frame_number_ = 0;
     awaiting_connection_ = false;
     awaiting_channel_join_ = false;
     pending_channel_id_ = 0;
@@ -702,6 +720,7 @@ void AppCore::on_disconnect_cleanup()
     audio_.stop();
     mixer_.clear();
     clear_all_sharers();
+    clear_all_camera_sharers();
     voice_last_active_.clear();
 
     model_.is_connected = false;
@@ -892,11 +911,17 @@ void AppCore::leave_channel()
     }
     if (model_.is_sharing && bridge_.stop_screen_share)
         bridge_.stop_screen_share();
+    if (model_.is_camera && bridge_.stop_camera_share)
+        bridge_.stop_camera_share();
 
     if (viewing_sharer_ != 0)
         stop_watching();
+    if (viewing_camera_ != 0)
+        stop_watching_camera();
     clear_all_sharers();
+    clear_all_camera_sharers();
     model_.is_sharing = false;
+    model_.is_camera = false;
 
     net_.send_message(protocol::ControlMessageType::CHANNEL_LEAVE, nullptr, 0);
 
@@ -982,6 +1007,63 @@ void AppCore::clear_all_sharers()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Camera share helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+void AppCore::watch_camera(UserId id)
+{
+    // Stop watching the current camera first (cleans up decode thread,
+    // server subscription, and camera video element)
+    if (viewing_camera_ != 0 && viewing_camera_ != id)
+        stop_watching_camera();
+
+    viewing_camera_ = id;
+    awaiting_camera_keyframe_ = true;
+    // Start decode thread FIRST so it's ready to receive the keyframe.
+    if (bridge_.start_camera_decode_thread)
+        bridge_.start_camera_decode_thread();
+    uint32_t id32 = id;
+    net_.send_message(protocol::ControlMessageType::CAMERA_SHARE_VIEW,
+                      reinterpret_cast<const uint8_t*>(&id32), 4);
+    send_camera_pli(id);
+    model_.viewing_camera_id = static_cast<int>(id);
+}
+
+void AppCore::stop_watching_camera()
+{
+    if (bridge_.stop_camera_decode_thread)
+        bridge_.stop_camera_decode_thread();
+    viewing_camera_ = 0;
+    awaiting_camera_keyframe_ = false;
+    uint32_t zero = 0;
+    net_.send_message(protocol::ControlMessageType::CAMERA_SHARE_VIEW,
+                      reinterpret_cast<const uint8_t*>(&zero), 4);
+    model_.viewing_camera_id = 0;
+    if (bridge_.clear_camera_element)
+        bridge_.clear_camera_element();
+}
+
+void AppCore::send_camera_pli(UserId target)
+{
+    std::vector<uint8_t> pkt(6);
+    pkt[0] = protocol::VIDEO_CONTROL_TYPE;
+    pkt[1] = protocol::VIDEO_CTL_CAMERA_PLI;
+    std::memcpy(pkt.data() + 2, &target, 4);
+    net_.send_video(pkt.data(), pkt.size(), true);
+}
+
+void AppCore::clear_all_camera_sharers()
+{
+    viewing_camera_ = 0;
+    awaiting_camera_keyframe_ = false;
+    active_camera_sharers_.clear();
+    model_.camera_sharers.silent().clear();
+    model_.camera_sharers.notify();
+    model_.someone_camera = false;
+    model_.viewing_camera_id = 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Voice state
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1030,6 +1112,12 @@ void AppCore::handle_server_message(protocol::ControlMessageType type,
         on_screen_share_stopped(data, len); break;
     case protocol::ControlMessageType::SCREEN_SHARE_DENIED:
         on_screen_share_denied(data, len); break;
+    case protocol::ControlMessageType::CAMERA_SHARE_STARTED:
+        on_camera_share_started(data, len); break;
+    case protocol::ControlMessageType::CAMERA_SHARE_STOPPED:
+        on_camera_share_stopped(data, len); break;
+    case protocol::ControlMessageType::CAMERA_SHARE_DENIED:
+        on_camera_share_denied(data, len); break;
     case protocol::ControlMessageType::ADMIN_RESULT:
         on_admin_result(data, len); break;
     case protocol::ControlMessageType::SERVER_ERROR:
@@ -1426,6 +1514,71 @@ void AppCore::on_screen_share_denied(const uint8_t* /*data*/, size_t /*len*/)
     LOG_WARN("Screen share denied by server");
 }
 
+void AppCore::on_camera_share_started(const uint8_t* data, size_t len)
+{
+    BinaryReader reader(data, len);
+    uint32_t sharer_id = reader.read_u32();
+    if (reader.error()) return;
+
+    auto& channels = model_.channels.silent();
+    std::string sharer_name = "Unknown";
+    for (auto& ch : channels)
+        if (ch.id == static_cast<int>(current_channel_))
+            for (auto& u : ch.users)
+                if (u.id == static_cast<int>(sharer_id)) { sharer_name = u.name.c_str(); break; }
+
+    ActiveSharer s;
+    s.id   = static_cast<int>(sharer_id);
+    s.name = Rml::String(sharer_name);
+
+    auto& sharers = model_.camera_sharers.silent();
+    auto it = std::remove_if(sharers.begin(), sharers.end(),
+        [sharer_id](const ActiveSharer& a) { return a.id == static_cast<int>(sharer_id); });
+    sharers.erase(it, sharers.end());
+    sharers.push_back(s);
+    model_.someone_camera = !sharers.empty();
+
+    // Mark user as camera-streaming in channel user list
+    for (auto& ch : channels)
+        for (auto& u : ch.users)
+            if (u.id == static_cast<int>(sharer_id)) u.camera_streaming = true;
+
+    model_.camera_sharers.notify();
+    model_.channels.notify();
+}
+
+void AppCore::on_camera_share_stopped(const uint8_t* data, size_t len)
+{
+    if (len < 4) return;
+    uint32_t sharer_id;
+    std::memcpy(&sharer_id, data, 4);
+
+    auto& sharers = model_.camera_sharers.silent();
+    auto it = std::remove_if(sharers.begin(), sharers.end(),
+        [sharer_id](const ActiveSharer& a) { return a.id == static_cast<int>(sharer_id); });
+    sharers.erase(it, sharers.end());
+    model_.someone_camera = !sharers.empty();
+
+    // Clear camera-streaming flag on user
+    auto& channels = model_.channels.silent();
+    for (auto& ch : channels)
+        for (auto& u : ch.users)
+            if (u.id == static_cast<int>(sharer_id)) u.camera_streaming = false;
+
+    model_.camera_sharers.notify();
+    model_.channels.notify();
+
+    if (viewing_camera_ == sharer_id)
+        stop_watching_camera();
+}
+
+void AppCore::on_camera_share_denied(const uint8_t* /*data*/, size_t /*len*/)
+{
+    model_.is_camera = false;
+    if (bridge_.stop_camera_share) bridge_.stop_camera_share();
+    LOG_WARN("Camera share denied by server");
+}
+
 void AppCore::on_admin_result(const uint8_t* data, size_t len)
 {
     BinaryReader reader(data, len);
@@ -1656,6 +1809,17 @@ void AppCore::setup_model_callbacks()
     model_.on_watch_sharer  = [this](int id) { watch_sharer(static_cast<UserId>(id)); };
     model_.on_select_sharer = [this](int id) { watch_sharer(static_cast<UserId>(id)); };
     model_.on_stop_watching = [this]()       { stop_watching(); };
+
+    model_.on_toggle_camera = [this]() {
+        if (model_.is_camera) {
+            if (bridge_.stop_camera_share) bridge_.stop_camera_share();
+        } else {
+            if (bridge_.start_camera_share) bridge_.start_camera_share();
+        }
+    };
+    model_.on_watch_camera       = [this](int id) { watch_camera(static_cast<UserId>(id)); };
+    model_.on_select_camera      = [this](int id) { watch_camera(static_cast<UserId>(id)); };
+    model_.on_stop_watching_camera = [this]()     { stop_watching_camera(); };
 
     model_.on_stream_volume_changed = [this](float v) {
         stream_audio_player_.set_volume(v);

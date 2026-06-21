@@ -105,6 +105,8 @@ bool Server::start(const Config& cfg) {
                                   const uint8_t* data, size_t len) {
         if (packet_type == protocol::VIDEO_FRAME_PACKET_TYPE) {
             forward_video_frame(session_id, data, len);
+        } else if (packet_type == protocol::CAMERA_FRAME_PACKET_TYPE) {
+            forward_camera_frame(session_id, data, len);
         } else {
             // Non-video packets (control, stream audio) still go through the queue
             DataPacket pkt;
@@ -1344,6 +1346,7 @@ void Server::handle_message(const IncomingMessage& msg) {
         ChannelId old_channel = session->channel_id;
         if (old_channel != 0 && old_channel != channel_id) {
             stop_screen_share(old_channel, session->user_id);
+            stop_camera_share(old_channel, session->user_id);
             session->channel_id = 0;
             BinaryWriter leave_writer;
             leave_writer.write_u32(session->user_id);
@@ -1417,6 +1420,30 @@ void Server::handle_message(const IncomingMessage& msg) {
             }
         }
 
+        // Notify new joiner about all active camera streamers in this channel
+        {
+            std::lock_guard<std::mutex> lock(sharers_mutex_);
+            auto cam_it = channel_camera_sharers_.find(channel_id);
+            if (cam_it != channel_camera_sharers_.end()) {
+                auto all2 = quic_.get_sessions();
+                for (UserId sharer_id : cam_it->second) {
+                    for (auto& s : all2) {
+                        if (s->user_id == sharer_id && s->authenticated) {
+                            BinaryWriter cam_writer;
+                            cam_writer.write_u32(s->user_id);
+                            cam_writer.write_u8(s->camera_codec);
+                            cam_writer.write_u16(s->camera_width);
+                            cam_writer.write_u16(s->camera_height);
+                            quic_.send_to(msg.session_id,
+                                         protocol::ControlMessageType::CAMERA_SHARE_STARTED,
+                                         cam_writer.data().data(), cam_writer.data().size());
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
         // Notify others in the channel
         {
             BinaryWriter join_writer;
@@ -1470,7 +1497,9 @@ void Server::handle_message(const IncomingMessage& msg) {
 
         ChannelId old_channel = session->channel_id;
         stop_screen_share(old_channel, session->user_id);
+        stop_camera_share(old_channel, session->user_id);
         session->subscribed_sharer = 0;
+        session->subscribed_camera = 0;
         session->channel_id = 0;
 
         BinaryWriter writer;
@@ -1835,6 +1864,122 @@ void Server::handle_message(const IncomingMessage& msg) {
                         std::vector<uint8_t> pli;
                         pli.push_back(protocol::VIDEO_CONTROL_TYPE);
                         pli.push_back(protocol::VIDEO_CTL_PLI);
+                        uint32_t requester_id = session->user_id;
+                        pli.insert(pli.end(), reinterpret_cast<uint8_t*>(&requester_id),
+                                   reinterpret_cast<uint8_t*>(&requester_id) + 4);
+                        quic_.send_datagram(s->id, pli.data(), pli.size());
+                        break;
+                    }
+                }
+            }
+        }
+        break;
+    }
+
+    // ── Camera share start ───────────────────────────────────────────────
+    case protocol::ControlMessageType::CAMERA_SHARE_START: {
+        if (!session->authenticated || session->channel_id == 0) break;
+
+        BinaryReader reader(msg.payload.data(), msg.payload.size());
+        uint8_t codec_id = reader.read_u8();
+        uint16_t width = reader.read_u16();
+        uint16_t height = reader.read_u16();
+        if (reader.error()) break;
+
+        ChannelId ch = session->channel_id;
+
+        // Allow multiple camera streamers per channel
+        {
+            std::lock_guard<std::mutex> lock(sharers_mutex_);
+            channel_camera_sharers_[ch].insert(session->user_id);
+        }
+        session->camera_codec = codec_id;
+        session->camera_width = width;
+        session->camera_height = height;
+
+        // Notify all in channel (including sender for confirmation)
+        BinaryWriter writer;
+        writer.write_u32(session->user_id);
+        writer.write_u8(codec_id);
+        writer.write_u16(width);
+        writer.write_u16(height);
+
+        auto all = quic_.get_sessions();
+        for (auto& s : all) {
+            if (s->authenticated && s->channel_id == ch) {
+                quic_.send_to(s->id, protocol::ControlMessageType::CAMERA_SHARE_STARTED,
+                               writer.data().data(), writer.data().size());
+            }
+        }
+
+        LOG_INFO("User '{}' started camera in channel {} ({}x{})", session->username, ch, width, height);
+        break;
+    }
+
+    // ── Camera share update ──
+    case protocol::ControlMessageType::CAMERA_SHARE_UPDATE: {
+        if (!session->authenticated || session->channel_id == 0) break;
+
+        // Only accept from active camera streamers
+        {
+            std::lock_guard<std::mutex> lock(sharers_mutex_);
+            auto it = channel_camera_sharers_.find(session->channel_id);
+            if (it == channel_camera_sharers_.end() ||
+                it->second.count(session->user_id) == 0)
+                break;
+        }
+
+        BinaryReader reader(msg.payload.data(), msg.payload.size());
+        uint8_t codec_id = reader.read_u8();
+        uint16_t width = reader.read_u16();
+        uint16_t height = reader.read_u16();
+        if (reader.error()) break;
+
+        session->camera_codec = codec_id;
+        session->camera_width = width;
+        session->camera_height = height;
+
+        LOG_INFO("User '{}' camera encoder ready: codec={} {}x{}", session->username, codec_id, width, height);
+        break;
+    }
+
+    // ── Camera share stop ────────────────────────────────────────────────
+    case protocol::ControlMessageType::CAMERA_SHARE_STOP: {
+        if (!session->authenticated || session->channel_id == 0) break;
+        stop_camera_share(session->channel_id, session->user_id);
+        break;
+    }
+
+    // ── Camera share view (subscribe/unsubscribe) ────────────────────────
+    case protocol::ControlMessageType::CAMERA_SHARE_VIEW: {
+        if (!session->authenticated || session->channel_id == 0) break;
+
+        BinaryReader reader(msg.payload.data(), msg.payload.size());
+        uint32_t target_id = reader.read_u32();
+        if (reader.error()) break;
+
+        if (target_id == 0) {
+            session->subscribed_camera = 0;
+        } else {
+            // Verify target is actually streaming a camera in this channel
+            bool is_sharer = false;
+            {
+                std::lock_guard<std::mutex> lock(sharers_mutex_);
+                auto it = channel_camera_sharers_.find(session->channel_id);
+                is_sharer = (it != channel_camera_sharers_.end() &&
+                             it->second.count(target_id));
+            }
+            if (is_sharer) {
+                session->subscribed_camera = target_id;
+
+                // Auto-PLI: tell the streamer to send a camera keyframe so the
+                // new viewer can decode from the Sequence Header
+                auto all = quic_.get_sessions();
+                for (auto& s : all) {
+                    if (s->user_id == target_id && s->authenticated) {
+                        std::vector<uint8_t> pli;
+                        pli.push_back(protocol::VIDEO_CONTROL_TYPE);
+                        pli.push_back(protocol::VIDEO_CTL_CAMERA_PLI);
                         uint32_t requester_id = session->user_id;
                         pli.insert(pli.end(), reinterpret_cast<uint8_t*>(&requester_id),
                                    reinterpret_cast<uint8_t*>(&requester_id) + 4);
@@ -2368,8 +2513,9 @@ void Server::process_disconnect(uint32_t session_id, UserId user_id, ChannelId c
     if (channel_id == 0)
         return;
 
-    // Clean up screen share if this user was sharing.
+    // Clean up screen share / camera if this user was sharing.
     stop_screen_share(channel_id, user_id);
+    stop_camera_share(channel_id, user_id);
 
     BinaryWriter writer;
     writer.write_u32(user_id);
@@ -2420,6 +2566,42 @@ void Server::forward_video_frame(uint32_t session_id, const uint8_t* data, size_
     delete[] fwd;
 }
 
+void Server::forward_camera_frame(uint32_t session_id, const uint8_t* data, size_t len) {
+	ZoneScopedN("Server::forward_camera_frame");
+    auto session = quic_.get_session(session_id);
+    if (!session || !session->authenticated || session->channel_id == 0)
+        return;
+
+    // Verify this user is an active camera streamer in the channel
+    {
+        std::lock_guard<std::mutex> lock(sharers_mutex_);
+        auto it = channel_camera_sharers_.find(session->channel_id);
+        if (it == channel_camera_sharers_.end() ||
+            it->second.count(session->user_id) == 0)
+            return;
+    }
+
+    // Reconstruct forwarded packet: [type(1)][sender_id(4)][data]
+    size_t fwd_len = 1 + 4 + len;
+    auto* fwd = new uint8_t[fwd_len];
+    fwd[0] = protocol::CAMERA_FRAME_PACKET_TYPE;
+    uint32_t uid = session->user_id;
+    std::memcpy(fwd + 1, &uid, 4);
+    std::memcpy(fwd + 5, data, len);
+
+    // Forward to viewers subscribed to this streamer's camera via video stream
+    auto all_sessions = quic_.get_sessions();
+    for (auto& s : all_sessions) {
+        if (s->id != session_id &&
+            s->authenticated &&
+            s->channel_id == session->channel_id &&
+            s->subscribed_camera == session->user_id) {
+            quic_.send_video_to(s->id, fwd, fwd_len);
+        }
+    }
+    delete[] fwd;
+}
+
 void Server::handle_video_control(const DataPacket& pkt) {
 	ZoneScopedN("Server::handle_video_control");
     auto session = quic_.get_session(pkt.session_id);
@@ -2451,6 +2633,35 @@ void Server::handle_video_control(const DataPacket& pkt) {
                 std::vector<uint8_t> fwd;
                 fwd.push_back(protocol::VIDEO_CONTROL_TYPE);
                 fwd.push_back(protocol::VIDEO_CTL_PLI);
+                uint32_t requester_id = session->user_id;
+                fwd.insert(fwd.end(), reinterpret_cast<uint8_t*>(&requester_id),
+                           reinterpret_cast<uint8_t*>(&requester_id) + 4);
+                quic_.send_datagram(s->id, fwd.data(), fwd.size());
+                break;
+            }
+        }
+    } else if (subtype == protocol::VIDEO_CTL_CAMERA_PLI) {
+        // Client sends: [subtype(1)][target_user_id(4)]
+        if (pkt.data.size() < 5) return;
+        uint32_t target_id;
+        std::memcpy(&target_id, pkt.data.data() + 1, 4);
+
+        // Verify target is an active camera streamer in this channel
+        {
+            std::lock_guard<std::mutex> lock(sharers_mutex_);
+            auto it = channel_camera_sharers_.find(session->channel_id);
+            if (it == channel_camera_sharers_.end() ||
+                it->second.count(target_id) == 0)
+                return;
+        }
+
+        // Forward camera PLI to the target streamer's session
+        auto all = quic_.get_sessions();
+        for (auto& s : all) {
+            if (s->user_id == target_id && s->authenticated) {
+                std::vector<uint8_t> fwd;
+                fwd.push_back(protocol::VIDEO_CONTROL_TYPE);
+                fwd.push_back(protocol::VIDEO_CTL_CAMERA_PLI);
                 uint32_t requester_id = session->user_id;
                 fwd.insert(fwd.end(), reinterpret_cast<uint8_t*>(&requester_id),
                            reinterpret_cast<uint8_t*>(&requester_id) + 4);
@@ -2526,6 +2737,37 @@ void Server::stop_screen_share(ChannelId channel_id, UserId user_id) {
     }
 
     LOG_INFO("User {} stopped screen sharing in channel {}", user_id, channel_id);
+}
+
+void Server::stop_camera_share(ChannelId channel_id, UserId user_id) {
+    {
+        std::lock_guard<std::mutex> lock(sharers_mutex_);
+        auto it = channel_camera_sharers_.find(channel_id);
+        if (it == channel_camera_sharers_.end()) return;
+        if (it->second.erase(user_id) == 0) return; // wasn't streaming
+        if (it->second.empty())
+            channel_camera_sharers_.erase(it);
+    }
+
+    // Clear subscriptions pointing to this camera streamer
+    auto all = quic_.get_sessions();
+    for (auto& s : all) {
+        if (s->subscribed_camera == user_id)
+            s->subscribed_camera = 0;
+    }
+
+    // Notify all in channel
+    BinaryWriter writer;
+    writer.write_u32(user_id);
+
+    for (auto& s : all) {
+        if (s->authenticated && s->channel_id == channel_id) {
+            quic_.send_to(s->id, protocol::ControlMessageType::CAMERA_SHARE_STOPPED,
+                           writer.data().data(), writer.data().size());
+        }
+    }
+
+    LOG_INFO("User {} stopped camera in channel {}", user_id, channel_id);
 }
 
 } // namespace parties::server
