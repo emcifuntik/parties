@@ -74,6 +74,10 @@ bool Database::create_schema() {
             bot_key       TEXT
         );
 
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_users_bot_identity
+            ON users(bot_owner_plugin, bot_key)
+            WHERE is_bot = 1;
+
         CREATE TABLE IF NOT EXISTS channels (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
             name       TEXT NOT NULL UNIQUE,
