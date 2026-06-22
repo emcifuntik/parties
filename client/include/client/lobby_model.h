@@ -46,6 +46,16 @@ struct ShareTarget {
 struct ActiveSharer {
     int id = 0;
     Rml::String name;
+    bool watching = false;   // true if this viewer is currently watching this sharer
+};
+
+// One screen share currently shown in the viewer grid. element_id is the stable
+// RmlUi id of its <video_frame> cell ("screen-share-<id>") so the platform layer
+// can route decoded frames to the right surface.
+struct WatchedStream {
+    int id = 0;
+    Rml::String name;
+    Rml::String element_id;
 };
 
 class LobbyModel : public rml::Model {
@@ -81,6 +91,12 @@ public:
     rml::Prop<float>       vad_threshold{0.10f};
     rml::Prop<float>       voice_level{0.0f};
 
+    // Master output volume for the two received audio streams (0.0 - 2.0).
+    // voice_volume = primary mic-voice mix; secondary_volume = aux stream
+    // (karaoke / join sounds / plugin audio).
+    rml::Prop<float>       voice_volume{1.0f};
+    rml::Prop<float>       secondary_volume{1.0f};
+
     // Notification sounds
     rml::Prop<float>       notification_volume{1.0f};   // 0.0 - 2.0
 
@@ -115,7 +131,9 @@ public:
     rml::Prop<bool>        is_sharing{false};
     rml::Prop<bool>        someone_sharing{false};      // convenience: !sharers.empty()
     rml::Prop<Rml::Vector<ActiveSharer>> sharers;       // all active sharers in channel
-    rml::Prop<int>         viewing_sharer_id{0};        // who we're subscribed to (0 = none)
+    rml::Prop<Rml::Vector<WatchedStream>> watched;      // sharers shown in the viewer grid
+    rml::Prop<int>         watching_count{0};           // size of watched (grid visible when > 0)
+    rml::Prop<int>         viewing_sharer_id{0};        // primary/last watched sharer (0 = none)
     rml::Prop<float>       stream_volume{1.0f};         // stream audio volume (0.0 - 2.0)
     rml::Prop<bool>        stream_fullscreen{false};    // double-click toggles fullscreen stream view
     rml::Prop<int>         stream_fps{0};               // current stream FPS (encode or decode)
@@ -188,6 +206,8 @@ public:
     std::function<void(bool)>  on_aec_changed;
     std::function<void(bool)>  on_vad_changed;
     std::function<void(float)> on_vad_threshold_changed;
+    std::function<void(float)> on_voice_volume_changed;
+    std::function<void(float)> on_secondary_volume_changed;
     std::function<void(float)> on_notification_volume_changed;
     std::function<void()>      on_test_notification_sound;
     std::function<void()>      on_toggle_ptt;
@@ -200,9 +220,10 @@ public:
     std::function<void()>      on_cancel_share;
     std::function<void()>      on_start_native_share;  // macOS: trigger native picker
     std::function<void(float)> on_share_bitrate_changed;
-    std::function<void(int)>   on_watch_sharer;
+    std::function<void(int)>   on_watch_sharer;     // sharer card / chip: add (or single-select) watch
     std::function<void(int)>   on_select_sharer;
-    std::function<void()>      on_stop_watching;
+    std::function<void(int)>   on_toggle_watch;     // chip toggle: add/remove this sharer from the grid
+    std::function<void()>      on_stop_watching;    // close all watched streams
     std::function<void(float)> on_stream_volume_changed;
     std::function<void()>      on_stream_tap_fullscreen;  // iOS: single tap toggles fullscreen
 

@@ -20,6 +20,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace Rml { class Context; }
@@ -38,8 +39,12 @@ struct PlatformBridge {
     std::function<void()>                                      stop_screen_share;
     std::function<void()>                                      request_keyframe;
     std::function<void()>                                      clear_video_element;
-    std::function<void()>                                      start_decode_thread;
-    std::function<void()>                                      stop_decode_thread;
+    // Per-sharer video decode (set only on platforms with a multi-stream decode
+    // pipeline — i.e. Windows). When start_video_stream is set, the core treats
+    // watching as ADDITIVE (multiple grid streams); when unset (macOS/iOS, single
+    // hardware decoder) watching is single-select.
+    std::function<void(UserId)>                                start_video_stream;
+    std::function<void(UserId)>                                stop_video_stream;
 };
 
 class AppCore {
@@ -59,6 +64,7 @@ public:
     NetClient         net_;
     AudioEngine       audio_;
     VoiceMixer        mixer_;
+    VoiceMixer        aux_mixer_{false};   // secondary stream: no voice makeup/normalization
     Settings          settings_;
     LobbyModel        model_;
     ChatModel         chat_model_;
@@ -83,6 +89,7 @@ public:
     bool        awaiting_channel_join_ = false;
     ChannelId   pending_channel_id_    = 0;
     uint16_t    voice_seq_             = 0;
+    uint16_t    voice2_seq_            = 0;   // secondary (VOICE2) stream sequence
     // Read on the MsQuic worker thread (video receive) and written on the main
     // thread (watch/stop) — must be atomic.
     std::atomic<UserId> viewing_sharer_{0};
@@ -116,8 +123,16 @@ public:
     std::chrono::steady_clock::time_point auth_success_time_{};  // last successful auth
 
     // Actions
-    void watch_sharer(UserId id);
-    void stop_watching();
+    void watch_sharer(UserId id);   // single-select (replace) — used by chips/cards + single-decoder platforms
+    void stop_watching();           // stop watching ALL streams
+    void add_watch(UserId id);      // start watching one more stream (additive when supported)
+    void remove_watch(UserId id);   // stop watching one stream
+    void toggle_watch(UserId id);   // add if not watched, else remove
+    bool is_watching(UserId id) const;
+    // Force the watched set to exactly {id} (or empty if 0) and refresh the grid
+    // model. For platforms whose watch flow lives in platform code (macOS/iOS,
+    // single hardware decoder) rather than going through add_watch/remove_watch.
+    void set_single_watched(UserId id);
     void send_voice_state();
     void send_pli(UserId target);
     void clear_all_sharers();
@@ -157,6 +172,13 @@ private:
 
     struct SharerInfo { UserId user_id = 0; std::string name; };
     std::unordered_map<UserId, SharerInfo> active_sharers_;
+
+    // The set of sharers currently being watched (shown in the viewer grid).
+    // Authoritative watch state; mirrored into model_.watched for the UI.
+    mutable std::mutex watched_mutex_;
+    std::unordered_set<UserId> watched_;
+    bool multi_stream() const { return static_cast<bool>(bridge_.start_video_stream); }
+    void rebuild_watched_model();   // refresh model_.watched + sharers[].watching + counts
 
     std::unordered_map<UserId, std::chrono::steady_clock::time_point> voice_last_active_;
 

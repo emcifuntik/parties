@@ -43,10 +43,18 @@ void LobbyModel::build(rml::Builder& b) {
     b.register_array<Rml::Vector<ShareTarget>>();
 
     b.register_struct<ActiveSharer>([](auto& s) {
-        s.member("id",   &ActiveSharer::id)
-         .member("name", &ActiveSharer::name);
+        s.member("id",       &ActiveSharer::id)
+         .member("name",     &ActiveSharer::name)
+         .member("watching", &ActiveSharer::watching);
     });
     b.register_array<Rml::Vector<ActiveSharer>>();
+
+    b.register_struct<WatchedStream>([](auto& s) {
+        s.member("id",         &WatchedStream::id)
+         .member("name",       &WatchedStream::name)
+         .member("element_id", &WatchedStream::element_id);
+    });
+    b.register_array<Rml::Vector<WatchedStream>>();
 
     // Bind variables.
     b.bind("is_connected",      is_connected)
@@ -75,6 +83,8 @@ void LobbyModel::build(rml::Builder& b) {
      .bind("vad_enabled",       vad_enabled)
      .bind("vad_threshold",     vad_threshold)
      .bind("voice_level",       voice_level)
+     .bind("voice_volume",      voice_volume)
+     .bind("secondary_volume",  secondary_volume)
      .bind("notification_volume", notification_volume)
      .bind("ptt_enabled",       ptt_enabled)
      .bind("ptt_key",           ptt_key)
@@ -91,6 +101,8 @@ void LobbyModel::build(rml::Builder& b) {
      .bind("is_sharing",        is_sharing)
      .bind("someone_sharing",   someone_sharing)
      .bind("sharers",           sharers)
+     .bind("watched",           watched)
+     .bind("watching_count",    watching_count)
      .bind("viewing_sharer_id", viewing_sharer_id)
      .bind("stream_volume",     stream_volume)
      .bind("stream_fullscreen", stream_fullscreen)
@@ -210,6 +222,14 @@ void LobbyModel::build(rml::Builder& b) {
         if (on_notification_volume_changed) on_notification_volume_changed(notification_volume.get());
     });
 
+    b.on("voice_volume_changed", [this] {
+        if (on_voice_volume_changed) on_voice_volume_changed(voice_volume.get());
+    });
+
+    b.on("secondary_volume_changed", [this] {
+        if (on_secondary_volume_changed) on_secondary_volume_changed(secondary_volume.get());
+    });
+
     b.on("test_notification_sound", [this] {
         if (on_test_notification_sound) on_test_notification_sound();
     });
@@ -275,6 +295,11 @@ void LobbyModel::build(rml::Builder& b) {
 
     b.on_args<int>("select_sharer", [this](int id) {
         if (on_select_sharer) on_select_sharer(id);
+    });
+
+    b.on_args<int>("toggle_watch", [this](int id) {
+        if (on_toggle_watch) on_toggle_watch(id);
+        mobile_show_content = true;
     });
 
     b.on("stop_watching", [this] {

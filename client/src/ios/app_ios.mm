@@ -271,11 +271,9 @@ using namespace parties::protocol;
 
     bridge.request_keyframe = nullptr;
 
-    bridge.clear_video_element = [bself]() {
-        if (!bself->_doc) return;
-        auto* el = dynamic_cast<VideoElement*>(bself->_doc->GetElementById("screen-share"));
-        if (el) el->Clear();
-    };
+    // Viewer is a data-for grid of per-sharer cells ("screen-share-<id>"); cells
+    // are torn down by the binding when they leave model_.watched.
+    bridge.clear_video_element = []() {};
 
     // iOS manages the decoder directly in watchSharer:/stopWatching:
     // (same pattern as macOS) — no start/stop_decode_thread needed.
@@ -341,6 +339,10 @@ using namespace parties::protocol;
     _core.model_.on_select_sharer = [bself](int id) {
         [bself watchSharer:static_cast<UserId>(id)];
     };
+    // Single hardware decoder: a chip toggle just switches to that single stream.
+    _core.model_.on_toggle_watch = [bself](int id) {
+        [bself watchSharer:static_cast<UserId>(id)];
+    };
     _core.model_.on_stop_watching = [bself]() {
         [bself stopWatching];
     };
@@ -399,7 +401,9 @@ using namespace parties::protocol;
     _core.stream_frame_count_.fetch_add(1, std::memory_order_relaxed);
 
     if (!_doc) return;
-    auto* el = dynamic_cast<VideoElement*>(_doc->GetElementById("screen-share"));
+    // Route to this sharer's grid cell (single-select on iOS).
+    std::string elem_id = "screen-share-" + std::to_string(_core.viewing_sharer_.load());
+    auto* el = dynamic_cast<VideoElement*>(_doc->GetElementById(elem_id));
     if (!el) return;
 
     CVPixelBufferLockBaseAddress(buf, kCVPixelBufferLock_ReadOnly);
@@ -432,7 +436,8 @@ using namespace parties::protocol;
     _core.net_.send_message(ControlMessageType::SCREEN_SHARE_VIEW,
                             (const uint8_t*)&id32, sizeof(id32));
 
-    _core.model_.viewing_sharer_id.silent() = static_cast<int>(uid);
+    // Populate the viewer grid model with this single stream.
+    _core.set_single_watched(uid);
     _streamRevealed = false;
     // Don't dirty yet — onVideoDecoded dirties on first frame to avoid black flash
 }
@@ -495,12 +500,7 @@ using namespace parties::protocol;
     _core.net_.send_message(ControlMessageType::SCREEN_SHARE_VIEW,
                             (const uint8_t*)&zero, sizeof(zero));
 
-    _core.model_.viewing_sharer_id = 0;
-
-    if (_doc) {
-        auto* el = dynamic_cast<VideoElement*>(_doc->GetElementById("screen-share"));
-        if (el) el->Clear();
-    }
+    _core.set_single_watched(0);
 }
 
 // ── Layout / orientation ──────────────────────────────────────────────────────

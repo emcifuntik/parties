@@ -28,3 +28,39 @@ target_link_libraries(parties_integration_test
 if(WIN32)
     target_link_libraries(parties_integration_test PRIVATE ncrypt.lib crypt32.lib)
 endif()
+
+# ── Voice packet-loss resilience (offline, deterministic) ─────────────────────
+find_package(Opus CONFIG REQUIRED)
+
+add_executable(parties_voice_loss_test
+    voice_loss_test.cpp
+    ../client/src/voice_mixer.cpp
+)
+
+target_include_directories(parties_voice_loss_test
+    PRIVATE
+        ../client/include
+)
+
+target_link_libraries(parties_voice_loss_test
+    PRIVATE
+        parties_common
+        Opus::opus
+)
+
+# ── Secondary/auxiliary audio stream (offline, deterministic) ─────────────────
+add_executable(parties_aux_stream_test
+    aux_stream_test.cpp
+    ../client/src/voice_mixer.cpp
+)
+
+target_include_directories(parties_aux_stream_test
+    PRIVATE
+        ../client/include
+)
+
+target_link_libraries(parties_aux_stream_test
+    PRIVATE
+        parties_common
+        Opus::opus
+)

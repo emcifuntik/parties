@@ -5,6 +5,7 @@
 #include <string>
 #include <cstdint>
 #include <atomic>
+#include <unordered_set>
 
 typedef struct QUIC_HANDLE *HQUIC;
 
@@ -36,8 +37,10 @@ struct Session {
     uint16_t         share_width = 0;
     uint16_t         share_height = 0;
 
-    // Subscribe state: whose video stream this viewer is watching (0 = none)
-    UserId           subscribed_sharer = 0;
+    // Subscribe state: the set of sharers whose video streams this viewer is
+    // watching (empty = none). A viewer can watch several screen shares at once
+    // (the client tiles them in a grid). Mutated only on the server main loop.
+    std::unordered_set<UserId> subscribed_sharers;
 
     // Connection state
     std::atomic<bool> alive{true};

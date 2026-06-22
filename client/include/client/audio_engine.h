@@ -10,6 +10,7 @@
 
 #include <functional>
 #include <atomic>
+#include <mutex>
 #include <vector>
 #include <string>
 #include <cstdint>
@@ -37,10 +38,21 @@ public:
     void stop();
 
     void set_mixer(VoiceMixer* mixer) { mixer_ = mixer; }
+    void set_aux_mixer(VoiceMixer* mixer) { aux_mixer_ = mixer; }
     void set_stream_player(StreamAudioPlayer* player) { stream_player_ = player; }
 
     // Called when an encoded voice frame is ready to send
     std::function<void(const uint8_t*, size_t)> on_encoded_frame;
+
+    // Called when an encoded SECONDARY-stream (VOICE2) frame is ready to send.
+    std::function<void(const uint8_t*, size_t)> on_secondary_encoded_frame;
+
+    // Feed mono 48 kHz PCM into the secondary/auxiliary stream. Buffers to 20 ms
+    // Opus frames, encodes in the music profile (NO denoise/AEC/VAD/normalize —
+    // raw, already-leveled program audio), and emits via on_secondary_encoded_frame.
+    // Intended for future karaoke / channel-join-sound / plugin sources. Safe to
+    // call from any single producer thread; calls are serialized internally.
+    void push_secondary_pcm(const float* pcm, int frame_count);
 
     // Mute/unmute
     void set_muted(bool muted) { muted_ = muted; if (muted) transmitting_ = false; }
@@ -127,6 +139,15 @@ private:
     // Opus encoder
     OpusCodec encoder_;
 
+    // Secondary-stream (VOICE2) Opus encoder + its own 20ms accumulation buffer,
+    // guarded by a mutex since the producer thread is external/arbitrary.
+    OpusCodec secondary_encoder_;
+    bool secondary_encoder_ready_ = false;
+    std::mutex secondary_mutex_;
+    std::vector<float> secondary_buf_;   // accumulates to OPUS_FRAME_SIZE
+    size_t secondary_pos_ = 0;
+    uint8_t secondary_opus_buf_[audio::MAX_OPUS_PACKET];
+
     // Capture accumulation buffer
     std::vector<float> capture_buf_;
     size_t capture_pos_ = 0;
@@ -138,6 +159,7 @@ private:
     uint8_t opus_buf_[audio::MAX_OPUS_PACKET];
 
     VoiceMixer* mixer_ = nullptr;
+    VoiceMixer* aux_mixer_ = nullptr;
     StreamAudioPlayer* stream_player_ = nullptr;
 
     std::atomic<bool> muted_{false};

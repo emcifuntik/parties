@@ -259,6 +259,22 @@
                 </div>
             </div>
 
+            <!-- Output volumes -->
+            <div class="settings-section">
+                <div class="slider-row">
+                    <span class="slider-label">Voice Volume</span>
+                    <input type="range" class="slider" min="0" max="2" step="0.01"
+                           data-value="voice_volume"
+                           data-event-change="voice_volume_changed" />
+                </div>
+                <div class="slider-row">
+                    <span class="slider-label">Music / 2nd Stream Volume</span>
+                    <input type="range" class="slider" min="0" max="2" step="0.01"
+                           data-value="secondary_volume"
+                           data-event-change="secondary_volume_changed" />
+                </div>
+            </div>
+
             <!-- Notification volume -->
             <div class="settings-section">
                 <div class="slider-row">
@@ -534,8 +550,8 @@
             <div class="channel-header" data-if="current_channel == 0">
                 <span class="channel-hint">Select a channel</span>
             </div>
-            <!-- Sharer cards (sharers exist but not watching) -->
-            <div class="sharer-cards" data-if="someone_sharing && viewing_sharer_id == 0">
+            <!-- Sharer cards (sharers exist but not watching any yet) -->
+            <div class="sharer-cards" data-if="someone_sharing && watching_count == 0">
                 <div data-for="sharer : sharers">
                     <div class="sharer-card" data-event-click="watch_sharer(sharer.id)">
                         <div class="sharer-card-icon">
@@ -548,15 +564,18 @@
                 </div>
             </div>
 
-            <!-- Active stream viewer (subscribed to a sharer) -->
-            <div class="screen-share-area" data-if="viewing_sharer_id > 0"
+            <!-- Active stream viewer grid (watching one or more sharers).
+                 The chips toggle individual sharers in/out of the grid; each
+                 watched stream renders as a <video_frame> cell whose stable id
+                 ("screen-share-<id>") the platform layer pushes frames to. -->
+            <div class="screen-share-area" data-if="watching_count > 0"
                  data-class-fullscreen="stream_fullscreen">
                 <div class="screen-share-header">
                     <div class="sharer-tabs">
                         <div data-for="sharer : sharers">
                             <div class="sharer-tab"
-                                 data-class-active="sharer.id == viewing_sharer_id"
-                                 data-event-click="select_sharer(sharer.id)">
+                                 data-class-active="sharer.watching"
+                                 data-event-click="toggle_watch(sharer.id)">
                                 {{ sharer.name }}
                             </div>
                         </div>
@@ -573,9 +592,16 @@
                         <div class="close-icon-b"></div>
                     </div>
                 </div>
-                <video_frame id="screen-share"
-                             data-event-dblclick="toggle_stream_fullscreen"
-                             data-event-click="stream_tap_fullscreen" />
+                <div class="stream-grid" id="stream-grid">
+                    <div class="stream-cell" data-for="w : watched">
+                        <video_frame class="stream-cell-video"
+                                     data-attr-id="w.element_id"
+                                     data-attr-streamid="w.id"
+                                     data-event-dblclick="toggle_stream_fullscreen"
+                                     data-event-click="stream_tap_fullscreen" />
+                        <div class="stream-cell-label">{{ w.name }}</div>
+                    </div>
+                </div>
             </div>
 
         </div>

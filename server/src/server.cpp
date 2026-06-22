@@ -160,15 +160,19 @@ void Server::process_data_packets() {
 	ZoneScopedN("Server::process_data_packets");
     auto packets = quic_.data_incoming().drain();
     for (auto& pkt : packets) {
-        if (pkt.packet_type == protocol::VOICE_PACKET_TYPE) {
+        if (pkt.packet_type == protocol::VOICE_PACKET_TYPE ||
+            pkt.packet_type == protocol::VOICE2_PACKET_TYPE) {
             auto session = quic_.get_session(pkt.session_id);
             if (!session || !session->authenticated || session->channel_id == 0)
                 continue;
 
-            // Forward: [VOICE_PACKET_TYPE][sender_user_id(u32)][opus_data]
+            // Forward: [<voice type>][sender_user_id(u32)][seq(2)][opus_data].
+            // The SFU treats the primary (VOICE) and secondary (VOICE2) streams
+            // identically — it never decodes; it echoes the same type byte so the
+            // receiver routes each into the right mixer.
             std::vector<uint8_t> fwd;
             fwd.reserve(1 + 4 + pkt.data.size());
-            fwd.push_back(protocol::VOICE_PACKET_TYPE);
+            fwd.push_back(pkt.packet_type);
             uint32_t uid = session->user_id;
             fwd.insert(fwd.end(), reinterpret_cast<uint8_t*>(&uid),
                        reinterpret_cast<uint8_t*>(&uid) + 4);
@@ -737,7 +741,10 @@ void Server::handle_message(const IncomingMessage& msg) {
 
         ChannelId old_channel = session->channel_id;
         stop_screen_share(old_channel, session->user_id);
-        session->subscribed_sharer = 0;
+        {
+            std::lock_guard<std::mutex> lock(subscriptions_mutex_);
+            session->subscribed_sharers.clear();
+        }
         session->channel_id = 0;
 
         BinaryWriter writer;
@@ -1057,6 +1064,11 @@ void Server::handle_message(const IncomingMessage& msg) {
     }
 
     // ── Screen share view (subscribe/unsubscribe) ────────────────────────
+    // Wire formats (a viewer may watch several sharers at once):
+    //   [target(4)]            legacy single-select: replace the whole set with
+    //                          {target} (target 0 = clear all).
+    //   [target(4)][action(1)] additive: action 1 = add target, 0 = remove
+    //                          target (target 0 + action 0 = clear all).
     case protocol::ControlMessageType::SCREEN_SHARE_VIEW: {
         if (!session->authenticated || session->channel_id == 0) break;
 
@@ -1064,35 +1076,47 @@ void Server::handle_message(const IncomingMessage& msg) {
         uint32_t target_id = reader.read_u32();
         if (reader.error()) break;
 
-        if (target_id == 0) {
-            session->subscribed_sharer = 0;
-        } else {
-            // Verify target is actually sharing in this channel
-            bool is_sharer = false;
-            {
-                std::lock_guard<std::mutex> lock(sharers_mutex_);
-                auto it = channel_screen_sharers_.find(session->channel_id);
-                is_sharer = (it != channel_screen_sharers_.end() &&
-                             it->second.count(target_id));
-            }
-            if (is_sharer) {
-                session->subscribed_sharer = target_id;
+        const bool additive = msg.payload.size() >= 5;
+        const bool subscribe = additive ? (reader.read_u8() != 0) : (target_id != 0);
 
-                // Auto-PLI: tell the sharer to send a keyframe so the new viewer
-                // can decode from the Sequence Header
-                auto all = quic_.get_sessions();
-                for (auto& s : all) {
-                    if (s->user_id == target_id && s->authenticated) {
-                        std::vector<uint8_t> pli;
-                        pli.push_back(protocol::VIDEO_CONTROL_TYPE);
-                        pli.push_back(protocol::VIDEO_CTL_PLI);
-                        uint32_t requester_id = session->user_id;
-                        pli.insert(pli.end(), reinterpret_cast<uint8_t*>(&requester_id),
-                                   reinterpret_cast<uint8_t*>(&requester_id) + 4);
-                        quic_.send_datagram(s->id, pli.data(), pli.size());
-                        break;
-                    }
-                }
+        if (!subscribe) {
+            std::lock_guard<std::mutex> lock(subscriptions_mutex_);
+            if (target_id == 0) session->subscribed_sharers.clear();   // clear all
+            else                session->subscribed_sharers.erase(target_id);
+            break;
+        }
+        if (target_id == 0) break;
+
+        // Verify target is actually sharing in this channel
+        bool is_sharer = false;
+        {
+            std::lock_guard<std::mutex> lock(sharers_mutex_);
+            auto it = channel_screen_sharers_.find(session->channel_id);
+            is_sharer = (it != channel_screen_sharers_.end() &&
+                         it->second.count(target_id));
+        }
+        if (!is_sharer) break;
+
+        {
+            std::lock_guard<std::mutex> lock(subscriptions_mutex_);
+            // Legacy single-select replaces the whole set; additive keeps the rest.
+            if (!additive) session->subscribed_sharers.clear();
+            session->subscribed_sharers.insert(target_id);
+        }
+
+        // Auto-PLI: tell the sharer to send a keyframe so the new viewer
+        // can decode from the Sequence Header
+        auto all = quic_.get_sessions();
+        for (auto& s : all) {
+            if (s->user_id == target_id && s->authenticated) {
+                std::vector<uint8_t> pli;
+                pli.push_back(protocol::VIDEO_CONTROL_TYPE);
+                pli.push_back(protocol::VIDEO_CTL_PLI);
+                uint32_t requester_id = session->user_id;
+                pli.insert(pli.end(), reinterpret_cast<uint8_t*>(&requester_id),
+                           reinterpret_cast<uint8_t*>(&requester_id) + 4);
+                quic_.send_datagram(s->id, pli.data(), pli.size());
+                break;
             }
         }
         break;
@@ -1542,16 +1566,25 @@ void Server::forward_video_frame(uint32_t session_id, const uint8_t* data, size_
     std::memcpy(fwd + 1, &uid, 4);
     std::memcpy(fwd + 5, data, len);
 
-    // Forward to viewers subscribed to this sharer via video stream
-    auto all_sessions = quic_.get_sessions();
-    for (auto& s : all_sessions) {
-        if (s->id != session_id &&
-            s->authenticated &&
-            s->channel_id == session->channel_id &&
-            s->subscribed_sharer == session->user_id) {
-            quic_.send_video_to(s->id, fwd, fwd_len);
+    // Forward to viewers subscribed to this sharer. Snapshot the subscribed
+    // session ids under subscriptions_mutex_ (this runs on the receive thread,
+    // concurrent with main-loop subscription mutations), then send outside the
+    // lock so a stalled send can't block subscribe/unsubscribe.
+    std::vector<uint32_t> targets;
+    {
+        auto all_sessions = quic_.get_sessions();
+        std::lock_guard<std::mutex> lock(subscriptions_mutex_);
+        for (auto& s : all_sessions) {
+            if (s->id != session_id &&
+                s->authenticated &&
+                s->channel_id == session->channel_id &&
+                s->subscribed_sharers.count(session->user_id)) {
+                targets.push_back(s->id);
+            }
         }
     }
+    for (uint32_t sid : targets)
+        quic_.send_video_to(sid, fwd, fwd_len);
     delete[] fwd;
 }
 
@@ -1620,16 +1653,23 @@ void Server::forward_stream_audio(const DataPacket& pkt) {
                reinterpret_cast<uint8_t*>(&uid) + 4);
     fwd.insert(fwd.end(), pkt.data.begin(), pkt.data.end());
 
-    // Forward to viewers subscribed to this sharer via datagram
-    auto all_sessions = quic_.get_sessions();
-    for (auto& s : all_sessions) {
-        if (s->id != pkt.session_id &&
-            s->authenticated &&
-            s->channel_id == session->channel_id &&
-            s->subscribed_sharer == session->user_id) {
-            quic_.send_datagram(s->id, fwd.data(), fwd.size());
+    // Forward to viewers subscribed to this sharer via datagram. Snapshot under
+    // subscriptions_mutex_ for parity with forward_video_frame (see that comment).
+    std::vector<uint32_t> targets;
+    {
+        auto all_sessions = quic_.get_sessions();
+        std::lock_guard<std::mutex> lock(subscriptions_mutex_);
+        for (auto& s : all_sessions) {
+            if (s->id != pkt.session_id &&
+                s->authenticated &&
+                s->channel_id == session->channel_id &&
+                s->subscribed_sharers.count(session->user_id)) {
+                targets.push_back(s->id);
+            }
         }
     }
+    for (uint32_t sid : targets)
+        quic_.send_datagram(sid, fwd.data(), fwd.size());
 }
 
 void Server::stop_screen_share(ChannelId channel_id, UserId user_id) {
@@ -1644,9 +1684,10 @@ void Server::stop_screen_share(ChannelId channel_id, UserId user_id) {
 
     // Clear subscriptions pointing to this sharer
     auto all = quic_.get_sessions();
-    for (auto& s : all) {
-        if (s->subscribed_sharer == user_id)
-            s->subscribed_sharer = 0;
+    {
+        std::lock_guard<std::mutex> lock(subscriptions_mutex_);
+        for (auto& s : all)
+            s->subscribed_sharers.erase(user_id);
     }
 
     // Notify all in channel

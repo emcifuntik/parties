@@ -228,9 +228,22 @@ No payload.
 
 #### SCREEN_SHARE_VIEW (0x0009) -- C->S
 
+A viewer may watch **several** sharers at once (the client tiles them in a grid),
+so a session holds a *set* of subscriptions. Two wire forms:
+
 | Field | Type | Size | Description |
 |-------|------|------|-------------|
-| target_user_id | u32 | 4 | Sharer to subscribe to (0 = unsubscribe) |
+| target_user_id | u32 | 4 | Sharer id |
+| action | u8 | 1 (optional) | `1` = subscribe, `0` = unsubscribe |
+
+- **Legacy (4 bytes, no `action`):** single-select — replaces the whole set with
+  `{target}` (target `0` = clear all). Used by single-decoder clients (macOS/iOS).
+- **Additive (5 bytes):** `action=1` adds `target`, `action=0` removes it
+  (`target 0, action 0` = clear all). Used by the multi-stream grid (desktop).
+
+Subscribing to a sharer triggers an auto-PLI to that sharer (keyframe for the new
+viewer). Subscriptions are cleared on channel leave, disconnect, and when the
+sharer stops.
 
 #### SCREEN_SHARE_STARTED (0x010A) -- S->C
 
@@ -323,6 +336,17 @@ Voice audio is sent as QUIC datagrams (unreliable, unordered) for minimal latenc
 ```
 
 The server **never decodes** voice data. It prepends the sender's user ID and forwards to all authenticated users in the same channel who are not deafened.
+
+### Secondary voice stream (VOICE2, `0x05`)
+
+An **optional** second per-user audio stream sharing the exact wire shape of the
+primary voice plane, but with packet type `0x05`. It carries auxiliary audio
+(karaoke backing track, channel join sound, plugin audio) that the receiver mixes
+**without** the primary stream's makeup gain or normalization, at its own volume.
+
+The SFU forwards `0x05` identically to `0x01` (echoing the type byte). Peers that
+do not implement it ignore the unknown type, so it is fully backwards compatible —
+a client that never sends `0x05` is indistinguishable from one that can't.
 
 ### Opus codec parameters
 
@@ -563,11 +587,13 @@ sequenceDiagram
 | Voice | `0x01` | Datagram |
 | Video frame | `0x02` | Stream 1 |
 | Video control | `0x03` | Datagram |
+| Stream (screen-share) audio | `0x04` | Datagram |
+| Secondary voice (VOICE2) | `0x05` | Datagram |
 
 ### SFU forwarding model
 
 The server operates as a **Selective Forwarding Unit** (SFU):
 
-- Voice packets are forwarded to all authenticated users in the same channel (excluding sender and deafened users)
-- Video frames are forwarded only to explicitly subscribed viewers
+- Voice packets (`0x01`) and secondary voice (`0x05`) are forwarded to all authenticated users in the same channel (excluding sender and deafened users)
+- Video frames are forwarded to every viewer subscribed to that sharer (a viewer may subscribe to multiple sharers at once)
 - The server **never decodes** audio or video -- it only prepends the sender's user ID and routes packets

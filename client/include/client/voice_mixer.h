@@ -15,7 +15,12 @@ namespace parties::client {
 
 class VoiceMixer {
 public:
-    VoiceMixer();
+    // apply_makeup: when true (the primary voice mix) the +VOICE_OUTPUT_GAIN_DB
+    // master makeup gain is applied to the whole mix, because decoded mic voice
+    // sits well below full scale. The secondary/auxiliary mix (karaoke, join
+    // sounds, plugin audio) passes false: that audio is already at its intended
+    // level and must NOT get voice makeup or normalization.
+    explicit VoiceMixer(bool apply_makeup = true);
     ~VoiceMixer();
 
     // Feed an incoming opus packet for a given user (with sequence number for reordering)
@@ -40,6 +45,12 @@ public:
 
     // Get per-user volume (returns 1.0 if not set)
     float get_user_volume(UserId user_id) const;
+
+    // Global volume for this whole mix (slider position 0.0 - 2.0, 1.0 = unity).
+    // Multiplies on top of per-user volume. Lets the user balance the primary
+    // voice mix against the secondary stream independently.
+    void  set_master_volume(float position);
+    float get_master_volume() const;
 
     // Per-user voice compression (normalization).
     // When enabled, automatically adjusts gain to bring this user's voice to the target level.
@@ -102,6 +113,9 @@ private:
     mutable std::mutex mutex_;
     std::unordered_map<UserId, UserStream> streams_;
     DecodeStats stats_;   // guarded by mutex_ (updated inside mix_output)
+
+    const bool apply_makeup_;       // primary mix: apply voice makeup gain; aux: don't
+    float master_volume_ = 1.0f;    // slider position (0..2); guarded by mutex_
 
     // Temporary mix buffer (avoids allocation in audio callback)
     std::vector<float> mix_buf_;
