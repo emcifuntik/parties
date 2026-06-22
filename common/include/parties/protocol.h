@@ -12,7 +12,7 @@ constexpr uint16_t DEFAULT_PORT = 7800;
 // in AUTH_IDENTITY. The server rejects only on a MAJOR mismatch, so a minor
 // bump doesn't lock out older clients.
 constexpr uint8_t  PROTOCOL_VERSION_MAJOR = 1;
-constexpr uint8_t  PROTOCOL_VERSION_MINOR = 1;
+constexpr uint8_t  PROTOCOL_VERSION_MINOR = 2;   // +VOICE2 (secondary voice stream), additive
 constexpr uint16_t PROTOCOL_VERSION =
     (static_cast<uint16_t>(PROTOCOL_VERSION_MAJOR) << 8) | PROTOCOL_VERSION_MINOR;
 
@@ -111,6 +111,14 @@ constexpr uint8_t VOICE_PACKET_TYPE        = 0x01;
 constexpr uint8_t VIDEO_FRAME_PACKET_TYPE  = 0x02;
 constexpr uint8_t VIDEO_CONTROL_TYPE       = 0x03;
 constexpr uint8_t STREAM_AUDIO_PACKET_TYPE = 0x04;  // Screen share audio (Opus, stereo)
+constexpr uint8_t VOICE2_PACKET_TYPE       = 0x05;  // Secondary per-user voice stream (Opus, mono).
+                                                    // Optional companion to VOICE: same wire shape,
+                                                    // forwarded identically by the SFU. Carries
+                                                    // auxiliary audio (karaoke backing track, channel
+                                                    // join sound, plugin audio) that the receiver
+                                                    // mixes WITHOUT voice makeup/normalization and at
+                                                    // its own volume. Peers that don't know it ignore
+                                                    // the type, so it is fully back-compatible.
 
 // File transfer stream type bytes (first byte on streams 2+)
 constexpr uint8_t STREAM_TYPE_FILE_UPLOAD   = 0x10;

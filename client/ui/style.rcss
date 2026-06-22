@@ -1760,6 +1760,43 @@ video_frame {
     border-radius: 14dp;
 }
 
+/* Multi-stream viewer grid: tiles each watched share across a row (each cell
+   stretches to full height and splits the width, mirroring the single-stream
+   flex:1 fill). data-for is on .stream-cell itself, so there is no inline
+   wrapper div to collapse the layout. */
+.stream-grid {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    flex: 1;
+    width: 100%;
+}
+
+.stream-cell {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 45%;
+    min-width: 280dp;
+    margin: 4dp;
+}
+
+.stream-cell-video {
+    display: block;
+    flex: 1;
+    width: 100%;
+    min-height: 200dp;
+    background-color: #0B0D14;
+    border-radius: 10dp;
+}
+
+.stream-cell-label {
+    display: block;
+    flex: none;
+    padding: 4dp 2dp;
+    color: #9AA3B2;
+    font-size: 12dp;
+}
+
 /* Fullscreen stream */
 .screen-share-area.fullscreen {
     position: absolute;
@@ -1770,6 +1807,14 @@ video_frame {
     padding: 0dp;
     z-index: 50;
     background-color: #000000;
+}
+
+.screen-share-area.fullscreen .stream-cell {
+    padding: 0dp;
+}
+
+.screen-share-area.fullscreen .stream-cell-video {
+    border-radius: 0dp;
 }
 
 .screen-share-area.fullscreen .screen-share-header {

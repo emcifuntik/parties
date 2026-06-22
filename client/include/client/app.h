@@ -27,6 +27,7 @@ namespace parties::encdec { struct DecodedFrame; }
 #include <queue>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 typedef struct HWND__* HWND;
@@ -78,16 +79,24 @@ private:
     // ── Shared logic (platform-independent) ──────────────────────────────
     AppCore core_;
 
+    struct VideoStream;   // per-sharer decode pipeline (defined below)
+
     // ── Windows-specific platform plumbing ───────────────────────────────
     void show_share_picker();
     void start_screen_share(int target_index);
     void stop_screen_share();
     void on_video_frame_received(uint32_t sender_id, const uint8_t* data, size_t len);
 
-    void start_decode_thread();
-    void stop_decode_thread();
-    void decode_loop();
-    void on_video_decoded(const encdec::DecodedFrame& frame);
+    // Per-sharer video stream lifecycle (multiple streams play at once in a grid).
+    void start_video_stream(UserId sharer_id);
+    void stop_video_stream(UserId sharer_id);
+    void stop_all_video_streams();
+    void stop_stream_thread(VideoStream* s);   // signal running=false (under queue_mutex) + join
+    void decode_loop(VideoStream* s);
+    void on_video_decoded(VideoStream* s, const encdec::DecodedFrame& frame);
+    void enqueue_decode_work(UserId sharer_id, std::vector<uint8_t>&& encoded,
+                             int64_t timestamp, VideoCodecId codec,
+                             uint16_t width, uint16_t height, bool is_keyframe);
     void encode_loop();
 
     void update_voice_level();
@@ -179,28 +188,44 @@ private:
     // Stream audio (capture for sharer, playback for viewer)
     std::unique_ptr<StreamAudioCapture> stream_audio_capture_;
 
-    // Video decode thread
+    // ── Video decode (multiple simultaneous sharer streams, tiled in a grid) ──
     struct DecodeWork {
         std::vector<uint8_t> data;
-        int64_t     timestamp;
+        int64_t      timestamp;
         VideoCodecId codec;
-        uint16_t    width;
-        uint16_t    height;
+        uint16_t     width;
+        uint16_t     height;
     };
-    std::thread decode_thread_;
-    std::atomic<bool> decode_running_{false};
-    std::mutex decode_queue_mutex_;
-    std::condition_variable decode_queue_cv_;
-    std::queue<DecodeWork> decode_queue_;
 
-    // Latest decoded frame — YUV/NV12 planes
-    std::mutex frame_mutex_;
-    std::atomic<bool> new_frame_available_{false};
-    std::vector<uint8_t> shared_y_, shared_u_, shared_v_;
-    std::vector<uint8_t> staging_y_, staging_u_, staging_v_;
-    uint32_t shared_width_ = 0, shared_height_ = 0;
-    uint32_t shared_y_stride_ = 0, shared_uv_stride_ = 0;
-    bool shared_nv12_ = false;
+    // One watched sharer's decode pipeline: its own hardware decoder + thread +
+    // jitter queue + latest-decoded-frame buffers. Created when a stream is added
+    // to the grid, destroyed when removed. The QUIC receive thread feeds `queue`;
+    // the decode thread produces into the frame buffers; render_frame drains them
+    // onto this stream's <video_frame> grid cell (element_id).
+    struct VideoStream {
+        UserId       sharer_id = 0;
+        std::string  element_id;          // "screen-share-<id>"
+        std::unique_ptr<VideoDecoder> decoder;
+        std::thread  thread;
+        std::atomic<bool> running{false};
+        std::atomic<bool> awaiting_keyframe{true};
+
+        std::mutex queue_mutex;
+        std::condition_variable queue_cv;
+        std::queue<DecodeWork> queue;
+
+        std::mutex frame_mutex;
+        std::atomic<bool> new_frame{false};
+        std::vector<uint8_t> y, u, v;                          // latest decoded planes
+        std::vector<uint8_t> staging_y, staging_u, staging_v;  // decode-thread scratch
+        uint32_t width = 0, height = 0, y_stride = 0, uv_stride = 0;
+        bool nv12 = false;
+    };
+
+    // Guards the map structure AND each per-stream queue push, so a stream can't
+    // be destroyed out from under the QUIC receive thread mid-enqueue.
+    std::mutex streams_mutex_;
+    std::unordered_map<UserId, std::unique_ptr<VideoStream>> video_streams_;
 
     // FPS counters (render + stream)
     uint32_t fps_frame_count_ = 0;

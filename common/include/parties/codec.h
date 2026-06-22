@@ -7,6 +7,12 @@ struct OpusDecoder;
 
 namespace parties {
 
+// Encoder tuning profile. Voice = mic speech (OPUS_APPLICATION_VOIP, speech
+// signal). Music = the secondary/auxiliary stream (karaoke backing track,
+// sound effects): OPUS_APPLICATION_AUDIO + music signal so transients and
+// full-band content aren't smeared the way the speech-optimized path would.
+enum class OpusMode { Voice, Music };
+
 class OpusCodec {
 public:
     OpusCodec();
@@ -15,8 +21,10 @@ public:
     // inband_fec: enable Opus in-band FEC (LBRR) and tell the encoder the
     // expected packet-loss percentage so it sizes redundancy accordingly. Use
     // for real-time voice over a lossy/unreliable transport.
+    // mode: Voice (default) or Music (auxiliary stream); see OpusMode.
     bool init_encoder(int sample_rate, int channels, int bitrate,
-                      bool inband_fec = false, int expected_loss_pct = 0);
+                      bool inband_fec = false, int expected_loss_pct = 0,
+                      OpusMode mode = OpusMode::Voice);
     bool init_decoder(int sample_rate, int channels);
 
     // Encode PCM -> Opus. Returns bytes written, or negative on error.

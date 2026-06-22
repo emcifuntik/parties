@@ -292,15 +292,13 @@ bool App::init(HWND hwnd, int renderer_id) {
         }
     };
 
-    bridge.clear_video_element = [this]() {
-        if (doc_) {
-            auto* elem = doc_->GetElementById("screen-share");
-            if (elem) static_cast<VideoElement*>(elem)->Clear();
-        }
-    };
+    // Grid cells are created/destroyed by the data-for binding over model_.watched,
+    // and each stream's decoder is torn down by stop_video_stream, so there is no
+    // single element to clear here — make it a safe no-op on Windows.
+    bridge.clear_video_element = []() {};
 
-    bridge.start_decode_thread = [this]() { start_decode_thread(); };
-    bridge.stop_decode_thread  = [this]() { stop_decode_thread(); };
+    bridge.start_video_stream = [this](UserId id) { start_video_stream(id); };
+    bridge.stop_video_stream  = [this](UserId id) { stop_video_stream(id); };
 
     // Initialize UI
     if (!ui_.init(hwnd, renderer_id)) return false;
@@ -433,7 +431,7 @@ void App::shutdown() {
     for (auto& t : encode_textures_) t.Reset();
     encode_registered_ = false;
     if (encoder_) { encoder_->shutdown(); encoder_.reset(); }
-    stop_decode_thread();
+    stop_all_video_streams();
     core_.shutdown();
     ui_.shutdown();
 }
@@ -587,6 +585,20 @@ void App::render_loop() {
     }
 }
 
+// Walk a subtree for the <video_frame> whose bound "streamid" attribute matches
+// the given sharer id (the grid cells are created by a data-for binding).
+static Rml::Element* find_grid_video(Rml::Element* el, uint32_t streamid) {
+    if (el->GetTagName() == "video_frame" &&
+        el->GetAttribute<int>("streamid", -1) == static_cast<int>(streamid))
+        return el;
+    const int n = el->GetNumChildren();
+    for (int i = 0; i < n; ++i) {
+        if (auto* found = find_grid_video(el->GetChild(i), streamid))
+            return found;
+    }
+    return nullptr;
+}
+
 void App::render_frame() {
     ZoneScopedN("App::render_frame");
 
@@ -594,43 +606,50 @@ void App::render_frame() {
     {
         std::lock_guard<std::recursive_mutex> lock(ui_mutex_);
 
-        // Deliver latest decoded video frame to VideoElement for GPU rendering
-        if (new_frame_available_ && doc_) {
-            ZoneScopedN("App::deliver_video_frame");
-            std::vector<uint8_t> y, u, v;
-            uint32_t w = 0, h = 0, ys = 0, uvs = 0;
-            bool nv12 = false;
+        // Deliver each watched stream's latest decoded frame to its grid cell.
+        // Swap planes out under the locks, then upload after releasing them so the
+        // QUIC receive thread isn't blocked on streams_mutex_ during GPU work.
+        if (doc_) {
+            ZoneScopedN("App::deliver_video_frames");
+            struct PendingUpload {
+                uint32_t sharer;
+                std::vector<uint8_t> y, u, v;
+                uint32_t w, h, ys, uvs;
+                bool nv12;
+            };
+            std::vector<PendingUpload> uploads;
             {
-                std::lock_guard<std::mutex> flock(frame_mutex_);
-                if (new_frame_available_) {
-                    y.swap(shared_y_); u.swap(shared_u_); v.swap(shared_v_);
-                    w = shared_width_; h = shared_height_;
-                    ys = shared_y_stride_; uvs = shared_uv_stride_;
-                    nv12 = shared_nv12_;
-                    new_frame_available_ = false;
+                std::lock_guard<std::mutex> slock(streams_mutex_);
+                for (auto& [uid, sp] : video_streams_) {
+                    VideoStream* s = sp.get();
+                    if (!s->new_frame.load(std::memory_order_acquire)) continue;
+                    std::lock_guard<std::mutex> flock(s->frame_mutex);
+                    if (!s->new_frame.load(std::memory_order_relaxed)) continue;
+                    PendingUpload up;
+                    up.sharer = static_cast<uint32_t>(s->sharer_id);
+                    up.y.swap(s->y); up.u.swap(s->u); up.v.swap(s->v);
+                    up.w = s->width; up.h = s->height;
+                    up.ys = s->y_stride; up.uvs = s->uv_stride;
+                    up.nv12 = s->nv12;
+                    s->new_frame.store(false, std::memory_order_relaxed);
+                    uploads.push_back(std::move(up));
                 }
             }
-            if (!y.empty() && w > 0 && h > 0) {
-                // Reveal video area on first frame (deferred from watch_sharer)
-                if (!stream_revealed_) {
-                    stream_revealed_ = true;
-                    core_.model_.dirty("viewing_sharer_id");
-                }
+            // Resolve each sharer's grid cell by walking the grid for the
+            // <video_frame> tagged with the matching "streamid" attribute. This
+            // is the same proven attribute-read path SelectableTextElement uses,
+            // and avoids relying on GetElementById finding a data-bound id.
+            Rml::Element* grid = uploads.empty() ? nullptr : doc_->GetElementById("stream-grid");
+            for (auto& up : uploads) {
+                if (up.y.empty() || up.w == 0 || up.h == 0) continue;
                 core_.stream_frame_count_.fetch_add(1, std::memory_order_relaxed);
-                auto* elem = doc_->GetElementById("screen-share");
+                auto* elem = grid ? find_grid_video(grid, up.sharer) : nullptr;
                 if (elem) {
                     auto* ve = static_cast<VideoElement*>(elem);
-                    if (nv12)
-                        ve->UpdateNV12Frame(y, ys, u, uvs, w, h);
+                    if (up.nv12)
+                        ve->UpdateNV12Frame(up.y, up.ys, up.u, up.uvs, up.w, up.h);
                     else
-                        ve->UpdateYUVFrame(y.data(), ys, u.data(), v.data(), uvs, w, h);
-                }
-            }
-            // Return spent buffers so staging_ can reuse them
-            {
-                std::lock_guard<std::mutex> flock(frame_mutex_);
-                if (!new_frame_available_) {
-                    shared_y_.swap(y); shared_u_.swap(u); shared_v_.swap(v);
+                        ve->UpdateYUVFrame(up.y.data(), up.ys, up.u.data(), up.v.data(), up.uvs, up.w, up.h);
                 }
             }
         }
@@ -871,18 +890,15 @@ void App::start_screen_share(int target_index) {
         std::memcpy(pkt.data() + off, data, len);
         core_.net_.send_video(pkt.data(), pkt.size(), true);
 
-        // Local self-preview feed
-        if (core_.viewing_sharer_ == core_.user_id_ && encoder_ && decode_running_) {
-            if (core_.awaiting_keyframe_) { if (!keyframe) return; core_.awaiting_keyframe_ = false; }
-            DecodeWork work;
-            work.data.assign(data, data + len);
-            work.timestamp = 0;
-            work.codec  = encoder_->codec();
-            work.width  = static_cast<uint16_t>(encoder_->width());
-            work.height = static_cast<uint16_t>(encoder_->height());
-            std::lock_guard<std::mutex> lock(decode_queue_mutex_);
-            decode_queue_.push(std::move(work));
-            decode_queue_cv_.notify_one();
+        // Local self-preview feed: if we're watching our own share, decode our
+        // encoder output locally into that stream's grid cell.
+        if (encoder_ && core_.is_watching(core_.user_id_)) {
+            std::vector<uint8_t> copy(data, data + len);
+            enqueue_decode_work(core_.user_id_, std::move(copy), 0,
+                                encoder_->codec(),
+                                static_cast<uint16_t>(encoder_->width()),
+                                static_cast<uint16_t>(encoder_->height()),
+                                keyframe);
         }
     };
     encode_on_encoded_ = on_encoded_cb;
@@ -1035,8 +1051,9 @@ void App::stop_screen_share() {
     if (!sharing_screen_) return;
     sharing_screen_ = false;
 
-    if (core_.viewing_sharer_ == core_.user_id_)
-        core_.stop_watching();
+    // If we were self-previewing our own share, drop just that stream.
+    if (core_.is_watching(core_.user_id_))
+        core_.remove_watch(core_.user_id_);
 
     if (stream_audio_capture_) { stream_audio_capture_->stop(); stream_audio_capture_.reset(); }
     if (capture_) { capture_->stop(); capture_->shutdown(); capture_.reset(); }
@@ -1067,7 +1084,6 @@ void App::on_video_frame_received(uint32_t sender_id, const uint8_t* data, size_
     ZoneScopedN("App::on_video_frame_received");
     // data = [fn(4)][ts(4)][flags(1)][w(2)][h(2)][codec(1)][encoded(N)]
     if (len < 14) return;
-    if (sender_id != core_.viewing_sharer_) return;
 
     uint8_t flags = data[8];
     bool is_keyframe = (flags & VIDEO_FLAG_KEYFRAME) != 0;
@@ -1076,30 +1092,47 @@ void App::on_video_frame_received(uint32_t sender_id, const uint8_t* data, size_
     std::memcpy(&height, data + 11, 2);
     auto codec = static_cast<VideoCodecId>(data[13]);
 
-    if (core_.awaiting_keyframe_) {
-        if (!is_keyframe) return;
-    }
-
     const uint8_t* encoded     = data + 14;
     size_t         encoded_len = len  - 14;
+    if (encoded_len == 0) return;
 
-    if (decode_running_ && encoded_len > 0) {
-        // Only clear awaiting_keyframe_ when we can actually queue the frame
-        core_.awaiting_keyframe_ = false;
-        uint32_t frame_number;
-        std::memcpy(&frame_number, data, 4);
-        DecodeWork work;
-        work.data.assign(encoded, encoded + encoded_len);
-        work.timestamp = static_cast<int64_t>(frame_number);
-        work.codec  = codec;
-        work.width  = width;
-        work.height = height;
-        {
-            std::lock_guard<std::mutex> lock(decode_queue_mutex_);
-            decode_queue_.push(std::move(work));
-        }
-        decode_queue_cv_.notify_one();
+    uint32_t frame_number;
+    std::memcpy(&frame_number, data, 4);
+
+    std::vector<uint8_t> copy(encoded, encoded + encoded_len);
+    enqueue_decode_work(sender_id, std::move(copy), static_cast<int64_t>(frame_number),
+                        codec, width, height, is_keyframe);
+}
+
+// Push one encoded frame into a watched stream's decode queue. Holds
+// streams_mutex_ across the whole find+push so the stream can't be destroyed
+// concurrently by stop_video_stream. A stream waits for its first keyframe
+// before queueing anything (decoders need a sequence header to start).
+void App::enqueue_decode_work(UserId sharer_id, std::vector<uint8_t>&& encoded,
+                              int64_t timestamp, VideoCodecId codec,
+                              uint16_t width, uint16_t height, bool is_keyframe) {
+    std::lock_guard<std::mutex> slock(streams_mutex_);
+    auto it = video_streams_.find(sharer_id);
+    if (it == video_streams_.end()) return;
+    VideoStream* s = it->second.get();
+    if (!s->running.load(std::memory_order_relaxed)) return;
+
+    if (s->awaiting_keyframe.load(std::memory_order_relaxed)) {
+        if (!is_keyframe) return;
+        s->awaiting_keyframe.store(false, std::memory_order_relaxed);
     }
+
+    DecodeWork work;
+    work.data   = std::move(encoded);
+    work.timestamp = timestamp;
+    work.codec  = codec;
+    work.width  = width;
+    work.height = height;
+    {
+        std::lock_guard<std::mutex> qlock(s->queue_mutex);
+        s->queue.push(std::move(work));
+    }
+    s->queue_cv.notify_one();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1188,94 +1221,137 @@ void App::encode_loop() {
 // Decode thread
 // ─────────────────────────────────────────────────────────────────────────────
 
-void App::start_decode_thread() {
-    if (decode_running_) return;
-    if (decoder_)
-        decoder_->on_decoded = [this](const DecodedFrame& f) { on_video_decoded(f); };
-    decode_running_ = true;
-    decode_thread_ = std::thread([this] { decode_loop(); });
+void App::start_video_stream(UserId sharer_id) {
+    std::lock_guard<std::mutex> lock(streams_mutex_);
+    if (video_streams_.count(sharer_id)) return;   // already watching
+    auto s = std::make_unique<VideoStream>();
+    s->sharer_id = sharer_id;
+    s->element_id = "screen-share-" + std::to_string(sharer_id);
+    s->awaiting_keyframe.store(true, std::memory_order_relaxed);
+    s->running.store(true, std::memory_order_relaxed);
+    VideoStream* ptr = s.get();
+    s->thread = std::thread([this, ptr] { decode_loop(ptr); });
+    video_streams_.emplace(sharer_id, std::move(s));
 }
 
-void App::stop_decode_thread() {
-    if (!decode_running_) return;
-    decode_running_ = false;
-    decode_queue_cv_.notify_all();
-    if (decode_thread_.joinable()) decode_thread_.join();
-    if (decoder_) { decoder_->shutdown(); decoder_.reset(); }
-    new_frame_available_ = false;
-    stream_revealed_ = false;
-    std::lock_guard<std::mutex> lock(decode_queue_mutex_);
-    while (!decode_queue_.empty()) decode_queue_.pop();
+void App::stop_video_stream(UserId sharer_id) {
+    // Extract+erase under the lock (so the receive thread can't be mid-enqueue on
+    // it), then stop+join its thread OUTSIDE the lock so we never block the
+    // receive thread on a thread join.
+    std::unique_ptr<VideoStream> s;
+    {
+        std::lock_guard<std::mutex> lock(streams_mutex_);
+        auto it = video_streams_.find(sharer_id);
+        if (it == video_streams_.end()) return;
+        s = std::move(it->second);
+        video_streams_.erase(it);
+    }
+    stop_stream_thread(s.get());
+    if (s->decoder) { s->decoder->shutdown(); s->decoder.reset(); }
+    // s destroyed here — its grid cell is removed by the data-for binding when
+    // app_core drops this sharer from model_.watched.
 }
 
-void App::on_video_decoded(const encdec::DecodedFrame& frame) {
+void App::stop_all_video_streams() {
+    std::vector<std::unique_ptr<VideoStream>> dead;
+    {
+        std::lock_guard<std::mutex> lock(streams_mutex_);
+        for (auto& [uid, sp] : video_streams_) dead.push_back(std::move(sp));
+        video_streams_.clear();
+    }
+    for (auto& s : dead) {
+        stop_stream_thread(s.get());
+        if (s->decoder) { s->decoder->shutdown(); s->decoder.reset(); }
+    }
+}
+
+// Signal a decode thread to exit and join it. The running=false store MUST happen
+// under queue_mutex: decode_loop waits on queue_cv with a predicate that reads
+// running, so mutating running outside that mutex opens a lost-wakeup window
+// (notify fires in the gap between the waiter's predicate check and it parking on
+// the condvar) that would hang the join forever.
+void App::stop_stream_thread(VideoStream* s) {
+    {
+        std::lock_guard<std::mutex> lock(s->queue_mutex);
+        s->running.store(false, std::memory_order_relaxed);
+    }
+    s->queue_cv.notify_all();
+    if (s->thread.joinable()) s->thread.join();
+}
+
+void App::on_video_decoded(VideoStream* s, const encdec::DecodedFrame& frame) {
     ZoneScopedN("on_decoded::copy_planes");
     uint32_t w = frame.width, h = frame.height;
     uint32_t half_h = h / 2;
     size_t y_size = static_cast<size_t>(frame.y_stride) * h;
-    staging_y_.resize(y_size);
-    std::memcpy(staging_y_.data(), frame.y_plane, y_size);
+    s->staging_y.resize(y_size);
+    std::memcpy(s->staging_y.data(), frame.y_plane, y_size);
     size_t uv_size = static_cast<size_t>(frame.uv_stride) * half_h;
-    staging_u_.resize(uv_size);
-    std::memcpy(staging_u_.data(), frame.u_plane, uv_size);
+    s->staging_u.resize(uv_size);
+    std::memcpy(s->staging_u.data(), frame.u_plane, uv_size);
     if (!frame.nv12 && frame.v_plane) {
-        staging_v_.resize(uv_size);
-        std::memcpy(staging_v_.data(), frame.v_plane, uv_size);
+        s->staging_v.resize(uv_size);
+        std::memcpy(s->staging_v.data(), frame.v_plane, uv_size);
     }
     {
-        std::lock_guard<std::mutex> lock(frame_mutex_);
-        shared_y_.swap(staging_y_); shared_u_.swap(staging_u_); shared_v_.swap(staging_v_);
-        shared_width_ = w; shared_height_ = h;
-        shared_y_stride_ = frame.y_stride; shared_uv_stride_ = frame.uv_stride;
-        shared_nv12_ = frame.nv12;
-        new_frame_available_ = true;
+        std::lock_guard<std::mutex> lock(s->frame_mutex);
+        s->y.swap(s->staging_y); s->u.swap(s->staging_u); s->v.swap(s->staging_v);
+        s->width = w; s->height = h;
+        s->y_stride = frame.y_stride; s->uv_stride = frame.uv_stride;
+        s->nv12 = frame.nv12;
+        s->new_frame.store(true, std::memory_order_release);
     }
 }
 
-void App::decode_loop() {
+void App::decode_loop(VideoStream* s) {
     TracySetThreadName("VideoDecoder");
     static constexpr size_t MAX_DECODE_QUEUE = 10;
 
-    while (decode_running_) {
+    while (s->running.load(std::memory_order_relaxed)) {
         ZoneScopedN("App::decode_loop");
         std::queue<DecodeWork> batch;
         {
-            std::unique_lock<std::mutex> lock(decode_queue_mutex_);
-            decode_queue_cv_.wait(lock, [this] {
-                return !decode_queue_.empty() || !decode_running_;
+            std::unique_lock<std::mutex> lock(s->queue_mutex);
+            s->queue_cv.wait(lock, [s] {
+                return !s->queue.empty() || !s->running.load(std::memory_order_relaxed);
             });
-            if (!decode_running_) break;
-            batch.swap(decode_queue_);
+            if (!s->running.load(std::memory_order_relaxed)) break;
+            batch.swap(s->queue);
         }
 
         if (batch.size() > MAX_DECODE_QUEUE) {
             LOG_WARN("Decode queue backed up ({} frames), flushing", batch.size());
-            if (decoder_) decoder_->flush();
+            if (s->decoder) s->decoder->flush();
             while (!batch.empty()) batch.pop();
-            if (core_.viewing_sharer_ != 0) core_.send_pli(core_.viewing_sharer_);
+            core_.send_pli(s->sharer_id);
             continue;
         }
 
         while (!batch.empty()) {
             auto& work = batch.front();
-            if (!decoder_ || decoder_->context_lost() || decoder_->codec() != work.codec) {
-                bool was_context_lost = decoder_ && decoder_->context_lost();
-                if (decoder_) decoder_->shutdown();
+            if (!s->decoder || s->decoder->context_lost() || s->decoder->codec() != work.codec) {
+                bool was_context_lost = s->decoder && s->decoder->context_lost();
+                if (s->decoder) s->decoder->shutdown();
                 if (was_context_lost) {
-                    // Give the GPU a moment to recover from TDR before reinit
+                    // Give the GPU a moment to recover from TDR before reinit, but
+                    // wake immediately if we're being stopped — otherwise the
+                    // joining (UI) thread stalls for the whole delay.
                     LOG_WARN("Decoder context lost — reinitializing after brief delay");
-                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                    std::unique_lock<std::mutex> lock(s->queue_mutex);
+                    s->queue_cv.wait_for(lock, std::chrono::milliseconds(500),
+                        [s] { return !s->running.load(std::memory_order_relaxed); });
+                    if (!s->running.load(std::memory_order_relaxed)) break;
                 }
-                decoder_ = std::make_unique<VideoDecoder>();
-                if (!decoder_->init(work.codec, work.width, work.height)) {
+                s->decoder = std::make_unique<VideoDecoder>();
+                if (!s->decoder->init(work.codec, work.width, work.height)) {
                     LOG_ERROR("Decoder init failed codec={} {}x{}",
                                  static_cast<uint8_t>(work.codec), work.width, work.height);
-                    decoder_.reset(); batch.pop(); continue;
+                    s->decoder.reset(); batch.pop(); continue;
                 }
-                LOG_INFO("Decoder reinitialized: {}",  decoder_->backend_name());
-                decoder_->on_decoded = [this](const DecodedFrame& f) { on_video_decoded(f); };
+                LOG_INFO("Decoder reinitialized: {}",  s->decoder->backend_name());
+                s->decoder->on_decoded = [this, s](const DecodedFrame& f) { on_video_decoded(s, f); };
             }
-            decoder_->decode(work.data.data(), work.data.size(), work.timestamp);
+            s->decoder->decode(work.data.data(), work.data.size(), work.timestamp);
             batch.pop();
         }
     }

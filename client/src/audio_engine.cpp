@@ -116,9 +116,49 @@ bool AudioEngine::init() {
         return false;
     }
 
+    // Secondary/auxiliary stream encoder (music profile, mono). Optional — if it
+    // fails we just don't offer a 2nd stream; the primary path is unaffected.
+    secondary_buf_.assign(audio::OPUS_FRAME_SIZE, 0.0f);
+    secondary_pos_ = 0;
+    secondary_encoder_ready_ =
+        secondary_encoder_.init_encoder(audio::SAMPLE_RATE, audio::CHANNELS,
+                                        audio::SECONDARY_OPUS_BITRATE,
+                                        /*inband_fec=*/true, audio::OPUS_EXPECTED_LOSS_PCT,
+                                        OpusMode::Music);
+    if (!secondary_encoder_ready_)
+        LOG_WARN("Secondary audio encoder unavailable; 2nd stream disabled");
+
     if (!init_devices()) return false;
 
     return true;
+}
+
+void AudioEngine::push_secondary_pcm(const float* pcm, int frame_count) {
+    if (!pcm || frame_count <= 0 || !on_secondary_encoded_frame) return;
+
+    std::lock_guard<std::mutex> lock(secondary_mutex_);
+    if (!secondary_encoder_ready_) return;
+
+    int remaining = frame_count;
+    const float* src = pcm;
+    while (remaining > 0) {
+        size_t space = audio::OPUS_FRAME_SIZE - secondary_pos_;
+        size_t to_copy = std::min(static_cast<size_t>(remaining), space);
+        std::memcpy(secondary_buf_.data() + secondary_pos_, src, to_copy * sizeof(float));
+        secondary_pos_ += to_copy;
+        src += to_copy;
+        remaining -= static_cast<int>(to_copy);
+
+        if (secondary_pos_ >= static_cast<size_t>(audio::OPUS_FRAME_SIZE)) {
+            int encoded = secondary_encoder_.encode(secondary_buf_.data(),
+                                                    audio::OPUS_FRAME_SIZE,
+                                                    secondary_opus_buf_,
+                                                    audio::MAX_OPUS_PACKET);
+            if (encoded > 0)
+                on_secondary_encoded_frame(secondary_opus_buf_, static_cast<size_t>(encoded));
+            secondary_pos_ = 0;
+        }
+    }
 }
 
 bool AudioEngine::init_devices() {
@@ -481,9 +521,38 @@ void AudioEngine::process_playback(float* output, ma_uint32 frame_count) {
         }
     }
 
+    // Mix the secondary/auxiliary voice stream (karaoke/join sounds/plugin audio).
+    // It is mono like the primary mix, but gets NO voice normalization or makeup
+    // gain — the aux VoiceMixer already applies its own (no-makeup) master volume.
+    if (!deafened_ && aux_mixer_) {
+        float mono_buf[4096];
+        ma_uint32 remaining = frame_count;
+        ma_uint32 offset = 0;
+        while (remaining > 0) {
+            ma_uint32 chunk = remaining > 4096 ? 4096 : remaining;
+            std::memset(mono_buf, 0, chunk * sizeof(float));
+            aux_mixer_->mix_output(mono_buf, static_cast<int>(chunk));
+            for (ma_uint32 i = 0; i < chunk; i++) {
+                output[(offset + i) * 2 + 0] += mono_buf[i];
+                output[(offset + i) * 2 + 1] += mono_buf[i];
+            }
+            offset += chunk;
+            remaining -= chunk;
+        }
+    }
+
     // Mix stream audio (already stereo, adds to existing output)
     if (stream_player_)
         stream_player_->mix_output(output, static_cast<int>(frame_count));
+
+    // Final hard limiter across the summed output. Each source self-clamps its own
+    // contribution to [-1,1], but primary voice + secondary (VOICE2) + screen-share
+    // audio are summed on top of each other and can exceed full scale together —
+    // clamp once at the end so loud overlap doesn't wrap/clip at the device.
+    for (ma_uint32 i = 0; i < total_samples; i++) {
+        if (output[i] > 1.0f) output[i] = 1.0f;
+        else if (output[i] < -1.0f) output[i] = -1.0f;
+    }
 }
 
 } // namespace parties::client

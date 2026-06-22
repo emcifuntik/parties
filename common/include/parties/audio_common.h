@@ -15,6 +15,12 @@ constexpr int OPUS_BITRATE     = 40000;   // 40 kbps: +8k over the old 32k funds
 constexpr int OPUS_EXPECTED_LOSS_PCT = 15; // size LBRR for the 10% target with burst headroom
 constexpr int MAX_OPUS_PACKET  = 512;     // max bytes per opus frame (~100B at 40kbps/20ms)
 
+// Secondary/auxiliary voice stream (karaoke backing track, channel join sound,
+// plugin audio). Mono 48k/20ms like the primary stream so it reuses the whole
+// jitter-buffer/decoder path, but encoded in the music profile at a higher
+// bitrate because it carries full-band program material rather than speech.
+constexpr int SECONDARY_OPUS_BITRATE = 64000;  // 64 kbps for music quality
+
 constexpr float DB_FLOOR = -60.0f;        // dB floor for display/VAD mapping
 
 // Linear RMS → perceptual [0,1] (maps [-60dB, 0dB] → [0, 1])

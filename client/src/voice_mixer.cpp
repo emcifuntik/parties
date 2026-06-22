@@ -8,9 +8,10 @@
 
 namespace parties::client {
 
-VoiceMixer::VoiceMixer()
+VoiceMixer::VoiceMixer(bool apply_makeup)
     : mix_buf_(audio::OPUS_FRAME_SIZE, 0.0f)
-    , user_buf_(audio::OPUS_FRAME_SIZE, 0.0f) {}
+    , user_buf_(audio::OPUS_FRAME_SIZE, 0.0f)
+    , apply_makeup_(apply_makeup) {}
 
 VoiceMixer::~VoiceMixer() = default;
 
@@ -256,8 +257,11 @@ void VoiceMixer::mix_output(float* output, int frame_count) {
         written += chunk;
     }
 
-    // Apply master makeup gain (received voice is low at unity), then clip.
-    const float master = audio::db_to_gain(audio::VOICE_OUTPUT_GAIN_DB);
+    // Apply makeup gain (primary voice only — received voice is low at unity)
+    // and the per-mix global volume, then clip. The aux mix skips makeup so its
+    // already-leveled audio (music/sounds) is not artificially boosted.
+    const float makeup = apply_makeup_ ? audio::db_to_gain(audio::VOICE_OUTPUT_GAIN_DB) : 1.0f;
+    const float master = makeup * audio::volume_position_to_gain(master_volume_);
     for (int i = 0; i < frame_count; i++) {
         float s = output[i] * master;
         if (s > 1.0f) s = 1.0f;
@@ -289,6 +293,16 @@ float VoiceMixer::get_user_volume(UserId user_id) const {
     if (it != streams_.end())
         return it->second.volume;
     return 1.0f;
+}
+
+void VoiceMixer::set_master_volume(float position) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    master_volume_ = std::clamp(position, 0.0f, 2.0f);
+}
+
+float VoiceMixer::get_master_volume() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return master_volume_;
 }
 
 void VoiceMixer::set_user_compression(UserId user_id, bool enabled, float target) {

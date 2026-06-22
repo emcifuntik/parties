@@ -14,29 +14,34 @@ OpusCodec::~OpusCodec() {
 }
 
 bool OpusCodec::init_encoder(int sample_rate, int channels, int bitrate,
-                             bool inband_fec, int expected_loss_pct) {
+                             bool inband_fec, int expected_loss_pct, OpusMode mode) {
     if (encoder_) {
         opus_encoder_destroy(encoder_);
         encoder_ = nullptr;
     }
     int err;
-    encoder_ = opus_encoder_create(sample_rate, channels, OPUS_APPLICATION_VOIP, &err);
+    const int application = (mode == OpusMode::Music) ? OPUS_APPLICATION_AUDIO
+                                                      : OPUS_APPLICATION_VOIP;
+    encoder_ = opus_encoder_create(sample_rate, channels, application, &err);
     if (err != OPUS_OK) {
         encoder_ = nullptr;
         return false;
     }
     opus_encoder_ctl(encoder_, OPUS_SET_BITRATE(bitrate));
 
+    const int signal = (mode == OpusMode::Music) ? OPUS_SIGNAL_MUSIC : OPUS_SIGNAL_VOICE;
+
     if (inband_fec) {
-        // Packet-loss resilience for real-time voice over unreliable datagrams.
-        // In-band FEC (LBRR) embeds a low-bitrate copy of the previous frame in
-        // each packet; it is ONLY emitted when packet-loss-perc > 0 and the
-        // encoder is in SILK/hybrid (where LBRR lives). App-side VAD already
-        // gates transmission, so keep Opus DTX off (it would add in-band gaps
-        // the receiver would mistake for loss).
+        // Packet-loss resilience over unreliable datagrams. In-band FEC (LBRR)
+        // embeds a low-bitrate copy of the previous frame in each packet; it is
+        // ONLY emitted when packet-loss-perc > 0 and the encoder is in
+        // SILK/hybrid (where LBRR lives). App-side VAD already gates voice
+        // transmission, so keep Opus DTX off (it would add in-band gaps the
+        // receiver would mistake for loss). For the music profile LBRR may not
+        // engage at high bitrate; the decoder still PLCs lost frames.
         opus_encoder_ctl(encoder_, OPUS_SET_INBAND_FEC(1));
         opus_encoder_ctl(encoder_, OPUS_SET_PACKET_LOSS_PERC(expected_loss_pct));
-        opus_encoder_ctl(encoder_, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
+        opus_encoder_ctl(encoder_, OPUS_SET_SIGNAL(signal));
         opus_encoder_ctl(encoder_, OPUS_SET_DTX(0));
         opus_encoder_ctl(encoder_, OPUS_SET_VBR(1));
         opus_encoder_ctl(encoder_, OPUS_SET_VBR_CONSTRAINT(1));
@@ -44,8 +49,13 @@ bool OpusCodec::init_encoder(int sample_rate, int channels, int bitrate,
 
         opus_int32 fec_on = 0;
         opus_encoder_ctl(encoder_, OPUS_GET_INBAND_FEC(&fec_on));
-        if (!fec_on)
+        if (!fec_on && mode == OpusMode::Voice)
             LOG_WARN("Opus in-band FEC was requested but did not enable");
+    } else if (mode == OpusMode::Music) {
+        opus_encoder_ctl(encoder_, OPUS_SET_SIGNAL(signal));
+        opus_encoder_ctl(encoder_, OPUS_SET_DTX(0));
+        opus_encoder_ctl(encoder_, OPUS_SET_VBR(1));
+        opus_encoder_ctl(encoder_, OPUS_SET_COMPLEXITY(10));
     }
     return true;
 }

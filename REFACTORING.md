@@ -2,8 +2,8 @@
 [x] Analysis of our DX12 implementation and backend implementation + bug fixes. Currently we have a bug that when we are moving application our Stream playback freezes. Maybe we need to do separate UI and logic threads. Figure it out and fix and remove workaround that fixing FPS lags while moving application window.
 [x] UDP unbound information on server that will return count of users connected (not in QUIC, but like in game servers for server list)
 [x] Make complete project and network protocol analysis and find places to improve, also autoreconnect on connection drop should be implemented with reconnect to server and last channel. (Auto-reconnect implemented: backoff + re-auth + channel rejoin + flap guard. Analysis backlog captured in docs/analysis-backlog.md.)
-[ ] Add support of multiple videos streams playback
-[ ] Make support of sending and playing multiple VOIP streams (for plugins in future)
+[x] Add support of multiple videos streams playback (pick-multiple grid: additive SCREEN_SHARE_VIEW + per-sharer subscriptions server-side; Windows per-sharer VideoStream decode pipeline + data-for grid of <video_frame> cells; macOS/iOS remain single-decoder but render into the same grid)
+[x] Make support of sending and playing 2 VOIP streams (for plugins in future) (new optional VOICE2 0x05 packet; aux VoiceMixer with no makeup/normalization + own volume; AudioEngine::push_secondary_pcm music-profile encoder; independent Voice/Music volume sliders. Lays the transport for the Karaoke + Channel Join Sound plugins.)
 [ ] Implement plugins SDK (as dynamic libraries). As initial functionality plugins should have a possibility to create custom page in "Plugins". Plugins page should also be implemented in Parties client UI. Example Karaoke plugin should provide possibility to select .WAV file to stream it as extra audio track to server and broadcast to channel members. 
 [ ] I don't like our UI management and user config store. I think we need to do UI refactor as well and improve it to be Enterprise grade
 [x] Fix issues in macOS stream encoding. Streams from macOS with M2 CPU looks very bad and like a lowbitrate stream with actual 20mb/s bitrate.

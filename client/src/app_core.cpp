@@ -57,6 +57,7 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
 
     // Wire audio subsystems
     audio_.set_mixer(&mixer_);
+    audio_.set_aux_mixer(&aux_mixer_);
     audio_.set_stream_player(&stream_audio_player_);
 
     audio_.on_encoded_frame = [this](const uint8_t* data, size_t len) {
@@ -64,6 +65,19 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
         uint16_t seq = voice_seq_++;
         std::vector<uint8_t> pkt(1 + 2 + len);
         pkt[0] = protocol::VOICE_PACKET_TYPE;
+        std::memcpy(pkt.data() + 1, &seq, 2);
+        std::memcpy(pkt.data() + 3, data, len);
+        net_.send_data(pkt.data(), pkt.size());
+    };
+
+    // Secondary/auxiliary stream (VOICE2): same wire shape as voice, its own
+    // sequence space. Not gated by mute (mute is for the mic) but still requires
+    // being authenticated and in a channel.
+    audio_.on_secondary_encoded_frame = [this](const uint8_t* data, size_t len) {
+        if (!authenticated_ || current_channel_ == 0) return;
+        uint16_t seq = voice2_seq_++;
+        std::vector<uint8_t> pkt(1 + 2 + len);
+        pkt[0] = protocol::VOICE2_PACKET_TYPE;
         std::memcpy(pkt.data() + 1, &seq, 2);
         std::memcpy(pkt.data() + 3, data, len);
         net_.send_data(pkt.data(), pkt.size());
@@ -87,6 +101,16 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
             uint16_t seq;
             std::memcpy(&seq, data + 5, 2);
             mixer_.push_packet(sender_id, seq, data + 7, len - 7);
+        } else if (type == protocol::VOICE2_PACKET_TYPE) {
+            // Secondary stream — identical layout to VOICE: [type(1)][sender_id(4)][seq(2)][opus(N)].
+            // Routed into the aux mixer (no makeup/normalization, own volume).
+            if (len < 8) return;
+            uint32_t sender_id;
+            std::memcpy(&sender_id, data + 1, 4);
+            if (sender_id == user_id_) return;
+            uint16_t seq;
+            std::memcpy(&seq, data + 5, 2);
+            aux_mixer_.push_packet(sender_id, seq, data + 7, len - 7);
         } else if (type == protocol::VIDEO_FRAME_PACKET_TYPE) {
             // [type(1)][sender_id(4)][fn(4)][ts(4)][flags(1)][w(2)][h(2)][codec(1)][data(N)]
             if (len < 19) return;
@@ -101,6 +125,11 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
             uint32_t sender_id;
             std::memcpy(&sender_id, data + 1, 4);
             if (sender_id == user_id_) return;
+            // When watching several shares in the grid the server forwards audio
+            // for all of them, but StreamAudioPlayer is a single decoder/jitter
+            // queue — feeding it two senders would corrupt decoding. So we play
+            // only the focused (primary) stream's audio. Per-sharer screen-share
+            // audio mixing would need a StreamAudioPlayer-per-sharer (TODO).
             if (sender_id == viewing_sharer_)
                 stream_audio_player_.push_packet(data + 5, len - 5);
         } else if (type == protocol::VIDEO_CONTROL_TYPE) {
@@ -343,6 +372,12 @@ void AppCore::load_saved_prefs()
 
     v = pref("audio.stream_volume");
     if (!v.empty()) { float vol = std::strtof(v.c_str(), nullptr); stream_audio_player_.set_volume(vol); model_.stream_volume = vol; }
+
+    v = pref("audio.voice_volume");
+    if (!v.empty()) { float vol = std::strtof(v.c_str(), nullptr); mixer_.set_master_volume(vol); model_.voice_volume = vol; }
+
+    v = pref("audio.secondary_volume");
+    if (!v.empty()) { float vol = std::strtof(v.c_str(), nullptr); aux_mixer_.set_master_volume(vol); model_.secondary_volume = vol; }
 
     v = pref("audio.notification_volume");
     if (!v.empty()) { float vol = std::strtof(v.c_str(), nullptr); if (bridge_.set_notification_volume) bridge_.set_notification_volume(vol); model_.notification_volume = vol; }
@@ -701,6 +736,7 @@ void AppCore::on_disconnect_cleanup()
 
     audio_.stop();
     mixer_.clear();
+    aux_mixer_.clear();
     clear_all_sharers();
     voice_last_active_.clear();
 
@@ -918,6 +954,7 @@ void AppCore::leave_channel()
         bridge_.play_sound(SoundPlayer::Effect::LeaveChannel);
     audio_.stop();
     mixer_.clear();
+    aux_mixer_.clear();
 
     model_.current_channel = 0;
     model_.current_channel_name = "";
@@ -928,34 +965,125 @@ void AppCore::leave_channel()
 // Screen share helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Single-select watch (replace whatever we were watching with just `id`). Used
+// by single-decoder platforms (macOS/iOS) and as the "focus" action. On a
+// multi-stream platform a sharer card / chip instead routes through add_watch.
 void AppCore::watch_sharer(UserId id)
 {
-    // Stop watching the current sharer first (cleans up decode thread,
-    // server subscription, and video element)
-    if (viewing_sharer_ != 0 && viewing_sharer_ != id)
-        stop_watching();
+    if (id == 0) { stop_watching(); return; }
+    if (multi_stream()) { add_watch(id); return; }
 
+    // Tear down the previous single stream (server sub + decoder), keep at most one.
+    if (viewing_sharer_ != 0 && viewing_sharer_ != id && bridge_.stop_video_stream)
+        bridge_.stop_video_stream(viewing_sharer_);
+    {
+        std::lock_guard<std::mutex> lock(watched_mutex_);
+        watched_.clear();
+        watched_.insert(id);
+    }
     viewing_sharer_ = id;
     awaiting_keyframe_ = true;
-    // Start decode thread FIRST so it's ready to receive the keyframe.
-    if (bridge_.start_decode_thread)
-        bridge_.start_decode_thread();
-    uint32_t id32 = id;
+    if (bridge_.start_video_stream) bridge_.start_video_stream(id);
+
+    uint32_t id32 = id;   // legacy single-select wire form ([target] only)
     net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_VIEW,
                       reinterpret_cast<const uint8_t*>(&id32), 4);
     send_pli(id);
     model_.viewing_sharer_id = static_cast<int>(id);
+    rebuild_watched_model();
+}
+
+// Add one more stream to the grid (additive on multi-stream platforms; falls
+// back to single-select where only one hardware decoder exists).
+void AppCore::add_watch(UserId id)
+{
+    if (id == 0) return;
+    if (!multi_stream()) { watch_sharer(id); return; }
+
+    {
+        std::lock_guard<std::mutex> lock(watched_mutex_);
+        if (!watched_.insert(id).second) return;   // already watching
+    }
+    BinaryWriter w; w.write_u32(id); w.write_u8(1);   // additive subscribe
+    net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_VIEW,
+                      w.data().data(), w.data().size());
+    if (bridge_.start_video_stream) bridge_.start_video_stream(id);
+    send_pli(id);
+    viewing_sharer_ = id;   // most-recently-added is the "primary" (fullscreen focus)
+    model_.viewing_sharer_id = static_cast<int>(id);
+    rebuild_watched_model();
+}
+
+void AppCore::remove_watch(UserId id)
+{
+    bool was_watching, empty_now;
+    {
+        std::lock_guard<std::mutex> lock(watched_mutex_);
+        was_watching = watched_.erase(id) > 0;
+        empty_now = watched_.empty();
+    }
+    if (!was_watching) return;
+
+    BinaryWriter w; w.write_u32(id); w.write_u8(0);   // additive unsubscribe
+    net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_VIEW,
+                      w.data().data(), w.data().size());
+    if (bridge_.stop_video_stream) bridge_.stop_video_stream(id);
+
+    if (empty_now) {
+        viewing_sharer_ = 0;
+        model_.viewing_sharer_id = 0;
+        model_.stream_fullscreen = false;
+        if (bridge_.clear_video_element) bridge_.clear_video_element();
+    } else {
+        UserId primary;
+        { std::lock_guard<std::mutex> lock(watched_mutex_); primary = *watched_.begin(); }
+        viewing_sharer_ = primary;
+        model_.viewing_sharer_id = static_cast<int>(primary);
+    }
+    rebuild_watched_model();
+}
+
+void AppCore::toggle_watch(UserId id)
+{
+    if (is_watching(id)) remove_watch(id);
+    else                 add_watch(id);
+}
+
+void AppCore::set_single_watched(UserId id)
+{
+    {
+        std::lock_guard<std::mutex> lock(watched_mutex_);
+        watched_.clear();
+        if (id != 0) watched_.insert(id);
+    }
+    viewing_sharer_ = id;
+    model_.viewing_sharer_id = static_cast<int>(id);
+    if (id == 0) model_.stream_fullscreen = false;
+    rebuild_watched_model();
+}
+
+bool AppCore::is_watching(UserId id) const
+{
+    std::lock_guard<std::mutex> lock(watched_mutex_);
+    return watched_.count(id) > 0;
 }
 
 void AppCore::stop_watching()
 {
-    if (bridge_.stop_decode_thread)
-        bridge_.stop_decode_thread();
-    viewing_sharer_ = 0;
-    awaiting_keyframe_ = false;
-    uint32_t zero = 0;
+    std::vector<UserId> to_stop;
+    {
+        std::lock_guard<std::mutex> lock(watched_mutex_);
+        to_stop.assign(watched_.begin(), watched_.end());
+        watched_.clear();
+    }
+    for (UserId id : to_stop)
+        if (bridge_.stop_video_stream) bridge_.stop_video_stream(id);
+
+    uint32_t zero = 0;   // target 0 = unsubscribe from everyone (both wire forms)
     net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_VIEW,
                       reinterpret_cast<const uint8_t*>(&zero), 4);
+    viewing_sharer_ = 0;
+    awaiting_keyframe_ = false;
     model_.viewing_sharer_id = 0;
     // Leaving the stream view must also drop fullscreen, or the window stays
     // borderless-fullscreen with nothing to show (the app.cpp tick syncs the OS
@@ -963,6 +1091,32 @@ void AppCore::stop_watching()
     model_.stream_fullscreen = false;
     if (bridge_.clear_video_element)
         bridge_.clear_video_element();
+    rebuild_watched_model();
+}
+
+// Refresh model_.watched (grid cells) + sharers[].watching flags from watched_.
+void AppCore::rebuild_watched_model()
+{
+    std::unordered_set<UserId> w;
+    { std::lock_guard<std::mutex> lock(watched_mutex_); w = watched_; }
+
+    auto& sharers = model_.sharers.silent();
+    auto& wv = model_.watched.silent();
+    wv.clear();
+    for (auto& s : sharers) {
+        bool watching = w.count(static_cast<UserId>(s.id)) > 0;
+        s.watching = watching;
+        if (watching) {
+            WatchedStream ws;
+            ws.id = s.id;
+            ws.name = s.name;
+            ws.element_id = Rml::String("screen-share-" + std::to_string(s.id));
+            wv.push_back(ws);
+        }
+    }
+    model_.sharers.notify();
+    model_.watched.notify();
+    model_.watching_count = static_cast<int>(wv.size());
 }
 
 void AppCore::send_pli(UserId target)
@@ -976,11 +1130,25 @@ void AppCore::send_pli(UserId target)
 
 void AppCore::clear_all_sharers()
 {
+    // Tear down any active decoders (channel left / disconnected). No server
+    // unsubscribe is sent — the channel/connection is already gone.
+    std::vector<UserId> to_stop;
+    {
+        std::lock_guard<std::mutex> lock(watched_mutex_);
+        to_stop.assign(watched_.begin(), watched_.end());
+        watched_.clear();
+    }
+    for (UserId id : to_stop)
+        if (bridge_.stop_video_stream) bridge_.stop_video_stream(id);
+
     viewing_sharer_ = 0;
     awaiting_keyframe_ = false;
     active_sharers_.clear();
     model_.sharers.silent().clear();
     model_.sharers.notify();
+    model_.watched.silent().clear();
+    model_.watched.notify();
+    model_.watching_count = 0;
     model_.someone_sharing = false;
     model_.viewing_sharer_id = 0;
     model_.stream_fullscreen = false;
@@ -1307,6 +1475,7 @@ void AppCore::on_user_left(const uint8_t* data, size_t len)
     if (reader.error()) return;
 
     mixer_.remove_user(uid);
+    aux_mixer_.remove_user(uid);
 
     auto& channels = model_.channels.silent();
     for (auto& ch : channels) {
@@ -1395,8 +1564,8 @@ void AppCore::on_screen_share_started(const uint8_t* data, size_t len)
         for (auto& u : ch.users)
             if (u.id == static_cast<int>(sharer_id)) u.streaming = true;
 
-    model_.sharers.notify();
     model_.channels.notify();
+    rebuild_watched_model();   // notifies sharers + refreshes watching flags
 }
 
 void AppCore::on_screen_share_stopped(const uint8_t* data, size_t len)
@@ -1417,11 +1586,14 @@ void AppCore::on_screen_share_stopped(const uint8_t* data, size_t len)
         for (auto& u : ch.users)
             if (u.id == static_cast<int>(sharer_id)) u.streaming = false;
 
-    model_.sharers.notify();
     model_.channels.notify();
 
-    if (viewing_sharer_ == sharer_id)
-        stop_watching();
+    // If we were watching this sharer, tear that stream down; otherwise just
+    // refresh the model so the (now-gone) sharer drops out of the grid/chips.
+    if (is_watching(static_cast<UserId>(sharer_id)))
+        remove_watch(static_cast<UserId>(sharer_id));
+    else
+        rebuild_watched_model();
 }
 
 void AppCore::on_screen_share_denied(const uint8_t* /*data*/, size_t /*len*/)
@@ -1630,6 +1802,8 @@ void AppCore::setup_model_callbacks()
     model_.on_aec_changed               = [this](bool e) { audio_.set_aec_enabled(e); settings_.set_pref("audio.aec", e?"1":"0"); };
     model_.on_vad_changed               = [this](bool e) { audio_.set_vad_enabled(e); settings_.set_pref("audio.vad", e?"1":"0"); };
     model_.on_vad_threshold_changed     = [this](float t) { audio_.set_vad_threshold(t); save_pref_debounced("audio.vad_threshold", std::to_string(t)); };
+    model_.on_voice_volume_changed      = [this](float v) { mixer_.set_master_volume(v); save_pref_debounced("audio.voice_volume", std::to_string(v)); };
+    model_.on_secondary_volume_changed  = [this](float v) { aux_mixer_.set_master_volume(v); save_pref_debounced("audio.secondary_volume", std::to_string(v)); };
 
     model_.on_toggle_ptt = [this]() {
         model_.ptt_enabled = !model_.ptt_enabled;
@@ -1658,7 +1832,8 @@ void AppCore::setup_model_callbacks()
         model_.show_share_picker = false;
     };
 
-    model_.on_watch_sharer  = [this](int id) { watch_sharer(static_cast<UserId>(id)); };
+    model_.on_watch_sharer  = [this](int id) { add_watch(static_cast<UserId>(id)); };
+    model_.on_toggle_watch  = [this](int id) { toggle_watch(static_cast<UserId>(id)); };
     model_.on_select_sharer = [this](int id) { watch_sharer(static_cast<UserId>(id)); };
     model_.on_stop_watching = [this]()       { stop_watching(); };
 

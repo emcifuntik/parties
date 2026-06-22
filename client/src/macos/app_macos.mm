@@ -407,11 +407,10 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         bself->_needsKeyframe = true;
     };
 
-    bridge.clear_video_element = [bself]() {
-        if (!bself->_doc) return;
-        auto* el = dynamic_cast<VideoElement*>(bself->_doc->GetElementById("screen-share"));
-        if (el) el->Clear();
-    };
+    // The viewer is now a data-for grid of per-sharer cells ("screen-share-<id>");
+    // a stream's cell is destroyed by the binding when it drops out of
+    // model_.watched, so there is no single element to clear here.
+    bridge.clear_video_element = []() {};
 
     // ── Init AppCore ──────────────────────────────────────────────────────
     if (!_core.init(std::string(dbPath.UTF8String), std::move(bridge), _rmlContext)) {
@@ -545,6 +544,10 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     _core.model_.on_select_sharer = [bself](int id) {
         [bself watchSharer:static_cast<UserId>(id)];
     };
+    // Single hardware decoder: a chip toggle just switches to that single stream.
+    _core.model_.on_toggle_watch = [bself](int id) {
+        [bself watchSharer:static_cast<UserId>(id)];
+    };
     _core.model_.on_stop_watching = [bself]() {
         [bself stopWatching];
     };
@@ -600,7 +603,10 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     _core.stream_frame_count_.fetch_add(1, std::memory_order_relaxed);
 
     if (!_doc) return;
-    auto* el = dynamic_cast<VideoElement*>(_doc->GetElementById("screen-share"));
+    // The viewer is a grid of per-sharer cells; route to this sharer's cell.
+    // macOS is single-select, so viewing_sharer_ is the one being watched.
+    std::string elem_id = "screen-share-" + std::to_string(_core.viewing_sharer_.load());
+    auto* el = dynamic_cast<VideoElement*>(_doc->GetElementById(elem_id));
     if (!el) return;
 
     CVPixelBufferLockBaseAddress(buf, kCVPixelBufferLock_ReadOnly);
@@ -828,9 +834,10 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     _core.net_.send_message(ControlMessageType::SCREEN_SHARE_VIEW,
                              (const uint8_t*)&id32, sizeof(id32));
 
-    _core.model_.viewing_sharer_id.silent() = static_cast<int>(sharerId);
+    // Populate the viewer grid model with this single stream (single hardware
+    // decoder → exactly one cell, id "screen-share-<id>").
+    _core.set_single_watched(sharerId);
     _streamRevealed = false;
-    // Don't dirty yet — onVideoDecoded dirties on first frame to avoid black flash
 }
 
 - (void)stopWatching
@@ -844,12 +851,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     _core.net_.send_message(ControlMessageType::SCREEN_SHARE_VIEW,
                              (const uint8_t*)&zero, sizeof(zero));
 
-    _core.model_.viewing_sharer_id = 0;
-
-    if (_doc) {
-        auto* el = dynamic_cast<VideoElement*>(_doc->GetElementById("screen-share"));
-        if (el) el->Clear();
-    }
+    _core.set_single_watched(0);
 }
 
 - (void)sendPLI:(UserId)targetId
