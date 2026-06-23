@@ -749,6 +749,8 @@ void AppCore::on_disconnect_cleanup()
     model_.channels.silent().clear();
     model_.is_muted = false;
     model_.is_deafened = false;
+    if (model_.is_sharing && bridge_.stop_screen_share)
+        bridge_.stop_screen_share();
     model_.is_sharing = false;
     model_.show_settings = false;
     model_.show_share_picker = false;
