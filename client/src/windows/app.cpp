@@ -5,6 +5,7 @@
 #include <d3dcompiler.h>
 #include <client/context_menu.h>
 #include <client/screen_capture.h>
+#include <client/webcam_capture.h>
 #include <client/video_encoder.h>
 #include <client/video_decoder.h>
 #include <client/video_element.h>
@@ -300,6 +301,18 @@ bool App::init(HWND hwnd, int renderer_id) {
     bridge.start_video_stream = [this](UserId id) { start_video_stream(id); };
     bridge.stop_video_stream  = [this](UserId id) { stop_video_stream(id); };
 
+    // Webcam bridges (mirror the screen-share bridges above).
+    bridge.start_camera_share = [this]() { start_camera_share(); };
+    bridge.stop_camera_share  = [this]() { stop_camera_share(); };
+    bridge.request_camera_keyframe = [this]() {
+        std::lock_guard<std::mutex> lock(cam_encode_mutex_);
+        if (cam_encoder_) cam_encoder_->force_keyframe();
+    };
+    // Camera grid cells come and go with the data-for binding, so nothing to clear.
+    bridge.clear_camera_element = []() {};
+    bridge.start_camera_stream = [this](UserId id) { start_camera_stream(id); };
+    bridge.stop_camera_stream  = [this](UserId id) { stop_camera_stream(id); };
+
     // Initialize UI
     if (!ui_.init(hwnd, renderer_id)) return false;
 
@@ -319,6 +332,37 @@ bool App::init(HWND hwnd, int renderer_id) {
     // Wire video frame reception to local on_video_frame_received
     core_.on_video_frame_received = [this](uint32_t sender_id, const uint8_t* data, size_t len) {
         on_video_frame_received(sender_id, data, len);
+    };
+
+    // Wire camera frame reception to local on_camera_frame_received
+    core_.on_camera_frame_received = [this](uint32_t sender_id, const uint8_t* data, size_t len) {
+        on_camera_frame_received(sender_id, data, len);
+    };
+
+    // Enumerate cameras and restore the saved selection
+    {
+        auto cams = WebcamCapture::enumerate_devices();
+        auto& list = core_.model_.camera_devices.silent();
+        list.clear();
+        for (size_t i = 0; i < cams.size(); i++)
+            list.push_back({Rml::String(cams[i].name), static_cast<int>(i)});
+        core_.model_.camera_devices.notify();
+
+        int sel = 0;
+        if (auto saved = core_.settings_.get_pref("video.camera_device")) {
+            for (size_t i = 0; i < cams.size(); i++)
+                if (cams[i].name == *saved) { sel = static_cast<int>(i); break; }
+        }
+        core_.model_.selected_camera_device = sel;
+    }
+
+    core_.model_.on_select_camera_device = [this](int index) {
+        auto& devs = core_.model_.camera_devices.silent();
+        if (index < 0 || index >= static_cast<int>(devs.size())) return;
+        core_.model_.selected_camera_device = index;
+        core_.settings_.set_pref("video.camera_device", std::string(devs[index].name.c_str()));
+        // Apply immediately if a camera is already streaming.
+        if (sharing_camera_) { stop_camera_share(); start_camera_share(); }
     };
 
     // Windows-only: select share target from DXGI list
@@ -432,6 +476,8 @@ void App::shutdown() {
     encode_registered_ = false;
     if (encoder_) { encoder_->shutdown(); encoder_.reset(); }
     stop_all_video_streams();
+    stop_camera_share();
+    stop_all_camera_streams();
     core_.shutdown();
     ui_.shutdown();
 }
@@ -644,6 +690,39 @@ void App::render_frame() {
                 if (up.y.empty() || up.w == 0 || up.h == 0) continue;
                 core_.stream_frame_count_.fetch_add(1, std::memory_order_relaxed);
                 auto* elem = grid ? find_grid_video(grid, up.sharer) : nullptr;
+                if (elem) {
+                    auto* ve = static_cast<VideoElement*>(elem);
+                    if (up.nv12)
+                        ve->UpdateNV12Frame(up.y, up.ys, up.u, up.uvs, up.w, up.h);
+                    else
+                        ve->UpdateYUVFrame(up.y.data(), up.ys, up.u.data(), up.v.data(), up.uvs, up.w, up.h);
+                }
+            }
+
+            // Same delivery for camera streams, routed to the separate camera grid.
+            std::vector<PendingUpload> cam_uploads;
+            {
+                std::lock_guard<std::mutex> slock(camera_streams_mutex_);
+                for (auto& [uid, sp] : camera_streams_) {
+                    VideoStream* s = sp.get();
+                    if (!s->new_frame.load(std::memory_order_acquire)) continue;
+                    std::lock_guard<std::mutex> flock(s->frame_mutex);
+                    if (!s->new_frame.load(std::memory_order_relaxed)) continue;
+                    PendingUpload up;
+                    up.sharer = static_cast<uint32_t>(s->sharer_id);
+                    up.y.swap(s->y); up.u.swap(s->u); up.v.swap(s->v);
+                    up.w = s->width; up.h = s->height;
+                    up.ys = s->y_stride; up.uvs = s->uv_stride;
+                    up.nv12 = s->nv12;
+                    s->new_frame.store(false, std::memory_order_relaxed);
+                    cam_uploads.push_back(std::move(up));
+                }
+            }
+            Rml::Element* cam_grid = cam_uploads.empty() ? nullptr : doc_->GetElementById("camera-grid");
+            for (auto& up : cam_uploads) {
+                if (up.y.empty() || up.w == 0 || up.h == 0) continue;
+                core_.camera_frame_count_.fetch_add(1, std::memory_order_relaxed);
+                auto* elem = cam_grid ? find_grid_video(cam_grid, up.sharer) : nullptr;
                 if (elem) {
                     auto* ve = static_cast<VideoElement*>(elem);
                     if (up.nv12)
@@ -1080,6 +1159,264 @@ void App::stop_screen_share() {
         core_.net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_STOP, nullptr, 0);
 }
 
+// Webcam capture + encode, independent of the screen encode thread. Frames are
+// captured on the WebcamCapture worker and encoded inline there (a camera is a
+// fraction of a screen's pixel rate, so it needs no triple-buffered thread).
+
+void App::start_camera_share() {
+    ZoneScopedN("App::start_camera_share");
+    if (sharing_camera_ || !core_.authenticated_ || core_.current_channel_ == 0) return;
+
+    constexpr uint32_t kCamWidth  = 1280;
+    constexpr uint32_t kCamHeight = 720;
+    constexpr uint32_t kCamFps    = 30;
+
+    // Dedicated D3D11 device for the camera encode path (independent of screen).
+    D3D_FEATURE_LEVEL fl;
+    UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
+    HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags,
+                                   nullptr, 0, D3D11_SDK_VERSION,
+                                   cam_device_.GetAddressOf(), &fl, cam_context_.GetAddressOf());
+    if (FAILED(hr)) {
+        LOG_ERROR("Camera: D3D11CreateDevice failed: {:#x}", static_cast<unsigned>(hr));
+        cam_device_.Reset(); cam_context_.Reset();
+        return;
+    }
+
+    int cam_dev = (std::max)(0, core_.model_.selected_camera_device.get());
+    cam_capture_ = std::make_unique<WebcamCapture>();
+    if (!cam_capture_->start(cam_dev, kCamWidth, kCamHeight, kCamFps)) {
+        LOG_ERROR("Failed to start webcam capture (device {})", cam_dev);
+        cam_capture_.reset(); cam_device_.Reset(); cam_context_.Reset();
+        return;
+    }
+
+    uint32_t cw = cam_capture_->width()  & ~1u;  // encoders require even dimensions
+    uint32_t ch = cam_capture_->height() & ~1u;
+    if (cw == 0 || ch == 0) { cw = kCamWidth; ch = kCamHeight; }
+    cam_tex_w_ = cw; cam_tex_h_ = ch;
+
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = cw; td.Height = ch; td.MipLevels = 1; td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    hr = cam_device_->CreateTexture2D(&td, nullptr, cam_upload_tex_.ReleaseAndGetAddressOf());
+    if (FAILED(hr)) {
+        LOG_ERROR("Camera: upload texture creation failed: {:#x}", static_cast<unsigned>(hr));
+        cam_capture_->stop(); cam_capture_.reset();
+        cam_device_.Reset(); cam_context_.Reset();
+        return;
+    }
+
+    uint32_t bitrate = static_cast<uint32_t>(core_.model_.share_bitrate.get() * 1'000'000.0f);
+    bitrate = (std::max)(VIDEO_MIN_BITRATE, (std::min)(bitrate, VIDEO_MAX_BITRATE));
+    int codec_idx = (std::max)(0, (std::min)(core_.model_.share_codec.get(), 2));
+    VideoCodecId codec_pref = codec_idx == 0 ? VideoCodecId::AV1
+                            : codec_idx == 1 ? VideoCodecId::H265 : VideoCodecId::H264;
+
+    cam_encoder_ = std::make_unique<VideoEncoder>();
+    if (!cam_encoder_->init(cam_device_.Get(), cw, ch, cw, ch, kCamFps, bitrate, codec_pref)) {
+        LOG_ERROR("Camera encoder init failed");
+        cam_encoder_.reset();
+        cam_capture_->stop(); cam_capture_.reset();
+        cam_upload_tex_.Reset(); cam_device_.Reset(); cam_context_.Reset();
+        return;
+    }
+
+    core_.camera_frame_number_ = 0;
+    core_.camera_frame_count_.store(0, std::memory_order_relaxed);
+
+    cam_encoder_->on_encoded = [this](const uint8_t* data, size_t len, bool keyframe) {
+        if (!sharing_camera_ || !core_.authenticated_ || !cam_encoder_) return;
+
+        uint32_t fn = core_.camera_frame_number_++;
+        uint32_t ts = fn;
+        uint8_t  flags = keyframe ? VIDEO_FLAG_KEYFRAME : 0;
+        uint16_t w = static_cast<uint16_t>(cam_encoder_->width());
+        uint16_t h = static_cast<uint16_t>(cam_encoder_->height());
+        uint8_t  codec = static_cast<uint8_t>(cam_encoder_->codec());
+
+        size_t header_len = 1 + 4 + 4 + 1 + 2 + 2 + 1;
+        std::vector<uint8_t> pkt(header_len + len);
+        size_t off = 0;
+        pkt[off++] = protocol::CAMERA_FRAME_PACKET_TYPE;
+        std::memcpy(pkt.data() + off, &fn, 4);    off += 4;
+        std::memcpy(pkt.data() + off, &ts, 4);    off += 4;
+        pkt[off++] = flags;
+        std::memcpy(pkt.data() + off, &w, 2);     off += 2;
+        std::memcpy(pkt.data() + off, &h, 2);     off += 2;
+        pkt[off++] = codec;
+        std::memcpy(pkt.data() + off, data, len);
+        core_.net_.send_video(pkt.data(), pkt.size(), true);
+
+        // Local self-preview: if we're watching our own camera, decode our own
+        // encoder output into that camera grid cell (mirrors screen self-preview).
+        if (core_.is_watching_camera(core_.user_id_)) {
+            std::vector<uint8_t> copy(data, data + len);
+            enqueue_camera_decode_work(core_.user_id_, std::move(copy), 0,
+                                       cam_encoder_->codec(), w, h, keyframe);
+        }
+    };
+
+    cam_capture_->on_frame = [this](const uint8_t* bgra, uint32_t w, uint32_t h, uint32_t stride) {
+        on_camera_captured(bgra, w, h, stride);
+    };
+
+    sharing_camera_ = true;
+    core_.model_.is_camera = true;
+
+    // The encoder is already initialized, so START carries the real codec/dims.
+    BinaryWriter writer;
+    writer.write_u8(static_cast<uint8_t>(cam_encoder_->codec()));
+    writer.write_u16(static_cast<uint16_t>(cam_encoder_->width()));
+    writer.write_u16(static_cast<uint16_t>(cam_encoder_->height()));
+    core_.net_.send_message(protocol::ControlMessageType::CAMERA_SHARE_START,
+                            writer.data().data(), writer.data().size());
+
+    LOG_INFO("Camera streaming started ({}x{} via {})", cw, ch, cam_encoder_->backend_name());
+}
+
+void App::on_camera_captured(const uint8_t* bgra, uint32_t /*w*/, uint32_t h, uint32_t stride) {
+    ZoneScopedN("App::on_camera_captured");
+    std::lock_guard<std::mutex> lock(cam_encode_mutex_);
+    if (!sharing_camera_ || !cam_encoder_ || !cam_upload_tex_ || !cam_context_) return;
+
+    // Upload BGRA into the encoder input texture, honouring the source stride and
+    // clamping to the (possibly evened-down) encode dimensions.
+    uint32_t copy_h = (h < cam_tex_h_) ? h : cam_tex_h_;
+    D3D11_BOX box{};
+    box.left = 0; box.top = 0; box.front = 0;
+    box.right = cam_tex_w_; box.bottom = copy_h; box.back = 1;
+    cam_context_->UpdateSubresource(cam_upload_tex_.Get(), 0, &box, bgra, stride, 0);
+
+    int64_t ts = static_cast<int64_t>(core_.camera_frame_number_) * (10'000'000LL / 30);
+    cam_encoder_->encode_frame(cam_upload_tex_.Get(), ts);
+}
+
+void App::stop_camera_share() {
+    ZoneScopedN("App::stop_camera_share");
+    if (!sharing_camera_) return;
+    sharing_camera_ = false;
+
+    // If we were self-previewing our own camera, drop just that stream.
+    if (core_.is_watching_camera(core_.user_id_))
+        core_.remove_watch_camera(core_.user_id_);
+
+    // Stop the capture worker FIRST (joins its thread) so no on_camera_captured
+    // call is in flight before we tear down the encoder under the lock.
+    if (cam_capture_) { cam_capture_->stop(); cam_capture_.reset(); }
+
+    {
+        std::lock_guard<std::mutex> lock(cam_encode_mutex_);
+        if (cam_encoder_) { cam_encoder_->shutdown(); cam_encoder_.reset(); }
+        cam_upload_tex_.Reset();
+        cam_context_.Reset();
+        cam_device_.Reset();
+        cam_tex_w_ = 0; cam_tex_h_ = 0;
+    }
+
+    core_.camera_frame_number_ = 0;
+    core_.model_.is_camera = false;
+
+    if (core_.authenticated_ && core_.current_channel_ != 0)
+        core_.net_.send_message(protocol::ControlMessageType::CAMERA_SHARE_STOP, nullptr, 0);
+}
+
+void App::on_camera_frame_received(uint32_t sender_id, const uint8_t* data, size_t len) {
+    ZoneScopedN("App::on_camera_frame_received");
+    // data = [fn(4)][ts(4)][flags(1)][w(2)][h(2)][codec(1)][encoded(N)]
+    if (len < 14) return;
+
+    uint8_t flags = data[8];
+    bool is_keyframe = (flags & VIDEO_FLAG_KEYFRAME) != 0;
+    uint16_t width, height;
+    std::memcpy(&width,  data + 9,  2);
+    std::memcpy(&height, data + 11, 2);
+    auto codec = static_cast<VideoCodecId>(data[13]);
+
+    const uint8_t* encoded     = data + 14;
+    size_t         encoded_len = len  - 14;
+    if (encoded_len == 0) return;
+
+    uint32_t frame_number;
+    std::memcpy(&frame_number, data, 4);
+
+    std::vector<uint8_t> copy(encoded, encoded + encoded_len);
+    enqueue_camera_decode_work(sender_id, std::move(copy), static_cast<int64_t>(frame_number),
+                               codec, width, height, is_keyframe);
+}
+
+// Per-camera decode streams (reuse the VideoStream pipeline).
+
+void App::start_camera_stream(UserId sharer_id) {
+    std::lock_guard<std::mutex> lock(camera_streams_mutex_);
+    if (camera_streams_.count(sharer_id)) return;   // already watching
+    auto s = std::make_unique<VideoStream>();
+    s->sharer_id = sharer_id;
+    s->element_id = "camera-" + std::to_string(sharer_id);
+    s->is_camera = true;
+    s->awaiting_keyframe.store(true, std::memory_order_relaxed);
+    s->running.store(true, std::memory_order_relaxed);
+    VideoStream* ptr = s.get();
+    s->thread = std::thread([this, ptr] { decode_loop(ptr); });
+    camera_streams_.emplace(sharer_id, std::move(s));
+}
+
+void App::stop_camera_stream(UserId sharer_id) {
+    std::unique_ptr<VideoStream> s;
+    {
+        std::lock_guard<std::mutex> lock(camera_streams_mutex_);
+        auto it = camera_streams_.find(sharer_id);
+        if (it == camera_streams_.end()) return;
+        s = std::move(it->second);
+        camera_streams_.erase(it);
+    }
+    stop_stream_thread(s.get());
+    if (s->decoder) { s->decoder->shutdown(); s->decoder.reset(); }
+}
+
+void App::stop_all_camera_streams() {
+    std::vector<std::unique_ptr<VideoStream>> dead;
+    {
+        std::lock_guard<std::mutex> lock(camera_streams_mutex_);
+        for (auto& [uid, sp] : camera_streams_) dead.push_back(std::move(sp));
+        camera_streams_.clear();
+    }
+    for (auto& s : dead) {
+        stop_stream_thread(s.get());
+        if (s->decoder) { s->decoder->shutdown(); s->decoder.reset(); }
+    }
+}
+
+void App::enqueue_camera_decode_work(UserId sharer_id, std::vector<uint8_t>&& encoded,
+                                     int64_t timestamp, VideoCodecId codec,
+                                     uint16_t width, uint16_t height, bool is_keyframe) {
+    std::lock_guard<std::mutex> slock(camera_streams_mutex_);
+    auto it = camera_streams_.find(sharer_id);
+    if (it == camera_streams_.end()) return;
+    VideoStream* s = it->second.get();
+    if (!s->running.load(std::memory_order_relaxed)) return;
+
+    if (s->awaiting_keyframe.load(std::memory_order_relaxed)) {
+        if (!is_keyframe) return;
+        s->awaiting_keyframe.store(false, std::memory_order_relaxed);
+    }
+
+    DecodeWork work;
+    work.data   = std::move(encoded);
+    work.timestamp = timestamp;
+    work.codec  = codec;
+    work.width  = width;
+    work.height = height;
+    {
+        std::lock_guard<std::mutex> qlock(s->queue_mutex);
+        s->queue.push(std::move(work));
+    }
+    s->queue_cv.notify_one();
+}
+
 void App::on_video_frame_received(uint32_t sender_id, const uint8_t* data, size_t len) {
     ZoneScopedN("App::on_video_frame_received");
     // data = [fn(4)][ts(4)][flags(1)][w(2)][h(2)][codec(1)][encoded(N)]
@@ -1323,7 +1660,8 @@ void App::decode_loop(VideoStream* s) {
             LOG_WARN("Decode queue backed up ({} frames), flushing", batch.size());
             if (s->decoder) s->decoder->flush();
             while (!batch.empty()) batch.pop();
-            core_.send_pli(s->sharer_id);
+            if (s->is_camera) core_.send_camera_pli(s->sharer_id);
+            else              core_.send_pli(s->sharer_id);
             continue;
         }
 

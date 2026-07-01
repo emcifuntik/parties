@@ -268,7 +268,31 @@ Broadcast to all users in the channel.
 |-------|------|-------------|
 | reason | string | Why the share was denied |
 
-### 5.5 Admin Operations
+### 5.5 Webcam Sharing Signaling
+
+The webcam is an **independent second video source**, parallel to screen share.
+Its control messages are byte-for-byte analogues of the `SCREEN_SHARE_*` family
+and follow the exact same semantics (multi-sharer per channel, additive
+per-viewer subscription set, auto-PLI on subscribe, late-join notifications).
+A user may share screen and webcam simultaneously; the two are tracked in
+separate server-side maps and separate per-viewer subscription sets.
+
+| Message | ID | Dir | Payload |
+|---------|----|-----|---------|
+| CAMERA_SHARE_START | 0x000B | C->S | `[codec(1)][width(2)][height(2)]` |
+| CAMERA_SHARE_STOP | 0x000C | C->S | -- |
+| CAMERA_SHARE_VIEW | 0x000D | C->S | `[target(4)]` or `[target(4)][action(1)]` (see SCREEN_SHARE_VIEW) |
+| CAMERA_SHARE_UPDATE | 0x000E | C->S | `[codec(1)][width(2)][height(2)]` |
+| CAMERA_SHARE_STARTED | 0x010D | S->C | `[user_id(4)][codec(1)][width(2)][height(2)]` |
+| CAMERA_SHARE_STOPPED | 0x010E | S->C | `[user_id(4)]` |
+| CAMERA_SHARE_DENIED | 0x010F | S->C | `[reason(string)]` (reserved) |
+
+Webcam frames ride the same reliable **Stream 1** as screen share, tagged with
+packet type `0x06` (CAMERA_FRAME) instead of `0x02`, and are keyframe-requested
+via video-control subtype `0x04` (CAMERA_PLI). The SFU forwards them to viewers
+in each camera streamer's independent subscription set.
+
+### 5.6 Admin Operations
 
 #### ADMIN_CREATE_CHANNEL (0x0201) -- C->S
 
@@ -589,6 +613,7 @@ sequenceDiagram
 | Video control | `0x03` | Datagram |
 | Stream (screen-share) audio | `0x04` | Datagram |
 | Secondary voice (VOICE2) | `0x05` | Datagram |
+| Webcam frame (CAMERA_FRAME) | `0x06` | Stream 1 |
 
 ### SFU forwarding model
 

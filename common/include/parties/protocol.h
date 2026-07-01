@@ -12,7 +12,7 @@ constexpr uint16_t DEFAULT_PORT = 7800;
 // in AUTH_IDENTITY. The server rejects only on a MAJOR mismatch, so a minor
 // bump doesn't lock out older clients.
 constexpr uint8_t  PROTOCOL_VERSION_MAJOR = 1;
-constexpr uint8_t  PROTOCOL_VERSION_MINOR = 1;   // +VOICE2 (secondary voice stream), additive
+constexpr uint8_t  PROTOCOL_VERSION_MINOR = 2;   // +VOICE2 (secondary voice stream); +webcam share, additive
 constexpr uint16_t PROTOCOL_VERSION =
     (static_cast<uint16_t>(PROTOCOL_VERSION_MAJOR) << 8) | PROTOCOL_VERSION_MINOR;
 
@@ -47,6 +47,11 @@ enum class ControlMessageType : uint16_t {
     SCREEN_SHARE_STOP     = 0x0008,
     SCREEN_SHARE_VIEW     = 0x0009,   // Subscribe to a sharer's stream [target_user_id(4)], 0 = unsubscribe
     SCREEN_SHARE_UPDATE   = 0x000A,   // Update share metadata: [codec(1)][width(2)][height(2)]
+    // Webcam: independent second video source. Same wire shapes as SCREEN_SHARE_*.
+    CAMERA_SHARE_START    = 0x000B,   // [codec(1)][width(2)][height(2)]
+    CAMERA_SHARE_STOP     = 0x000C,
+    CAMERA_SHARE_VIEW     = 0x000D,   // [target_user_id(4)] or [target(4)][action(1)] (see SCREEN_SHARE_VIEW)
+    CAMERA_SHARE_UPDATE   = 0x000E,   // Update camera metadata: [codec(1)][width(2)][height(2)]
 
     // Server -> Client
     AUTH_RESPONSE         = 0x0101,
@@ -62,6 +67,9 @@ enum class ControlMessageType : uint16_t {
     SCREEN_SHARE_STARTED  = 0x010A,
     SCREEN_SHARE_STOPPED  = 0x010B,
     SCREEN_SHARE_DENIED   = 0x010C,
+    CAMERA_SHARE_STARTED  = 0x010D,   // [user_id(4)][codec(1)][width(2)][height(2)]
+    CAMERA_SHARE_STOPPED  = 0x010E,   // [user_id(4)]
+    CAMERA_SHARE_DENIED   = 0x010F,   // (reserved)
     SERVER_ERROR          = 0x01FF,
 
     // Admin operations (client -> server)
@@ -115,6 +123,7 @@ constexpr uint8_t VOICE2_PACKET_TYPE       = 0x05;  // Secondary per-user voice 
                                                     // mixes WITHOUT voice makeup/normalization and at
                                                     // its own volume. Peers that don't know it ignore
                                                     // the type, so it is fully back-compatible.
+constexpr uint8_t CAMERA_FRAME_PACKET_TYPE = 0x06;  // Webcam frames, on the same video stream as 0x02
 
 // File transfer stream type bytes (first byte on streams 2+)
 constexpr uint8_t STREAM_TYPE_FILE_UPLOAD   = 0x10;
@@ -124,5 +133,6 @@ constexpr uint8_t STREAM_TYPE_FILE_DOWNLOAD = 0x11;
 constexpr uint8_t VIDEO_CTL_PLI         = 0x01;
 constexpr uint8_t VIDEO_CTL_SHARE_START = 0x02;
 constexpr uint8_t VIDEO_CTL_SHARE_STOP  = 0x03;
+constexpr uint8_t VIDEO_CTL_CAMERA_PLI  = 0x04;  // Keyframe request for a sharer's camera stream
 
 } // namespace parties::protocol

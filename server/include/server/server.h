@@ -49,6 +49,10 @@ private:
     void handle_video_control(const DataPacket& pkt);
     void stop_screen_share(ChannelId channel_id, UserId user_id);
 
+    // Webcam sharing (independent parallel stream, mirrors screen sharing)
+    void forward_camera_frame(uint32_t session_id, const uint8_t* data, size_t len);
+    void stop_camera_share(ChannelId channel_id, UserId user_id);
+
     Config config_;
     Database db_;
     QuicServer quic_;
@@ -58,10 +62,15 @@ private:
     std::mutex sharers_mutex_;
     std::unordered_map<ChannelId, std::set<UserId>> channel_screen_sharers_;
 
-    // Guards every access to Session::subscribed_sharers. forward_video_frame
-    // reads it on the MsQuic receive thread while SCREEN_SHARE_VIEW / channel
-    // leave / stop_screen_share mutate it on the main loop — an unordered_set
-    // read concurrent with insert/erase/clear is UB without this.
+    // Webcam share state: channel_id -> set of camera-streaming user_ids.
+    // Guarded by sharers_mutex_ (same as channel_screen_sharers_).
+    std::unordered_map<ChannelId, std::set<UserId>> channel_camera_sharers_;
+
+    // Guards every access to Session::subscribed_sharers AND
+    // subscribed_camera_sharers. forward_video_frame / forward_camera_frame read
+    // them on the MsQuic receive thread while the *_SHARE_VIEW / channel leave /
+    // stop_*_share paths mutate them on the main loop: an unordered_set read
+    // concurrent with insert/erase/clear is UB without this.
     std::mutex subscriptions_mutex_;
 
     // Auth replay guard: recently-accepted (pubkey, timestamp) pairs. Drops an

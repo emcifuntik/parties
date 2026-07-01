@@ -97,6 +97,9 @@ else()
         # Screen capture — DXGI
         src/windows/screen_capture.cpp
 
+        # Webcam capture — Media Foundation
+        src/windows/webcam_capture.cpp
+
         # Video — Media Foundation / hardware encoders
         src/windows/video_encoder.cpp
         src/windows/video_decoder.cpp
@@ -274,6 +277,8 @@ else()
             windowsapp
             dwmapi
             winhttp wintrust crypt32
+            # Webcam capture — Media Foundation
+            mf mfplat mfreadwrite mfuuid
     )
 endif()
 

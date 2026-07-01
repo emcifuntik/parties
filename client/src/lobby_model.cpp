@@ -16,6 +16,7 @@ void LobbyModel::build(rml::Builder& b) {
          .member("deafened",    &ChannelUser::deafened)
          .member("speaking",    &ChannelUser::speaking)
          .member("streaming",   &ChannelUser::streaming)
+         .member("camera_streaming", &ChannelUser::camera_streaming)
          .member("color_index", &ChannelUser::color_index);
     });
     b.register_array<Rml::Vector<ChannelUser>>();
@@ -107,6 +108,16 @@ void LobbyModel::build(rml::Builder& b) {
      .bind("stream_volume",     stream_volume)
      .bind("stream_fullscreen", stream_fullscreen)
      .bind("stream_fps",        stream_fps)
+     .bind("is_camera",         is_camera)
+     .bind("someone_camera",    someone_camera)
+     .bind("camera_sharers",    camera_sharers)
+     .bind("watched_cameras",   watched_cameras)
+     .bind("camera_watching_count", camera_watching_count)
+     .bind("viewing_camera_id", viewing_camera_id)
+     .bind("camera_fullscreen", camera_fullscreen)
+     .bind("camera_fps",        camera_fps)
+     .bind("camera_devices",    camera_devices)
+     .bind("selected_camera_device", selected_camera_device)
      .bind("show_share_picker", show_share_picker)
      .bind("use_native_picker", use_native_picker)
      .bind("share_targets",     share_targets)
@@ -323,6 +334,39 @@ void LobbyModel::build(rml::Builder& b) {
 
     b.on("stream_tap_fullscreen", [this] {
         if (on_stream_tap_fullscreen) on_stream_tap_fullscreen();
+    });
+
+    // Webcam events (parallel to the screen-share events above).
+    b.on("toggle_camera", [this] {
+        if (on_toggle_camera) on_toggle_camera();
+    });
+
+    b.on_args<int>("watch_camera", [this](int id) {
+        if (on_watch_camera) {
+            on_watch_camera(id);
+            mobile_show_content = true;
+        }
+    });
+
+    b.on_args<int>("select_camera", [this](int id) {
+        if (on_select_camera) on_select_camera(id);
+    });
+
+    b.on_args<int>("toggle_watch_camera", [this](int id) {
+        if (on_toggle_watch_camera) on_toggle_watch_camera(id);
+        mobile_show_content = true;
+    });
+
+    b.on("stop_watching_camera", [this] {
+        if (on_stop_watching_camera) on_stop_watching_camera();
+    });
+
+    b.on("toggle_camera_fullscreen", [this] {
+        camera_fullscreen = !camera_fullscreen.get();
+    });
+
+    b.on_args<int>("select_camera_device", [this](int index) {
+        if (on_select_camera_device) on_select_camera_device(index);
     });
 
     // Admin event callbacks
