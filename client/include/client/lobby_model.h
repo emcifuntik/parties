@@ -21,6 +21,7 @@ struct ChannelUser {
     bool deafened = false;
     bool speaking = false;
     bool streaming = false;
+    bool camera_streaming = false;
     int color_index = 0;  // 0-11, generated from name hash for avatar color
 };
 
@@ -138,6 +139,18 @@ public:
     rml::Prop<bool>        stream_fullscreen{false};    // double-click toggles fullscreen stream view
     rml::Prop<int>         stream_fps{0};               // current stream FPS (encode or decode)
 
+    // Webcam (independent parallel video source, mirrors the screen-share grid).
+    rml::Prop<bool>        is_camera{false};             // am I streaming my camera?
+    rml::Prop<bool>        someone_camera{false};        // convenience: !camera_sharers.empty()
+    rml::Prop<Rml::Vector<ActiveSharer>> camera_sharers; // all active camera streamers in channel
+    rml::Prop<Rml::Vector<WatchedStream>> watched_cameras; // cameras shown in the camera viewer grid
+    rml::Prop<int>         camera_watching_count{0};     // size of watched_cameras (grid visible when > 0)
+    rml::Prop<int>         viewing_camera_id{0};         // primary/last watched camera (0 = none)
+    rml::Prop<bool>        camera_fullscreen{false};     // double-click toggles fullscreen camera view
+    rml::Prop<int>         camera_fps{0};                // current camera FPS (encode or decode)
+    rml::Prop<Rml::Vector<AudioDevice>> camera_devices;  // available cameras (name + index)
+    rml::Prop<int>         selected_camera_device{0};    // index into camera_devices
+
     // Share picker
     rml::Prop<bool>        show_share_picker{false};
     rml::Prop<bool>        use_native_picker{false};  // true on macOS (native picker, no target list)
@@ -226,6 +239,14 @@ public:
     std::function<void()>      on_stop_watching;    // close all watched streams
     std::function<void(float)> on_stream_volume_changed;
     std::function<void()>      on_stream_tap_fullscreen;  // iOS: single tap toggles fullscreen
+
+    // Webcam callbacks (parallel to the screen-share callbacks above).
+    std::function<void()>      on_toggle_camera;          // start/stop streaming my camera
+    std::function<void(int)>   on_watch_camera;           // camera card / chip: add (or single-select) watch
+    std::function<void(int)>   on_select_camera;
+    std::function<void(int)>   on_toggle_watch_camera;    // chip toggle: add/remove this camera from the grid
+    std::function<void()>      on_stop_watching_camera;   // close all watched cameras
+    std::function<void(int)>   on_select_camera_device;   // pick capture camera
 
     // Auto-update
     std::function<void()>      on_apply_update;

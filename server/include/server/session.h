@@ -37,10 +37,19 @@ struct Session {
     uint16_t         share_width = 0;
     uint16_t         share_height = 0;
 
+    // Webcam metadata (set when streaming a camera, for late-join notifications)
+    uint8_t          camera_codec = 0;
+    uint16_t         camera_width = 0;
+    uint16_t         camera_height = 0;
+
     // Subscribe state: the set of sharers whose video streams this viewer is
     // watching (empty = none). A viewer can watch several screen shares at once
     // (the client tiles them in a grid). Mutated only on the server main loop.
     std::unordered_set<UserId> subscribed_sharers;
+
+    // Camera streamers this viewer is watching. Separate from subscribed_sharers
+    // so a viewer can watch any mix of screens and cameras.
+    std::unordered_set<UserId> subscribed_camera_sharers;
 
     // Connection state
     std::atomic<bool> alive{true};

@@ -45,6 +45,15 @@ struct PlatformBridge {
     // hardware decoder) watching is single-select.
     std::function<void(UserId)>                                start_video_stream;
     std::function<void(UserId)>                                stop_video_stream;
+    // Webcam bridge (mirrors the screen-share bridge above). start_camera_share
+    // begins local capture+encode (no picker); per-camera decode via
+    // start/stop_camera_stream (multi-stream grid on Windows, unset elsewhere).
+    std::function<void()>                                      start_camera_share;
+    std::function<void()>                                      stop_camera_share;
+    std::function<void()>                                      request_camera_keyframe;
+    std::function<void()>                                      clear_camera_element;
+    std::function<void(UserId)>                                start_camera_stream;
+    std::function<void(UserId)>                                stop_camera_stream;
 };
 
 class AppCore {
@@ -59,6 +68,8 @@ public:
 
     // Platform-provided video frame handler (platform owns decoder)
     std::function<void(uint32_t sender_id, const uint8_t* data, size_t len)> on_video_frame_received;
+    // Platform-provided camera frame handler (platform owns the camera decoder)
+    std::function<void(uint32_t sender_id, const uint8_t* data, size_t len)> on_camera_frame_received;
 
     // Public subsystems
     NetClient         net_;
@@ -96,6 +107,12 @@ public:
     std::atomic<bool>   awaiting_keyframe_{false};
     uint32_t    video_frame_number_    = 0;
     std::atomic<uint32_t> stream_frame_count_{0};
+    // Camera viewing state (mirrors the screen-share fields). viewing_camera_ is
+    // the focused camera for fullscreen; the full watched set is watched_cameras_.
+    std::atomic<UserId> viewing_camera_{0};
+    std::atomic<bool>   awaiting_camera_keyframe_{false};
+    uint32_t    camera_frame_number_   = 0;
+    std::atomic<uint32_t> camera_frame_count_{0};
     std::string tofu_pending_fingerprint_;
     bool        tofu_pending_ = false;
     // Set on the MsQuic worker thread when the connection drops; the actual
@@ -136,6 +153,17 @@ public:
     void send_voice_state();
     void send_pli(UserId target);
     void clear_all_sharers();
+    // Camera actions (parallel to the screen-share actions above, keyed into the
+    // camera subscription set). Same additive/single-select semantics.
+    void watch_camera(UserId id);
+    void stop_watching_cameras();
+    void add_watch_camera(UserId id);
+    void remove_watch_camera(UserId id);
+    void toggle_watch_camera(UserId id);
+    bool is_watching_camera(UserId id) const;
+    void set_single_watched_camera(UserId id);
+    void send_camera_pli(UserId target);
+    void clear_all_camera_sharers();
     void refresh_server_list();
     void apply_user_audio_prefs(UserId user_id);
     void save_pref_debounced(const std::string& key, std::string value);
@@ -172,6 +200,7 @@ private:
 
     struct SharerInfo { UserId user_id = 0; std::string name; };
     std::unordered_map<UserId, SharerInfo> active_sharers_;
+    std::unordered_map<UserId, SharerInfo> active_camera_sharers_;
 
     // The set of sharers currently being watched (shown in the viewer grid).
     // Authoritative watch state; mirrored into model_.watched for the UI.
@@ -179,6 +208,12 @@ private:
     std::unordered_set<UserId> watched_;
     bool multi_stream() const { return static_cast<bool>(bridge_.start_video_stream); }
     void rebuild_watched_model();   // refresh model_.watched + sharers[].watching + counts
+
+    // Camera streamers currently being watched; mirrored into model_.watched_cameras.
+    mutable std::mutex watched_cameras_mutex_;
+    std::unordered_set<UserId> watched_cameras_;
+    bool multi_camera_stream() const { return static_cast<bool>(bridge_.start_camera_stream); }
+    void rebuild_watched_cameras_model();   // refresh model_.watched_cameras + camera_sharers[].watching + counts
 
     std::unordered_map<UserId, std::chrono::steady_clock::time_point> voice_last_active_;
 
@@ -222,6 +257,9 @@ private:
     void on_screen_share_started(const uint8_t* data, size_t len);
     void on_screen_share_stopped(const uint8_t* data, size_t len);
     void on_screen_share_denied(const uint8_t* data, size_t len);
+    void on_camera_share_started(const uint8_t* data, size_t len);
+    void on_camera_share_stopped(const uint8_t* data, size_t len);
+    void on_camera_share_denied(const uint8_t* data, size_t len);
     void on_admin_result(const uint8_t* data, size_t len);
     void on_server_error(const uint8_t* data, size_t len);
     void on_chat_channel_list(const uint8_t* data, size_t len);

@@ -38,6 +38,7 @@ class VideoEncoder;
 class VideoDecoder;
 class VideoElement;
 class LevelMeterElement;
+class WebcamCapture;
 
 class App {
 public:
@@ -98,6 +99,21 @@ private:
                              int64_t timestamp, VideoCodecId codec,
                              uint16_t width, uint16_t height, bool is_keyframe);
     void encode_loop();
+
+    // Webcam (independent parallel video source, mirrors screen share).
+    // Capture + encode run inline on the capture worker.
+    void start_camera_share();
+    void stop_camera_share();
+    void on_camera_captured(const uint8_t* bgra, uint32_t width, uint32_t height, uint32_t stride);
+    void on_camera_frame_received(uint32_t sender_id, const uint8_t* data, size_t len);
+    // Per-camera decode streams reuse the VideoStream pipeline in a separate map,
+    // so one user can share screen and camera at once under the same user_id.
+    void start_camera_stream(UserId sharer_id);
+    void stop_camera_stream(UserId sharer_id);
+    void stop_all_camera_streams();
+    void enqueue_camera_decode_work(UserId sharer_id, std::vector<uint8_t>&& encoded,
+                                    int64_t timestamp, VideoCodecId codec,
+                                    uint16_t width, uint16_t height, bool is_keyframe);
 
     void update_voice_level();
 
@@ -204,7 +220,8 @@ private:
     // onto this stream's <video_frame> grid cell (element_id).
     struct VideoStream {
         UserId       sharer_id = 0;
-        std::string  element_id;          // "screen-share-<id>"
+        std::string  element_id;          // "screen-share-<id>" or "camera-<id>"
+        bool         is_camera = false;   // routes PLI/grid to the camera path
         std::unique_ptr<VideoDecoder> decoder;
         std::thread  thread;
         std::atomic<bool> running{false};
@@ -226,6 +243,21 @@ private:
     // be destroyed out from under the QUIC receive thread mid-enqueue.
     std::mutex streams_mutex_;
     std::unordered_map<UserId, std::unique_ptr<VideoStream>> video_streams_;
+
+    // Webcam capture + encode (independent of the screen encode thread).
+    std::unique_ptr<WebcamCapture> cam_capture_;
+    std::unique_ptr<VideoEncoder>  cam_encoder_;
+    bool sharing_camera_ = false;
+    std::mutex cam_encode_mutex_;
+    Microsoft::WRL::ComPtr<ID3D11Device>        cam_device_;
+    Microsoft::WRL::ComPtr<ID3D11DeviceContext> cam_context_;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D>     cam_upload_tex_;  // BGRA upload target
+    uint32_t cam_tex_w_ = 0, cam_tex_h_ = 0;
+
+    // Per-camera decode streams (reuses VideoStream), keyed by streamer user_id.
+    // Separate from video_streams_ so screen + camera from one user don't collide.
+    std::mutex camera_streams_mutex_;
+    std::unordered_map<UserId, std::unique_ptr<VideoStream>> camera_streams_;
 
     // FPS counters (render + stream)
     uint32_t fps_frame_count_ = 0;
