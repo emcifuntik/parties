@@ -4,6 +4,7 @@
 #include "nvidia_loader.h"
 
 #include <cstdint>
+#include <stop_token>
 #include <vector>
 
 struct ID3D12Device;
@@ -23,6 +24,9 @@ public:
     bool decode(const uint8_t* data, size_t len, int64_t timestamp) override;
     void flush() override;
     bool context_lost() const override { return context_lost_; }
+    void set_stop_token(std::stop_token stop_token) override {
+        stop_token_ = stop_token;
+    }
     DecoderInfo info() const override;
 
 private:
@@ -99,6 +103,7 @@ private:
     bool opaque_output_active_ = false;
     bool opaque_output_capable_ = false;
     bool collect_packet_diagnostics_ = false;
+    std::stop_token stop_token_;
     uint64_t next_packet_id_ = 0;
     PacketDiagnostics packet_diagnostics_{};
 };

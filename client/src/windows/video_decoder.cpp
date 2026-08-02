@@ -11,7 +11,7 @@ namespace parties::client {
 VideoDecoder::~VideoDecoder() { shutdown(); }
 
 bool VideoDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height,
-                        ID3D12Device* render_device) {
+                        ID3D12Device* render_device, std::stop_token stop_token) {
 	ZoneScopedN("VideoDecoder::init");
     shutdown();
     codec_ = codec;
@@ -27,6 +27,7 @@ bool VideoDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height,
     }
 
     if (!decoder_) return false;
+    decoder_->set_stop_token(stop_token);
     initialized_ = true;
     return true;
 }

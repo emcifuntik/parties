@@ -1629,6 +1629,10 @@ void App::stop_stream_thread(VideoStream* s) {
         std::lock_guard<std::mutex> lock(s->queue_mutex);
         s->running.store(false, std::memory_order_relaxed);
     }
+    // NVDEC may be waiting for a surface lease that can only be retired by the
+    // render thread. This function is called while the message thread owns the
+    // UI mutex, so a plain join would prevent that renderer progress forever.
+    s->decode_stop.request_stop();
     s->queue_cv.notify_all();
     if (s->thread.joinable()) s->thread.join();
 }
@@ -1777,7 +1781,8 @@ void App::decode_loop(VideoStream* s) {
                 s->decoder = std::make_unique<VideoDecoder>();
                 if (s->hardware_decode_disabled)
                     s->decoder->disable_hardware();
-                if (!s->decoder->init(work.codec, work.width, work.height, decode_d3d12_device_)) {
+                if (!s->decoder->init(work.codec, work.width, work.height,
+                                      decode_d3d12_device_, s->decode_stop.get_token())) {
                     LOG_ERROR("Decoder init failed codec={} {}x{}",
                                  static_cast<uint8_t>(work.codec), work.width, work.height);
                     while (!batch.empty()) batch.pop();
@@ -1788,6 +1793,10 @@ void App::decode_loop(VideoStream* s) {
                 s->decoder->on_decoded = [this, s](const DecodedFrame& f) { on_video_decoded(s, f); };
             }
             if (!s->decoder->decode(work.data.data(), work.data.size(), work.timestamp)) {
+                if (!s->running.load(std::memory_order_relaxed)) {
+                    while (!batch.empty()) batch.pop();
+                    break;
+                }
                 const bool lost_context = s->decoder->context_lost();
                 while (!batch.empty()) batch.pop();
                 recover_at_keyframe("bitstream decode failure", lost_context);

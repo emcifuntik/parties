@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <stop_token>
 
 namespace parties::encdec {
 
@@ -66,6 +67,11 @@ public:
     // True if the GPU context was invalidated (device reset, game launch, TDR).
     // Caller should destroy this decoder and create a new one.
     virtual bool context_lost() const { return false; }
+
+    // Supplies the lifetime token of the decode worker. Hardware backends with
+    // cancellable waits should observe it so teardown never depends on the
+    // render thread making progress while the caller joins the worker.
+    virtual void set_stop_token(std::stop_token) {}
 
     // Metadata about the active decoder
     virtual DecoderInfo info() const = 0;

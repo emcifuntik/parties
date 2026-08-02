@@ -1,11 +1,20 @@
 #include "nvidia/nvdec_sequence_policy.h"
+#include "nvidia/nvdec_surface_wait.h"
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdlib>
+#include <future>
 #include <iostream>
+#include <mutex>
+#include <stop_token>
 
 using parties::encdec::nvidia::detail::NvdecSequenceFormat;
 using parties::encdec::nvidia::detail::NvdecSequenceState;
+using parties::encdec::nvidia::detail::SurfaceWaitResult;
 using parties::encdec::nvidia::detail::can_reuse_decoder;
+using parties::encdec::nvidia::detail::wait_for_surface_release;
 
 namespace {
 void check(bool condition, const char* message) {
@@ -45,6 +54,26 @@ int main() {
     check(!can_reuse_decoder(state, deeper),
           "a bit-depth change must recreate the decoder");
 
-    std::cout << "NVDEC sequence reuse policy passed\n";
+    std::condition_variable_any released;
+    std::mutex surface_mutex;
+    std::stop_source stop_source;
+    std::atomic<bool> predicate_entered = false;
+    std::promise<void> entered_promise;
+    auto entered = entered_promise.get_future();
+    auto waiter = std::async(std::launch::async, [&] {
+        return wait_for_surface_release(
+            released, surface_mutex, stop_source.get_token(), std::chrono::seconds(5), [&] {
+                if (!predicate_entered.exchange(true)) entered_promise.set_value();
+                return false;
+            });
+    });
+    entered.wait();
+    stop_source.request_stop();
+    check(waiter.wait_for(std::chrono::milliseconds(250)) == std::future_status::ready,
+          "surface wait must wake promptly when decoder teardown is requested");
+    check(waiter.get() == SurfaceWaitResult::Cancelled,
+          "cancelled surface wait must not be reported as a timeout");
+
+    std::cout << "NVDEC sequence and cancellable surface wait policies passed\n";
     return 0;
 }

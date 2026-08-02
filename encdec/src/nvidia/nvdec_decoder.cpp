@@ -1,6 +1,7 @@
 #include "nvdec_decoder.h"
 #include "nv12_to_rgba_ptx.h"
 #include "nvdec_sequence_policy.h"
+#include "nvdec_surface_wait.h"
 
 #include <algorithm>
 #include <atomic>
@@ -121,7 +122,7 @@ struct NvdecCudaInteropState : std::enable_shared_from_this<NvdecCudaInteropStat
     CUexternalSemaphore ready_semaphore = nullptr;
     std::vector<std::unique_ptr<Slot>> slots;
     std::mutex slot_mutex;
-    std::condition_variable slot_released;
+    std::condition_variable_any slot_released;
     uint32_t width = 0;
     uint32_t height = 0;
     uint64_t next_fence_value = 0;
@@ -457,14 +458,15 @@ struct NvdecCudaInteropState : std::enable_shared_from_this<NvdecCudaInteropStat
             ? slots[index].get() : nullptr;
     }
 
-    bool wait_until_available(size_t index) {
-        if (index >= slots.size() || !slots[index]) return false;
+    detail::SurfaceWaitResult wait_until_available(
+            size_t index, std::stop_token stop_token) {
+        if (index >= slots.size() || !slots[index])
+            return detail::SurfaceWaitResult::InvalidSlot;
         auto available = [&] {
             return !slots[index]->in_use.load(std::memory_order_acquire);
         };
-        if (available()) return true;
-        std::unique_lock lock(slot_mutex);
-        return slot_released.wait_for(lock, std::chrono::seconds(2), available);
+        return detail::wait_for_surface_release(
+            slot_released, slot_mutex, stop_token, std::chrono::seconds(2), available);
     }
 
     void release_slot(Slot* slot) {
@@ -1042,11 +1044,18 @@ int NvdecDecoder::on_decode(CUVIDPICPARAMS* pic) {
 
     if (opaque_output_active_ && interop_) {
         const auto wait_start = DiagnosticClock::now();
-        const bool available = interop_->wait_until_available(
-            static_cast<size_t>(pic->CurrPicIdx));
+        const auto wait_result = interop_->wait_until_available(
+            static_cast<size_t>(pic->CurrPicIdx), stop_token_);
         if (collect_packet_diagnostics_)
             packet_diagnostics_.surface_wait_us += elapsed_us(wait_start);
-        if (!available) {
+        if (wait_result == detail::SurfaceWaitResult::Cancelled)
+            return 0;
+        if (wait_result == detail::SurfaceWaitResult::InvalidSlot) {
+            LOG_ERROR("NVDEC opaque surface index {} is outside the registered pool",
+                      pic->CurrPicIdx);
+            return 0;
+        }
+        if (wait_result == detail::SurfaceWaitResult::TimedOut) {
             LOG_ERROR("NVDEC opaque surface {} remained owned by the renderer for over 2 seconds",
                       pic->CurrPicIdx);
             return 0;

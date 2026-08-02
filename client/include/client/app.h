@@ -234,6 +234,7 @@ private:
         std::unique_ptr<VideoDecoder> decoder;
         std::thread  thread;
         std::atomic<bool> running{false};
+        std::stop_source decode_stop;
         // Serialized with queue by queue_mutex.
         VideoDecodeGate decode_gate;
         bool hardware_decode_disabled = false;
