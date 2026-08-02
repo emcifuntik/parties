@@ -2,11 +2,10 @@
 
 #include <parties/codec.h>
 #include <parties/audio_common.h>
+#include <client/echo_canceller.h>
 
 #include <miniaudio.h>
 #include <rnnoise.h>
-#include <speex/speex_echo.h>
-#include <speex/speex_preprocess.h>
 
 #include <functional>
 #include <atomic>
@@ -83,8 +82,8 @@ public:
     void set_normalize_target(float target) { normalize_target_ = target; }
 
     // Echo cancellation
-    void set_aec_enabled(bool enabled) { aec_enabled_ = enabled; }
-    bool is_aec_enabled() const { return aec_enabled_; }
+    void set_aec_enabled(bool enabled) { echo_canceller_.set_enabled(enabled); }
+    bool is_aec_enabled() const { return echo_canceller_.is_enabled(); }
 
     // Voice activation detection
     void set_vad_enabled(bool enabled) { vad_enabled_ = enabled; }
@@ -131,14 +130,7 @@ private:
     // RNNoise denoiser
     DenoiseState* rnn_ = nullptr;
 
-    // SpeexDSP echo canceller
-    SpeexEchoState* aec_ = nullptr;
-    SpeexPreprocessState* aec_preprocess_ = nullptr;
-    // Playback reference ring buffer for AEC. Written by the playback thread,
-    // read by the capture thread — indices must be atomic.
-    std::vector<spx_int16_t> aec_ref_buf_;
-    std::atomic<size_t> aec_ref_write_{0};
-    std::atomic<size_t> aec_ref_read_{0};
+    EchoCanceller echo_canceller_;
 
     // Opus encoder
     OpusCodec encoder_;
@@ -170,7 +162,6 @@ private:
     std::atomic<bool> muted_{false};
     std::atomic<bool> deafened_{false};
     std::atomic<bool> denoise_enabled_{true};
-    std::atomic<bool> aec_enabled_{false};
     std::atomic<bool> normalize_enabled_{false};
     std::atomic<float> normalize_target_{0.8f};
     std::atomic<bool> vad_enabled_{true};

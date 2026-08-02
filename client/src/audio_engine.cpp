@@ -72,40 +72,12 @@ bool AudioEngine::init() {
         return false;
     }
 
-    // Initialize SpeexDSP echo canceller
-    // filter_length = 200ms worth of samples at 48kHz = 9600
-    // 200ms tail covers typical speaker-to-mic echo paths on laptops/phones
-    aec_ = speex_echo_state_init(audio::FRAME_SIZE, audio::SAMPLE_RATE / 5);
-    if (!aec_) {
-        LOG_ERROR("Failed to create Speex AEC state");
+    if (!echo_canceller_.init()) {
+        LOG_ERROR("Failed to initialize stereo echo cancellation");
         rnnoise_destroy(rnn_);
         rnn_ = nullptr;
         return false;
     }
-    {
-        int rate = audio::SAMPLE_RATE;
-        speex_echo_ctl(aec_, SPEEX_ECHO_SET_SAMPLING_RATE, &rate);
-    }
-
-    // Initialize Speex preprocessor for residual echo suppression
-    aec_preprocess_ = speex_preprocess_state_init(audio::FRAME_SIZE, audio::SAMPLE_RATE);
-    if (aec_preprocess_) {
-        speex_preprocess_ctl(aec_preprocess_, SPEEX_PREPROCESS_SET_ECHO_STATE, aec_);
-        // Suppress residual echo aggressively
-        int suppress = -60;
-        speex_preprocess_ctl(aec_preprocess_, SPEEX_PREPROCESS_SET_ECHO_SUPPRESS, &suppress);
-        int suppress_active = -60;
-        speex_preprocess_ctl(aec_preprocess_, SPEEX_PREPROCESS_SET_ECHO_SUPPRESS_ACTIVE, &suppress_active);
-        // Disable other preprocessing (RNNoise handles denoising/AGC)
-        int off = 0;
-        speex_preprocess_ctl(aec_preprocess_, SPEEX_PREPROCESS_SET_DENOISE, &off);
-        speex_preprocess_ctl(aec_preprocess_, SPEEX_PREPROCESS_SET_AGC, &off);
-    }
-
-    // Ring buffer for playback reference: 250ms to handle system audio latency
-    aec_ref_buf_.resize(audio::SAMPLE_RATE / 4, 0);
-    aec_ref_write_ = 0;
-    aec_ref_read_ = 0;
 
     // Initialize Opus encoder with in-band FEC for packet-loss resilience.
     if (!encoder_.init_encoder(audio::SAMPLE_RATE, audio::CHANNELS, audio::OPUS_BITRATE,
@@ -241,14 +213,7 @@ void AudioEngine::shutdown() {
         ma_device_uninit(&capture_device_);
         capture_initialized_ = false;
     }
-    if (aec_preprocess_) {
-        speex_preprocess_state_destroy(aec_preprocess_);
-        aec_preprocess_ = nullptr;
-    }
-    if (aec_) {
-        speex_echo_state_destroy(aec_);
-        aec_ = nullptr;
-    }
+    echo_canceller_.shutdown();
     if (rnn_) {
         rnnoise_destroy(rnn_);
         rnn_ = nullptr;
@@ -261,6 +226,7 @@ void AudioEngine::shutdown() {
 
 bool AudioEngine::start() {
     if (!capture_initialized_ || !playback_initialized_ || running_) return false;
+    echo_canceller_.request_reset();
     if (ma_device_start(&playback_device_) != MA_SUCCESS) {
         LOG_ERROR("Failed to start playback device");
         return false;
@@ -344,28 +310,11 @@ void AudioEngine::playback_callback(ma_device* device, void* output,
     auto* engine = static_cast<AudioEngine*>(device->pUserData);
     engine->process_playback(static_cast<float*>(output), frame_count);
 
-    // Store playback reference for AEC (extract left channel from stereo, float→int16 into ring buffer)
-    if (engine->aec_enabled_ && engine->aec_) {
-        auto* out_f = static_cast<const float*>(output);
-        size_t cap = engine->aec_ref_buf_.size();
-        size_t w = engine->aec_ref_write_.load(std::memory_order_relaxed);
-        for (ma_uint32 i = 0; i < frame_count; i++) {
-            float s = out_f[i * 2];  // left channel
-            if (s > 1.0f) s = 1.0f;
-            else if (s < -1.0f) s = -1.0f;
-            engine->aec_ref_buf_[(w + i) % cap] =
-                static_cast<spx_int16_t>(s * 32767.0f);
-        }
-        // Publish after the samples are written so the capture thread
-        // never reads slots ahead of the data.
-        engine->aec_ref_write_.store(w + frame_count, std::memory_order_release);
-    }
+    engine->echo_canceller_.push_playback(static_cast<const float*>(output), frame_count);
 }
 
 void AudioEngine::process_capture(const float* input, ma_uint32 frame_count) {
 	ZoneScopedN("AudioEngine::process_capture");
-    if (muted_ || !on_encoded_frame) return;
-
     ma_uint32 remaining = frame_count;
     const float* src = input;
 
@@ -379,43 +328,14 @@ void AudioEngine::process_capture(const float* input, ma_uint32 frame_count) {
         remaining -= static_cast<ma_uint32>(to_copy);
 
         if (capture_pos_ >= static_cast<size_t>(audio::FRAME_SIZE)) {
-            // AEC: cancel echo from capture using playback reference
-            if (aec_enabled_ && aec_) {
-                size_t cap = aec_ref_buf_.size();
-                size_t w = aec_ref_write_.load(std::memory_order_acquire);
-                size_t r = aec_ref_read_.load(std::memory_order_relaxed);
-                size_t avail = w - r;
-                // Resync after the reader stalls (muted skips this whole
-                // path while playback keeps writing) or clock drift: samples
-                // older than half the ring are stale or already overwritten,
-                // so jump to the freshest full frame.
-                if (avail > cap / 2 && w >= static_cast<size_t>(audio::FRAME_SIZE)) {
-                    r = w - audio::FRAME_SIZE;
-                    avail = audio::FRAME_SIZE;
-                }
-                if (avail >= static_cast<size_t>(audio::FRAME_SIZE)) {
-                    spx_int16_t mic[audio::FRAME_SIZE];
-                    spx_int16_t ref[audio::FRAME_SIZE];
-                    spx_int16_t out[audio::FRAME_SIZE];
+            echo_canceller_.process_capture(capture_buf_.data(), audio::FRAME_SIZE);
 
-                    for (int i = 0; i < audio::FRAME_SIZE; i++) {
-                        float s = capture_buf_[i];
-                        if (s > 1.0f) s = 1.0f;
-                        else if (s < -1.0f) s = -1.0f;
-                        mic[i] = static_cast<spx_int16_t>(s * 32767.0f);
-                        ref[i] = aec_ref_buf_[(r + i) % cap];
-                    }
-                    aec_ref_read_.store(r + audio::FRAME_SIZE, std::memory_order_relaxed);
-
-                    speex_echo_cancellation(aec_, mic, ref, out);
-
-                    // Residual echo suppression via preprocessor
-                    if (aec_preprocess_)
-                        speex_preprocess_run(aec_preprocess_, out);
-
-                    for (int i = 0; i < audio::FRAME_SIZE; i++)
-                        capture_buf_[i] = static_cast<float>(out[i]) / 32767.0f;
-                }
+            // Keep AEC timing and adaptation alive while muted, but never run
+            // the transmit pipeline or retain microphone samples.
+            if (muted_.load(std::memory_order_relaxed) || !on_encoded_frame) {
+                transmitting_.store(false, std::memory_order_relaxed);
+                capture_pos_ = 0;
+                continue;
             }
 
             float processed[audio::FRAME_SIZE];

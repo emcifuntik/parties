@@ -68,6 +68,7 @@ endif()
 set(CLIENT_COMMON_SOURCES
     src/application_audio.cpp
     src/context_window_model.cpp
+    src/echo_canceller.cpp
     src/lobby_model.cpp
     src/server_list_model.cpp
     src/settings.cpp
