@@ -44,10 +44,8 @@
 #include <client/sound_player.h>
 #include <client/rmlui_backend.h>
 #include <client/video_element.h>
-#include <client/level_meter_element.h>
 #include <client/gradient_circle_element.h>
 #include <client/custom_elements.h>
-#include <client/slug_font_engine.h>
 
 #ifdef SENTRY_COCOA_ENABLED
 #import <Sentry/Sentry.h>
@@ -73,10 +71,6 @@ extern void macos_updater_check_in_background();
 using namespace parties;
 using namespace parties::client;
 using namespace parties::protocol;
-
-// Slug GPU font engine — owned for the app lifetime (mirrors Windows ui_manager).
-// Must outlive RmlUi, which holds a raw FontEngineInterface pointer to it.
-static std::unique_ptr<SlugFontEngine> g_slug_font_engine;
 
 // ── Key mapping — NSEvent key codes → RmlUi ──────────────────────────────────
 
@@ -251,7 +245,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
     // Custom element instancers
     parties::rml::ElementRegistry _elementRegistry;
-    LevelMeterElement*    _levelMeter;
 
     // AppCore — all shared connection/audio/model logic
     AppCore _core;
@@ -317,14 +310,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     Rml::SetSystemInterface(Backend::GetSystemInterface());
     Rml::SetRenderInterface(Backend::GetRenderInterface());
 
-    // ── Slug GPU font engine ──────────────────────────────────────────────
-    // Replaces FreeType: glyphs render as GPU-evaluated Bezier coverage.
-    // Wire it to the Metal renderer (for curve/band textures + batch data) and
-    // install it as RmlUi's font engine. Both must happen before Rml::Initialise().
-    g_slug_font_engine = std::make_unique<SlugFontEngine>();
-    Backend::GetMetalRenderInterface()->SetSlugFontEngine(g_slug_font_engine.get());
-    Rml::SetFontEngineInterface(g_slug_font_engine.get());
-
     Rml::Initialise();
 
     // Register window-action as no-op to suppress warnings (used on Windows for caption hit-testing)
@@ -351,6 +336,8 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     Rml::LoadFontFace("ui/fonts/Inter-Regular.ttf");
     Rml::LoadFontFace("ui/fonts/Inter-Medium.ttf");
     Rml::LoadFontFace("ui/fonts/Inter-Bold.ttf");
+    Rml::LoadFontFace("ui/fonts/NotoSans-Regular.ttf", true);
+    Rml::LoadFontFace("ui/fonts/NotoSans-Bold.ttf", true);
 
     // ── App state ─────────────────────────────────────────────────────────
     _sharing         = false;
@@ -443,7 +430,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         // Mark document as macOS platform so RCSS hides Win32 controls and
         // centres the branding, leaving space for native traffic-light buttons.
         _doc->SetClass("platform-macos", true);
-        _levelMeter = static_cast<LevelMeterElement*>(_doc->GetElementById("voice-level-meter"));
     }
 
     // ── Mouse tracking area ───────────────────────────────────────────────
@@ -474,12 +460,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 {
     // Tick shared logic (network messages, FPS counter, audio levels, etc.)
     _core.tick();
-
-    // Update voice level meter
-    if (_levelMeter && _core.model_.is_connected) {
-        _levelMeter->SetLevel(audio::rms_to_perceptual(_core.audio_.voice_level()));
-        _levelMeter->SetThreshold(_core.model_.vad_threshold);
-    }
 
     // Update FPS + ping in titlebar (once per second)
     _fpsFrameCount++;
@@ -630,13 +610,14 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 {
     NSLog(@"[ScreenShare] showSharePicker");
     _core.model_.use_native_picker  = true;
-    _core.model_.show_share_picker  = true;
+    _core.model_.router.open_share_picker();
 }
 
 - (void)startNativeShare
 {
     NSLog(@"[ScreenShare] startNativeShare");
-    _core.model_.show_share_picker = false;
+    if (_core.model_.router.is(DocumentRoute::SharePicker))
+        _core.model_.router.back();
 
     _capturer = std::make_unique<ScreenCaptureMac>();
     PartiesViewController* bself = self;
@@ -1016,9 +997,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 {
     [_viewController shutdown];
     Rml::Shutdown();
-    // Safe to destroy the font engine now: Rml::Shutdown() has released all
-    // references to the FontEngineInterface.
-    g_slug_font_engine.reset();
     Backend::Shutdown();
     parties::quic_cleanup();
 }

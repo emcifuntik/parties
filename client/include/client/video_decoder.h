@@ -6,6 +6,8 @@
 #include <functional>
 #include <memory>
 
+struct ID3D12Device;
+
 namespace parties::client {
 
 // Re-export DecodedFrame from encdec for client code compatibility
@@ -18,7 +20,8 @@ public:
 
     // Initialize for the given codec.
     // Tries hardware decoders first (NVDEC, AMF), then software (dav1d, MFT).
-    bool init(VideoCodecId codec, uint32_t width, uint32_t height);
+    bool init(VideoCodecId codec, uint32_t width, uint32_t height,
+              ::ID3D12Device* render_device = nullptr);
     void shutdown();
 
     // Feed encoded data. Calls on_decoded when a frame is ready.

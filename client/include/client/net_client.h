@@ -58,6 +58,12 @@ public:
     // Send a video frame on the reliable video stream.
     bool send_video(const uint8_t* data, size_t len, bool reliable = false);
 
+    // Scatter/gather-friendly producer API. The transport owns one contiguous
+    // copy for MsQuic's asynchronous send lifetime, avoiding an intermediate
+    // application packet and a second full bitstream copy.
+    bool send_video_parts(const uint8_t* header, size_t header_len,
+                          const uint8_t* payload, size_t payload_len);
+
     // Open the video and datagram streams after authentication.
     // On MsQuic these are opened automatically on connect; on Apple they are
     // deferred until after auth to ensure correct QUIC stream ID ordering.

@@ -213,22 +213,30 @@ struct NetClient::Impl {
         return true;
     }
 
-    bool send_video(const uint8_t* data, size_t len, bool /*reliable*/)
+    bool send_video_parts(const uint8_t* header, size_t header_len,
+                          const uint8_t* payload, size_t payload_len)
     {
-        ZoneScopedN("NetClient::send_video");
+        ZoneScopedN("NetClient::send_video_parts");
         if (!connected || !video_stream) return false;
 
+        const size_t len = header_len + payload_len;
         size_t total_len = 4 + len;
         auto*  buf       = new uint8_t[total_len];
         uint32_t flen = static_cast<uint32_t>(len);
         std::memcpy(buf, &flen, 4);
-        std::memcpy(buf + 4, data, len);
+        if (header_len) std::memcpy(buf + 4, header, header_len);
+        if (payload_len) std::memcpy(buf + 4 + header_len, payload, payload_len);
 
         auto* qb = new QUIC_BUFFER{ static_cast<uint32_t>(total_len), buf };
         if (QUIC_FAILED(api->StreamSend(video_stream, qb, 1, QUIC_SEND_FLAG_NONE, qb))) {
             delete[] buf; delete qb; return false;
         }
         return true;
+    }
+
+    bool send_video(const uint8_t* data, size_t len, bool /*reliable*/)
+    {
+        return send_video_parts(nullptr, 0, data, len);
     }
 
     // ── MsQuic callbacks ─────────────────────────────────────────────────
@@ -477,6 +485,12 @@ bool NetClient::send_data(const uint8_t* data, size_t len, bool reliable)
 bool NetClient::send_video(const uint8_t* data, size_t len, bool reliable)
 {
     return impl_->send_video(data, len, reliable);
+}
+
+bool NetClient::send_video_parts(const uint8_t* header, size_t header_len,
+                                 const uint8_t* payload, size_t payload_len)
+{
+    return impl_->send_video_parts(header, header_len, payload, payload_len);
 }
 
 // MsQuic opens both streams automatically on QUIC_CONNECTION_EVENT_CONNECTED.

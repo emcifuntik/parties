@@ -1,13 +1,9 @@
 #include <client/ui_manager.h>
 #include <client/rml_elements.h>
-#include <client/slug_font_engine.h>
 #include <parties/profiler.h>
 
 #include "RmlUi_RenderInterface_Extended.h"
-#include "dx12/RmlUi_Renderer_DX12.h"
-#include "dx12/RmlUi_Renderer_DX12WL.h"
-#include "dx11/RmlUi_Renderer_DX11.h"
-#include "vulkan/RmlUi_Renderer_VK.h"
+#include "dx12/Parties_Renderer_DX12.h"
 #include "RmlUi_Platform_Win32.h"
 
 #ifndef PARTIES_RETAIL
@@ -28,7 +24,7 @@ namespace parties::client {
 UiManager::UiManager() = default;
 UiManager::~UiManager() { shutdown(); }
 
-bool UiManager::init(HWND hwnd, int renderer_id) {
+bool UiManager::init(HWND hwnd) {
 	ZoneScopedN("UiManager::init");
     hwnd_ = hwnd;
 
@@ -44,45 +40,14 @@ bool UiManager::init(HWND hwnd, int renderer_id) {
     settings.vsync = true;
     settings.msaa_sample_count = 4;
 
-    const char* renderer_name;
-    switch (renderer_id) {
-    case 1:  // DX11
-        render_interface_ = std::make_unique<RenderInterface_DX11>(
-            static_cast<void*>(hwnd), settings);
-        renderer_name = "DX11";
-        break;
-    case 2:  // DX12WL
-        render_interface_ = std::make_unique<RenderInterface_DX12WL>(
-            static_cast<void*>(hwnd), settings);
-        renderer_name = "DX12WL";
-        break;
-    case 3:  // Vulkan
-        render_interface_ = std::make_unique<RenderInterface_VK>(
-            static_cast<void*>(hwnd), settings);
-        renderer_name = "Vulkan";
-        break;
-    default: // DX12
-        render_interface_ = std::make_unique<RenderInterface_DX12>(
-            static_cast<void*>(hwnd), settings);
-        renderer_name = "DX12";
-        break;
-    }
+    render_interface_ = std::make_unique<PartiesRenderInterface_DX12>(
+        static_cast<void*>(hwnd), settings);
     if (!*render_interface_) {
-        LOG_ERROR("Failed to create {} render interface", renderer_name);
+        LOG_ERROR("Failed to create the upstream RmlUi Win32/DX12 renderer");
         return false;
     }
 
     Rml::SetRenderInterface(render_interface_.get());
-
-    // Create Slug GPU font engine (replaces FreeType)
-    slug_font_engine_ = std::make_unique<SlugFontEngine>();
-
-    // Wire the font engine to the DX12 renderer for marker texture and batch data
-    if (auto* dx12 = dynamic_cast<RenderInterface_DX12*>(render_interface_.get())) {
-        dx12->SetSlugFontEngine(slug_font_engine_.get());
-    }
-
-    Rml::SetFontEngineInterface(slug_font_engine_.get());
 
     if (!Rml::Initialise()) {
         LOG_ERROR("Failed to initialise RmlUi");
@@ -122,13 +87,16 @@ bool UiManager::init(HWND hwnd, int renderer_id) {
     // Load fonts (Inter — Regular, Medium, Bold)
     Rml::LoadFontFace("ui/fonts/Inter-Regular.ttf");
     Rml::LoadFontFace("ui/fonts/Inter-Medium.ttf");
-    Rml::LoadFontFace("ui/fonts/Inter-Bold.ttf", true);
+    Rml::LoadFontFace("ui/fonts/Inter-Bold.ttf");
+    Rml::LoadFontFace("ui/fonts/NotoSans-Regular.ttf", true);
+    Rml::LoadFontFace("ui/fonts/NotoSans-Bold.ttf", true);
 
     // Text input method editor for IME support
     text_input_editor_ = std::make_unique<TextInputMethodEditor_Win32>();
 
     initialised_ = true;
-    LOG_INFO("Initialised {} ({}x{}, DPI scale={:.2f})", renderer_name, width, height, dpi_scale_);
+    LOG_INFO("Initialised upstream RmlUi Win32/DX12 backend ({}x{}, DPI scale={:.2f})",
+        width, height, dpi_scale_);
     return true;
 }
 
@@ -141,11 +109,6 @@ void UiManager::shutdown() {
         context_ = nullptr;
     }
     Rml::Shutdown();
-
-    // Destroy font engine after Rml::Shutdown — Shutdown() calls
-    // font_interface->Shutdown() which clears our CallbackTextureSource,
-    // then destroys RenderManagers. The engine itself is safe to destroy after.
-    slug_font_engine_.reset();
 
     render_interface_.reset();
     system_interface_.reset();
@@ -178,35 +141,43 @@ void UiManager::update() {
 }
 
 void UiManager::render() {
-    render_begin();
+    if (!render_begin()) return;
     render_body();
     render_end();
 }
 
-void UiManager::render_begin() {
+bool UiManager::render_begin() {
 	ZoneScopedN("UiManager::render_begin");
-    if (!render_interface_ || !*render_interface_ || minimized_) return;
+    frame_started_ = false;
+    if (!render_interface_ || !*render_interface_ ||
+        minimized_.load(std::memory_order_acquire)) return false;
     render_interface_->BeginFrame();
+    frame_started_ = render_interface_->IsFrameActive();
+    return frame_started_;
 }
 
 void UiManager::render_body() {
 	ZoneScopedN("UiManager::render_body");
-    if (!render_interface_ || !*render_interface_ || minimized_) return;
+    // Do not re-check minimized_ here. A minimize can race with rendering, and
+    // abandoning a frame after BeginFrame leaves the DX12 command list open.
+    if (!frame_started_ || !render_interface_) return;
     render_interface_->Clear();
     if (context_) context_->Render();
 }
 
 void UiManager::render_end() {
 	ZoneScopedN("UiManager::render_end");
-    if (!render_interface_ || !*render_interface_ || minimized_) return;
+    // Every successfully opened frame must be closed, including a frame during
+    // which the message thread reported that the window was minimized.
+    if (!frame_started_ || !render_interface_) return;
+    frame_started_ = false;
     render_interface_->EndFrame();
 }
 
 void UiManager::on_resize(int width, int height) {
 	ZoneScopedN("UiManager::on_resize");
     if (width <= 0 || height <= 0) return;
-    bool was_minimized = minimized_;
-    minimized_ = false;
+    bool was_minimized = minimized_.exchange(false, std::memory_order_acq_rel);
     if (render_interface_) {
         // After restore from minimize, force a viewport reset even if
         // dimensions match. ResizeBuffers re-registers the swap chain
@@ -218,7 +189,7 @@ void UiManager::on_resize(int width, int height) {
 }
 
 void UiManager::on_minimize() {
-    minimized_ = true;
+    minimized_.store(true, std::memory_order_release);
 }
 
 void UiManager::on_dpi_change(float scale) {

@@ -7,6 +7,8 @@
 #include <client/gradient_circle_element.h>
 #include <client/rml_elements.h>
 #include <client/stream_audio_capture.h>
+#include <client/context_window_manager.h>
+#include <client/video_decode_gate.h>
 #include <parties/types.h>
 #include <parties/video_common.h>
 
@@ -18,6 +20,7 @@
 #include <wrl/client.h>
 
 namespace parties::encdec { struct DecodedFrame; }
+struct ID3D12Device;
 
 #include <atomic>
 #include <chrono>
@@ -25,6 +28,7 @@ namespace parties::encdec { struct DecodedFrame; }
 #include <memory>
 #include <mutex>
 #include <queue>
+#include <stop_token>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -44,8 +48,7 @@ public:
     App();
     ~App();
 
-    // renderer_id: 0=DX12, 1=DX11, 2=DX12WL, 3=Vulkan
-    bool init(HWND hwnd, int renderer_id = 0);
+    bool init(HWND hwnd);
     void shutdown();
 
     // Per-iteration logic tick on the message thread (network, hotkeys,
@@ -82,9 +85,14 @@ private:
     struct VideoStream;   // per-sharer decode pipeline (defined below)
 
     // ── Windows-specific platform plumbing ───────────────────────────────
-    void show_share_picker();
+    void show_share_picker(bool audio_only = false);
+    void queue_share_thumbnails();
+    void cancel_share_thumbnails();
+    void share_thumbnail_worker(std::stop_token stop_token);
     void start_screen_share(int target_index);
     void stop_screen_share();
+    void start_application_audio_share(int target_index);
+    void stop_application_audio_share();
     void on_video_frame_received(uint32_t sender_id, const uint8_t* data, size_t len);
 
     // Per-sharer video stream lifecycle (multiple streams play at once in a grid).
@@ -99,7 +107,6 @@ private:
                              uint16_t width, uint16_t height, bool is_keyframe);
     void encode_loop();
 
-    void update_voice_level();
 
     // Render thread: owns the GPU swap chain + per-frame rendering and decoded-
     // video delivery, paced by vsync. Independent of the Win32 message loop.
@@ -109,6 +116,8 @@ private:
     HWND hwnd_ = nullptr;
     SoundPlayer sound_player_;
     UiManager ui_;
+    ID3D12Device* decode_d3d12_device_ = nullptr; // owned by ui_ renderer
+    ContextWindowManager context_windows_;
 
     // ── Render thread + UI synchronization ───────────────────────────────
     std::recursive_mutex ui_mutex_;            // guards RmlUi context + data model
@@ -139,12 +148,25 @@ private:
     bool capture_had_input_ = false;
 
     // Screen sharing state
+    struct ShareThumbnail {
+        int target_index = -1;
+        std::vector<uint8_t> rgba;
+        uint32_t width = 0;
+        uint32_t height = 0;
+    };
     std::vector<CaptureTarget> capture_targets_;
+    std::vector<ShareThumbnail> pending_share_thumbnails_;
+    std::vector<CaptureTarget> share_thumbnail_job_targets_;
+    std::jthread share_thumbnail_thread_;
+    std::mutex share_thumbnail_mutex_;
+    std::condition_variable_any share_thumbnail_cv_;
+    uint64_t share_thumbnail_generation_ = 0;
+    bool share_thumbnail_job_pending_ = false;
+    bool share_thumbnail_job_active_ = false;
     std::unique_ptr<ScreenCapture> capture_;
     std::unique_ptr<VideoEncoder> encoder_;
     std::unique_ptr<VideoDecoder> decoder_;
     parties::rml::ElementRegistry element_registry_;
-    LevelMeterElement* level_meter_ = nullptr;  // owned by RmlUi document
     bool sharing_screen_ = false;
     bool stream_revealed_ = false;  // first decoded frame shown to UI
     std::atomic<bool> capture_lost_{false};
@@ -168,6 +190,7 @@ private:
     // Encode thread with triple-buffered staging textures
     static constexpr int ENCODE_SLOTS = 3;
     Microsoft::WRL::ComPtr<ID3D11Texture2D> encode_textures_[ENCODE_SLOTS];
+    Microsoft::WRL::ComPtr<ID3D11RenderTargetView> encode_rtvs_[ENCODE_SLOTS];
     int encode_nvenc_slots_[ENCODE_SLOTS]{-1, -1, -1};
     uint32_t encode_tex_w_ = 0, encode_tex_h_ = 0;
     bool encode_registered_ = false;
@@ -187,6 +210,8 @@ private:
 
     // Stream audio (capture for sharer, playback for viewer)
     std::unique_ptr<StreamAudioCapture> stream_audio_capture_;
+    std::unique_ptr<StreamAudioCapture> application_audio_capture_;
+    std::atomic<bool> application_audio_sharing_{false};
 
     // ── Video decode (multiple simultaneous sharer streams, tiled in a grid) ──
     struct DecodeWork {
@@ -195,6 +220,7 @@ private:
         VideoCodecId codec;
         uint16_t     width;
         uint16_t     height;
+        bool         keyframe = false;
     };
 
     // One watched sharer's decode pipeline: its own hardware decoder + thread +
@@ -208,7 +234,9 @@ private:
         std::unique_ptr<VideoDecoder> decoder;
         std::thread  thread;
         std::atomic<bool> running{false};
-        std::atomic<bool> awaiting_keyframe{true};
+        // Serialized with queue by queue_mutex.
+        VideoDecodeGate decode_gate;
+        bool hardware_decode_disabled = false;
 
         std::mutex queue_mutex;
         std::condition_variable queue_cv;
@@ -216,6 +244,20 @@ private:
 
         std::mutex frame_mutex;
         std::atomic<bool> new_frame{false};
+        // Native AMF/D3D12 decode output. The shared owner keeps the AMF
+        // surface (and therefore its ID3D12Resource) alive until the renderer
+        // has finished using the frame.
+        std::shared_ptr<void> native_owner;
+        void* native_resource = nullptr;
+        void* native_chroma_resource = nullptr;
+        void* native_ready_fence = nullptr;
+        uint64_t native_ready_value = 0;
+        uint32_t native_resource_state = 0;
+        bool native_rgba = false;
+        uint32_t native_texture_width = 0;
+        uint32_t native_texture_height = 0;
+        uint32_t native_crop_x = 0;
+        uint32_t native_crop_y = 0;
         std::vector<uint8_t> y, u, v;                          // latest decoded planes
         std::vector<uint8_t> staging_y, staging_u, staging_v;  // decode-thread scratch
         uint32_t width = 0, height = 0, y_stride = 0, uv_stride = 0;

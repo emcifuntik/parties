@@ -7,6 +7,13 @@ if(WIN32)
 endif()
 
 if(WIN32)
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/nvidia/nv12_to_rgba.ptx"
+        PARTIES_NV12_TO_RGBA_PTX)
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/nvidia/nv12_to_rgba_ptx.h.in"
+        "${CMAKE_CURRENT_BINARY_DIR}/generated/nv12_to_rgba_ptx.h"
+        @ONLY)
+
     set(ENCDEC_PLATFORM_SOURCES
         src/factory.cpp
         src/nvidia/nvidia_loader.cpp
@@ -43,6 +50,7 @@ target_include_directories(parties_encdec
         ${CMAKE_CURRENT_SOURCE_DIR}/include
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
+        $<$<BOOL:${WIN32}>:${CMAKE_CURRENT_BINARY_DIR}/generated>
 )
 
 if(WIN32)
@@ -59,7 +67,7 @@ if(WIN32)
     target_link_libraries(parties_encdec PRIVATE
         libhevc::decoder
         ${OPENH264_LIBRARY}
-        d3d11 mfplat mfuuid mf strmiids
+        d3d11 d3d12 dxgi mfplat mfuuid mf strmiids
     )
 elseif(APPLE)
     target_link_libraries(parties_encdec PRIVATE

@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(parties VERSION 0.1.0 LANGUAGES CXX C)
+include(CTest)
 
 # ── Version from git tag ─────────────────────────────────────────────────────
 find_package(Git QUIET)
@@ -82,11 +83,15 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "App
     add_compile_options(-Wno-unused-command-line-argument -Wno-c23-extensions)
 endif()
 if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    # Full LTO + PDB in Release (Windows/MSVC-style flags, not for Apple Clang)
+    # Full LTO in Release. clang-cl emits LLVM bitcode which lld-link consumes
+    # directly, so forwarding the Unix -flto option to lld-link is unnecessary.
     add_compile_options($<$<CONFIG:Release>:-flto=full>)
-    add_compile_options($<$<CONFIG:Release>:/Zi>)
-    add_link_options($<$<CONFIG:Release>:-flto=full>)
-    add_link_options($<$<CONFIG:Release>:/DEBUG:FULL>)
+    if(CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+        add_compile_options($<$<CONFIG:Release>:/Zi>)
+        add_link_options($<$<CONFIG:Release>:/DEBUG:FULL>)
+    else()
+        add_link_options($<$<CONFIG:Release>:-flto=full>)
+    endif()
 endif()
 
 # Generate dSYM bundles for Xcode archives (required for App Store symbol upload)

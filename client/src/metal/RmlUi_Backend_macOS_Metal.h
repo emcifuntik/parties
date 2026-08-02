@@ -38,7 +38,7 @@ void Shutdown();
 Rml::SystemInterface* GetSystemInterface();
 Rml::RenderInterface* GetRenderInterface();
 
-/// Concrete Metal render interface (for wiring the Slug font engine).
+/// Concrete Metal render interface for platform-specific rendering extensions.
 RenderInterface_Metal* GetMetalRenderInterface();
 
 void SetViewport(int width, int height);

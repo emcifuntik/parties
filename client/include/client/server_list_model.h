@@ -49,6 +49,7 @@ public:
 
     // Identity / seed phrase onboarding
     rml::Prop<bool>        show_onboarding{false};
+    rml::Prop<int>         onboarding_step{0};  // 0=path selection, 1=recovery confirmation
     rml::Prop<bool>        show_restore{false};
     rml::Prop<bool>        show_key_import{false};
     rml::Prop<Rml::String> seed_phrase;

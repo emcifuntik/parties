@@ -282,22 +282,6 @@ int main(int argc, char* argv[]) {
     // Handle auto-updater lifecycle args (--update-replace, --update-cleanup)
     AutoUpdater::handle_update_args(argc, argv);
 
-    // Parse command-line flags for renderer selection
-    // --dx11    = DirectX 11
-    // --dx12wl  = DirectX 12 (WL backend)
-    // --vulkan  = Vulkan (experimental)
-    // default   = DirectX 12 (custom backend)
-    enum class Renderer { DX12, DX11, DX12WL, Vulkan };
-    Renderer renderer = Renderer::DX12;
-    for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--dx11") == 0)
-            renderer = Renderer::DX11;
-        else if (std::strcmp(argv[i], "--dx12wl") == 0)
-            renderer = Renderer::DX12WL;
-        else if (std::strcmp(argv[i], "--vulkan") == 0)
-            renderer = Renderer::Vulkan;
-    }
-
     // Per-monitor DPI awareness (must be set before creating any windows)
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
@@ -339,13 +323,7 @@ int main(int argc, char* argv[]) {
 
     // Create borderless window. WS_CAPTION enables DWM minimize/restore
     // animations; WM_NCCALCSIZE collapses the caption to zero pixels.
-    const wchar_t* window_title;
-    switch (renderer) {
-    case Renderer::DX11:   window_title = L"Parties (DirectX 11)"; break;
-    case Renderer::DX12WL: window_title = L"Parties (DirectX 12 WL)"; break;
-    case Renderer::Vulkan: window_title = L"Parties (Vulkan)"; break;
-    default:               window_title = L"Parties (DirectX 12)"; break;
-    }
+    const wchar_t* window_title = L"Parties (RmlUi DirectX 12)";
     HWND hwnd = CreateWindowExW(
         0,
         L"PartiesClient",
@@ -370,7 +348,7 @@ int main(int argc, char* argv[]) {
     App app;
     SetPropW(hwnd, L"App", &app);
 
-    if (!app.init(hwnd, static_cast<int>(renderer))) {
+    if (!app.init(hwnd)) {
         LOG_ERROR("Failed to initialize application");
         SetPropW(hwnd, L"App", nullptr);
         DestroyWindow(hwnd);

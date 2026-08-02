@@ -118,6 +118,30 @@ int main() {
         TEST_ASSERT(e2 > aux_energy * 1.5, "master volume 2 is louder than unity");
     }
 
+    // 3. Per-user music preferences are applied from on_stream_created, exactly
+    //    like AppCore does when the first VOICE2 packet for a member arrives.
+    //    This matters because the saved preference exists before the mixer has
+    //    created that user's auxiliary stream.
+    {
+        VoiceMixer per_user_muted(/*apply_makeup=*/false);
+        per_user_muted.on_stream_created = [&per_user_muted](UserId user_id) {
+            per_user_muted.set_user_volume(user_id, 0.0f);
+        };
+        double muted_energy = run_energy(per_user_muted, pkts, -1.0f);
+        std::printf("[per-user=0] energy=%.6f\n", muted_energy);
+        TEST_ASSERT(muted_energy < aux_energy * 1e-3,
+                    "saved per-user music volume is applied on stream creation");
+
+        VoiceMixer per_user_loud(/*apply_makeup=*/false);
+        per_user_loud.on_stream_created = [&per_user_loud](UserId user_id) {
+            per_user_loud.set_user_volume(user_id, 2.0f);
+        };
+        double loud_energy = run_energy(per_user_loud, pkts, -1.0f);
+        std::printf("[per-user=2] energy=%.3f (unity=%.3f)\n", loud_energy, aux_energy);
+        TEST_ASSERT(loud_energy > aux_energy * 1.5,
+                    "per-user music volume scales only that member's VOICE2 stream");
+    }
+
     std::printf("=== ALL AUX STREAM TESTS PASSED ===\n");
     return 0;
 }

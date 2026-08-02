@@ -5,6 +5,7 @@
 #include <RmlUi/Core/RenderInterface.h>
 #include <RmlUi/Core/Context.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <parties/profiler.h>
@@ -20,6 +21,31 @@ VideoElement::~VideoElement() {
     ReleaseResources();
 }
 
+void VideoElement::SetTextureCrop(uint32_t texture_width, uint32_t texture_height,
+                                  uint32_t crop_x, uint32_t crop_y,
+                                  uint32_t visible_width, uint32_t visible_height) {
+    texture_width = texture_width ? texture_width : visible_width;
+    texture_height = texture_height ? texture_height : visible_height;
+    if (!texture_width || !texture_height) return;
+
+    crop_x = (std::min)(crop_x, texture_width);
+    crop_y = (std::min)(crop_y, texture_height);
+    const uint32_t right = (std::min)(crop_x + visible_width, texture_width);
+    const uint32_t bottom = (std::min)(crop_y + visible_height, texture_height);
+    const float u0 = static_cast<float>(crop_x) / texture_width;
+    const float v0 = static_cast<float>(crop_y) / texture_height;
+    const float u1 = static_cast<float>(right) / texture_width;
+    const float v1 = static_cast<float>(bottom) / texture_height;
+    if (u0 != texture_u0_ || v0 != texture_v0_ ||
+        u1 != texture_u1_ || v1 != texture_v1_) {
+        texture_u0_ = u0;
+        texture_v0_ = v0;
+        texture_u1_ = u1;
+        texture_v1_ = v1;
+        geometry_uv_dirty_ = true;
+    }
+}
+
 void VideoElement::UpdateYUVFrame(
     const uint8_t* y_data, uint32_t y_stride,
     const uint8_t* u_data, const uint8_t* v_data, uint32_t uv_stride,
@@ -32,6 +58,15 @@ void VideoElement::UpdateYUVFrame(
     has_frame_ = true;
     yuv_mode_ = true;
     nv12_mode_ = false;
+    nv12_native_mode_ = false;
+    nv12_native_resource_ = nullptr;
+    nv12_native_chroma_resource_ = nullptr;
+    nv12_native_ready_fence_ = nullptr;
+    nv12_native_ready_value_ = 0;
+    nv12_native_resource_state_ = 0;
+    nv12_native_rgba_ = false;
+    nv12_native_owner_.reset();
+    SetTextureCrop(width, height, 0, 0, width, height);
 
     // Store plane data — uploaded to GPU in OnRender (must happen on render thread)
     uint32_t half_w = width / 2;
@@ -54,6 +89,39 @@ void VideoElement::UpdateYUVFrame(
         DirtyLayout();
 }
 
+void VideoElement::UpdateYUVFrame(
+    std::vector<uint8_t>& y_data, uint32_t y_stride,
+    std::vector<uint8_t>& u_data, std::vector<uint8_t>& v_data, uint32_t uv_stride,
+    uint32_t width, uint32_t height) {
+    ZoneScopedN("VideoElement::UpdateYUVFrame(swap)");
+
+    const bool size_changed = (frame_width_ != width || frame_height_ != height);
+    frame_width_ = width;
+    frame_height_ = height;
+    has_frame_ = true;
+    yuv_mode_ = true;
+    nv12_mode_ = false;
+    nv12_native_mode_ = false;
+    nv12_native_resource_ = nullptr;
+    nv12_native_chroma_resource_ = nullptr;
+    nv12_native_ready_fence_ = nullptr;
+    nv12_native_ready_value_ = 0;
+    nv12_native_resource_state_ = 0;
+    nv12_native_rgba_ = false;
+    nv12_native_owner_.reset();
+    SetTextureCrop(width, height, 0, 0, width, height);
+
+    yuv_y_.swap(y_data);
+    yuv_u_.swap(u_data);
+    yuv_v_.swap(v_data);
+    yuv_y_stride_ = y_stride;
+    yuv_uv_stride_ = uv_stride;
+    yuv_dirty_ = true;
+
+    if (size_changed)
+        DirtyLayout();
+}
+
 void VideoElement::UpdateNV12Frame(
     const uint8_t* y_data, uint32_t y_stride,
     const uint8_t* uv_data, uint32_t uv_stride,
@@ -66,6 +134,15 @@ void VideoElement::UpdateNV12Frame(
     has_frame_ = true;
     nv12_mode_ = true;
     yuv_mode_ = false;
+    nv12_native_mode_ = false;
+    nv12_native_resource_ = nullptr;
+    nv12_native_chroma_resource_ = nullptr;
+    nv12_native_ready_fence_ = nullptr;
+    nv12_native_ready_value_ = 0;
+    nv12_native_resource_state_ = 0;
+    nv12_native_rgba_ = false;
+    nv12_native_owner_.reset();
+    SetTextureCrop(width, height, 0, 0, width, height);
 
     uint32_t half_h = height / 2;
 
@@ -95,6 +172,15 @@ void VideoElement::UpdateNV12Frame(
     has_frame_ = true;
     nv12_mode_ = true;
     yuv_mode_ = false;
+    nv12_native_mode_ = false;
+    nv12_native_resource_ = nullptr;
+    nv12_native_chroma_resource_ = nullptr;
+    nv12_native_ready_fence_ = nullptr;
+    nv12_native_ready_value_ = 0;
+    nv12_native_resource_state_ = 0;
+    nv12_native_rgba_ = false;
+    nv12_native_owner_.reset();
+    SetTextureCrop(width, height, 0, 0, width, height);
 
     // Swap instead of move — caller gets our old buffer back,
     // which cycles through the swap chain and avoids malloc every frame.
@@ -108,12 +194,53 @@ void VideoElement::UpdateNV12Frame(
         DirtyLayout();
 }
 
+void VideoElement::UpdateNativeNV12Frame(
+    void* d3d12_resource, void* d3d12_chroma_resource,
+    std::shared_ptr<void> owner,
+    void* ready_fence, uint64_t ready_value, uint32_t resource_state, bool rgba,
+    uint32_t width, uint32_t height,
+    uint32_t texture_width, uint32_t texture_height,
+    uint32_t crop_x, uint32_t crop_y) {
+    ZoneScopedN("VideoElement::UpdateNativeNV12Frame");
+    if (!d3d12_resource || !owner) return;
+
+    const bool size_changed = (frame_width_ != width || frame_height_ != height);
+    frame_width_ = width;
+    frame_height_ = height;
+    has_frame_ = true;
+    nv12_mode_ = true;
+    yuv_mode_ = false;
+    nv12_native_mode_ = true;
+    nv12_native_resource_ = d3d12_resource;
+    nv12_native_chroma_resource_ = d3d12_chroma_resource;
+    nv12_native_ready_fence_ = ready_fence;
+    nv12_native_ready_value_ = ready_value;
+    nv12_native_resource_state_ = resource_state;
+    nv12_native_rgba_ = rgba;
+    nv12_native_owner_ = std::move(owner);
+    SetTextureCrop(texture_width, texture_height, crop_x, crop_y, width, height);
+    nv12_dirty_ = true;
+
+    if (size_changed)
+        DirtyLayout();
+}
+
 void VideoElement::UpdateFrame(std::vector<uint8_t>&& rgba_data, uint32_t width, uint32_t height) {
     bool size_changed = (frame_width_ != width || frame_height_ != height);
     frame_width_  = width;
     frame_height_ = height;
     has_frame_ = true;
     yuv_mode_ = false;
+    nv12_mode_ = false;
+    nv12_native_mode_ = false;
+    nv12_native_resource_ = nullptr;
+    nv12_native_chroma_resource_ = nullptr;
+    nv12_native_ready_fence_ = nullptr;
+    nv12_native_ready_value_ = 0;
+    nv12_native_resource_state_ = 0;
+    nv12_native_rgba_ = false;
+    nv12_native_owner_.reset();
+    SetTextureCrop(width, height, 0, 0, width, height);
     frame_data_ = std::move(rgba_data);
     texture_dirty_ = true;
     if (size_changed)
@@ -126,6 +253,16 @@ void VideoElement::UpdateFrame(const uint8_t* rgba_data, uint32_t width, uint32_
     frame_height_ = height;
     has_frame_ = true;
     yuv_mode_ = false;
+    nv12_mode_ = false;
+    nv12_native_mode_ = false;
+    nv12_native_resource_ = nullptr;
+    nv12_native_chroma_resource_ = nullptr;
+    nv12_native_ready_fence_ = nullptr;
+    nv12_native_ready_value_ = 0;
+    nv12_native_resource_state_ = 0;
+    nv12_native_rgba_ = false;
+    nv12_native_owner_.reset();
+    SetTextureCrop(width, height, 0, 0, width, height);
 
     size_t byte_count = static_cast<size_t>(width) * height * 4;
     frame_data_.resize(byte_count);
@@ -142,6 +279,7 @@ void VideoElement::SetVideoDimensions(uint32_t width, uint32_t height) {
     frame_width_  = width;
     frame_height_ = height;
     has_frame_ = true;
+    SetTextureCrop(width, height, 0, 0, width, height);
 
     if (size_changed)
         DirtyLayout();
@@ -159,9 +297,18 @@ void VideoElement::Clear() {
     yuv_u_.clear();
     yuv_v_.clear();
     nv12_mode_ = false;
+    nv12_native_mode_ = false;
+    nv12_native_resource_ = nullptr;
+    nv12_native_chroma_resource_ = nullptr;
+    nv12_native_ready_fence_ = nullptr;
+    nv12_native_ready_value_ = 0;
+    nv12_native_resource_state_ = 0;
+    nv12_native_rgba_ = false;
+    nv12_native_owner_.reset();
     nv12_dirty_ = false;
     nv12_y_.clear();
     nv12_uv_.clear();
+    SetTextureCrop(1, 1, 0, 0, 1, 1);
     ReleaseResources();
     DirtyLayout();
 }
@@ -187,6 +334,7 @@ void VideoElement::ReleaseResources() {
         nv12_texture_ = 0;
     }
     nv12_tex_w_ = nv12_tex_h_ = 0;
+    nv12_texture_native_ = false;
 
     if (video_geom_) {
         ri->ReleaseGeometry(video_geom_);
@@ -241,22 +389,23 @@ void VideoElement::RebuildGeometry() {
         v.colour = Rml::ColourbPremultiplied(255, 255, 255, 255);
 
     vertices[0].position = {ox, oy};
-    vertices[0].tex_coord = {0.0f, 0.0f};
+    vertices[0].tex_coord = {texture_u0_, texture_v0_};
 
     vertices[1].position = {ox + rw, oy};
-    vertices[1].tex_coord = {1.0f, 0.0f};
+    vertices[1].tex_coord = {texture_u1_, texture_v0_};
 
     vertices[2].position = {ox + rw, oy + rh};
-    vertices[2].tex_coord = {1.0f, 1.0f};
+    vertices[2].tex_coord = {texture_u1_, texture_v1_};
 
     vertices[3].position = {ox, oy + rh};
-    vertices[3].tex_coord = {0.0f, 1.0f};
+    vertices[3].tex_coord = {texture_u0_, texture_v1_};
 
     int indices[6] = {0, 1, 2, 0, 2, 3};
 
     video_geom_ = ri->CompileGeometry({vertices, 4}, {indices, 6});
     geom_w_ = elem_w;
     geom_h_ = elem_h;
+    geometry_uv_dirty_ = false;
 }
 
 void VideoElement::OnResize() {
@@ -281,7 +430,7 @@ void VideoElement::OnRender() {
 
     // Rebuild geometry if element size changed
     Rml::Vector2f size = GetBox().GetSize(Rml::BoxArea::Content);
-    if (!video_geom_ || size.x != geom_w_ || size.y != geom_h_)
+    if (!video_geom_ || size.x != geom_w_ || size.y != geom_h_ || geometry_uv_dirty_)
         RebuildGeometry();
     if (!video_geom_) return;
 
@@ -289,23 +438,51 @@ void VideoElement::OnRender() {
 
     if (nv12_mode_) {
         // NV12 path: Y + interleaved UV, native hardware decoder format
-        if (nv12_dirty_ && !nv12_y_.empty()) {
-            if (nv12_texture_ && nv12_tex_w_ == frame_width_ && nv12_tex_h_ == frame_height_) {
-                ext_ri->UpdateNV12Texture(nv12_texture_,
-                    nv12_y_.data(), nv12_y_stride_,
-                    nv12_uv_.data(), nv12_uv_stride_,
-                    frame_width_, frame_height_);
+        if (nv12_dirty_ && (nv12_native_mode_ || !nv12_y_.empty())) {
+            const bool compatible = nv12_texture_ &&
+                nv12_tex_w_ == frame_width_ && nv12_tex_h_ == frame_height_ &&
+                nv12_texture_native_ == nv12_native_mode_;
+            if (!compatible && nv12_texture_) {
+                ext_ri->ReleaseNV12Texture(nv12_texture_);
+                nv12_texture_ = 0;
+            }
+
+            if (nv12_native_mode_) {
+                if (nv12_texture_) {
+                    if (!ext_ri->UpdateNativeNV12Texture(nv12_texture_, nv12_native_resource_,
+                            nv12_native_chroma_resource_, nv12_native_owner_,
+                            nv12_native_ready_fence_, nv12_native_ready_value_,
+                            nv12_native_resource_state_, nv12_native_rgba_, frame_width_, frame_height_)) {
+                        ext_ri->ReleaseNV12Texture(nv12_texture_);
+                        nv12_texture_ = 0;
+                    }
+                }
+                if (!nv12_texture_) {
+                    nv12_texture_ = ext_ri->GenerateNativeNV12Texture(
+                        nv12_native_resource_, nv12_native_chroma_resource_,
+                        nv12_native_owner_, nv12_native_ready_fence_,
+                        nv12_native_ready_value_, nv12_native_resource_state_, nv12_native_rgba_,
+                        frame_width_, frame_height_);
+                }
             } else {
-                if (nv12_texture_)
-                    ext_ri->ReleaseNV12Texture(nv12_texture_);
-                nv12_texture_ = ext_ri->GenerateNV12Texture(
-                    nv12_y_.data(), nv12_y_stride_,
-                    nv12_uv_.data(), nv12_uv_stride_,
-                    frame_width_, frame_height_);
+                if (nv12_texture_) {
+                    ext_ri->UpdateNV12Texture(nv12_texture_,
+                        nv12_y_.data(), nv12_y_stride_,
+                        nv12_uv_.data(), nv12_uv_stride_,
+                        frame_width_, frame_height_);
+                } else {
+                    nv12_texture_ = ext_ri->GenerateNV12Texture(
+                        nv12_y_.data(), nv12_y_stride_,
+                        nv12_uv_.data(), nv12_uv_stride_,
+                        frame_width_, frame_height_);
+                }
+            }
+            if (nv12_texture_) {
                 nv12_tex_w_ = frame_width_;
                 nv12_tex_h_ = frame_height_;
+                nv12_texture_native_ = nv12_native_mode_;
+                nv12_dirty_ = false;
             }
-            nv12_dirty_ = false;
         }
         if (nv12_texture_)
             ext_ri->RenderNV12Geometry(video_geom_, offset, nv12_texture_);

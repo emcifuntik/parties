@@ -2,6 +2,7 @@
 <head>
     <title>Parties</title>
     <link type="text/rcss" href="style.rcss" />
+    <link type="text/rcss" href="redesign.rcss" />
 </head>
 <body class="fullscreen">
 
@@ -63,25 +64,48 @@
 
             <!-- Party grid content -->
             <div class="home-content">
-                <div class="home-greeting">
-                    <span class="home-title">Your Parties</span>
-                    <span class="home-subtitle">{{ party_count_text }}</span>
+                <div class="home-toolbar">
+                    <div class="home-greeting">
+                        <span class="home-eyebrow">Welcome back</span>
+                        <span class="home-title">Your Parties</span>
+                        <span class="home-subtitle">{{ party_count_text }}</span>
+                    </div>
+                    <div class="home-actions" data-model="lobby">
+                        <div class="home-profile">
+                            <gradient_circle class="home-profile-avatar" data-attr-seed="username" />
+                            <span class="home-profile-name">{{ username }}</span>
+                        </div>
+                        <div class="home-add-button" data-model="serverlist" data-event-click="add_server">+ Add party</div>
+                    </div>
                 </div>
 
                 <div class="home-grid">
                     <div data-for="srv : servers">
                         <div class="party-card"
+                             data-class-online="srv.online"
                              data-event-mousedown="server_mousedown(srv.id)">
-                            <div class="party-card-icon-wrap">
-                                <gradient_circle class="party-card-gradient" data-attr-seed="srv.name" />
-                                <span class="party-card-initials">{{ srv.initials }}</span>
-                            </div>
-                            <span class="party-card-name">{{ srv.name }}</span>
-                            <div class="party-card-status">
-                                <span class="status-dot" data-class-online="srv.online"></span>
-                                <span class="party-card-users" data-if="srv.online">{{ srv.users_text }}</span>
-                                <span class="party-card-users party-card-offline" data-if="srv.online == false">Offline</span>
-                                <span class="party-card-lock" data-if="srv.locked">Private</span>
+                            <div class="party-card-banner"
+                                 data-class-offline="srv.online == false"
+                                 data-class-variant-one="srv.color_index == 1"
+                                 data-class-variant-two="srv.color_index == 2"
+                                 data-class-variant-three="srv.color_index == 3"></div>
+                            <div class="party-card-body">
+                                <div class="party-card-icon-wrap">
+                                    <gradient_circle class="party-card-gradient" data-attr-seed="srv.name" />
+                                    <span class="party-card-initials">{{ srv.initials }}</span>
+                                </div>
+                                <span class="party-card-name">{{ srv.name }}</span>
+                                <div class="party-card-status">
+                                    <span class="status-dot" data-class-online="srv.online"></span>
+                                    <span class="party-card-users" data-if="srv.online">{{ srv.users_text }}</span>
+                                    <span class="party-card-users party-card-offline" data-if="srv.online == false">Offline</span>
+                                    <span class="party-card-lock" data-if="srv.locked">Private</span>
+                                </div>
+                                <div class="party-card-footer">
+                                    <span class="party-card-host">{{ srv.host }}</span>
+                                    <span class="party-card-action" data-if="srv.online">Join</span>
+                                    <span class="party-card-action secondary" data-if="srv.online == false">Reconnect</span>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -102,8 +126,10 @@
          PARTY VIEW — sidebar + main content (when connected)
          ============================================================ -->
 
-    <!-- Sidebar (only when connected) -->
-    <div class="sidebar" data-model="lobby" data-if="is_connected">
+    <!-- Every connected application route uses the same channel sidebar.
+         Settings is the sole exception because it owns a dedicated settings nav. -->
+    <div class="sidebar" id="channel-sidebar" data-model="lobby"
+         data-if="is_connected && route != 'settings'">
         <div class="server-header">
             <div class="server-header-icon-wrap">
                 <gradient_circle class="server-header-gradient" data-attr-seed="server_name" />
@@ -180,7 +206,7 @@
                         <span class="user-name">{{ username }}</span>
                         <span class="user-fingerprint" data-model="serverlist" data-if="fingerprint != ''" data-event-click="copy_fingerprint">{{ fingerprint }}</span>
                     </div>
-                    <div class="settings-btn" data-event-click="toggle_settings">
+                    <div class="settings-btn" data-event-click="open_settings">
                         <svg src="icon-settings.svg" width="16" height="16" />
                     </div>
                 </div>
@@ -200,6 +226,11 @@
                          data-event-click="toggle_share">
                         <svg class="voice-icon" src="icon-share.svg" width="18" height="18" data-if="is_sharing == false" />
                         <svg class="voice-icon" src="icon-sharing.svg" width="18" height="18" data-if="is_sharing" />
+                    </div>
+                    <div id="room-audio-share-button" class="voice-btn audio-share-button"
+                         data-class-active="is_audio_sharing"
+                         data-event-click="toggle_audio_share" title="Share application audio">
+                        <svg class="voice-icon" src="icon-music.svg" width="18" height="18" />
                     </div>
                     <div class="voice-btn btn-disconnect"
                          data-event-click="leave_channel">
@@ -223,343 +254,364 @@
             <span class="text-muted-msg">Select a server to get started</span>
         </div>
 
-        <!-- Settings overlay -->
-        <div class="settings-overlay" data-if="show_settings == true && show_share_picker == false">
-            <div class="settings-header">
-                <h2>Settings</h2>
-                <div class="close-icon" data-event-click="toggle_settings">
-                    <div class="close-icon-a"></div>
-                    <div class="close-icon-b"></div>
+        <!-- Settings is a routed page, not an overlay flag. Only one top-level
+             route can exist, so it cannot render together with chat or room. -->
+        <div class="settings-overlay" id="route-settings" data-if="route == 'settings'">
+            <div class="settings-nav" id="settings-nav">
+                <div class="settings-nav-title">Settings</div>
+                <div class="settings-nav-group">Device</div>
+                <div class="settings-nav-item" id="settings-nav-audio" data-class-active="settings_section == 0"
+                     data-event-click="navigate_settings(0)">
+                    <span class="settings-nav-icon"><svg src="icon-unmute.svg" width="15" height="15" /></span>
+                    <span>Audio &amp; Voice</span>
+                </div>
+                <div class="settings-nav-item" id="settings-nav-screen-share" data-class-active="settings_section == 1"
+                     data-event-click="navigate_settings(1)">
+                    <span class="settings-nav-icon"><svg src="icon-share.svg" width="15" height="15" /></span>
+                    <span>Screen Share</span>
+                </div>
+                <div class="settings-nav-group">App</div>
+                <div class="settings-nav-item" id="settings-nav-hotkeys" data-class-active="settings_section == 2"
+                     data-event-click="navigate_settings(2)">
+                    <span class="settings-nav-icon"><svg src="icon-keyboard.svg" width="15" height="15" /></span>
+                    <span>Hotkeys</span>
+                </div>
+                <div class="settings-nav-item" id="settings-nav-account" data-class-active="settings_section == 3"
+                     data-event-click="navigate_settings(3)">
+                    <span class="settings-nav-icon"><svg src="icon-key.svg" width="15" height="15" /></span>
+                    <span>Account &amp; Keys</span>
                 </div>
             </div>
 
-            <!-- Input device -->
-            <div class="settings-section">
-                <div class="settings-label">Input Device</div>
-                <div class="device-list">
-                    <div data-for="dev : capture_devices"
-                         class="device-item"
-                         data-class-selected="dev.index == selected_capture"
-                         data-event-click="select_capture(dev.index)">
-                        {{ dev.name }}
+            <div class="settings-page">
+                <div class="settings-header">
+                    <h2 data-if="settings_section == 0">Audio &amp; Voice</h2>
+                    <h2 data-if="settings_section == 1">Screen Share</h2>
+                    <h2 data-if="settings_section == 2">Hotkeys</h2>
+                    <h2 data-if="settings_section == 3">Account &amp; Keys</h2>
+                    <div class="settings-close" data-event-click="route_back" title="Close settings">
+                        <svg src="icon-close.svg" width="17" height="17" />
                     </div>
                 </div>
-            </div>
 
-            <!-- Output device -->
-            <div class="settings-section">
-                <div class="settings-label">Output Device</div>
-                <div class="device-list">
-                    <div data-for="dev : playback_devices"
-                         class="device-item"
-                         data-class-selected="dev.index == selected_playback"
-                         data-event-click="select_playback(dev.index)">
-                        {{ dev.name }}
-                    </div>
-                </div>
-            </div>
-
-            <!-- Output volumes -->
-            <div class="settings-section">
-                <div class="slider-row">
-                    <span class="slider-label">Voice Volume</span>
-                    <input type="range" class="slider" min="0" max="2" step="0.01"
-                           data-value="voice_volume"
-                           data-event-change="voice_volume_changed" />
-                </div>
-                <div class="slider-row">
-                    <span class="slider-label">Music / 2nd Stream Volume</span>
-                    <input type="range" class="slider" min="0" max="2" step="0.01"
-                           data-value="secondary_volume"
-                           data-event-change="secondary_volume_changed" />
-                </div>
-            </div>
-
-            <!-- Notification volume -->
-            <div class="settings-section">
-                <div class="slider-row">
-                    <span class="slider-label">Notification Volume</span>
-                    <input type="range" class="slider" min="0" max="2" step="0.01"
-                           data-value="notification_volume"
-                           data-event-change="notification_volume_changed" />
-                </div>
-                <div class="btn btn-secondary btn-small" data-event-click="test_notification_sound">Play Sound</div>
-            </div>
-
-            <!-- Noise cancellation toggle -->
-            <div class="settings-section">
-                <div class="settings-toggle" data-event-click="toggle_denoise">
-                    <span class="toggle-indicator" data-class-on="denoise_enabled"></span>
-                    <span class="toggle-label">Noise Cancellation</span>
-                </div>
-            </div>
-
-            <!-- Voice normalization -->
-            <div class="settings-section">
-                <div class="settings-toggle" data-event-click="toggle_normalize">
-                    <span class="toggle-indicator" data-class-on="normalize_enabled"></span>
-                    <span class="toggle-label">Voice Normalization</span>
-                </div>
-                <div class="slider-row" data-if="normalize_enabled">
-                    <span class="slider-label">Target Level</span>
-                    <input type="range" class="slider" min="0" max="1" step="0.01"
-                           data-value="normalize_target"
-                           data-event-change="normalize_target_changed" />
-                </div>
-            </div>
-
-            <!-- Echo cancellation -->
-            <div class="settings-section">
-                <div class="settings-toggle" data-event-click="toggle_aec">
-                    <span class="toggle-indicator" data-class-on="aec_enabled"></span>
-                    <span class="toggle-label">Echo Cancellation</span>
-                </div>
-            </div>
-
-            <!-- Voice activation -->
-            <div class="settings-section">
-                <div class="settings-toggle" data-event-click="toggle_vad">
-                    <span class="toggle-indicator" data-class-on="vad_enabled"></span>
-                    <span class="toggle-label">Voice Activation</span>
-                </div>
-                <div class="vad-settings" data-if="vad_enabled">
-                    <div class="slider-row">
-                        <span class="slider-label">Threshold</span>
-                        <input type="range" class="slider" min="0" max="1" step="0.01"
-                               data-value="vad_threshold"
-                               data-event-change="vad_threshold_changed" />
-                    </div>
-                    <level_meter id="voice-level-meter" class="level-meter" />
-                </div>
-            </div>
-
-            <!-- Push to Talk -->
-            <div class="settings-section">
-                <div class="settings-toggle" data-event-click="toggle_ptt">
-                    <span class="toggle-indicator" data-class-on="ptt_enabled"></span>
-                    <span class="toggle-label">Push to Talk</span>
-                </div>
-                <div class="ptt-settings" data-if="ptt_enabled">
-                    <div class="keybind-row">
-                        <span class="slider-label">Key</span>
-                        <div class="keybind-btn" data-event-click="ptt_bind">
-                            <span data-if="ptt_binding">Press a key...</span>
-                            <span data-if="ptt_binding == false && ptt_key > 0">{{ ptt_key_name }}</span>
-                            <span data-if="ptt_binding == false && ptt_key == 0">Not set</span>
+                <!-- Audio & Voice: matches the compact design specification. -->
+                <div class="settings-scroll settings-audio-page" data-if="settings_section == 0">
+                    <div class="settings-device-grid">
+                        <div class="settings-device-field">
+                            <div class="settings-field-label">Input Device</div>
+                            <div class="settings-device-select-wrap">
+                                <svg src="icon-unmute.svg" width="16" height="16" />
+                                <select class="settings-device-select" id="settings-capture-select" data-value="selected_capture"
+                                        data-event-change="capture_selection_changed">
+                                    <option data-for="dev : capture_devices" data-attr-value="dev.index">{{ dev.name }}</option>
+                                </select>
+                            </div>
+                            <div class="settings-meter-row">
+                                <span>Mic</span>
+                                <level_meter id="voice-level-meter" class="settings-mic-meter"
+                                             data-attr-level="voice_level" data-attr-threshold="vad_threshold" />
+                            </div>
+                        </div>
+                        <div class="settings-device-field">
+                            <div class="settings-field-label">Output Device</div>
+                            <div class="settings-device-select-wrap">
+                                <svg src="icon-volume.svg" width="16" height="16" />
+                                <select class="settings-device-select" id="settings-playback-select" data-value="selected_playback"
+                                        data-event-change="playback_selection_changed">
+                                    <option data-for="dev : playback_devices" data-attr-value="dev.index">{{ dev.name }}</option>
+                                </select>
+                            </div>
+                            <div class="settings-test-output" data-event-click="test_notification_sound">
+                                <svg src="icon-volume.svg" width="13" height="13" /><span>Test output</span>
+                            </div>
                         </div>
                     </div>
-                    <div class="slider-row">
-                        <span class="slider-label">Release Delay — {{ ptt_delay }}ms</span>
-                        <input type="range" class="slider" min="0" max="1000" step="50"
-                               data-value="ptt_delay"
-                               data-event-change="ptt_delay_changed" />
-                    </div>
-                </div>
-            </div>
 
-            <!-- Global Hotkeys -->
-            <div class="settings-section">
-                <div class="settings-label">Hotkeys</div>
-                <div class="keybind-row">
-                    <span class="slider-label">Toggle Mute</span>
-                    <div class="keybind-btn" data-event-click="mute_bind">
-                        <span data-if="mute_binding">Press a key...</span>
-                        <span data-if="mute_binding == false && mute_key > 0">{{ mute_key_name }}</span>
-                        <span data-if="mute_binding == false && mute_key == 0">Not set</span>
+                    <div class="settings-feature-grid">
+                        <div class="settings-feature-card" id="settings-noise-card" data-event-click="toggle_denoise">
+                            <div><span class="settings-feature-title">Noise Cancellation</span><span class="settings-feature-copy">RNNoise · removes background</span></div>
+                            <span class="settings-switch" id="settings-denoise-switch" data-class-on="denoise_enabled"><span class="settings-switch-knob" id="settings-denoise-switch-knob"></span></span>
+                        </div>
+                        <div class="settings-feature-card" id="settings-normalize-card" data-event-click="toggle_normalize">
+                            <div><span class="settings-feature-title">Voice Normalization</span><span class="settings-feature-copy">Even out loudness</span></div>
+                            <span class="settings-switch" id="settings-normalize-switch" data-class-on="normalize_enabled"><span class="settings-switch-knob" id="settings-normalize-switch-knob"></span></span>
+                        </div>
+                        <div class="settings-feature-card" data-event-click="toggle_aec">
+                            <div><span class="settings-feature-title">Echo Cancellation</span><span class="settings-feature-copy">For open speakers</span></div>
+                            <span class="settings-switch" data-class-on="aec_enabled"><span class="settings-switch-knob"></span></span>
+                        </div>
+                        <div class="settings-feature-card settings-ptt-card" id="settings-ptt-card">
+                            <div class="settings-ptt-card-header" data-event-click="toggle_ptt">
+                                <div class="settings-ptt-card-copy">
+                                    <span class="settings-feature-title">Push to Talk</span>
+                                    <span class="settings-feature-copy">Hold a key to transmit</span>
+                                </div>
+                                <span class="settings-switch" data-class-on="ptt_enabled"><span class="settings-switch-knob"></span></span>
+                            </div>
+                            <div class="settings-ptt-delay" data-class-inactive="ptt_enabled == false">
+                                <input type="range" class="settings-wide-slider settings-ptt-delay-slider"
+                                       id="settings-ptt-delay-slider" min="0" max="1000" step="50"
+                                       data-value="ptt_delay" data-event-change="ptt_delay_changed" />
+                                <span class="settings-ptt-delay-value" id="settings-ptt-delay-value"><span>{{ ptt_delay_text }}</span></span>
+                            </div>
+                        </div>
                     </div>
-                </div>
-                <div class="keybind-row">
-                    <span class="slider-label">Toggle Deafen</span>
-                    <div class="keybind-btn" data-event-click="deafen_bind">
-                        <span data-if="deafen_binding">Press a key...</span>
-                        <span data-if="deafen_binding == false && deafen_key > 0">{{ deafen_key_name }}</span>
-                        <span data-if="deafen_binding == false && deafen_key == 0">Not set</span>
-                    </div>
-                </div>
-            </div>
 
-            <!-- Screen sharing settings -->
-            <div class="settings-section">
-                <div class="settings-label">Screen Sharing</div>
-                <div class="share-setting-group">
-                    <div class="settings-sublabel">Codec</div>
-                    <div class="share-codec-buttons">
-                        <div class="share-codec-btn" data-class-active="share_codec == 0"
-                             data-event-click="select_share_codec(0)">AV1</div>
-                        <div class="share-codec-btn" data-class-active="share_codec == 1"
-                             data-event-click="select_share_codec(1)">H.265</div>
-                        <div class="share-codec-btn" data-class-active="share_codec == 2"
-                             data-event-click="select_share_codec(2)">H.264</div>
-                    </div>
-                </div>
-                <div class="share-setting-group">
-                    <div class="settings-sublabel">Scale</div>
-                    <div class="share-codec-buttons">
-                        <div class="share-codec-btn" data-class-active="share_scale == 0"
-                             data-event-click="select_share_scale(0)">Source</div>
-                        <div class="share-codec-btn" data-class-active="share_scale == 1"
-                             data-event-click="select_share_scale(1)">75%</div>
-                        <div class="share-codec-btn" data-class-active="share_scale == 2"
-                             data-event-click="select_share_scale(2)">50%</div>
-                        <div class="share-codec-btn" data-class-active="share_scale == 3"
-                             data-event-click="select_share_scale(3)">25%</div>
-                    </div>
-                </div>
-                <div class="share-setting-group">
-                    <div class="settings-sublabel">FPS</div>
-                    <div class="share-codec-buttons">
-                        <div class="share-codec-btn" data-class-active="share_fps == 0"
-                             data-event-click="select_share_fps(0)">15</div>
-                        <div class="share-codec-btn" data-class-active="share_fps == 1"
-                             data-event-click="select_share_fps(1)">30</div>
-                        <div class="share-codec-btn" data-class-active="share_fps == 2"
-                             data-event-click="select_share_fps(2)">60</div>
-                        <div class="share-codec-btn" data-class-active="share_fps == 3"
-                             data-event-click="select_share_fps(3)">120</div>
-                    </div>
-                </div>
-                <div class="share-setting-group">
-                    <div class="settings-sublabel">Bitrate</div>
-                    <div class="share-bitrate-row">
-                        <input type="range" class="share-bitrate-slider" min="0.5" max="20" step="0.5"
-                               data-value="share_bitrate"
-                               data-event-change="share_bitrate_changed" />
-                        <div class="share-bitrate-value">{{ share_bitrate }} Mbps</div>
-                    </div>
-                </div>
-            </div>
+                    <div class="settings-level-grid">
+                        <div class="settings-level-card" id="settings-notification-card">
+                            <div class="settings-level-heading">
+                                <div>
+                                    <span class="settings-feature-title">Notification Volume</span>
+                                    <span class="settings-feature-copy">Alerts &amp; room sounds</span>
+                                </div>
+                                <span class="settings-level-value">Output level</span>
+                            </div>
+                            <input type="range" class="settings-wide-slider" min="0" max="2" step="0.01"
+                                   data-value="notification_volume" data-event-change="notification_volume_changed" />
+                        </div>
 
-            <!-- Identity backup/import -->
-            <div class="settings-section">
-                <div class="settings-label">Identity</div>
+                        <div class="settings-level-card" id="settings-music-send-card">
+                            <div class="settings-level-heading">
+                                <div>
+                                    <span class="settings-feature-title">Shared Music Volume</span>
+                                    <span class="settings-feature-copy">Gain applied before application audio is sent</span>
+                                </div>
+                                <span class="settings-level-value">Send level</span>
+                            </div>
+                            <input type="range" class="settings-wide-slider" id="settings-music-send-slider"
+                                   min="0" max="2" step="0.01"
+                                   data-value="music_send_volume"
+                                   data-event-change="music_send_volume_changed" />
+                        </div>
 
-                <div class="btn btn-secondary btn-small" data-event-click="toggle_private_key">
-                    <span data-if="show_private_key == false">Show Private Key</span>
-                    <span data-if="show_private_key">Hide Private Key</span>
+                        <div class="settings-level-card settings-vad-card" id="settings-vad-card"
+                             data-class-disabled="vad_enabled == false">
+                            <div class="settings-vad-heading">
+                                <div class="settings-vad-title">
+                                    <span class="settings-feature-title">Voice Activation</span>
+                                    <span class="settings-feature-copy">Transmit automatically when your voice is detected</span>
+                                </div>
+                                <div class="settings-vad-toggle" data-event-click="toggle_vad">
+                                    <span class="settings-switch" id="settings-vad-switch" data-class-on="vad_enabled">
+                                        <span class="settings-switch-knob" id="settings-vad-switch-knob"></span>
+                                    </span>
+                                </div>
+                            </div>
+                            <div class="settings-vad-track">
+                                <level_meter id="voice-activation-meter" class="settings-vad-meter"
+                                             data-attr-level="voice_level" data-attr-threshold="vad_threshold" />
+                                <input type="range" class="settings-vad-slider" min="0" max="1" step="0.01"
+                                       data-value="vad_threshold" data-event-change="vad_threshold_changed" />
+                            </div>
+                            <div class="settings-vad-foot"><span>Drag marker to set threshold</span></div>
+                        </div>
+                    </div>
+
                 </div>
 
-                <div class="seed-phrase-display" data-if="show_private_key">
-                    <div class="private-key-text">{{ identity_private_key }}</div>
-                    <div class="btn btn-secondary btn-small" data-event-click="copy_private_key">Copy</div>
+                <div class="settings-scroll" id="settings-screen-share-page" data-if="settings_section == 1">
+                    <div class="settings-page-intro" id="settings-screen-share-intro">Choose the defaults used when you start a new screen share.</div>
+                    <div class="settings-config-card">
+                        <div class="share-setting-group"><div class="settings-field-label">Codec</div><div class="share-codec-buttons">
+                            <div class="share-codec-btn" data-class-active="share_codec == 0" data-event-click="select_share_codec(0)">AV1</div>
+                            <div class="share-codec-btn" data-class-active="share_codec == 1" data-event-click="select_share_codec(1)">H.265</div>
+                            <div class="share-codec-btn" data-class-active="share_codec == 2" data-event-click="select_share_codec(2)">H.264</div>
+                        </div></div>
+                        <div class="share-setting-group"><div class="settings-field-label">Scale</div><div class="share-codec-buttons">
+                            <div class="share-codec-btn" data-class-active="share_scale == 0" data-event-click="select_share_scale(0)">Source</div>
+                            <div class="share-codec-btn" data-class-active="share_scale == 1" data-event-click="select_share_scale(1)">75%</div>
+                            <div class="share-codec-btn" data-class-active="share_scale == 2" data-event-click="select_share_scale(2)">50%</div>
+                            <div class="share-codec-btn" data-class-active="share_scale == 3" data-event-click="select_share_scale(3)">25%</div>
+                        </div></div>
+                        <div class="share-setting-group"><div class="settings-field-label">Frame Rate</div><div class="share-codec-buttons">
+                            <div class="share-codec-btn" data-class-active="share_fps == 0" data-event-click="select_share_fps(0)">15</div>
+                            <div class="share-codec-btn" data-class-active="share_fps == 1" data-event-click="select_share_fps(1)">30</div>
+                            <div class="share-codec-btn" data-class-active="share_fps == 2" data-event-click="select_share_fps(2)">60</div>
+                            <div class="share-codec-btn" data-class-active="share_fps == 3" data-event-click="select_share_fps(3)">120</div>
+                        </div></div>
+                        <div class="share-setting-group"><div class="settings-slider-heading settings-bitrate-heading"><span class="settings-field-label" id="settings-bitrate-label">Average bitrate</span><span class="settings-field-label settings-bitrate-value" id="settings-bitrate-value">{{ share_bitrate }} Mbps</span></div>
+                            <input type="range" class="settings-wide-slider" id="settings-bitrate-slider" min="0.5" max="20" step="0.5"
+                                   data-value="share_bitrate" data-event-change="share_bitrate_changed" />
+                        </div>
+                    </div>
                 </div>
 
-                <div class="btn btn-secondary btn-small" data-if="show_import_identity == false"
-                     data-event-click="show_import_form">Import Identity</div>
+                <div class="settings-scroll" id="settings-hotkeys-page" data-if="settings_section == 2">
+                    <div class="settings-page-intro" id="settings-hotkeys-intro">Global shortcuts continue to work while Parties is in the background.</div>
+                    <div class="settings-config-card settings-keybind-list">
+                        <div class="settings-keybind-row"><div class="settings-row-copy"><span class="settings-feature-title">Toggle Mute</span><span class="settings-feature-copy">Mute or restore your microphone</span></div><div class="settings-keycap" data-event-click="mute_bind"><span data-if="mute_binding">Press a key...</span><span data-if="mute_binding == false && mute_key > 0">{{ mute_key_name }}</span><span data-if="mute_binding == false && mute_key == 0">Not set</span></div></div>
+                        <div class="settings-keybind-row"><div class="settings-row-copy"><span class="settings-feature-title">Toggle Deafen</span><span class="settings-feature-copy">Mute all incoming room audio</span></div><div class="settings-keycap" data-event-click="deafen_bind"><span data-if="deafen_binding">Press a key...</span><span data-if="deafen_binding == false && deafen_key > 0">{{ deafen_key_name }}</span><span data-if="deafen_binding == false && deafen_key == 0">Not set</span></div></div>
+                        <div class="settings-keybind-row"><div class="settings-row-copy"><span class="settings-feature-title">Push to Talk</span><span class="settings-feature-copy">Transmit while the assigned shortcut is held</span></div><div class="settings-keycap" data-event-click="ptt_bind"><span data-if="ptt_binding">Press a key...</span><span data-if="ptt_binding == false && ptt_key > 0">{{ ptt_key_name }}</span><span data-if="ptt_binding == false && ptt_key == 0">Not set</span></div></div>
+                        <div class="settings-keybind-delay" data-if="ptt_enabled"><div class="settings-slider-heading"><span class="settings-feature-title">Push-to-talk release delay</span><span class="settings-meta-value">{{ ptt_delay_text }}</span></div><input type="range" class="settings-wide-slider" min="0" max="1000" step="50" data-value="ptt_delay" data-event-change="ptt_delay_changed" /></div>
+                    </div>
+                </div>
 
-                <div class="import-identity-form" data-if="show_import_identity">
-                    <div class="subtitle">Enter a 12-word seed phrase or 64-char hex private key.</div>
-                    <input type="text" class="restore-input" data-value="import_phrase" />
-                    <div class="error-text" data-if="import_error != ''">{{ import_error }}</div>
-                    <div class="btn btn-danger btn-small" data-event-click="do_import_identity">Replace Identity</div>
-                    <div class="btn btn-secondary btn-small" data-event-click="cancel_import">Cancel</div>
+                <div class="settings-scroll" id="settings-account-page" data-if="settings_section == 3">
+                    <div class="settings-page-intro" id="settings-account-intro">Your identity is stored locally. Keep an offline recovery copy before replacing it.</div>
+                    <div class="settings-config-card settings-account-actions">
+                        <div class="settings-account-row"><div><span class="settings-feature-title">Private key</span><span class="settings-feature-copy">Reveal the key for this local identity</span></div><div class="settings-secondary-action" data-event-click="toggle_private_key"><span data-if="show_private_key == false">Show</span><span data-if="show_private_key">Hide</span></div></div>
+                        <div class="seed-phrase-display" data-if="show_private_key"><div class="private-key-text">{{ identity_private_key }}</div><div class="settings-secondary-action" id="settings-copy-private-key" data-event-click="copy_private_key"><span>Copy</span></div></div>
+                        <div class="settings-account-row" data-if="show_import_identity == false"><div><span class="settings-feature-title">Import identity</span><span class="settings-feature-copy">Restore from 12 words or a private key</span></div><div class="settings-secondary-action" id="settings-show-import" data-event-click="show_import_form"><span>Import</span></div></div>
+                        <div class="import-identity-form" data-if="show_import_identity"><div class="settings-feature-copy">Enter a 12-word recovery phrase or 64-character private key.</div><input type="text" class="restore-input" data-value="import_phrase" /><div class="error-text" data-if="import_error != ''">{{ import_error }}</div><div class="settings-danger-action" id="settings-replace-identity" data-event-click="do_import_identity"><span>Replace Identity</span></div><div class="settings-secondary-action" id="settings-cancel-import" data-event-click="cancel_import"><span>Cancel</span></div></div>
+                    </div>
                 </div>
             </div>
         </div>
 
         <!-- Share target picker -->
-        <div class="share-picker-overlay" data-if="show_share_picker">
+        <div class="share-picker-overlay" data-if="route == 'share-picker'">
             <div class="share-picker-header">
-                <h2>Share Screen</h2>
-                <div class="close-icon" data-event-click="cancel_share">
-                    <div class="close-icon-a"></div>
-                    <div class="close-icon-b"></div>
+                <div>
+                    <div class="share-picker-kicker" data-if="share_picker_mode == 0">Screen share</div>
+                    <div class="share-picker-kicker" data-if="share_picker_mode == 1">Application audio</div>
+                    <h2 data-if="share_picker_mode == 0">Choose what to share</h2>
+                    <h2 data-if="share_picker_mode == 1">Choose what to play</h2>
+                    <div class="share-picker-subtitle" data-if="share_picker_mode == 0">Only the selected screen or application will be visible to the room.</div>
+                    <div class="share-picker-subtitle" data-if="share_picker_mode == 1">Audio from the selected application is sent as a separate high-quality channel stream.</div>
                 </div>
+                <div class="share-close" data-event-click="cancel_share">Close</div>
             </div>
-            <div class="share-picker-settings">
-                <div class="share-setting-group">
-                    <div class="settings-label">FPS</div>
-                    <div class="share-codec-buttons">
-                        <div class="share-codec-btn" data-class-active="share_fps == 0"
-                             data-event-click="select_share_fps(0)">15</div>
-                        <div class="share-codec-btn" data-class-active="share_fps == 1"
-                             data-event-click="select_share_fps(1)">30</div>
-                        <div class="share-codec-btn" data-class-active="share_fps == 2"
-                             data-event-click="select_share_fps(2)">60</div>
-                        <div class="share-codec-btn" data-class-active="share_fps == 3"
-                             data-event-click="select_share_fps(3)">120</div>
+
+            <div class="share-picker-scroll" data-if="use_native_picker == false">
+                <div id="share-screens-section" class="share-picker-section" data-if="share_picker_mode == 0">
+                    <div class="share-picker-section-heading">
+                        <span>Screens</span><span>Entire displays</span>
                     </div>
-                </div>
-                <div class="share-setting-group">
-                    <div class="settings-label">Codec</div>
-                    <div class="share-codec-buttons">
-                        <div class="share-codec-btn" data-class-active="share_codec == 0"
-                             data-event-click="select_share_codec(0)">AV1</div>
-                        <div class="share-codec-btn" data-class-active="share_codec == 1"
-                             data-event-click="select_share_codec(1)">H.265</div>
-                        <div class="share-codec-btn" data-class-active="share_codec == 2"
-                             data-event-click="select_share_codec(2)">H.264</div>
-                    </div>
-                </div>
-                <div class="share-setting-group">
-                    <div class="settings-label">Scale</div>
-                    <div class="share-codec-buttons">
-                        <div class="share-codec-btn" data-class-active="share_scale == 0"
-                             data-event-click="select_share_scale(0)">Source</div>
-                        <div class="share-codec-btn" data-class-active="share_scale == 1"
-                             data-event-click="select_share_scale(1)">75%</div>
-                        <div class="share-codec-btn" data-class-active="share_scale == 2"
-                             data-event-click="select_share_scale(2)">50%</div>
-                        <div class="share-codec-btn" data-class-active="share_scale == 3"
-                             data-event-click="select_share_scale(3)">25%</div>
-                    </div>
-                </div>
-                <div class="share-setting-group">
-                    <div class="settings-label">Bitrate</div>
-                    <div class="share-bitrate-row">
-                        <input type="range" class="share-bitrate-slider" min="0.5" max="20" step="0.5"
-                               data-value="share_bitrate"
-                               data-event-change="share_bitrate_changed" />
-                        <div class="share-bitrate-value">{{ share_bitrate }} Mbps</div>
-                    </div>
-                </div>
-            </div>
-            <!-- Windows: enumerate targets -->
-            <div data-if="use_native_picker == false">
-                <div class="share-picker-section">
-                    <div class="settings-label">Monitors</div>
-                    <div data-for="target : share_targets">
-                        <div class="share-target-item"
-                             data-if="target.is_monitor"
-                             data-event-click="select_share_target(target.index)">
-                            {{ target.name }}
+                    <div class="share-target-grid">
+                        <div data-for="target : share_targets" data-if="target.is_monitor"
+                             class="share-target-card"
+                             data-class-selected="target.index == selected_share_target"
+                             data-event-click="choose_share_target(target.index)">
+                            <div class="share-target-preview">
+                                <div class="share-target-fallback">Preview unavailable</div>
+                                <video_frame class="share-target-thumbnail"
+                                             data-attr-thumbnailindex="target.index" />
+                            </div>
+                            <div class="share-target-meta">
+                                <span class="share-target-name">{{ target.name }}</span>
+                                <span class="share-target-kind">Screen</span>
+                            </div>
+                            <span class="share-target-check">✓</span>
                         </div>
                     </div>
                 </div>
-                <div class="share-picker-section">
-                    <div class="settings-label">Windows</div>
-                    <div data-for="target : share_targets">
-                        <div class="share-target-item"
-                             data-if="target.is_monitor == false"
-                             data-event-click="select_share_target(target.index)">
-                            {{ target.name }}
+                <div id="share-applications-section" class="share-picker-section">
+                    <div class="share-picker-section-heading">
+                        <span>Applications</span>
+                        <span data-if="share_picker_mode == 0">Share one window</span>
+                        <span data-if="share_picker_mode == 1">Capture sound from one application</span>
+                    </div>
+                    <div class="share-target-grid">
+                        <div data-for="target : share_targets" data-if="target.is_monitor == false"
+                             class="share-target-card"
+                             data-class-selected="target.index == selected_share_target"
+                             data-event-click="choose_share_target(target.index)">
+                            <div class="share-target-preview">
+                                <div class="share-target-fallback">Preview unavailable</div>
+                                <video_frame class="share-target-thumbnail"
+                                             data-attr-thumbnailindex="target.index" />
+                            </div>
+                            <div class="share-target-meta">
+                                <span class="share-target-name">{{ target.name }}</span>
+                                <span class="share-target-kind" data-if="share_picker_mode == 0">Application</span>
+                                <span class="share-target-kind" data-if="share_picker_mode == 1">Application audio</span>
+                            </div>
+                            <span class="share-target-check">✓</span>
                         </div>
                     </div>
                 </div>
             </div>
-            <!-- macOS: native picker button -->
-            <div class="share-picker-section" data-if="use_native_picker">
-                <div class="btn" data-event-click="start_native_share">Select target...</div>
+
+            <div class="share-picker-section native-share" data-if="use_native_picker">
+                <div class="btn" data-event-click="start_native_share">Open system picker</div>
+            </div>
+            <div class="share-picker-footer">
+                <div class="share-picker-footer-actions">
+                    <div class="btn btn-secondary" data-event-click="cancel_share">Cancel</div>
+                    <div class="btn share-start-button" data-class-disabled="selected_share_target < 0"
+                         data-event-click="start_selected_share">
+                        <span data-if="share_picker_mode == 0">Start sharing</span>
+                        <span id="share-audio-start-label" data-if="share_picker_mode == 1">Share audio</span>
+                    </div>
+                </div>
             </div>
         </div>
 
         <!-- Channel content (voice) -->
-        <div class="channel-content" data-if="show_settings == false && show_share_picker == false && show_chat == false">
-            <div class="channel-header" data-if="current_channel > 0">
-                <span class="channel-title"># {{ current_channel_name }}</span>
+        <div class="channel-content" data-if="route == 'room' || route == 'streams'">
+            <div class="channel-header" data-if="route == 'room' && current_channel > 0">
+                <div class="channel-heading">
+                    <span class="channel-kicker">Voice room</span>
+                    <span class="channel-title">{{ current_channel_name }}</span>
+                </div>
+                <span class="channel-hint">Drop in, talk, or share something with the room.</span>
             </div>
-            <div class="channel-header" data-if="current_channel == 0">
+            <div class="channel-header" data-if="route == 'room' && current_channel == 0">
                 <span class="channel-hint">Select a channel</span>
             </div>
-            <!-- Sharer cards (sharers exist but not watching any yet) -->
-            <div class="sharer-cards" data-if="someone_sharing && watching_count == 0">
-                <div data-for="sharer : sharers">
-                    <div class="sharer-card" data-event-click="watch_sharer(sharer.id)">
-                        <div class="sharer-card-icon">
-                            <div class="sharer-card-screen"></div>
-                            <div class="sharer-card-stand"></div>
+            <!-- Voice stage. The existing channel collection remains the single
+                 source of truth; this is only a second, purpose-built view of it. -->
+            <div class="voice-stage" data-if="route == 'room' && current_channel > 0 && watching_count == 0">
+                <div data-for="ch : channels" data-if="ch.id == current_channel" class="voice-stage-room">
+                    <div class="voice-stage-summary">
+                        <span class="voice-stage-count">{{ ch.user_count }} in voice</span>
+                    </div>
+                    <div class="voice-stage-grid" id="voice-stage-grid">
+                        <div data-for="user : ch.users" class="voice-stage-card"
+                             data-class-speaking="user.speaking"
+                             data-class-streaming="user.streaming"
+                             data-class-muted="user.muted"
+                            data-event-click="watch_user_stream(user.id)"
+                             data-event-mousedown="user_mousedown(user.id, user.name, user.role)">
+                            <div class="voice-stage-camera-pattern" data-if="user.streaming">
+                                <div class="voice-stage-camera-row row-1">
+                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
+                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
+                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
+                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
+                                </div>
+                                <div class="voice-stage-camera-row row-2">
+                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
+                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
+                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
+                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
+                                </div>
+                                <div class="voice-stage-camera-row row-3">
+                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
+                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
+                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
+                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
+                                </div>
+                                <div class="voice-stage-camera-row row-4">
+                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
+                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
+                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
+                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
+                                </div>
+                                <div class="voice-stage-camera-row row-5">
+                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
+                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
+                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
+                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
+                                </div>
+                                <div class="voice-stage-camera-row row-6">
+                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
+                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
+                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
+                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
+                                </div>
+                            </div>
+                            <div class="voice-stage-avatar-wrap">
+                                <gradient_circle class="voice-stage-avatar" data-attr-seed="user.name" />
+                                <span class="voice-stage-initial">{{ user.name }}</span>
+                                <span class="voice-stage-speaking" data-if="user.speaking"></span>
+                            </div>
+                            <span class="voice-stage-name">{{ user.name }}</span>
+                            <span class="voice-stage-state voice-stage-streaming-state" data-if="user.streaming">Streaming</span>
+                            <span class="voice-stage-state" data-if="user.streaming == false && user.speaking">Speaking</span>
+                            <span class="voice-stage-state" data-if="user.streaming == false && user.speaking == false && user.muted">Muted</span>
+                            <span class="voice-stage-state" data-if="user.streaming == false && user.speaking == false && user.muted == false">Listening</span>
                         </div>
-                        <span class="sharer-card-name">{{ sharer.name }}</span>
-                        <span class="sharer-card-action">Watch</span>
                     </div>
                 </div>
             </div>
@@ -568,9 +620,13 @@
                  The chips toggle individual sharers in/out of the grid; each
                  watched stream renders as a <video_frame> cell whose stable id
                  ("screen-share-<id>") the platform layer pushes frames to. -->
-            <div class="screen-share-area" data-if="watching_count > 0"
+            <div class="screen-share-area" data-if="route == 'streams' && watching_count > 0"
                  data-class-fullscreen="stream_fullscreen">
                 <div class="screen-share-header">
+                    <div class="stream-room-context">
+                        <span class="stream-room-live">LIVE</span>
+                        <span class="stream-room-name">{{ current_channel_name }}</span>
+                    </div>
                     <div class="sharer-tabs">
                         <div data-for="sharer : sharers">
                             <div class="sharer-tab"
@@ -580,19 +636,25 @@
                             </div>
                         </div>
                     </div>
-                    <div class="stream-volume-control">
-                        <svg class="stream-volume-icon" src="icon-volume.svg" width="16" height="16" />
-                        <input type="range" class="stream-volume-slider" min="0" max="2" step="0.01"
-                               data-value="stream_volume"
-                               data-event-change="stream_volume_changed" />
-                    </div>
-                    <div class="stream-fps">{{ stream_fps }} fps</div>
-                    <div class="sharer-close" data-event-click="stop_watching">
-                        <div class="close-icon-a"></div>
-                        <div class="close-icon-b"></div>
+                    <div class="stream-playback-tools">
+                        <div class="stream-volume-control" title="Stream volume">
+                            <svg class="stream-volume-icon" src="icon-volume.svg" width="16" height="16" />
+                            <input type="range" class="stream-volume-slider" id="stream-volume-slider" min="0" max="2" step="0.01"
+                                   data-value="stream_volume"
+                                   data-event-change="stream_volume_changed" />
+                        </div>
+                        <div class="stream-fps" id="stream-fps-meter" title="Stream frame rate">
+                            <span class="stream-fps-value" id="stream-fps-normal" data-if="stream_fps &lt;= 1000">{{ stream_fps }}</span>
+                            <span class="stream-fps-value" id="stream-fps-overflow" data-if="stream_fps &gt; 1000">999+</span>
+                            <span class="stream-fps-unit">FPS</span>
+                        </div>
                     </div>
                 </div>
-                <div class="stream-grid" id="stream-grid">
+                <div class="stream-grid" id="stream-grid"
+                     data-class-single="watching_count == 1"
+                     data-class-pair="watching_count == 2"
+                     data-class-trio="watching_count == 3"
+                     data-class-many="watching_count > 3">
                     <div class="stream-cell" data-for="w : watched">
                         <video_frame class="stream-cell-video"
                                      data-attr-id="w.element_id"
@@ -602,13 +664,36 @@
                         <div class="stream-cell-label">{{ w.name }}</div>
                     </div>
                 </div>
+                <div class="stream-call-dock">
+                    <div class="dock-controls">
+                        <div class="dock-button" data-class-danger="is_muted" data-event-click="toggle_mute" title="Toggle microphone">
+                            <svg src="icon-unmute.svg" width="18" height="18" data-if="is_muted == false" />
+                            <svg src="icon-mute.svg" width="18" height="18" data-if="is_muted" />
+                        </div>
+                        <div class="dock-button" data-class-danger="is_deafened" data-event-click="toggle_deafen" title="Toggle audio">
+                            <svg src="icon-undeafen.svg" width="18" height="18" data-if="is_deafened == false" />
+                            <svg src="icon-deafen.svg" width="18" height="18" data-if="is_deafened" />
+                        </div>
+                        <div class="dock-button" data-class-active="is_sharing" data-event-click="toggle_share" title="Share a screen">
+                            <svg src="icon-share.svg" width="18" height="18" data-if="is_sharing == false" />
+                            <svg src="icon-sharing.svg" width="18" height="18" data-if="is_sharing" />
+                        </div>
+                        <div class="dock-button" data-class-active="is_audio_sharing" data-event-click="toggle_audio_share" title="Share application audio">
+                            <svg src="icon-music.svg" width="18" height="18" />
+                        </div>
+                        <div class="dock-button dock-end-streams" data-event-click="stop_watching" title="Leave all video streams">
+                            <svg src="icon-stream-off.svg" width="18" height="18" />
+                        </div>
+                    </div>
+                </div>
             </div>
 
         </div>
 
-        <!-- Chat content (visible when text channel selected) -->
-        <div class="chat-content" data-model="chat"
-             data-if="active_channel > 0">
+        <!-- Chat is a routed page. The nested chat model owns data only, never
+             document visibility, so settings and chat cannot overlap. -->
+        <div class="route-page route-chat" id="route-chat" data-if="route == 'chat'">
+        <div class="chat-content" data-model="chat" data-if="active_channel > 0">
 
             <!-- Header -->
             <div class="chat-header">
@@ -678,6 +763,18 @@
 
             <!-- Message list (hidden during search) -->
             <div class="chat-messages" id="chat-messages" data-if="show_search == false">
+                <div class="chat-welcome">
+                    <div class="chat-welcome-icon">
+                        <svg src="icon-chat.svg" width="22" height="22" />
+                    </div>
+                    <span class="chat-welcome-title">Welcome to {{ active_channel_name }}</span>
+                    <span class="chat-welcome-copy">This is the beginning of the conversation. Share an idea, a link, or simply say hello.</span>
+                </div>
+                <div class="date-separator">
+                    <span class="date-separator-line"></span>
+                    <span class="date-separator-text">Today</span>
+                    <span class="date-separator-line"></span>
+                </div>
                 <div class="chat-load-more" data-if="has_more_history"
                      data-event-click="load_more_history">Load older messages</div>
                 <div data-for="msg : messages" class="msg-row"
@@ -692,9 +789,14 @@
                         <span class="msg-time">{{ msg.timestamp_str }}</span>
                         <selectable_text class="msg-text" data-attr-msgid="msg.id" data-if="msg.has_url == false">{{ msg.text }}</selectable_text>
                         <selectable_text class="msg-text" data-attr-msgid="msg.id" data-if="msg.has_url">
-                            <span data-for="seg : msg.segments"
-                                  data-class-msg-link="seg.is_url"
-                                  data-event-click="open_url(seg.text)">{{ seg.text }}</span>
+                            <!-- Keep the data-for node structural-only. Its clones are
+                                 removed before bindings on the nested child are evaluated,
+                                 so shrinking/reordering messages cannot leave a same-depth
+                                 binding pointed at a stale segment index. -->
+                            <span data-for="seg : msg.segments">
+                                <span data-class-msg-link="seg.is_url"
+                                      data-event-click="open_url(seg.text)">{{ seg.text }}</span>
+                            </span>
                         </selectable_text>
                         <div data-for="att : msg.attachments" class="att-card">
                             <svg class="att-icon" src="icon-file.svg" width="16" height="16" />
@@ -742,55 +844,79 @@
         </div>
     </div>
 
+    </div><!-- /main-content -->
+
     </div><!-- /app-content -->
 
     <!-- User context menu (non-blocking, RmlUi overlay) -->
     <div class="user-menu-backdrop" data-model="lobby" data-if="show_user_menu">
         <div class="user-menu-popup">
-            <!-- Header -->
             <div class="user-menu-header">
-                <span class="user-menu-name">{{ menu_user_name }}</span>
+                <div class="user-menu-identity">
+                    <gradient_circle class="user-menu-avatar" data-attr-seed="menu_user_name" />
+                    <span class="user-menu-presence"></span>
+                    <div>
+                        <span class="user-menu-name">{{ menu_user_name }}</span>
+                        <span class="user-menu-status">In voice · {{ current_channel_name }}</span>
+                    </div>
+                </div>
                 <div class="close-icon" data-event-click="close_user_menu">
                     <div class="close-icon-a"></div>
                     <div class="close-icon-b"></div>
                 </div>
             </div>
 
-            <!-- Audio -->
+            <div class="user-menu-role-row">
+                <span class="member-role owner" data-if="menu_user_role == 0">Owner</span>
+                <span class="member-role admin" data-if="menu_user_role == 1">Administrator</span>
+                <span class="member-role moderator" data-if="menu_user_role == 2">Moderator</span>
+                <span class="member-role" data-if="menu_user_role == 3">Member</span>
+                <span class="member-connection">Secure session</span>
+            </div>
+
             <div class="user-menu-section">
+                <div class="user-menu-section-title">Listening preferences</div>
                 <div class="user-menu-slider-row">
-                    <span class="user-menu-sublabel">Volume</span>
+                    <span class="user-menu-sublabel">Personal volume</span>
                     <input type="range" class="user-menu-slider" min="0" max="2" step="0.01"
                            data-value="menu_user_volume"
                            data-event-change="user_volume_changed" />
+                    <span class="user-menu-value">{{ menu_user_volume }}×</span>
                 </div>
-                <div class="user-menu-slider-row user-menu-normalize-row" data-event-click="toggle_user_compress">
-                    <span class="user-menu-sublabel">Normalize</span>
+                <div class="user-menu-slider-row">
+                    <span class="user-menu-sublabel">Music volume</span>
+                    <input type="range" class="user-menu-slider" min="0" max="2" step="0.01"
+                           data-value="menu_user_music_volume"
+                           data-event-change="user_music_volume_changed" />
+                    <span class="user-menu-value">{{ menu_user_music_volume }}×</span>
+                </div>
+                <div class="user-menu-option user-menu-normalize-row" data-event-click="toggle_user_compress">
+                    <div>
+                        <span class="user-menu-sublabel">Normalize voice</span>
+                        <span class="user-menu-option-copy">Keep this member at a consistent level</span>
+                    </div>
                     <span class="toggle-indicator toggle-sm" data-class-on="menu_user_compress"></span>
                 </div>
                 <div class="user-menu-slider-row" data-if="menu_user_compress">
-                    <span class="user-menu-sublabel">Target</span>
+                    <span class="user-menu-sublabel">Target level</span>
                     <input type="range" class="user-menu-slider" min="0.1" max="1" step="0.01"
                            data-value="menu_user_compress_target"
                            data-event-change="user_compress_target_changed" />
                 </div>
             </div>
 
-            <!-- Role management (only if permitted) -->
             <div class="user-menu-actions" data-if="menu_can_roles">
-                <div class="user-menu-sep"></div>
+                <div class="user-menu-section-title">Role management</div>
                 <div class="user-menu-action" data-if="menu_user_role != 1"
-                     data-event-click="set_user_role(1)"><span>Set Admin</span></div>
+                     data-event-click="set_user_role(1)"><span>Make administrator</span><span class="action-chevron">›</span></div>
                 <div class="user-menu-action" data-if="menu_user_role != 2"
-                     data-event-click="set_user_role(2)"><span>Set Moderator</span></div>
+                     data-event-click="set_user_role(2)"><span>Make moderator</span><span class="action-chevron">›</span></div>
                 <div class="user-menu-action" data-if="menu_user_role != 3"
-                     data-event-click="set_user_role(3)"><span>Set User</span></div>
+                     data-event-click="set_user_role(3)"><span>Make member</span><span class="action-chevron">›</span></div>
             </div>
 
-            <!-- Kick (only if permitted) -->
-            <div class="user-menu-actions" data-if="menu_can_kick">
-                <div class="user-menu-sep"></div>
-                <div class="user-menu-action danger" data-event-click="kick_user"><span>Kick</span></div>
+            <div class="user-menu-footer" data-if="menu_can_kick">
+                <div class="user-menu-action danger" data-event-click="kick_user"><span>Remove from party</span><span>Kick</span></div>
             </div>
         </div>
     </div>
@@ -829,67 +955,126 @@
     </div>
 
     <!-- Seed phrase onboarding modal (first launch) -->
-    <div class="modal-backdrop" data-model="serverlist" data-if="show_onboarding">
-        <div class="modal-box onboarding-box">
-            <!-- Generate view (default: neither restore nor key_import) -->
-            <div data-if="show_restore == false && show_key_import == false">
-                <h1>Your Identity</h1>
-                <div class="subtitle">Save this seed phrase — it is your permanent identity.</div>
+    <div class="modal-backdrop onboarding-backdrop" data-model="serverlist" data-if="show_onboarding">
+        <div class="onboarding-shell">
+            <div class="onboarding-story">
+                <div class="onboarding-brand"><svg src="logo.svg" width="30" height="30" /><span>parties</span></div>
+                <div class="onboarding-story-copy" data-if="onboarding_step == 0">
+                    <span class="onboarding-eyebrow">Private by design</span>
+                    <h1>Your conversations belong to you.</h1>
+                    <p>Parties gives you voice, chat, and screen sharing without a central identity provider. Your recovery phrase is the key.</p>
+                </div>
+                <div class="onboarding-proof" data-if="onboarding_step == 0">
+                    <div><span>01</span><p>Peer-to-peer media</p></div>
+                    <div><span>02</span><p>Portable identity</p></div>
+                    <div><span>03</span><p>No account tracking</p></div>
+                </div>
+                <div class="onboarding-recovery-aside" data-if="onboarding_step == 1">
+                    <div class="recovery-aside-mark"><span>12</span></div>
+                    <span class="onboarding-eyebrow">Your offline backup</span>
+                    <h1>One phrase.<br />Full recovery.</h1>
+                    <p>Store it somewhere only you can access. A password manager or a handwritten copy in a secure place works well.</p>
+                    <div class="recovery-aside-rule"></div>
+                    <p class="recovery-aside-detail">No email reset · No support override · No central account</p>
+                </div>
+                <div class="onboarding-story-footer">Encrypted locally · Open protocol</div>
+            </div>
 
-                <div class="seed-phrase-card" data-if="seed_phrase != ''">
-                    <span class="seed-phrase-text">{{ seed_phrase }}</span>
-                    <div class="btn btn-secondary btn-small" data-event-click="copy_seed">Copy</div>
+            <div class="onboarding-main">
+                <div class="onboarding-progress"><span class="active"></span><span data-class-active="onboarding_step == 1"></span></div>
+
+                <div class="onboarding-choice" data-if="onboarding_step == 0 && show_restore == false && show_key_import == false">
+                    <div class="onboarding-step-label">Step 1 of 2</div>
+                    <h1>How would you like to begin?</h1>
+                    <p class="onboarding-lead">Create a new local identity or bring one you already own.</p>
+                    <div class="identity-path primary" data-event-click="generate_identity">
+                        <div class="identity-path-icon"><span>+</span></div>
+                        <div><h2>Create a new identity</h2><p>Generate a secure recovery phrase on this device.</p></div>
+                        <span class="identity-path-arrow">›</span>
+                    </div>
+                    <div class="identity-path" data-event-click="show_restore">
+                        <div class="identity-path-icon"><span>R</span></div>
+                        <div><h2>Restore with recovery phrase</h2><p>Continue with your portable 12-word identity.</p></div>
+                        <span class="identity-path-arrow">›</span>
+                    </div>
+                    <div class="identity-path" data-event-click="show_key_import">
+                        <div class="identity-path-icon"><span>K</span></div>
+                        <div><h2>Import a private key</h2><p>For advanced users migrating an existing key.</p></div>
+                        <span class="identity-path-arrow">›</span>
+                    </div>
+                    <div class="onboarding-security-note"><span class="security-check">✓</span><span class="security-copy">Your identity never leaves this device unless you export it.</span></div>
                 </div>
 
-                <div class="btn" data-if="seed_phrase == ''" data-event-click="generate_identity">Generate Seed Phrase</div>
-                <div class="btn" data-if="seed_phrase != ''" data-event-click="save_identity">I Have Saved My Seed Phrase</div>
-                <div class="btn btn-secondary" data-event-click="show_restore">Restore From Seed Phrase</div>
-                <div class="btn btn-secondary" data-event-click="show_key_import">Import Private Key</div>
-            </div>
+                <div class="onboarding-form" data-if="show_restore">
+                    <div class="onboarding-back" data-event-click="onboarding_back">‹ Back</div>
+                    <div class="onboarding-step-label">Restore identity</div>
+                    <h1>Enter your recovery phrase</h1>
+                    <p class="onboarding-lead">Use the 12 words in their original order.</p>
+                    <input type="text" class="restore-input recovery-input" data-value="restore_phrase" />
+                    <div class="error-text" data-if="login_error != ''">{{ login_error }}</div>
+                    <div class="btn onboarding-primary" data-event-click="restore_identity">Restore identity</div>
+                </div>
 
-            <!-- Restore view (seed phrase) -->
-            <div data-if="show_restore">
-                <h1>Restore Identity</h1>
-                <div class="subtitle">Enter your 12-word seed phrase to restore your identity.</div>
+                <div class="onboarding-form" data-if="show_key_import">
+                    <div class="onboarding-back" data-event-click="onboarding_back">‹ Back</div>
+                    <div class="onboarding-step-label">Import identity</div>
+                    <h1>Enter your private key</h1>
+                    <p class="onboarding-lead">Paste the 64-character hexadecimal key.</p>
+                    <input type="text" class="restore-input recovery-input" data-value="import_key_hex" />
+                    <div class="error-text" data-if="login_error != ''">{{ login_error }}</div>
+                    <div class="btn onboarding-primary" data-event-click="import_key">Import identity</div>
+                </div>
 
-                <input type="text" class="restore-input" data-value="restore_phrase" />
-
-                <div class="error-text" data-if="login_error != ''">{{ login_error }}</div>
-
-                <div class="btn" data-event-click="restore_identity">Restore</div>
-                <div class="btn btn-secondary" data-event-click="generate_identity">Back to Generate</div>
-            </div>
-
-            <!-- Import private key view -->
-            <div data-if="show_key_import">
-                <h1>Import Private Key</h1>
-                <div class="subtitle">Enter your 64-character hex private key.</div>
-
-                <input type="text" class="restore-input" data-value="import_key_hex" />
-
-                <div class="error-text" data-if="login_error != ''">{{ login_error }}</div>
-
-                <div class="btn" data-event-click="import_key">Import</div>
-                <div class="btn btn-secondary" data-event-click="generate_identity">Back to Generate</div>
+                <div class="onboarding-recovery" data-if="onboarding_step == 1 && show_restore == false && show_key_import == false">
+                    <div class="onboarding-back" data-event-click="onboarding_back">‹ Back</div>
+                    <div class="onboarding-step-label">Step 2 of 2</div>
+                    <h1>Secure your recovery phrase</h1>
+                    <p class="onboarding-lead">Write these words down in order. They are the only way to recover this identity.</p>
+                    <div class="seed-phrase-card enterprise-seed">
+                        <div class="seed-card-label"><span>Recovery phrase</span><span>12 words</span></div>
+                        <span class="seed-phrase-text">{{ seed_phrase }}</span>
+                        <div class="seed-card-actions">
+                            <div class="btn btn-secondary btn-small" data-event-click="copy_seed">Copy phrase</div>
+                        </div>
+                    </div>
+                    <div class="recovery-warning"><span>!</span><p>Anyone with these words can use your identity. Parties support cannot recover them.</p></div>
+                    <div class="btn onboarding-primary" data-event-click="save_identity">I saved my recovery phrase</div>
+                </div>
             </div>
         </div>
     </div>
 
     <!-- Add server modal -->
     <div class="modal-backdrop" data-model="serverlist" data-if="show_add_form">
-        <div class="modal-box">
-            <h1>Add Party</h1>
-
-            <div class="label">Host</div>
-            <input type="text" data-value="edit_host" />
-
-            <div class="label">Port</div>
-            <input type="text" data-value="edit_port" />
-
+        <div class="modal-box party-connect-dialog">
+            <div class="party-connect-header">
+                <div><div class="modal-kicker">New connection</div><h1>Create or join a party</h1></div>
+                <div class="close-icon" data-event-click="cancel_edit"><div class="close-icon-a"></div><div class="close-icon-b"></div></div>
+            </div>
+            <div class="party-connect-tabs">
+                <span>Join with invite</span><span class="active">Direct connect</span><span>Host new</span>
+            </div>
+            <div class="party-connect-body">
+                <div class="party-connect-form">
+                    <div class="label">Server address</div>
+                    <input type="text" data-value="edit_host" placeholder="voice.example.com" />
+                    <div class="label">Port</div>
+                    <input type="text" data-value="edit_port" />
+                    <div class="connection-security"><span>✓</span><div><b>Identity protected</b><p>The server will see your public fingerprint, never your private key.</p></div></div>
+                </div>
+                <div class="party-connect-preview">
+                    <span class="preview-label">Connection preview</span>
+                    <div class="preview-party-logo"><span>P</span></div>
+                    <h2>Direct party</h2>
+                    <p>{{ edit_host }}</p>
+                    <div class="preview-meta"><span class="status-dot online"></span>Ready to connect</div>
+                </div>
+            </div>
             <div class="error-text" data-if="edit_error != ''">{{ edit_error }}</div>
-
-            <div class="btn" data-event-click="save_server">Save</div>
-            <div class="btn btn-secondary" data-event-click="cancel_edit">Cancel</div>
+            <div class="party-connect-footer">
+                <div class="btn btn-secondary" data-event-click="cancel_edit">Cancel</div>
+                <div class="btn" data-event-click="save_server">Save and continue</div>
+            </div>
         </div>
     </div>
 

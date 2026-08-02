@@ -1,5 +1,6 @@
 #include "amf_encoder.h"
 #include "amf_loader.h"
+#include <encdec/rate_control.h>
 
 #include <AMF/components/VideoEncoderVCE.h>
 #include <AMF/components/VideoEncoderHEVC.h>
@@ -16,7 +17,9 @@ AmfEncoder::~AmfEncoder() {
     if (!initialized_) return;
 
     if (encoder_) {
-        encoder_->Drain();
+        // Drain is an end-of-stream operation and can block in a driver while
+        // the application is tearing down its capture device. There is no
+        // consumer for delayed output at this point, so terminate directly.
         encoder_->Terminate();
         encoder_->Release();
         encoder_ = nullptr;
@@ -87,10 +90,17 @@ bool AmfEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
         return false;
     }
 
-    LOG_INFO("Selected encoder codec: {} ({}x{} @ {} fps), bitrate: {} bps",
-             codec_name(codec_), width, height, fps, bitrate);
+    const auto rate_control = make_stream_vbr_rate_control(bitrate);
+    LOG_INFO("Selected encoder codec: {} ({}x{} @ {} fps), VBR average: {} bps, peak: {} bps",
+             codec_name(codec_), width, height, fps,
+             rate_control.average_bitrate, rate_control.peak_bitrate);
 
-    amf_int64 br = static_cast<amf_int64>(bitrate);
+    const amf_int64 average_bitrate =
+        static_cast<amf_int64>(rate_control.average_bitrate);
+    const amf_int64 peak_bitrate =
+        static_cast<amf_int64>(rate_control.peak_bitrate);
+    const amf_int64 vbv_buffer_size =
+        static_cast<amf_int64>(rate_control.vbv_buffer_size);
     amf_int64 keyframe_period = static_cast<amf_int64>(fps * (VIDEO_KEYFRAME_INTERVAL_MS / 1000));
 
     if (codec_ == VideoCodecId::AV1) {
@@ -99,10 +109,10 @@ bool AmfEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
         encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET,
             static_cast<amf_int64>(AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET_SPEED));
         encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD,
-            static_cast<amf_int64>(AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_CBR));
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_TARGET_BITRATE, br);
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_PEAK_BITRATE, br);
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_VBV_BUFFER_SIZE, br);
+            static_cast<amf_int64>(AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR));
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_TARGET_BITRATE, average_bitrate);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_PEAK_BITRATE, peak_bitrate);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_VBV_BUFFER_SIZE, vbv_buffer_size);
         encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_INITIAL_VBV_BUFFER_FULLNESS, static_cast<amf_int64>(64));
         encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_ENFORCE_HRD, true);
         encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_FILLER_DATA, false);
@@ -116,10 +126,10 @@ bool AmfEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
         encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET,
             static_cast<amf_int64>(AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET_SPEED));
         encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD,
-            static_cast<amf_int64>(AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_CBR));
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_TARGET_BITRATE, br);
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_PEAK_BITRATE, br);
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_VBV_BUFFER_SIZE, br);
+            static_cast<amf_int64>(AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR));
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_TARGET_BITRATE, average_bitrate);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_PEAK_BITRATE, peak_bitrate);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_VBV_BUFFER_SIZE, vbv_buffer_size);
         encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_INITIAL_VBV_BUFFER_FULLNESS, static_cast<amf_int64>(64));
         encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_ENFORCE_HRD, true);
         encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_FILLER_DATA_ENABLE, false);
@@ -133,10 +143,10 @@ bool AmfEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
         encoder_->SetProperty(AMF_VIDEO_ENCODER_QUALITY_PRESET,
             static_cast<amf_int64>(AMF_VIDEO_ENCODER_QUALITY_PRESET_SPEED));
         encoder_->SetProperty(AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD,
-            static_cast<amf_int64>(AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_CBR));
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_TARGET_BITRATE, br);
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_PEAK_BITRATE, br);
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_VBV_BUFFER_SIZE, br);
+            static_cast<amf_int64>(AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR));
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_TARGET_BITRATE, average_bitrate);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_PEAK_BITRATE, peak_bitrate);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_VBV_BUFFER_SIZE, vbv_buffer_size);
         encoder_->SetProperty(AMF_VIDEO_ENCODER_INITIAL_VBV_BUFFER_FULLNESS, static_cast<amf_int64>(64));
         encoder_->SetProperty(AMF_VIDEO_ENCODER_ENFORCE_HRD, true);
         encoder_->SetProperty(AMF_VIDEO_ENCODER_FILLER_DATA_ENABLE, false);
@@ -149,27 +159,6 @@ bool AmfEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
     res = encoder_->Init(amf::AMF_SURFACE_BGRA, width, height);
     if (res != AMF_OK) {
         LOG_ERROR("Encoder Init(BGRA) failed: {}", (int)res);
-        encoder_->Release();
-        encoder_ = nullptr;
-        context_->Release();
-        context_ = nullptr;
-        return false;
-    }
-
-    D3D11_TEXTURE2D_DESC desc{};
-    desc.Width = width;
-    desc.Height = height;
-    desc.MipLevels = 1;
-    desc.ArraySize = 1;
-    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    desc.SampleDesc = {1, 0};
-    desc.Usage = D3D11_USAGE_DEFAULT;
-    desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
-
-    HRESULT hr = device_->CreateTexture2D(&desc, nullptr, &staging_texture_);
-    if (FAILED(hr)) {
-        LOG_ERROR("CreateTexture2D staging failed: {:#010x}", hr);
-        encoder_->Terminate();
         encoder_->Release();
         encoder_ = nullptr;
         context_->Release();
@@ -193,12 +182,36 @@ bool AmfEncoder::try_codec(const wchar_t* component_id, VideoCodecId id) {
 
 bool AmfEncoder::encode(ID3D11Texture2D* bgra_texture, int64_t timestamp_100ns) {
     ZoneScopedN("AmfEncoder::encode");
-    if (!initialized_) return false;
+    if (!initialized_ || !bgra_texture || !ensure_staging_texture()) return false;
 
     d3d_context_->CopyResource(staging_texture_.Get(), bgra_texture);
     d3d_context_->Flush();
 
     return do_encode(staging_texture_.Get(), timestamp_100ns);
+}
+
+bool AmfEncoder::ensure_staging_texture() {
+    if (staging_texture_) return true;
+
+    // Registered capture textures are the normal path and are wrapped by AMF
+    // directly. Allocate a copy target only for callers using encode().
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = width_;
+    desc.Height = height_;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.SampleDesc = {1, 0};
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
+
+    const HRESULT hr = device_->CreateTexture2D(&desc, nullptr, &staging_texture_);
+    if (FAILED(hr)) {
+        LOG_ERROR("CreateTexture2D AMF fallback staging failed: {:#010x}",
+                  static_cast<unsigned>(hr));
+        return false;
+    }
+    return true;
 }
 
 int AmfEncoder::register_input(ID3D11Texture2D* texture) {
@@ -230,8 +243,8 @@ bool AmfEncoder::do_encode(ID3D11Texture2D* texture, int64_t timestamp_100ns) {
 
     surface->SetPts(timestamp_100ns);
 
-    if (force_keyframe_) {
-        force_keyframe_ = false;
+    const bool requested_keyframe = force_keyframe_;
+    if (requested_keyframe) {
         if (codec_ == VideoCodecId::AV1) {
             surface->SetProperty(AMF_VIDEO_ENCODER_AV1_FORCE_FRAME_TYPE,
                 static_cast<amf_int64>(AMF_VIDEO_ENCODER_AV1_FORCE_FRAME_TYPE_KEY));
@@ -244,14 +257,41 @@ bool AmfEncoder::do_encode(ID3D11Texture2D* texture, int64_t timestamp_100ns) {
         }
     }
 
-    res = encoder_->SubmitInput(surface);
+    // AMF_INPUT_FULL means ownership has not transferred. Retain and retry the
+    // exact same surface after consuming output; releasing it here used to drop
+    // frames and could also lose a requested IDR.
+    static constexpr int max_submit_retries = 8;
+    for (int retry = 0; retry < max_submit_retries; ++retry) {
+        res = encoder_->SubmitInput(surface);
+        if (res == AMF_OK) break;
+        if (res != AMF_INPUT_FULL) {
+            LOG_ERROR("SubmitInput failed: {}", (int)res);
+            surface->Release();
+            return false;
+        }
+
+        amf::AMFData* pending = nullptr;
+        const AMF_RESULT output_result = encoder_->QueryOutput(&pending);
+        if (pending && !deliver_output(pending)) {
+            surface->Release();
+            return false;
+        }
+        if (output_result != AMF_OK && output_result != AMF_REPEAT) {
+            LOG_ERROR("QueryOutput while encoder input was full failed: {}",
+                      static_cast<int>(output_result));
+            surface->Release();
+            return false;
+        }
+        Sleep(0);
+    }
     surface->Release();
 
     if (res != AMF_OK) {
-        if (res == AMF_INPUT_FULL) return true;
-        LOG_ERROR("SubmitInput failed: {}", (int)res);
-        return false;
+        LOG_WARN("AMF encoder remained full after {} retries; dropping newest frame",
+                 max_submit_retries);
+        return true;
     }
+    if (requested_keyframe) force_keyframe_ = false;
 
     amf::AMFData* data = nullptr;
     for (int retry = 0; retry < 100; retry++) {
@@ -264,6 +304,11 @@ bool AmfEncoder::do_encode(ID3D11Texture2D* texture, int64_t timestamp_100ns) {
         break;
     }
 
+    if (!data) return true;
+    return deliver_output(data);
+}
+
+bool AmfEncoder::deliver_output(amf::AMFData* data) {
     if (!data) return true;
 
     amf::AMFBuffer* buffer = nullptr;
@@ -306,19 +351,25 @@ void AmfEncoder::force_keyframe() {
 void AmfEncoder::set_bitrate(uint32_t bitrate) {
     if (!initialized_ || !encoder_) return;
 
-    amf_int64 br = static_cast<amf_int64>(bitrate);
+    const auto rate_control = make_stream_vbr_rate_control(bitrate);
+    const amf_int64 average_bitrate =
+        static_cast<amf_int64>(rate_control.average_bitrate);
+    const amf_int64 peak_bitrate =
+        static_cast<amf_int64>(rate_control.peak_bitrate);
+    const amf_int64 vbv_buffer_size =
+        static_cast<amf_int64>(rate_control.vbv_buffer_size);
     if (codec_ == VideoCodecId::AV1) {
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_TARGET_BITRATE, br);
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_PEAK_BITRATE, br);
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_VBV_BUFFER_SIZE, br);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_TARGET_BITRATE, average_bitrate);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_PEAK_BITRATE, peak_bitrate);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_VBV_BUFFER_SIZE, vbv_buffer_size);
     } else if (codec_ == VideoCodecId::H265) {
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_TARGET_BITRATE, br);
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_PEAK_BITRATE, br);
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_VBV_BUFFER_SIZE, br);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_TARGET_BITRATE, average_bitrate);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_PEAK_BITRATE, peak_bitrate);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_VBV_BUFFER_SIZE, vbv_buffer_size);
     } else {
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_TARGET_BITRATE, br);
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_PEAK_BITRATE, br);
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_VBV_BUFFER_SIZE, br);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_TARGET_BITRATE, average_bitrate);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_PEAK_BITRATE, peak_bitrate);
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_VBV_BUFFER_SIZE, vbv_buffer_size);
     }
 }
 

@@ -1,4 +1,5 @@
 #include "mft_encoder.h"
+#include <encdec/rate_control.h>
 
 #include <mferror.h>
 #include <codecapi.h>
@@ -239,12 +240,13 @@ bool MftEncoder::configure_encoder(uint32_t width, uint32_t height,
 
         VariantInit(&var);
         var.vt = VT_UI4;
-        var.ulVal = bitrate;
+        const auto rate_control = make_stream_vbr_rate_control(bitrate);
+        var.ulVal = rate_control.average_bitrate;
         codec_api->SetValue(&CODECAPI_AVEncCommonMeanBitRate, &var);
 
         VariantInit(&var);
         var.vt = VT_UI4;
-        var.ulVal = bitrate * 5;
+        var.ulVal = rate_control.peak_bitrate;
         codec_api->SetValue(&CODECAPI_AVEncCommonMaxBitRate, &var);
 
         VariantInit(&var);
@@ -499,11 +501,17 @@ void MftEncoder::set_bitrate(uint32_t bitrate) {
 
     ComPtr<ICodecAPI> codec_api;
     if (SUCCEEDED(encoder_.As(&codec_api))) {
+        const auto rate_control = make_stream_vbr_rate_control(bitrate);
         VARIANT var;
         VariantInit(&var);
         var.vt = VT_UI4;
-        var.ulVal = bitrate;
+        var.ulVal = rate_control.average_bitrate;
         codec_api->SetValue(&CODECAPI_AVEncCommonMeanBitRate, &var);
+
+        VariantInit(&var);
+        var.vt = VT_UI4;
+        var.ulVal = rate_control.peak_bitrate;
+        codec_api->SetValue(&CODECAPI_AVEncCommonMaxBitRate, &var);
     }
 }
 

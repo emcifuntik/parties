@@ -3,8 +3,8 @@
 // Browser-style text selection + copy for the chat message list.
 //
 // Design: each plain-text message renders as a <selectable_text> custom element
-// that keeps a normal RmlUi text child (so the Slug font engine still draws the
-// glyphs). The element reads the child's already-wrapped lines via
+// that keeps a normal RmlUi text child. The element reads the child's
+// already-wrapped lines via
 // ElementText::GetLines() and measures character x-positions with
 // ElementUtilities::GetStringWidth, so the highlight it paints in OnRender (which
 // RmlUi runs BEFORE children — i.e. behind the glyphs) lines up exactly with the

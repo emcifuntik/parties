@@ -1,5 +1,9 @@
 find_package(unofficial-sqlite3 CONFIG REQUIRED)
 find_package(rnnoise CONFIG REQUIRED)
+# rlottie's exported target links RapidJSON by target name, but its package
+# config does not import that target itself. Make it available before RmlUi
+# loads the optional Lottie plugin.
+find_package(RapidJSON CONFIG REQUIRED)
 find_package(RmlUi CONFIG REQUIRED)
 find_path(MINIAUDIO_INCLUDE_DIRS "miniaudio.h")
 
@@ -8,7 +12,33 @@ find_path(SPEEXDSP_INCLUDE_DIRS "speex/speex_echo.h")
 find_library(SPEEXDSP_LIBRARY speexdsp)
 
 if(NOT APPLE)
-    find_package(D3D12MemoryAllocator CONFIG REQUIRED)
+    find_path(AMD_AMF_INCLUDE_DIRS "AMF/core/D3D12AMF.h" REQUIRED)
+
+    # Keep the upstream DX12/Win32 backend implementation in-tree. It is based
+    # on our pinned RmlUi revision and is the deliberate extension boundary for
+    # native textures, planar video sampling, and shared-device lifetime.
+    set(PARTIES_RMLUI_DX12_BACKEND_DIR
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/dx12/rmlui_backend")
+
+    add_library(parties_rmlui_dx12_backend STATIC
+        "${PARTIES_RMLUI_DX12_BACKEND_DIR}/RmlUi_Renderer_DX12.cpp"
+        "${PARTIES_RMLUI_DX12_BACKEND_DIR}/RmlUi_Platform_Win32.cpp"
+        src/dx12/Dx12VideoConverter.cpp
+        src/dx12/Parties_Renderer_DX12.cpp
+    )
+    target_include_directories(parties_rmlui_dx12_backend
+        PUBLIC
+            "${PARTIES_RMLUI_DX12_BACKEND_DIR}"
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/dx12
+    )
+    target_link_libraries(parties_rmlui_dx12_backend
+        PUBLIC RmlUi::RmlUi
+        PRIVATE d3d12 dxgi d3dcompiler imm32 gdi32 dwmapi
+    )
+    target_compile_definitions(parties_rmlui_dx12_backend
+        PUBLIC NOMINMAX _WIN32_WINNT=0x0A00 WINVER=0x0A00
+    )
 
     # Generate .rc with version info and icon
     file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/res/logo.ico" ICON_PATH)
@@ -24,6 +54,8 @@ endif()
 # ── Cross-platform sources ────────────────────────────────────────────────────
 # Platform-specific files live in CLIENT_PLATFORM_SOURCES below.
 set(CLIENT_COMMON_SOURCES
+    src/application_audio.cpp
+    src/context_window_model.cpp
     src/lobby_model.cpp
     src/server_list_model.cpp
     src/settings.cpp
@@ -40,8 +72,6 @@ set(CLIENT_COMMON_SOURCES
     src/chat_selection.cpp
     src/sound_player.cpp
     src/net_client_msquic.cpp
-    src/slug_glyph_cache.cpp
-    src/slug_font_engine.cpp
 )
 
 # ── Platform-specific sources ─────────────────────────────────────────────────
@@ -80,16 +110,10 @@ else()
         src/windows/main.cpp
         src/windows/app.cpp
         src/windows/stream_audio_capture.cpp
-        src/windows/RmlUi_Platform_Win32.cpp
         src/windows/ui_manager.cpp
-        src/windows/context_menu.cpp
+        src/windows/context_window_manager.cpp
 
-        # RmlUI rendering backends
-        src/dx11/RmlUi_Renderer_DX11.cpp
-        src/dx12/RmlUi_Renderer_DX12.cpp
-        src/dx12/RmlUi_Renderer_DX12WL.cpp
-        src/dx12/offsetAllocator.cpp
-        src/vulkan/RmlUi_Renderer_VK.cpp
+        # Parties application adapter over RmlUi's upstream Win32/DX12 backend
 
         # Auto-updater (WinHTTP)
         src/windows/auto_updater.cpp
@@ -175,9 +199,8 @@ target_include_directories(parties_client
         $<$<STREQUAL:${CMAKE_SYSTEM_NAME},iOS>:${CMAKE_CURRENT_SOURCE_DIR}/src/ios>
         $<$<AND:$<BOOL:${APPLE}>,$<NOT:$<STREQUAL:${CMAKE_SYSTEM_NAME},iOS>>>:${CMAKE_CURRENT_SOURCE_DIR}/src/macos>
         ${MINIAUDIO_INCLUDE_DIRS}
-        $<$<NOT:$<BOOL:${APPLE}>>:${CMAKE_CURRENT_SOURCE_DIR}/src/dx12>
-        $<$<NOT:$<BOOL:${APPLE}>>:${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan>
         ${SPEEXDSP_INCLUDE_DIRS}
+        $<$<NOT:$<BOOL:${APPLE}>>:${AMD_AMF_INCLUDE_DIRS}>
 )
 
 # Retail: no console window on Windows
@@ -239,6 +262,7 @@ target_link_libraries(parties_client
         rnnoise::rnnoise
         unofficial::sqlite3::sqlite3
         RmlUi::RmlUi
+        $<$<NOT:$<BOOL:${APPLE}>>:parties_rmlui_dx12_backend>
         $<$<NOT:$<BOOL:${BUILD_IN_RETAIL}>>:RmlUi::Debugger>
         ${SPEEXDSP_LIBRARY}
 )
@@ -269,10 +293,9 @@ if(APPLE)
 else()
     target_link_libraries(parties_client
         PRIVATE
-            GPUOpen::D3D12MemoryAllocator
             d3d11 d3d12 dxgi d3dcompiler
             windowsapp
-            dwmapi
+            dwmapi gdi32
             winhttp wintrust crypt32
     )
 endif()

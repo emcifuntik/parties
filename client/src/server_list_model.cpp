@@ -38,6 +38,7 @@ void ServerListModel::build(rml::Builder& b) {
      .bind("show_tofu_warning", show_tofu_warning)
      .bind("tofu_fingerprint",  tofu_fingerprint)
      .bind("show_onboarding",  show_onboarding)
+     .bind("onboarding_step", onboarding_step)
      .bind("show_restore",     show_restore)
      .bind("show_key_import",  show_key_import)
      .bind("seed_phrase",      seed_phrase)
@@ -88,7 +89,16 @@ void ServerListModel::build(rml::Builder& b) {
     });
 
     b.on("generate_identity", [this] {
+        show_restore = false;
+        show_key_import = false;
         if (on_generate_identity) on_generate_identity();
+        onboarding_step = 1;
+    });
+
+    b.on("onboarding_back", [this] {
+        onboarding_step = 0;
+        show_restore = false;
+        show_key_import = false;
     });
 
     b.on("save_identity", [this] {
@@ -100,10 +110,14 @@ void ServerListModel::build(rml::Builder& b) {
     });
 
     b.on("show_restore", [this] {
+        show_restore = true;
+        show_key_import = false;
         if (on_show_restore) on_show_restore();
     });
 
     b.on("show_key_import", [this] {
+        show_restore = false;
+        show_key_import = true;
         if (on_show_key_import) on_show_key_import();
     });
 

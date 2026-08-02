@@ -139,12 +139,15 @@ void AudioEngine::push_secondary_pcm(const float* pcm, int frame_count) {
     std::lock_guard<std::mutex> lock(secondary_mutex_);
     if (!secondary_encoder_ready_) return;
 
+    const float gain = audio::volume_position_to_gain(
+        secondary_send_volume_.load(std::memory_order_relaxed));
     int remaining = frame_count;
     const float* src = pcm;
     while (remaining > 0) {
         size_t space = audio::OPUS_FRAME_SIZE - secondary_pos_;
         size_t to_copy = std::min(static_cast<size_t>(remaining), space);
-        std::memcpy(secondary_buf_.data() + secondary_pos_, src, to_copy * sizeof(float));
+        for (size_t i = 0; i < to_copy; ++i)
+            secondary_buf_[secondary_pos_ + i] = std::clamp(src[i] * gain, -1.0f, 1.0f);
         secondary_pos_ += to_copy;
         src += to_copy;
         remaining -= static_cast<int>(to_copy);
@@ -159,6 +162,11 @@ void AudioEngine::push_secondary_pcm(const float* pcm, int frame_count) {
             secondary_pos_ = 0;
         }
     }
+}
+
+void AudioEngine::set_secondary_send_volume(float volume) {
+    secondary_send_volume_.store(std::clamp(volume, 0.0f, 2.0f),
+                                 std::memory_order_relaxed);
 }
 
 bool AudioEngine::init_devices() {

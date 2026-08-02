@@ -16,6 +16,18 @@ LevelMeterElement::~LevelMeterElement() {
     ReleaseResources();
 }
 
+void LevelMeterElement::OnAttributeChange(const Rml::ElementAttributes& changed_attributes) {
+    Rml::Element::OnAttributeChange(changed_attributes);
+
+    // Routed RML content may be created and destroyed at any time. Keeping the
+    // meter driven by data-bound attributes makes each instance self-contained
+    // and avoids cached DOM pointers in the platform backends.
+    if (changed_attributes.find("level") != changed_attributes.end())
+        SetLevel(GetAttribute<float>("level", 0.0f));
+    if (changed_attributes.find("threshold") != changed_attributes.end())
+        SetThreshold(GetAttribute<float>("threshold", 0.0f));
+}
+
 void LevelMeterElement::SetLevel(float level) {
     if (level < 0.0f) level = 0.0f;
     if (level > 1.0f) level = 1.0f;
@@ -55,7 +67,7 @@ void LevelMeterElement::RebuildGeometry() {
     };
 
     // Initialize colors
-    Rml::ColourbPremultiplied green(61, 214, 140, 255);  // #3dd68c
+    Rml::ColourbPremultiplied green(94, 234, 212, 255);  // #5eead4
     Rml::ColourbPremultiplied red(232, 100, 90, 255);    // #e8645a
     for (int i = 0; i < 4; ++i) vertices[i].colour = green;
     for (int i = 4; i < 8; ++i) vertices[i].colour = red;
@@ -88,7 +100,7 @@ void LevelMeterElement::UpdateVertices() {
     float marker_w = 2.0f;  // ~2dp
 
     Rml::Vertex vertices[8] = {};
-    Rml::ColourbPremultiplied green(61, 214, 140, 255);
+    Rml::ColourbPremultiplied green(94, 234, 212, 255);
     Rml::ColourbPremultiplied red(232, 100, 90, 255);
 
     // Fill bar quad

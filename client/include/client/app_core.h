@@ -7,6 +7,7 @@
 #include <client/lobby_model.h>
 #include <client/chat_model.h>
 #include <client/server_list_model.h>
+#include <client/server_query_wake.h>
 #include <client/sound_player.h>
 #include <client/stream_audio_player.h>
 #include <parties/types.h>
@@ -27,16 +28,32 @@ namespace Rml { class Context; }
 
 namespace parties::client {
 
+struct UserContextWindowRequest {
+    int user_id = 0;
+    std::string name;
+    std::string channel_name;
+    int role = 3;
+    bool can_manage_roles = false;
+    bool can_kick = false;
+    float volume = 1.0f;
+    float music_volume = 1.0f;
+    bool compression = false;
+    float compression_target = 0.8f;
+};
+
 struct PlatformBridge {
     std::function<void(const std::string&)>                    copy_to_clipboard;
     std::function<void(SoundPlayer::Effect)>                   play_sound;
     std::function<void(float)>                                 set_notification_volume;
+    std::function<void(const UserContextWindowRequest&)>       show_user_menu;
     std::function<void(int channel_id, const std::string& name)> show_channel_menu;
     std::function<void(int server_id)>                         show_server_menu;
     std::function<void(int64_t message_id)>                    show_message_menu;
     std::function<void()>                                      open_share_picker;
+    std::function<void()>                                      open_audio_share_picker;
     std::function<void()>                                      on_authenticated;
     std::function<void()>                                      stop_screen_share;
+    std::function<void()>                                      stop_audio_share;
     std::function<void()>                                      request_keyframe;
     std::function<void()>                                      clear_video_element;
     // Per-sharer video decode (set only on platforms with a multi-stream decode
@@ -188,6 +205,18 @@ private:
     };
     std::unordered_map<std::string, PendingPref> pending_prefs_;
 
+    struct UserAudioPrefs {
+        float voice_volume = 1.0f;
+        float music_volume = 1.0f;
+        bool compression = false;
+        float compression_target = 0.8f;
+    };
+    std::mutex user_audio_prefs_mutex_;
+    std::unordered_map<UserId, UserAudioPrefs> user_audio_prefs_;
+    // Stream creation happens on the QUIC worker thread. It may only consult
+    // this cache; SQLite access remains on the main thread.
+    void apply_cached_user_audio_prefs(UserId user_id);
+
     std::chrono::steady_clock::time_point stream_fps_last_update_{std::chrono::steady_clock::now()};
     std::chrono::steady_clock::time_point ping_sent_at_{};
     std::chrono::steady_clock::time_point ping_last_send_{};
@@ -244,6 +273,7 @@ private:
 
     std::thread               query_thread_;
     std::atomic<bool>         query_thread_run_{false};
+    ServerQueryWakeEvent      query_wake_;
     std::atomic<bool>         lobby_visible_{true};
     std::atomic<bool>         query_results_dirty_{false};
     std::mutex                query_targets_mutex_;

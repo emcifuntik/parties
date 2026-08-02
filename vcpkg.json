@@ -31,14 +31,13 @@
       "description": "Client GUI dependencies (Windows/Linux)",
       "dependencies": [
         "amd-amf",
-        "d3d12-memory-allocator",
         "miniaudio",
         "dav1d",
         "libhevc",
         "openh264",
         {
           "name": "rmlui",
-          "features": ["svg"]
+          "features": ["svg", "lottie"]
         },
         "rnnoise",
         "speexdsp"
@@ -51,7 +50,7 @@
         "miniaudio",
         {
           "name": "rmlui",
-          "features": ["svg"]
+          "features": ["svg", "lottie"]
         },
         "rnnoise",
         "speexdsp"
@@ -64,7 +63,7 @@
         "miniaudio",
         {
           "name": "rmlui",
-          "features": ["svg"]
+          "features": ["svg", "lottie"]
         },
         "rnnoise",
         "speexdsp"

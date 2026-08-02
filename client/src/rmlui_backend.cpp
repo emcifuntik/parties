@@ -15,8 +15,16 @@ static constexpr unsigned char embed_lobby_rml[] = {
     #embed "../ui/lobby.rml"
 };
 
+static constexpr unsigned char embed_context_window_rml[] = {
+    #embed "../ui/context_window.rml"
+};
+
 static constexpr unsigned char embed_style_rcss[] = {
     #embed "../ui/style.rcss"
+};
+
+static constexpr unsigned char embed_redesign_rcss[] = {
+    #embed "../ui/redesign.rcss"
 };
 
 static constexpr unsigned char embed_logo_svg[] = {
@@ -57,6 +65,34 @@ static constexpr unsigned char embed_icon_settings[] = {
 
 static constexpr unsigned char embed_icon_volume[] = {
     #embed "../ui/icon-volume.svg"
+};
+
+static constexpr unsigned char embed_icon_music[] = {
+    #embed "../ui/icon-music.svg"
+};
+
+static constexpr unsigned char embed_icon_stream_off[] = {
+    #embed "../ui/icon-stream-off.svg"
+};
+
+static constexpr unsigned char embed_icon_camera[] = {
+    #embed "../ui/icon-camera.svg"
+};
+
+static constexpr unsigned char embed_icon_keyboard[] = {
+    #embed "../ui/icon-keyboard.svg"
+};
+
+static constexpr unsigned char embed_icon_appearance[] = {
+    #embed "../ui/icon-appearance.svg"
+};
+
+static constexpr unsigned char embed_icon_key[] = {
+    #embed "../ui/icon-key.svg"
+};
+
+static constexpr unsigned char embed_icon_close[] = {
+    #embed "../ui/icon-close.svg"
 };
 
 static constexpr unsigned char embed_icon_disconnect[] = {
@@ -119,6 +155,14 @@ static constexpr unsigned char embed_font_bold[] = {
     #embed "../ui/fonts/Inter-Bold.ttf"
 };
 
+static constexpr unsigned char embed_font_fallback_regular[] = {
+    #embed "../ui/fonts/NotoSans-Regular.ttf"
+};
+
+static constexpr unsigned char embed_font_fallback_bold[] = {
+    #embed "../ui/fonts/NotoSans-Bold.ttf"
+};
+
 namespace {
 
 struct OpenFile {
@@ -134,7 +178,9 @@ struct OpenFile {
 
 EmbeddedFileInterface::EmbeddedFileInterface() {
     entries_["ui/lobby.rml"] = { embed_lobby_rml, sizeof(embed_lobby_rml) };
+    entries_["ui/context_window.rml"] = { embed_context_window_rml, sizeof(embed_context_window_rml) };
     entries_["ui/style.rcss"] = { embed_style_rcss, sizeof(embed_style_rcss) };
+    entries_["ui/redesign.rcss"] = { embed_redesign_rcss, sizeof(embed_redesign_rcss) };
     entries_["ui/logo.svg"] = { embed_logo_svg, sizeof(embed_logo_svg) };
     entries_["ui/icon-unmute.svg"] = { embed_icon_unmute, sizeof(embed_icon_unmute) };
     entries_["ui/icon-mute.svg"] = { embed_icon_mute, sizeof(embed_icon_mute) };
@@ -145,6 +191,13 @@ EmbeddedFileInterface::EmbeddedFileInterface() {
     entries_["ui/icon-leave.svg"] = { embed_icon_leave, sizeof(embed_icon_leave) };
     entries_["ui/icon-settings.svg"] = { embed_icon_settings, sizeof(embed_icon_settings) };
     entries_["ui/icon-volume.svg"] = { embed_icon_volume, sizeof(embed_icon_volume) };
+    entries_["ui/icon-music.svg"] = { embed_icon_music, sizeof(embed_icon_music) };
+    entries_["ui/icon-stream-off.svg"] = { embed_icon_stream_off, sizeof(embed_icon_stream_off) };
+    entries_["ui/icon-camera.svg"] = { embed_icon_camera, sizeof(embed_icon_camera) };
+    entries_["ui/icon-keyboard.svg"] = { embed_icon_keyboard, sizeof(embed_icon_keyboard) };
+    entries_["ui/icon-appearance.svg"] = { embed_icon_appearance, sizeof(embed_icon_appearance) };
+    entries_["ui/icon-key.svg"] = { embed_icon_key, sizeof(embed_icon_key) };
+    entries_["ui/icon-close.svg"] = { embed_icon_close, sizeof(embed_icon_close) };
     entries_["ui/icon-disconnect.svg"] = { embed_icon_disconnect, sizeof(embed_icon_disconnect) };
     entries_["ui/icon-room.svg"] = { embed_icon_room, sizeof(embed_icon_room) };
     entries_["ui/icon-chat.svg"] = { embed_icon_chat, sizeof(embed_icon_chat) };
@@ -160,6 +213,8 @@ EmbeddedFileInterface::EmbeddedFileInterface() {
     entries_["ui/fonts/Inter-Regular.ttf"] = { embed_font_regular, sizeof(embed_font_regular) };
     entries_["ui/fonts/Inter-Medium.ttf"] = { embed_font_medium, sizeof(embed_font_medium) };
     entries_["ui/fonts/Inter-Bold.ttf"] = { embed_font_bold, sizeof(embed_font_bold) };
+    entries_["ui/fonts/NotoSans-Regular.ttf"] = { embed_font_fallback_regular, sizeof(embed_font_fallback_regular) };
+    entries_["ui/fonts/NotoSans-Bold.ttf"] = { embed_font_fallback_bold, sizeof(embed_font_fallback_bold) };
     LOG_INFO("Embedded resources: {} files", entries_.size());
 }
 

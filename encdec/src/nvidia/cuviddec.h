@@ -51,6 +51,10 @@ extern "C" {
 typedef void *CUvideodecoder;
 typedef struct _CUcontextlock_st *CUvideoctxlock;
 
+typedef enum cuvidMaxNumRegisterDecodeSurfaces_enum {
+    MAX_NUM_REGISTERED_DECODE_SURFACES = 32
+} cuvidMaxNumRegisterDecodeSurfaces;
+
 /*********************************************************************************/
 //! \enum cudaVideoCodec
 //! Video codec enums
@@ -91,8 +95,14 @@ typedef enum cudaVideoSurfaceFormat_enum {
     cudaVideoSurfaceFormat_YUV444_16Bit=3,  /**< 16 bit Planar YUV [Y plane followed by U and V planes].
                                                  Can be used for 10 bit(6LSB bits 0), 12 bit (4LSB bits 0)      */
     cudaVideoSurfaceFormat_NV16=4,          /**< Semi-Planar YUV 422 [Y plane followed by interleaved UV plane] */
-    cudaVideoSurfaceFormat_P216=5           /**< 16 bit Semi-Planar YUV 422[Y plane followed by interleaved UV plane].
+    cudaVideoSurfaceFormat_P216=5,          /**< 16 bit Semi-Planar YUV 422[Y plane followed by interleaved UV plane].
                                                  Can be used for 10 bit(6LSB bits 0), 12 bit (4LSB bits 0)      */
+    cudaVideoSurfaceFormat_NV12_Opaque=6,   /**< Semi-Planar YUV in an application-provided opaque CUDA array. */
+    cudaVideoSurfaceFormat_P016_Opaque=7,   /**< 16-bit semi-planar YUV in an opaque CUDA array. */
+    cudaVideoSurfaceFormat_YUV444_Opaque=8,
+    cudaVideoSurfaceFormat_YUV444_16Bit_Opaque=9,
+    cudaVideoSurfaceFormat_NV16_Opaque=10,
+    cudaVideoSurfaceFormat_P216_Opaque=11
 } cudaVideoSurfaceFormat;
 
 /******************************************************************************************************************/
@@ -226,8 +236,19 @@ typedef struct _CUVIDDECODECREATEINFO
     } target_rect;
 
     unsigned long enableHistogram;             /**< IN: enable histogram output, if supported */
-    unsigned long Reserved2[4];                /**< Reserved for future use - set to zero */
+    unsigned long enableDecodeFeatures;        /**< IN: bitwise OR of cuvidDecodeFeature values */
+    unsigned long Reserved2[3];                /**< Reserved for future use - set to zero */
 } CUVIDDECODECREATEINFO;
+
+// Video Codec SDK 13.1 external opaque decode-surface registration ABI.
+typedef struct _CUVIDREGISTERDECODESURFACESINFO
+{
+    unsigned int ulNumDecodeSurfaces;
+    unsigned int reserved[31];
+    CUarray *pDecodeSurfaces;
+    CUdeviceptr *pDecodeStatsSurfaces;
+    void *pReserved[30];
+} CUVIDREGISTERDECODESURFACESINFO;
 
 /*********************************************************/
 //! \struct CUVIDH264DPBENTRY

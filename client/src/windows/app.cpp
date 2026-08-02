@@ -3,13 +3,13 @@
 #include <client/app.h>
 #include <client/app_core.h>
 #include <d3dcompiler.h>
-#include <client/context_menu.h>
 #include <client/screen_capture.h>
 #include <client/video_encoder.h>
 #include <client/video_decoder.h>
+#include <client/video_decode_backlog.h>
 #include <client/video_element.h>
-#include <client/level_meter_element.h>
 #include <client/custom_elements.h>
+#include "RmlUi_RenderInterface_Extended.h"
 #include <parties/protocol.h>
 #include <parties/serialization.h>
 #include <parties/crypto.h>
@@ -28,6 +28,7 @@
 #include <windowsx.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -189,7 +190,7 @@ bool App::handle_chat_input(unsigned int msg, WPARAM wParam, LPARAM lParam) {
 App::App() = default;
 App::~App() { shutdown(); }
 
-bool App::init(HWND hwnd, int renderer_id) {
+bool App::init(HWND hwnd) {
     hwnd_ = hwnd;
 
     // Build PlatformBridge — all callbacks capture hwnd_ and App members
@@ -206,35 +207,80 @@ bool App::init(HWND hwnd, int renderer_id) {
         sound_player_.set_volume(v);
     };
 
+    bridge.show_user_menu = [this](const UserContextWindowRequest& request) {
+        ContextWindowManager::UserRequest popup;
+        popup.user_id = request.user_id;
+        popup.name = request.name;
+        popup.channel_name = request.channel_name;
+        popup.role = request.role;
+        popup.can_manage_roles = request.can_manage_roles;
+        popup.can_kick = request.can_kick;
+        popup.volume = request.volume;
+        popup.music_volume = request.music_volume;
+        popup.compression = request.compression;
+        popup.compression_target = request.compression_target;
+
+        ContextWindowManager::UserCallbacks callbacks;
+        callbacks.set_volume = [this, user_id = request.user_id](float volume) {
+            if (core_.model_.on_user_volume_changed)
+                core_.model_.on_user_volume_changed(user_id, volume);
+        };
+        callbacks.set_music_volume = [this, user_id = request.user_id](float volume) {
+            if (core_.model_.on_user_music_volume_changed)
+                core_.model_.on_user_music_volume_changed(user_id, volume);
+        };
+        callbacks.set_compression = [this, user_id = request.user_id](bool enabled, float target) {
+            if (core_.model_.on_user_compress_changed)
+                core_.model_.on_user_compress_changed(user_id, enabled, target);
+        };
+        callbacks.set_role = [this, user_id = request.user_id](int role) {
+            if (core_.model_.on_set_user_role)
+                core_.model_.on_set_user_role(user_id, role);
+        };
+        callbacks.kick = [this, user_id = request.user_id] {
+            if (core_.model_.on_kick_user)
+                core_.model_.on_kick_user(user_id);
+        };
+        context_windows_.show_user(popup, std::move(callbacks));
+    };
+
     bridge.show_channel_menu = [this](int channel_id, std::string name) {
         constexpr int ID_RENAME = 1;
         constexpr int ID_DELETE = 2;
-        std::vector<ContextMenu::Item> items;
-        items.push_back({L"Rename Channel", ID_RENAME, false});
-        items.push_back({L"Delete Channel", ID_DELETE, true});
-        int cmd = ContextMenu::show(hwnd_, items);
-        if (cmd == ID_RENAME) {
-            core_.model_.rename_channel_id = channel_id;
-            core_.model_.rename_channel_name = name;
-            core_.model_.new_rename_channel_name = name;
-            core_.model_.show_rename_channel = true;
-        } else if (cmd == ID_DELETE) {
-            BinaryWriter writer;
-            writer.write_u32(static_cast<uint32_t>(channel_id));
-            core_.net_.send_message(protocol::ControlMessageType::ADMIN_DELETE_CHANNEL,
-                                    writer.data().data(), writer.data().size());
-        }
+        ContextWindowManager::ActionRequest request;
+        request.title = name;
+        request.subtitle = "Channel actions";
+        request.room_icon = true;
+        request.actions = {
+            {ID_RENAME, "Rename channel", "Change the channel name", false, false},
+            {ID_DELETE, "Delete channel", "Remove it for everyone", true, false},
+        };
+        context_windows_.show_actions(request, [this, channel_id, name = std::move(name)](int command) {
+            if (command == ID_RENAME) {
+                core_.model_.rename_channel_id = channel_id;
+                core_.model_.rename_channel_name = name;
+                core_.model_.new_rename_channel_name = name;
+                core_.model_.show_rename_channel = true;
+            } else if (command == ID_DELETE) {
+                BinaryWriter writer;
+                writer.write_u32(static_cast<uint32_t>(channel_id));
+                core_.net_.send_message(protocol::ControlMessageType::ADMIN_DELETE_CHANNEL,
+                                        writer.data().data(), writer.data().size());
+            }
+        });
     };
-
     bridge.show_server_menu = [this](int id) {
         constexpr int ID_DELETE = 1;
-        std::vector<ContextMenu::Item> items;
-        items.push_back({L"Delete", ID_DELETE, true});
-        int cmd = ContextMenu::show(hwnd_, items);
-        if (cmd == ID_DELETE) {
+        ContextWindowManager::ActionRequest request;
+        request.title = "Saved party";
+        request.subtitle = "Connection actions";
+        request.icon_text = "P";
+        request.actions = {{ID_DELETE, "Remove saved party", "Delete this connection", true, false}};
+        context_windows_.show_actions(request, [this, id](int command) {
+            if (command != ID_DELETE) return;
             core_.settings_.delete_server(id);
             core_.refresh_server_list();
-        }
+        });
     };
 
     bridge.show_message_menu = [this](int64_t msg_id) {
@@ -242,34 +288,37 @@ bool App::init(HWND hwnd, int renderer_id) {
         constexpr int ID_PIN    = 2;
         constexpr int ID_DELETE = 3;
 
-        // Fetch the message text up front (the menu runs a nested modal loop).
+        // Snapshot the message text before creating the transient RmlUI HWND.
         std::string text;
         for (const auto& m : core_.chat_model_.messages.get()) {
             if (m.id == msg_id) { text = std::string(m.text); break; }
         }
 
-        std::vector<ContextMenu::Item> items;
-        if (!text.empty())
-            items.push_back({L"Copy Text", ID_COPY, false});
-        items.push_back({L"Pin Message",    ID_PIN,    false});
-        items.push_back({L"Delete Message", ID_DELETE, true});
-        int cmd = ContextMenu::show(hwnd_, items);
-        if (cmd == ID_COPY) {
-            set_clipboard_text(hwnd_, text);
-        } else if (cmd == ID_PIN) {
-            if (core_.chat_model_.on_pin_message)
-                core_.chat_model_.on_pin_message(msg_id);
-        } else if (cmd == ID_DELETE) {
-            if (core_.chat_model_.on_delete_message)
-                core_.chat_model_.on_delete_message(msg_id);
-        }
+        ContextWindowManager::ActionRequest request;
+        request.title = "Message";
+        request.subtitle = "Conversation actions";
+        request.icon_text = "M";
+        if (!text.empty()) request.actions.push_back({ID_COPY, "Copy text", "Copy to clipboard", false, false});
+        request.actions.push_back({ID_PIN, "Pin message", "Keep it visible", false, false});
+        request.actions.push_back({ID_DELETE, "Delete message", "Remove it permanently", true, false});
+        context_windows_.show_actions(request, [this, msg_id, text = std::move(text)](int command) {
+            if (command == ID_COPY) {
+                set_clipboard_text(hwnd_, text);
+            } else if (command == ID_PIN) {
+                if (core_.chat_model_.on_pin_message) core_.chat_model_.on_pin_message(msg_id);
+            } else if (command == ID_DELETE) {
+                if (core_.chat_model_.on_delete_message) core_.chat_model_.on_delete_message(msg_id);
+            }
+        });
     };
 
-    bridge.open_share_picker = [this]() { show_share_picker(); };
+    bridge.open_share_picker = [this]() { show_share_picker(false); };
+    bridge.open_audio_share_picker = [this]() { show_share_picker(true); };
 
     bridge.on_authenticated = nullptr; // Windows needs no special post-auth step
 
     bridge.stop_screen_share = [this]() { stop_screen_share(); };
+    bridge.stop_audio_share = [this]() { stop_application_audio_share(); };
 
     bridge.request_keyframe = [this]() {
         if (encoder_) encoder_->force_keyframe();
@@ -301,7 +350,12 @@ bool App::init(HWND hwnd, int renderer_id) {
     bridge.stop_video_stream  = [this](UserId id) { stop_video_stream(id); };
 
     // Initialize UI
-    if (!ui_.init(hwnd, renderer_id)) return false;
+    if (!ui_.init(hwnd)) return false;
+    decode_d3d12_device_ = static_cast<ID3D12Device*>(ui_.renderer()->GetD3D12Device());
+    if (!context_windows_.init(hwnd, &ui_mutex_)) {
+        LOG_ERROR("Context window manager init failed");
+        return false;
+    }
 
     // Init AppCore (wires audio, net callbacks, model callbacks)
     if (!core_.init("parties_client.db", std::move(bridge), ui_.context()))
@@ -323,14 +377,26 @@ bool App::init(HWND hwnd, int renderer_id) {
 
     // Windows-only: select share target from DXGI list
     core_.model_.on_select_share_target = [this](int index) {
-        core_.model_.show_share_picker = false;
-        start_screen_share(index);
+        if (core_.model_.router.is(DocumentRoute::SharePicker))
+            core_.model_.router.back();
+        cancel_share_thumbnails();
+        if (core_.model_.share_picker_mode == 1)
+            start_application_audio_share(index);
+        else
+            start_screen_share(index);
     };
-
     // Override on_cancel_share to also clear capture targets
     core_.model_.on_cancel_share = [this]() {
-        core_.model_.show_share_picker = false;
+        if (core_.model_.router.is(DocumentRoute::SharePicker))
+            core_.model_.router.back();
+        cancel_share_thumbnails();
         capture_targets_.clear();
+        // Audio-only selection uses a temporary enumerator. Never tear down an
+        // active screen capture when its picker is cancelled.
+        if (core_.model_.share_picker_mode == 0 && capture_) {
+            capture_->shutdown();
+            capture_.reset();
+        }
     };
 
     core_.model_.on_share_bitrate_changed = [this](float mbps) {
@@ -393,7 +459,6 @@ bool App::init(HWND hwnd, int renderer_id) {
     doc_ = ui_.load_document("ui/lobby.rml");
     if (doc_) {
         ui_.show_document(doc_);
-        level_meter_ = static_cast<LevelMeterElement*>(doc_->GetElementById("voice-level-meter"));
     }
 
     core_.refresh_server_list();
@@ -414,14 +479,29 @@ bool App::init(HWND hwnd, int renderer_id) {
 }
 
 void App::shutdown() {
-    // Stop the render thread first so nothing renders or touches the RmlUi
-    // context concurrently while the rest of the app tears down.
+    // The thumbnail worker owns a D3D11/WinRT capture session. Stop it while the
+    // main graphics runtime is still fully alive so its resources are released
+    // from the worker body, not during OS thread teardown after rendering stops.
+    cancel_share_thumbnails();
+    if (share_thumbnail_thread_.joinable()) {
+        share_thumbnail_thread_.request_stop();
+        share_thumbnail_cv_.notify_all();
+        share_thumbnail_thread_.join();
+    }
+
+    // Nothing can enqueue preview textures now. Stop rendering before tearing
+    // down the RmlUi context and the remaining application resources.
     render_running_.store(false, std::memory_order_release);
     if (render_thread_.joinable())
         render_thread_.join();
 
+    context_windows_.prepare_shutdown();
     if (stream_audio_capture_) { stream_audio_capture_->stop(); stream_audio_capture_.reset(); }
-    if (capture_) { capture_->stop(); capture_->shutdown(); capture_.reset(); }
+    stop_application_audio_share();
+    // Stop producing frames first, but keep the capture D3D11 device alive
+    // until the consumer thread and every encoder registration are gone.
+    // NVENC/AMF keep references to resources created by this device.
+    if (capture_) capture_->stop();
     if (encode_thread_.joinable()) {
         encode_running_.store(false, std::memory_order_release);
         encode_cv_.notify_one();
@@ -429,11 +509,15 @@ void App::shutdown() {
     }
     if (encoder_ && encode_registered_) encoder_->unregister_inputs();
     for (auto& t : encode_textures_) t.Reset();
+    for (auto& rtv : encode_rtvs_) rtv.Reset();
     encode_registered_ = false;
     if (encoder_) { encoder_->shutdown(); encoder_.reset(); }
+    if (capture_) { capture_->shutdown(); capture_.reset(); }
+    capture_targets_.clear();
     stop_all_video_streams();
     core_.shutdown();
     ui_.shutdown();
+    context_windows_.shutdown();
 }
 
 void App::poll_hotkeys() {
@@ -599,10 +683,25 @@ static Rml::Element* find_grid_video(Rml::Element* el, uint32_t streamid) {
     return nullptr;
 }
 
+static Rml::Element* find_share_thumbnail(Rml::Element* el, int target_index) {
+    if (el->GetTagName() == "video_frame" &&
+        el->GetAttribute<int>("thumbnailindex", -1) == target_index)
+        return el;
+    const int n = el->GetNumChildren();
+    for (int i = 0; i < n; ++i) {
+        if (auto* found = find_share_thumbnail(el->GetChild(i), target_index))
+            return found;
+    }
+    return nullptr;
+}
+
 void App::render_frame() {
     ZoneScopedN("App::render_frame");
 
-    ui_.render_begin();         // BeginFrame: GPU/vsync wait — no context, no lock
+    if (!ui_.render_begin()) {  // BeginFrame: GPU/vsync wait — no context, no lock
+        Sleep(16);              // Invalid/lost renderer: avoid a busy retry loop.
+        return;
+    }
     {
         std::lock_guard<std::recursive_mutex> lock(ui_mutex_);
 
@@ -613,6 +712,17 @@ void App::render_frame() {
             ZoneScopedN("App::deliver_video_frames");
             struct PendingUpload {
                 uint32_t sharer;
+                std::shared_ptr<void> native_owner;
+                void* native_resource = nullptr;
+                void* native_chroma_resource = nullptr;
+                void* native_ready_fence = nullptr;
+                uint64_t native_ready_value = 0;
+                uint32_t native_resource_state = 0;
+                bool native_rgba = false;
+                uint32_t native_texture_width = 0;
+                uint32_t native_texture_height = 0;
+                uint32_t native_crop_x = 0;
+                uint32_t native_crop_y = 0;
                 std::vector<uint8_t> y, u, v;
                 uint32_t w, h, ys, uvs;
                 bool nv12;
@@ -627,6 +737,27 @@ void App::render_frame() {
                     if (!s->new_frame.load(std::memory_order_relaxed)) continue;
                     PendingUpload up;
                     up.sharer = static_cast<uint32_t>(s->sharer_id);
+                    up.native_owner = std::move(s->native_owner);
+                    up.native_resource = s->native_resource;
+                    up.native_chroma_resource = s->native_chroma_resource;
+                    up.native_ready_fence = s->native_ready_fence;
+                    up.native_ready_value = s->native_ready_value;
+                    up.native_resource_state = s->native_resource_state;
+                    up.native_rgba = s->native_rgba;
+                    up.native_texture_width = s->native_texture_width;
+                    up.native_texture_height = s->native_texture_height;
+                    up.native_crop_x = s->native_crop_x;
+                    up.native_crop_y = s->native_crop_y;
+                    s->native_resource = nullptr;
+                    s->native_chroma_resource = nullptr;
+                    s->native_ready_fence = nullptr;
+                    s->native_ready_value = 0;
+                    s->native_resource_state = 0;
+                    s->native_rgba = false;
+                    s->native_texture_width = 0;
+                    s->native_texture_height = 0;
+                    s->native_crop_x = 0;
+                    s->native_crop_y = 0;
                     up.y.swap(s->y); up.u.swap(s->u); up.v.swap(s->v);
                     up.w = s->width; up.h = s->height;
                     up.ys = s->y_stride; up.uvs = s->uv_stride;
@@ -641,21 +772,27 @@ void App::render_frame() {
             // and avoids relying on GetElementById finding a data-bound id.
             Rml::Element* grid = uploads.empty() ? nullptr : doc_->GetElementById("stream-grid");
             for (auto& up : uploads) {
-                if (up.y.empty() || up.w == 0 || up.h == 0) continue;
+                if ((!up.native_resource && up.y.empty()) || up.w == 0 || up.h == 0) continue;
                 core_.stream_frame_count_.fetch_add(1, std::memory_order_relaxed);
                 auto* elem = grid ? find_grid_video(grid, up.sharer) : nullptr;
                 if (elem) {
                     auto* ve = static_cast<VideoElement*>(elem);
-                    if (up.nv12)
+                    if (up.native_resource)
+                        ve->UpdateNativeNV12Frame(
+                            up.native_resource, up.native_chroma_resource,
+                            std::move(up.native_owner), up.native_ready_fence,
+                            up.native_ready_value, up.native_resource_state, up.native_rgba, up.w, up.h,
+                            up.native_texture_width, up.native_texture_height,
+                            up.native_crop_x, up.native_crop_y);
+                    else if (up.nv12)
                         ve->UpdateNV12Frame(up.y, up.ys, up.u, up.uvs, up.w, up.h);
                     else
-                        ve->UpdateYUVFrame(up.y.data(), up.ys, up.u.data(), up.v.data(), up.uvs, up.w, up.h);
+                        ve->UpdateYUVFrame(up.y, up.ys, up.u, up.v, up.uvs, up.w, up.h);
                 }
             }
         }
 
         // Update voice level meter
-        update_voice_level();
 
         // Update FPS + ping in titlebar (once per second)
         fps_frame_count_++;
@@ -686,9 +823,48 @@ void App::render_frame() {
         }
 
         ui_.update();
+
+        // Target cards are data-bound and only exist after the model update.
+        // Upload at most two previews per frame so texture creation never turns
+        // into a single large GPU/driver stall on machines with many windows.
+        if (doc_ && core_.model_.router.is(DocumentRoute::SharePicker)) {
+            std::vector<ShareThumbnail> ready;
+            {
+                std::lock_guard lock(share_thumbnail_mutex_);
+                const size_t count = (std::min)(size_t{2}, pending_share_thumbnails_.size());
+                ready.reserve(count);
+                for (size_t index = 0; index < count; ++index)
+                    ready.push_back(std::move(pending_share_thumbnails_[index]));
+                pending_share_thumbnails_.erase(
+                    pending_share_thumbnails_.begin(),
+                    pending_share_thumbnails_.begin() + static_cast<std::ptrdiff_t>(count));
+            }
+
+            std::vector<ShareThumbnail> remaining;
+            for (auto& thumbnail : ready) {
+                auto* element = find_share_thumbnail(doc_, thumbnail.target_index);
+                if (element && !thumbnail.rgba.empty()) {
+                    static_cast<VideoElement*>(element)->UpdateFrame(
+                        std::move(thumbnail.rgba), thumbnail.width, thumbnail.height);
+                } else {
+                    remaining.push_back(std::move(thumbnail));
+                }
+            }
+            if (!remaining.empty()) {
+                std::lock_guard lock(share_thumbnail_mutex_);
+                for (auto& thumbnail : remaining)
+                    pending_share_thumbnails_.push_back(std::move(thumbnail));
+            }
+        } else if (!core_.model_.router.is(DocumentRoute::SharePicker)) {
+            cancel_share_thumbnails();
+        }
         ui_.render_body();
     }
     ui_.render_end();           // EndFrame: present (+ DwmFlush) — no context, no lock
+    {
+        std::lock_guard<std::recursive_mutex> lock(ui_mutex_);
+        context_windows_.render();
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -737,40 +913,46 @@ void App::defer_dpi(float scale) {
     dpi_pending_.store(true, std::memory_order_release);
 }
 
-void App::update_voice_level() {
-    ZoneScopedN("App::update_voice_level");
-    if (!level_meter_ || !core_.model_.is_connected) return;
-    float level = audio::rms_to_perceptual(core_.audio_.voice_level());
-    level_meter_->SetLevel(level);
-    level_meter_->SetThreshold(core_.model_.vad_threshold);
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Screen sharing (Windows / DXGI specific)
 // ─────────────────────────────────────────────────────────────────────────────
 
-void App::show_share_picker() {
+void App::show_share_picker(bool audio_only) {
     ZoneScopedN("App::show_share_picker");
-    if (sharing_screen_ || !core_.authenticated_ || core_.current_channel_ == 0) return;
+    if ((!audio_only && sharing_screen_) ||
+        (audio_only && application_audio_sharing_.load(std::memory_order_acquire)) ||
+        !core_.authenticated_ || core_.current_channel_ == 0) return;
+    std::unique_ptr<ScreenCapture> audio_picker_capture;
+    ScreenCapture* picker = nullptr;
+    if (audio_only) {
+        audio_picker_capture = std::make_unique<ScreenCapture>();
+        picker = audio_picker_capture.get();
+    } else {
+        capture_ = std::make_unique<ScreenCapture>();
+        picker = capture_.get();
+    }
 
-    capture_ = std::make_unique<ScreenCapture>();
-    if (!capture_->init()) {
+    if (!picker->init()) {
         LOG_ERROR("Screen capture init failed");
-        capture_.reset();
+        if (!audio_only) capture_.reset();
         return;
     }
-
     capture_targets_.clear();
+    cancel_share_thumbnails();
     auto& targets = core_.model_.share_targets.silent();
     targets.clear();
+    core_.model_.selected_share_target = -1;
+    core_.model_.share_picker_mode = audio_only ? 1 : 0;
 
-    for (auto& m : capture_->enumerate_monitors()) {
-        int idx = static_cast<int>(capture_targets_.size());
-        ShareTarget st; st.name = Rml::String(m.name); st.index = idx; st.is_monitor = true;
-        targets.push_back(std::move(st));
-        capture_targets_.push_back(std::move(m));
+    if (!audio_only) {
+        for (auto& m : picker->enumerate_monitors()) {
+            int idx = static_cast<int>(capture_targets_.size());
+            ShareTarget st; st.name = Rml::String(m.name); st.index = idx; st.is_monitor = true;
+            targets.push_back(std::move(st));
+            capture_targets_.push_back(std::move(m));
+        }
     }
-    for (auto& w : capture_->enumerate_windows()) {
+    for (auto& w : picker->enumerate_windows()) {
         int idx = static_cast<int>(capture_targets_.size());
         ShareTarget st; st.name = Rml::String(w.name); st.index = idx; st.is_monitor = false;
         targets.push_back(std::move(st));
@@ -778,7 +960,147 @@ void App::show_share_picker() {
     }
 
     core_.model_.share_targets.notify();
-    core_.model_.show_share_picker = true;
+    core_.model_.router.open_share_picker();
+    queue_share_thumbnails();
+}
+
+void App::queue_share_thumbnails() {
+    ZoneScopedN("App::queue_share_thumbnails");
+    if (!share_thumbnail_thread_.joinable()) {
+        share_thumbnail_thread_ = std::jthread(
+            [this](std::stop_token stop_token) { share_thumbnail_worker(stop_token); });
+    }
+
+    {
+        std::lock_guard lock(share_thumbnail_mutex_);
+        ++share_thumbnail_generation_;
+        share_thumbnail_job_targets_ = capture_targets_;
+        pending_share_thumbnails_.clear();
+        share_thumbnail_job_pending_ = true;
+        share_thumbnail_job_active_ = true;
+    }
+    share_thumbnail_cv_.notify_all();
+}
+
+void App::cancel_share_thumbnails() {
+    std::lock_guard lock(share_thumbnail_mutex_);
+    if (!share_thumbnail_job_active_ && !share_thumbnail_job_pending_ &&
+        pending_share_thumbnails_.empty())
+        return;
+
+    ++share_thumbnail_generation_;
+    share_thumbnail_job_targets_.clear();
+    pending_share_thumbnails_.clear();
+    share_thumbnail_job_pending_ = false;
+    share_thumbnail_job_active_ = false;
+    share_thumbnail_cv_.notify_all();
+}
+
+void App::share_thumbnail_worker(std::stop_token stop_token) {
+    TracySetThreadName("Share thumbnails");
+    ScreenCapture::ThumbnailSession thumbnail_session;
+    while (!stop_token.stop_requested()) {
+        std::vector<CaptureTarget> targets;
+        uint64_t generation = 0;
+        {
+            std::unique_lock lock(share_thumbnail_mutex_);
+            share_thumbnail_cv_.wait(lock, stop_token, [this] {
+                return share_thumbnail_job_pending_;
+            });
+            if (stop_token.stop_requested())
+                break;
+            targets = share_thumbnail_job_targets_;
+            generation = share_thumbnail_generation_;
+            share_thumbnail_job_pending_ = false;
+        }
+
+        for (int index = 0; index < static_cast<int>(targets.size()); ++index) {
+            if (stop_token.stop_requested())
+                break;
+            {
+                std::lock_guard lock(share_thumbnail_mutex_);
+                if (generation != share_thumbnail_generation_)
+                    break;
+            }
+
+            // The cards are 250x118dp. 320x180 retains enough detail for high
+            // DPI while reducing capture conversion and texture memory by 56%
+            // compared with the old 480x270 previews.
+            auto thumbnail = thumbnail_session.capture(targets[index], 320, 180);
+            if (!thumbnail)
+                continue;
+
+            ShareThumbnail pending;
+            pending.target_index = index;
+            pending.rgba = std::move(thumbnail.rgba);
+            pending.width = thumbnail.width;
+            pending.height = thumbnail.height;
+
+            std::lock_guard lock(share_thumbnail_mutex_);
+            if (generation != share_thumbnail_generation_)
+                break;
+            pending_share_thumbnails_.push_back(std::move(pending));
+        }
+
+        {
+            std::lock_guard lock(share_thumbnail_mutex_);
+            if (generation == share_thumbnail_generation_)
+                share_thumbnail_job_active_ = false;
+        }
+    }
+}
+
+void App::start_application_audio_share(int target_index) {
+    ZoneScopedN("App::start_application_audio_share");
+    if (target_index < 0 || target_index >= static_cast<int>(capture_targets_.size()) ||
+        capture_targets_[target_index].type != CaptureTarget::Type::Window ||
+        !core_.authenticated_ || core_.current_channel_ == 0)
+        return;
+
+    HWND target_window = static_cast<HWND>(capture_targets_[target_index].handle);
+    DWORD target_pid = 0;
+    GetWindowThreadProcessId(target_window, &target_pid);
+    const std::string target_name = capture_targets_[target_index].name;
+
+    cancel_share_thumbnails();
+    capture_targets_.clear();
+    if (target_pid == 0) {
+        LOG_ERROR("Cannot resolve process for application audio target");
+        return;
+    }
+
+    stop_application_audio_share();
+    auto capture = std::make_unique<StreamAudioCapture>();
+    if (!capture->init(static_cast<uint32_t>(target_pid), StreamAudioCapture::OutputMode::MonoPcm)) {
+        LOG_ERROR("Application audio capture init failed for PID {}", target_pid);
+        return;
+    }
+    capture->on_pcm_frame = [this](const float* pcm, int frame_count) {
+        if (!application_audio_sharing_.load(std::memory_order_acquire))
+            return;
+        core_.audio_.push_secondary_pcm(pcm, frame_count);
+    };
+    application_audio_sharing_.store(true, std::memory_order_release);
+    if (!capture->start()) {
+        application_audio_sharing_.store(false, std::memory_order_release);
+        LOG_ERROR("Application audio capture start failed for PID {}", target_pid);
+        return;
+    }
+    application_audio_capture_ = std::move(capture);
+    core_.model_.is_audio_sharing = true;
+    core_.model_.audio_share_target_name = target_name;
+    LOG_INFO("Sharing application audio from '{}' (PID {}) over VOICE2", target_name, target_pid);
+}
+
+void App::stop_application_audio_share() {
+    ZoneScopedN("App::stop_application_audio_share");
+    application_audio_sharing_.store(false, std::memory_order_release);
+    if (application_audio_capture_) {
+        application_audio_capture_->stop();
+        application_audio_capture_.reset();
+    }
+    core_.model_.is_audio_sharing = false;
+    core_.model_.audio_share_target_name = "";
 }
 
 void App::init_scale_pipeline(ID3D11Device* device) {
@@ -877,8 +1199,8 @@ void App::start_screen_share(int target_index) {
         uint16_t h = static_cast<uint16_t>(encoder_->height());
         uint8_t  codec = static_cast<uint8_t>(encoder_->codec());
 
-        size_t header_len = 1 + 4 + 4 + 1 + 2 + 2 + 1;
-        std::vector<uint8_t> pkt(header_len + len);
+        constexpr size_t header_len = 1 + 4 + 4 + 1 + 2 + 2 + 1;
+        std::array<uint8_t, header_len> pkt{};
         size_t off = 0;
         pkt[off++] = protocol::VIDEO_FRAME_PACKET_TYPE;
         std::memcpy(pkt.data() + off, &fn, 4);    off += 4;
@@ -887,14 +1209,13 @@ void App::start_screen_share(int target_index) {
         std::memcpy(pkt.data() + off, &w, 2);     off += 2;
         std::memcpy(pkt.data() + off, &h, 2);     off += 2;
         pkt[off++] = codec;
-        std::memcpy(pkt.data() + off, data, len);
-        core_.net_.send_video(pkt.data(), pkt.size(), true);
+        core_.net_.send_video_parts(pkt.data(), pkt.size(), data, len);
 
         // Local self-preview feed: if we're watching our own share, decode our
         // encoder output locally into that stream's grid cell.
         if (encoder_ && core_.is_watching(core_.user_id_)) {
             std::vector<uint8_t> copy(data, data + len);
-            enqueue_decode_work(core_.user_id_, std::move(copy), 0,
+            enqueue_decode_work(core_.user_id_, std::move(copy), static_cast<int64_t>(fn),
                                 encoder_->codec(),
                                 static_cast<uint16_t>(encoder_->width()),
                                 static_cast<uint16_t>(encoder_->height()),
@@ -905,7 +1226,11 @@ void App::start_screen_share(int target_index) {
 
     encode_write_slot_ = 0; encode_ready_slot_ = -1; encode_active_slot_ = -1;
     encode_tex_w_ = 0; encode_tex_h_ = 0; encode_registered_ = false;
-    for (int i = 0; i < ENCODE_SLOTS; i++) { encode_textures_[i].Reset(); encode_nvenc_slots_[i] = -1; }
+    for (int i = 0; i < ENCODE_SLOTS; i++) {
+        encode_textures_[i].Reset();
+        encode_rtvs_[i].Reset();
+        encode_nvenc_slots_[i] = -1;
+    }
 
     encode_running_.store(true, std::memory_order_release);
     encode_thread_ = std::thread([this] { encode_loop(); });
@@ -949,8 +1274,18 @@ void App::start_screen_share(int target_index) {
             sd.BindFlags = needs_scale ? D3D11_BIND_RENDER_TARGET : 0;
             for (int i = 0; i < ENCODE_SLOTS; i++) {
                 encode_textures_[i].Reset();
+                encode_rtvs_[i].Reset();
                 HRESULT hr = capture_->device()->CreateTexture2D(&sd, nullptr, &encode_textures_[i]);
                 if (FAILED(hr)) { LOG_ERROR("CreateTexture2D failed slot {}: {:#010x}", i, static_cast<unsigned>(hr)); return; }
+                if (needs_scale) {
+                    hr = capture_->device()->CreateRenderTargetView(
+                        encode_textures_[i].Get(), nullptr, &encode_rtvs_[i]);
+                    if (FAILED(hr)) {
+                        LOG_ERROR("CreateRenderTargetView failed slot {}: {:#010x}",
+                                  i, static_cast<unsigned>(hr));
+                        return;
+                    }
+                }
             }
             encode_tex_w_ = tex_w; encode_tex_h_ = tex_h;
             encode_write_slot_ = 0; encode_ready_slot_ = -1;
@@ -976,21 +1311,29 @@ void App::start_screen_share(int target_index) {
             ZoneScopedN("capture::ScaleBlit");
             auto* ctx = capture_->context();
 
-            // Copy capture to full-res source texture
-            D3D11_BOX src_box = { 0, 0, 0, desc.Width, desc.Height, 1 };
-            ctx->CopySubresourceRegion(scale_src_tex_.Get(), 0, 0, 0, 0, texture, 0, &src_box);
-
-            // Create RTV for the scaled staging slot
-            Microsoft::WRL::ComPtr<ID3D11RenderTargetView> rtv;
-            capture_->device()->CreateRenderTargetView(encode_textures_[ws].Get(), nullptr, &rtv);
+            // WGC textures are often shader-readable already. Bind them
+            // directly and avoid a full-resolution GPU copy before scaling.
+            // Some drivers expose capture surfaces without SRV bind support;
+            // retain the explicit copy as a compatibility fallback.
+            Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> direct_capture_srv;
+            ID3D11ShaderResourceView* source_srv = nullptr;
+            if ((desc.BindFlags & D3D11_BIND_SHADER_RESOURCE) != 0 &&
+                SUCCEEDED(capture_->device()->CreateShaderResourceView(
+                    texture, nullptr, &direct_capture_srv))) {
+                source_srv = direct_capture_srv.Get();
+            } else {
+                D3D11_BOX src_box = { 0, 0, 0, desc.Width, desc.Height, 1 };
+                ctx->CopySubresourceRegion(scale_src_tex_.Get(), 0, 0, 0, 0, texture, 0, &src_box);
+                source_srv = scale_src_srv_.Get();
+            }
 
             // Blit with bilinear downscale
             D3D11_VIEWPORT vp = { 0, 0, (float)tex_w, (float)tex_h, 0, 1 };
             ctx->RSSetViewports(1, &vp);
-            ctx->OMSetRenderTargets(1, rtv.GetAddressOf(), nullptr);
+            ctx->OMSetRenderTargets(1, encode_rtvs_[ws].GetAddressOf(), nullptr);
             ctx->VSSetShader(scale_vs_.Get(), nullptr, 0);
             ctx->PSSetShader(scale_ps_.Get(), nullptr, 0);
-            ctx->PSSetShaderResources(0, 1, scale_src_srv_.GetAddressOf());
+            ctx->PSSetShaderResources(0, 1, &source_srv);
             ctx->PSSetSamplers(0, 1, scale_sampler_.GetAddressOf());
             ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             ctx->IASetInputLayout(nullptr);
@@ -1056,7 +1399,9 @@ void App::stop_screen_share() {
         core_.remove_watch(core_.user_id_);
 
     if (stream_audio_capture_) { stream_audio_capture_->stop(); stream_audio_capture_.reset(); }
-    if (capture_) { capture_->stop(); capture_->shutdown(); capture_.reset(); }
+    // Stop callbacks before joining, while preserving the device and textures
+    // used by the encode thread until that thread has fully exited.
+    if (capture_) capture_->stop();
 
     if (encode_thread_.joinable()) {
         encode_running_.store(false, std::memory_order_release);
@@ -1065,6 +1410,7 @@ void App::stop_screen_share() {
     }
     if (encoder_ && encode_registered_) { encoder_->unregister_inputs(); }
     for (auto& t : encode_textures_) t.Reset();
+    for (auto& rtv : encode_rtvs_) rtv.Reset();
     scale_src_tex_.Reset(); scale_src_srv_.Reset(); scale_src_w_ = 0; scale_src_h_ = 0;
     scale_vs_.Reset(); scale_ps_.Reset(); scale_sampler_.Reset(); scale_pipeline_ready_ = false;
     encode_tex_w_ = 0; encode_tex_h_ = 0; encode_registered_ = false;
@@ -1072,6 +1418,7 @@ void App::stop_screen_share() {
     encode_on_encoded_ = nullptr;
 
     if (encoder_) { encoder_->shutdown(); encoder_.reset(); }
+    if (capture_) { capture_->shutdown(); capture_.reset(); }
     core_.video_frame_number_ = 0;
 
     core_.model_.is_sharing = false;
@@ -1111,28 +1458,36 @@ void App::on_video_frame_received(uint32_t sender_id, const uint8_t* data, size_
 void App::enqueue_decode_work(UserId sharer_id, std::vector<uint8_t>&& encoded,
                               int64_t timestamp, VideoCodecId codec,
                               uint16_t width, uint16_t height, bool is_keyframe) {
-    std::lock_guard<std::mutex> slock(streams_mutex_);
-    auto it = video_streams_.find(sharer_id);
-    if (it == video_streams_.end()) return;
-    VideoStream* s = it->second.get();
-    if (!s->running.load(std::memory_order_relaxed)) return;
-
-    if (s->awaiting_keyframe.load(std::memory_order_relaxed)) {
-        if (!is_keyframe) return;
-        s->awaiting_keyframe.store(false, std::memory_order_relaxed);
-    }
-
-    DecodeWork work;
-    work.data   = std::move(encoded);
-    work.timestamp = timestamp;
-    work.codec  = codec;
-    work.width  = width;
-    work.height = height;
+    bool request_keyframe = false;
     {
+        std::lock_guard<std::mutex> slock(streams_mutex_);
+        auto it = video_streams_.find(sharer_id);
+        if (it == video_streams_.end()) return;
+        VideoStream* s = it->second.get();
+        if (!s->running.load(std::memory_order_relaxed)) return;
+
         std::lock_guard<std::mutex> qlock(s->queue_mutex);
-        s->queue.push(std::move(work));
+        const auto decision = s->decode_gate.on_frame(
+            static_cast<uint32_t>(timestamp), is_keyframe);
+        if (decision == VideoDecodeDecision::Discontinuity) {
+            while (!s->queue.empty()) s->queue.pop();
+            request_keyframe = true;
+        } else if (decision == VideoDecodeDecision::Accept) {
+            DecodeWork work;
+            work.data = std::move(encoded);
+            work.timestamp = timestamp;
+            work.codec = codec;
+            work.width = width;
+            work.height = height;
+            work.keyframe = is_keyframe;
+            s->queue.push(std::move(work));
+            s->queue_cv.notify_one();
+        }
     }
-    s->queue_cv.notify_one();
+    if (request_keyframe) {
+        LOG_WARN("Video frame discontinuity from user {}; requesting a keyframe", sharer_id);
+        core_.send_pli(sharer_id);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1227,7 +1582,6 @@ void App::start_video_stream(UserId sharer_id) {
     auto s = std::make_unique<VideoStream>();
     s->sharer_id = sharer_id;
     s->element_id = "screen-share-" + std::to_string(sharer_id);
-    s->awaiting_keyframe.store(true, std::memory_order_relaxed);
     s->running.store(true, std::memory_order_relaxed);
     VideoStream* ptr = s.get();
     s->thread = std::thread([this, ptr] { decode_loop(ptr); });
@@ -1282,6 +1636,32 @@ void App::stop_stream_thread(VideoStream* s) {
 void App::on_video_decoded(VideoStream* s, const encdec::DecodedFrame& frame) {
     ZoneScopedN("on_decoded::copy_planes");
     uint32_t w = frame.width, h = frame.height;
+
+    if (frame.native_d3d12_resource && frame.native_owner) {
+        std::lock_guard<std::mutex> lock(s->frame_mutex);
+        s->native_owner = frame.native_owner;
+        s->native_resource = frame.native_d3d12_resource;
+        s->native_chroma_resource = frame.native_d3d12_chroma_resource;
+        s->native_ready_fence = frame.native_d3d12_fence;
+        s->native_ready_value = frame.native_fence_value;
+        s->native_resource_state = frame.native_d3d12_state;
+        s->native_rgba = frame.native_rgba;
+        s->native_texture_width = frame.native_texture_width;
+        s->native_texture_height = frame.native_texture_height;
+        s->native_crop_x = frame.native_crop_x;
+        s->native_crop_y = frame.native_crop_y;
+        s->y.clear();
+        s->u.clear();
+        s->v.clear();
+        s->width = w;
+        s->height = h;
+        s->y_stride = 0;
+        s->uv_stride = 0;
+        s->nv12 = true;
+        s->new_frame.store(true, std::memory_order_release);
+        return;
+    }
+
     uint32_t half_h = h / 2;
     size_t y_size = static_cast<size_t>(frame.y_stride) * h;
     s->staging_y.resize(y_size);
@@ -1295,6 +1675,17 @@ void App::on_video_decoded(VideoStream* s, const encdec::DecodedFrame& frame) {
     }
     {
         std::lock_guard<std::mutex> lock(s->frame_mutex);
+        s->native_owner.reset();
+        s->native_resource = nullptr;
+        s->native_chroma_resource = nullptr;
+        s->native_ready_fence = nullptr;
+        s->native_ready_value = 0;
+        s->native_resource_state = 0;
+        s->native_rgba = false;
+        s->native_texture_width = 0;
+        s->native_texture_height = 0;
+        s->native_crop_x = 0;
+        s->native_crop_y = 0;
         s->y.swap(s->staging_y); s->u.swap(s->staging_u); s->v.swap(s->staging_v);
         s->width = w; s->height = h;
         s->y_stride = frame.y_stride; s->uv_stride = frame.uv_stride;
@@ -1305,7 +1696,33 @@ void App::on_video_decoded(VideoStream* s, const encdec::DecodedFrame& frame) {
 
 void App::decode_loop(VideoStream* s) {
     TracySetThreadName("VideoDecoder");
-    static constexpr size_t MAX_DECODE_QUEUE = 10;
+
+    auto resync_warm_decoder_at_keyframe = [this, s](const char* reason) {
+        {
+            std::lock_guard<std::mutex> lock(s->queue_mutex);
+            s->decode_gate.require_keyframe();
+            while (!s->queue.empty()) s->queue.pop();
+        }
+        LOG_WARN("Resynchronizing video decoder for user {} after {}; keeping warm decoder",
+                 s->sharer_id, reason);
+        core_.send_pli(s->sharer_id);
+    };
+
+    auto recover_at_keyframe = [this, s](const char* reason, bool disable_hardware) {
+        {
+            std::lock_guard<std::mutex> lock(s->queue_mutex);
+            s->decode_gate.require_keyframe();
+            while (!s->queue.empty()) s->queue.pop();
+        }
+        if (disable_hardware) s->hardware_decode_disabled = true;
+        if (s->decoder) {
+            s->decoder->shutdown();
+            s->decoder.reset();
+        }
+        LOG_WARN("Resetting video decoder for user {} after {}; waiting for keyframe",
+                 s->sharer_id, reason);
+        core_.send_pli(s->sharer_id);
+    };
 
     while (s->running.load(std::memory_order_relaxed)) {
         ZoneScopedN("App::decode_loop");
@@ -1319,39 +1736,63 @@ void App::decode_loop(VideoStream* s) {
             batch.swap(s->queue);
         }
 
-        if (batch.size() > MAX_DECODE_QUEUE) {
-            LOG_WARN("Decode queue backed up ({} frames), flushing", batch.size());
-            if (s->decoder) s->decoder->flush();
-            while (!batch.empty()) batch.pop();
-            core_.send_pli(s->sharer_id);
-            continue;
+        if (batch.size() > kVideoDecodeBacklogWarningFrames) {
+            const size_t original_size = batch.size();
+            const auto trim = trim_to_latest_keyframe(
+                batch, [](const DecodeWork& work) { return work.keyframe; });
+            if (trim.dropped > 0) {
+                LOG_WARN("Decode queue backed up ({} frames); dropped {} frames before "
+                         "the newest keyframe and retained {}",
+                         original_size, trim.dropped, batch.size());
+            } else {
+                LOG_WARN("Decode queue backed up ({} contiguous frames); draining without "
+                         "resetting the warm decoder",
+                         original_size);
+            }
+
+            // This is a sustained overload rather than the normal one-time 4K
+            // NVDEC warm-up. With no keyframe in the retained chain there is no
+            // safe prefix to drop, so request a new random-access point. Keep the
+            // decoder and its expensive CUDA/D3D12 surface pool alive.
+            if (should_resync_decode_backlog(
+                    batch.size(), trim.found_keyframe, s->decoder != nullptr)) {
+                while (!batch.empty()) batch.pop();
+                resync_warm_decoder_at_keyframe("sustained decode queue overflow");
+                continue;
+            }
         }
 
         while (!batch.empty()) {
             auto& work = batch.front();
-            if (!s->decoder || s->decoder->context_lost() || s->decoder->codec() != work.codec) {
-                bool was_context_lost = s->decoder && s->decoder->context_lost();
+            if (s->decoder && s->decoder->context_lost()) {
+                while (!batch.empty()) batch.pop();
+                recover_at_keyframe("GPU decode context loss", true);
+                break;
+            }
+            if (!s->decoder ||
+                s->decoder->codec() != work.codec ||
+                s->decoder->width() != work.width ||
+                s->decoder->height() != work.height) {
                 if (s->decoder) s->decoder->shutdown();
-                if (was_context_lost) {
-                    // Give the GPU a moment to recover from TDR before reinit, but
-                    // wake immediately if we're being stopped — otherwise the
-                    // joining (UI) thread stalls for the whole delay.
-                    LOG_WARN("Decoder context lost — reinitializing after brief delay");
-                    std::unique_lock<std::mutex> lock(s->queue_mutex);
-                    s->queue_cv.wait_for(lock, std::chrono::milliseconds(500),
-                        [s] { return !s->running.load(std::memory_order_relaxed); });
-                    if (!s->running.load(std::memory_order_relaxed)) break;
-                }
                 s->decoder = std::make_unique<VideoDecoder>();
-                if (!s->decoder->init(work.codec, work.width, work.height)) {
+                if (s->hardware_decode_disabled)
+                    s->decoder->disable_hardware();
+                if (!s->decoder->init(work.codec, work.width, work.height, decode_d3d12_device_)) {
                     LOG_ERROR("Decoder init failed codec={} {}x{}",
                                  static_cast<uint8_t>(work.codec), work.width, work.height);
-                    s->decoder.reset(); batch.pop(); continue;
+                    while (!batch.empty()) batch.pop();
+                    recover_at_keyframe("decoder initialization failure", false);
+                    break;
                 }
                 LOG_INFO("Decoder reinitialized: {}",  s->decoder->backend_name());
                 s->decoder->on_decoded = [this, s](const DecodedFrame& f) { on_video_decoded(s, f); };
             }
-            s->decoder->decode(work.data.data(), work.data.size(), work.timestamp);
+            if (!s->decoder->decode(work.data.data(), work.data.size(), work.timestamp)) {
+                const bool lost_context = s->decoder->context_lost();
+                while (!batch.empty()) batch.pop();
+                recover_at_keyframe("bitstream decode failure", lost_context);
+                break;
+            }
             batch.pop();
         }
     }

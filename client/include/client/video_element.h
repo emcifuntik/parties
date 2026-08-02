@@ -4,14 +4,16 @@
 #include <RmlUi/Core/ElementInstancer.h>
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace parties::client {
 
 // Custom RmlUi element that renders video frames as GPU textures.
 // Supports two rendering paths:
-// 1. RGBA: CPU-converted frames uploaded as a single RGBA texture
-// 2. YUV:  I420 planes uploaded as 3 R8 textures, converted to RGB by pixel shader (GPU)
+// 1. RGBA: frames uploaded or shared as a single RGBA texture.
+// 2. NV12: luma/chroma planes sampled directly by the final DX12 draw.
+// I420 retains the existing compute conversion compatibility path.
 class VideoElement : public Rml::Element {
 public:
     explicit VideoElement(const Rml::String& tag);
@@ -21,6 +23,13 @@ public:
     void UpdateYUVFrame(
         const uint8_t* y_data, uint32_t y_stride,
         const uint8_t* u_data, const uint8_t* v_data, uint32_t uv_stride,
+        uint32_t width, uint32_t height);
+
+    // Swap-based I420 upload. As with the NV12 overload, the caller receives
+    // our previous buffers for reuse instead of copying three planes again.
+    void UpdateYUVFrame(
+        std::vector<uint8_t>& y_data, uint32_t y_stride,
+        std::vector<uint8_t>& u_data, std::vector<uint8_t>& v_data, uint32_t uv_stride,
         uint32_t width, uint32_t height);
 
     // Upload NV12 frame (Y + interleaved UV) — native hardware decoder format.
@@ -36,6 +45,16 @@ public:
         std::vector<uint8_t>& y_data, uint32_t y_stride,
         std::vector<uint8_t>& uv_data, uint32_t uv_stride,
         uint32_t width, uint32_t height);
+
+    // Bind a decoder-owned ID3D12 NV12 or RGBA resource without host readback
+    // or upload. `owner` reserves it until the renderer fence has retired.
+    void UpdateNativeNV12Frame(
+        void* d3d12_resource, void* d3d12_chroma_resource,
+        std::shared_ptr<void> owner,
+        void* ready_fence, uint64_t ready_value, uint32_t resource_state, bool rgba,
+        uint32_t width, uint32_t height,
+        uint32_t texture_width = 0, uint32_t texture_height = 0,
+        uint32_t crop_x = 0, uint32_t crop_y = 0);
 
     // Upload a new RGBA video frame (move semantics — zero-copy from caller).
     void UpdateFrame(std::vector<uint8_t>&& rgba_data, uint32_t width, uint32_t height);
@@ -58,6 +77,9 @@ protected:
 private:
     void ReleaseResources();
     void RebuildGeometry();
+    void SetTextureCrop(uint32_t texture_width, uint32_t texture_height,
+                        uint32_t crop_x, uint32_t crop_y,
+                        uint32_t visible_width, uint32_t visible_height);
 
     uint32_t frame_width_ = 0;
     uint32_t frame_height_ = 0;
@@ -88,11 +110,25 @@ private:
     bool nv12_dirty_ = false;
     std::vector<uint8_t> nv12_y_, nv12_uv_;
     uint32_t nv12_y_stride_ = 0, nv12_uv_stride_ = 0;
+    void* nv12_native_resource_ = nullptr;
+    void* nv12_native_chroma_resource_ = nullptr;
+    void* nv12_native_ready_fence_ = nullptr;
+    uint64_t nv12_native_ready_value_ = 0;
+    uint32_t nv12_native_resource_state_ = 0;
+    bool nv12_native_rgba_ = false;
+    std::shared_ptr<void> nv12_native_owner_;
+    bool nv12_native_mode_ = false;
+    bool nv12_texture_native_ = false;
 
     // Compiled quad geometry
     Rml::CompiledGeometryHandle video_geom_ = 0;
     float geom_w_ = 0;
     float geom_h_ = 0;
+    float texture_u0_ = 0.0f;
+    float texture_v0_ = 0.0f;
+    float texture_u1_ = 1.0f;
+    float texture_v1_ = 1.0f;
+    bool geometry_uv_dirty_ = false;
 };
 
 } // namespace parties::client

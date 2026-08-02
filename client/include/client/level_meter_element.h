@@ -15,8 +15,11 @@ public:
 
     void SetLevel(float level);       // 0.0 - 1.0
     void SetThreshold(float thresh);  // 0.0 - 1.0
+    float GetLevel() const { return level_; }
+    float GetThreshold() const { return threshold_; }
 
 protected:
+    void OnAttributeChange(const Rml::ElementAttributes& changed_attributes) override;
     void OnRender() override;
     void OnResize() override;
 

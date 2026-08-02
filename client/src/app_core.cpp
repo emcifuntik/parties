@@ -146,8 +146,10 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
         pending_ticket_dirty_ = true;
     };
 
-    // Apply saved per-user prefs whenever the mixer creates a new stream
-    mixer_.on_stream_created = [this](UserId uid) { apply_user_audio_prefs(uid); };
+    // Stream creation runs on the QUIC worker. Apply only the main-thread-loaded
+    // cache here; Settings/SQLite is deliberately never touched from this path.
+    mixer_.on_stream_created = [this](UserId uid) { apply_cached_user_audio_prefs(uid); };
+    aux_mixer_.on_stream_created = [this](UserId uid) { apply_cached_user_audio_prefs(uid); };
 
     // Setup model callbacks
     setup_model_callbacks();
@@ -222,8 +224,14 @@ void AppCore::tick()
                                              ticket.data(), ticket.size());
     }
 
-    // Server-list status polling runs only while the lobby is visible.
-    lobby_visible_.store(!authenticated_, std::memory_order_relaxed);
+    // Server-list status polling runs only while the lobby is visible. Wake the
+    // worker on the transition so returning to the launcher never waits for the
+    // periodic refresh interval.
+    const bool lobby_visible = !authenticated_;
+    const bool was_lobby_visible = lobby_visible_.exchange(
+        lobby_visible, std::memory_order_relaxed);
+    if (lobby_visible && !was_lobby_visible)
+        query_wake_.request();
     apply_query_results();
 
     if (awaiting_connection_) poll_connecting();
@@ -313,7 +321,9 @@ void AppCore::tick()
 
     // Update local mic level indicator
     if (authenticated_ && current_channel_ != 0) {
-        float lvl = audio_.voice_level();
+        // The VAD threshold is expressed in the perceptual 0..1 domain, so the
+        // UI meter must use the same domain rather than raw RMS.
+        float lvl = audio::rms_to_perceptual(audio_.voice_level());
         if (std::abs(lvl - model_.voice_level) > 0.01f) {
             model_.voice_level = lvl;
         }
@@ -368,7 +378,11 @@ void AppCore::load_saved_prefs()
     if (!v.empty()) model_.ptt_enabled = (v != "0");
 
     v = pref("audio.ptt_delay");
-    if (!v.empty()) model_.ptt_delay = static_cast<float>(std::stoi(v));
+    if (!v.empty()) {
+        const int delay_ms = std::stoi(v);
+        model_.ptt_delay = static_cast<float>(delay_ms);
+        model_.ptt_delay_text = std::to_string(delay_ms) + " ms";
+    }
 
     v = pref("audio.stream_volume");
     if (!v.empty()) { float vol = std::strtof(v.c_str(), nullptr); stream_audio_player_.set_volume(vol); model_.stream_volume = vol; }
@@ -378,6 +392,13 @@ void AppCore::load_saved_prefs()
 
     v = pref("audio.secondary_volume");
     if (!v.empty()) { float vol = std::strtof(v.c_str(), nullptr); aux_mixer_.set_master_volume(vol); model_.secondary_volume = vol; }
+
+    v = pref("audio.music_send_volume");
+    if (!v.empty()) {
+        float vol = std::strtof(v.c_str(), nullptr);
+        audio_.set_secondary_send_volume(vol);
+        model_.music_send_volume = vol;
+    }
 
     v = pref("audio.notification_volume");
     if (!v.empty()) { float vol = std::strtof(v.c_str(), nullptr); if (bridge_.set_notification_volume) bridge_.set_notification_volume(vol); model_.notification_volume = vol; }
@@ -498,6 +519,9 @@ void AppCore::refresh_server_list()
         for (auto& s : saved)
             query_targets_.push_back({ s.id, s.host, static_cast<uint16_t>(s.port) });
     }
+    // Sticky notification: this also works when refresh_server_list() runs
+    // between the worker's initial empty pass and its first wait.
+    query_wake_.request();
     query_results_dirty_.store(true, std::memory_order_release);
 }
 
@@ -514,6 +538,7 @@ void AppCore::start_query_thread()
 void AppCore::stop_query_thread()
 {
     if (!query_thread_run_.exchange(false)) return;  // not running
+    query_wake_.stop();
     if (query_thread_.joinable()) query_thread_.join();
 }
 
@@ -521,6 +546,12 @@ void AppCore::query_thread_loop()
 {
     using namespace std::chrono;
     while (query_thread_run_.load(std::memory_order_relaxed)) {
+        // The first refresh_server_list() publishes targets and wakes this wait,
+        // so the initial packet is immediate without racing into a duplicate
+        // query when the worker starts after the targets were already stored.
+        if (!query_wake_.wait_for_next(milliseconds(3000)))
+            break;
+
         if (lobby_visible_.load(std::memory_order_relaxed)) {
             std::vector<QueryTarget> targets;
             {
@@ -546,9 +577,6 @@ void AppCore::query_thread_loop()
                 query_results_dirty_.store(true, std::memory_order_release);
             }
         }
-        // Refresh roughly every 3s, waking promptly on shutdown.
-        for (int i = 0; i < 30 && query_thread_run_.load(std::memory_order_relaxed); ++i)
-            std::this_thread::sleep_for(milliseconds(100));
     }
 }
 
@@ -751,9 +779,12 @@ void AppCore::on_disconnect_cleanup()
     model_.is_deafened = false;
     if (model_.is_sharing && bridge_.stop_screen_share)
         bridge_.stop_screen_share();
+    if (model_.is_audio_sharing && bridge_.stop_audio_share)
+        bridge_.stop_audio_share();
     model_.is_sharing = false;
-    model_.show_settings = false;
-    model_.show_share_picker = false;
+    model_.is_audio_sharing = false;
+    model_.audio_share_target_name = "";
+    model_.router.reset();
     model_.show_create_channel = false;
     model_.my_role = 3;
     model_.can_manage_channels = false;
@@ -764,7 +795,6 @@ void AppCore::on_disconnect_cleanup()
     model_.dirty_all();
 
     // Clear chat state
-    model_.show_chat = false;
     pending_uploads_.clear();
     {
         std::lock_guard<std::mutex> lock(downloads_mutex_);
@@ -900,12 +930,11 @@ void AppCore::join_channel(ChannelId id)
 {
     if (!authenticated_) return;
 
-    // Always dismiss chat view when clicking a voice channel
-    if (model_.show_chat) {
-        chat_model_.active_channel = 0;
-        chat_model_.active_channel_name = "";
-        model_.show_chat = false;
-    }
+    // Voice, chat, settings, sharing, and streams are document routes. Moving
+    // to a room replaces the current page atomically.
+    model_.router.go(DocumentRoute::Room);
+    chat_model_.active_channel = 0;
+    chat_model_.active_channel_name = "";
 
     if (id == current_channel_) return;
 
@@ -925,16 +954,19 @@ void AppCore::leave_channel()
 {
     if (!authenticated_ || current_channel_ == 0) return;
 
-    if (model_.show_share_picker) {
-        model_.show_share_picker = false;
-    }
+    if (model_.router.is(DocumentRoute::SharePicker))
+        model_.router.back();
     if (model_.is_sharing && bridge_.stop_screen_share)
         bridge_.stop_screen_share();
+    if (model_.is_audio_sharing && bridge_.stop_audio_share)
+        bridge_.stop_audio_share();
 
     if (viewing_sharer_ != 0)
         stop_watching();
     clear_all_sharers();
     model_.is_sharing = false;
+    model_.is_audio_sharing = false;
+    model_.audio_share_target_name = "";
 
     net_.send_message(protocol::ControlMessageType::CHANNEL_LEAVE, nullptr, 0);
 
@@ -961,6 +993,7 @@ void AppCore::leave_channel()
     model_.current_channel = 0;
     model_.current_channel_name = "";
     model_.channels.notify();
+    model_.router.go(DocumentRoute::Room);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -973,6 +1006,11 @@ void AppCore::leave_channel()
 void AppCore::watch_sharer(UserId id)
 {
     if (id == 0) { stop_watching(); return; }
+    const auto& sharers = model_.sharers.get();
+    if (std::none_of(sharers.begin(), sharers.end(), [id](const ActiveSharer& sharer) {
+            return sharer.id == static_cast<int>(id);
+        }))
+        return;
     if (multi_stream()) { add_watch(id); return; }
 
     // Tear down the previous single stream (server sub + decoder), keep at most one.
@@ -1000,6 +1038,11 @@ void AppCore::watch_sharer(UserId id)
 void AppCore::add_watch(UserId id)
 {
     if (id == 0) return;
+    const auto& sharers = model_.sharers.get();
+    if (std::none_of(sharers.begin(), sharers.end(), [id](const ActiveSharer& sharer) {
+            return sharer.id == static_cast<int>(id);
+        }))
+        return;
     if (!multi_stream()) { watch_sharer(id); return; }
 
     {
@@ -1119,6 +1162,12 @@ void AppCore::rebuild_watched_model()
     model_.sharers.notify();
     model_.watched.notify();
     model_.watching_count = static_cast<int>(wv.size());
+    if (wv.empty()) {
+        model_.router.leave_streams();
+    } else if (!model_.router.is(DocumentRoute::Settings) &&
+               !model_.router.is(DocumentRoute::SharePicker)) {
+        model_.router.go(DocumentRoute::Streams);
+    }
 }
 
 void AppCore::send_pli(UserId target)
@@ -1154,6 +1203,7 @@ void AppCore::clear_all_sharers()
     model_.someone_sharing = false;
     model_.viewing_sharer_id = 0;
     model_.stream_fullscreen = false;
+    model_.router.leave_streams();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1692,22 +1742,47 @@ void AppCore::update_speaking_state()
 
 void AppCore::apply_user_audio_prefs(UserId user_id)
 {
-    auto prefix = "user." + std::to_string(user_id);
-
-    auto vol_str = settings_.get_pref(prefix + ".volume");
-    if (vol_str) {
-        float vol = std::strtof(vol_str->c_str(), nullptr);
-        mixer_.set_user_volume(user_id, vol);
+    bool cached = false;
+    {
+        std::lock_guard<std::mutex> lock(user_audio_prefs_mutex_);
+        cached = user_audio_prefs_.find(user_id) != user_audio_prefs_.end();
+    }
+    if (cached) {
+        // Already loaded, including any newer debounced UI edit that has not
+        // reached SQLite yet.
+        apply_cached_user_audio_prefs(user_id);
+        return;
     }
 
-    auto comp_str = settings_.get_pref(prefix + ".compress");
-    if (comp_str) {
-        bool enabled = (*comp_str == "1");
-        float target = 0.8f;
-        auto target_str = settings_.get_pref(prefix + ".compress_target");
-        if (target_str) target = std::strtof(target_str->c_str(), nullptr);
-        mixer_.set_user_compression(user_id, enabled, target);
+    const auto prefix = "user." + std::to_string(user_id);
+    UserAudioPrefs prefs;
+    if (auto value = settings_.get_pref(prefix + ".volume"))
+        prefs.voice_volume = std::strtof(value->c_str(), nullptr);
+    if (auto value = settings_.get_pref(prefix + ".music_volume"))
+        prefs.music_volume = std::strtof(value->c_str(), nullptr);
+    if (auto value = settings_.get_pref(prefix + ".compress"))
+        prefs.compression = (*value == "1");
+    if (auto value = settings_.get_pref(prefix + ".compress_target"))
+        prefs.compression_target = std::strtof(value->c_str(), nullptr);
+
+    {
+        std::lock_guard<std::mutex> lock(user_audio_prefs_mutex_);
+        user_audio_prefs_[user_id] = prefs;
     }
+    apply_cached_user_audio_prefs(user_id);
+}
+
+void AppCore::apply_cached_user_audio_prefs(UserId user_id)
+{
+    UserAudioPrefs prefs;
+    {
+        std::lock_guard<std::mutex> lock(user_audio_prefs_mutex_);
+        if (auto it = user_audio_prefs_.find(user_id); it != user_audio_prefs_.end())
+            prefs = it->second;
+    }
+    mixer_.set_user_volume(user_id, prefs.voice_volume);
+    aux_mixer_.set_user_volume(user_id, prefs.music_volume);
+    mixer_.set_user_compression(user_id, prefs.compression, prefs.compression_target);
 }
 
 void AppCore::save_pref_debounced(const std::string& key, std::string value)
@@ -1800,6 +1875,10 @@ void AppCore::setup_model_callbacks()
     model_.on_vad_threshold_changed     = [this](float t) { audio_.set_vad_threshold(t); save_pref_debounced("audio.vad_threshold", std::to_string(t)); };
     model_.on_voice_volume_changed      = [this](float v) { mixer_.set_master_volume(v); save_pref_debounced("audio.voice_volume", std::to_string(v)); };
     model_.on_secondary_volume_changed  = [this](float v) { aux_mixer_.set_master_volume(v); save_pref_debounced("audio.secondary_volume", std::to_string(v)); };
+    model_.on_music_send_volume_changed = [this](float v) {
+        audio_.set_secondary_send_volume(v);
+        save_pref_debounced("audio.music_send_volume", std::to_string(v));
+    };
 
     model_.on_toggle_ptt = [this]() {
         model_.ptt_enabled = !model_.ptt_enabled;
@@ -1824,8 +1903,15 @@ void AppCore::setup_model_callbacks()
             if (bridge_.open_share_picker) bridge_.open_share_picker();
         }
     };
+    model_.on_toggle_audio_share = [this]() {
+        if (model_.is_audio_sharing) {
+            if (bridge_.stop_audio_share) bridge_.stop_audio_share();
+        } else {
+            if (bridge_.open_audio_share_picker) bridge_.open_audio_share_picker();
+        }
+    };
     model_.on_cancel_share = [this]() {
-        model_.show_share_picker = false;
+        model_.router.back();
     };
 
     model_.on_watch_sharer  = [this](int id) { add_watch(static_cast<UserId>(id)); };
@@ -1897,10 +1983,32 @@ void AppCore::setup_model_callbacks()
         model_.menu_user_role          = user_role;
         model_.menu_can_roles          = model_.can_manage_roles && role_ <= user_role;
         model_.menu_can_kick           = model_.can_kick && role_ <= user_role;
-        model_.menu_user_volume        = mixer_.get_user_volume(static_cast<UserId>(user_id));
-        model_.menu_user_compress      = mixer_.get_user_compression(static_cast<UserId>(user_id));
-        model_.menu_user_compress_target = mixer_.get_user_compression_target(static_cast<UserId>(user_id));
-        model_.show_user_menu          = true;
+        UserAudioPrefs prefs;
+        {
+            std::lock_guard<std::mutex> lock(user_audio_prefs_mutex_);
+            prefs = user_audio_prefs_[static_cast<UserId>(user_id)];
+        }
+        model_.menu_user_volume = prefs.voice_volume;
+        model_.menu_user_music_volume = prefs.music_volume;
+        model_.menu_user_compress = prefs.compression;
+        model_.menu_user_compress_target = prefs.compression_target;
+        if (bridge_.show_user_menu) {
+            UserContextWindowRequest request;
+            request.user_id = user_id;
+            request.name = std::move(name);
+            request.channel_name = std::string(model_.current_channel_name.get());
+            request.role = user_role;
+            request.can_manage_roles = model_.menu_can_roles.get();
+            request.can_kick = model_.menu_can_kick.get();
+            request.volume = model_.menu_user_volume.get();
+            request.music_volume = model_.menu_user_music_volume.get();
+            request.compression = model_.menu_user_compress.get();
+            request.compression_target = model_.menu_user_compress_target.get();
+            bridge_.show_user_menu(request);
+            model_.show_user_menu = false;
+        } else {
+            model_.show_user_menu = true;
+        }
     };
 
     model_.on_set_user_role = [this](int user_id, int new_role) {
@@ -1920,11 +2028,31 @@ void AppCore::setup_model_callbacks()
     };
 
     model_.on_user_volume_changed = [this](int user_id, float vol) {
+        {
+            std::lock_guard<std::mutex> lock(user_audio_prefs_mutex_);
+            user_audio_prefs_[static_cast<UserId>(user_id)].voice_volume = vol;
+        }
         mixer_.set_user_volume(static_cast<UserId>(user_id), vol);
         save_pref_debounced("user." + std::to_string(user_id) + ".volume", std::to_string(vol));
     };
 
+    model_.on_user_music_volume_changed = [this](int user_id, float vol) {
+        {
+            std::lock_guard<std::mutex> lock(user_audio_prefs_mutex_);
+            user_audio_prefs_[static_cast<UserId>(user_id)].music_volume = vol;
+        }
+        aux_mixer_.set_user_volume(static_cast<UserId>(user_id), vol);
+        save_pref_debounced("user." + std::to_string(user_id) + ".music_volume",
+                            std::to_string(vol));
+    };
+
     model_.on_user_compress_changed = [this](int user_id, bool enabled, float target) {
+        {
+            std::lock_guard<std::mutex> lock(user_audio_prefs_mutex_);
+            auto& prefs = user_audio_prefs_[static_cast<UserId>(user_id)];
+            prefs.compression = enabled;
+            prefs.compression_target = target;
+        }
         mixer_.set_user_compression(static_cast<UserId>(user_id), enabled, target);
         auto p = "user." + std::to_string(user_id);
         save_pref_debounced(p + ".compress", enabled ? "1" : "0");
@@ -2218,8 +2346,9 @@ void AppCore::setup_chat_model_callbacks()
         chat_model_.show_search = false;
         chat_model_.show_pinned = false;
 
-        // Show chat view (keep voice channel connection intact)
-        model_.show_chat = true;
+        // Show chat while keeping the voice connection intact. The document
+        // router guarantees this replaces settings/room/stream presentation.
+        model_.router.go(DocumentRoute::Chat);
 
         // Request history
         BinaryWriter writer;
@@ -2616,8 +2745,10 @@ void AppCore::on_chat_message(const uint8_t* data, size_t len) {
         bool found = false;
         for (auto& m : msgs) {
             if (m.id == msg.id) {
-                m.pinned = msg.pinned;
-                m.text = msg.text;
+                // The server sends the complete message on updates. Replace the
+                // complete view model as well, otherwise text, has_url and the
+                // nested segment array can describe different message versions.
+                m = std::move(msg);
                 found = true;
                 break;
             }
@@ -2685,7 +2816,6 @@ void AppCore::on_chat_message_deleted(const uint8_t* data, size_t len) {
         msgs.erase(std::remove_if(msgs.begin(), msgs.end(),
             [message_id](const ChatMessage& m) { return m.id == static_cast<int64_t>(message_id); }),
             msgs.end());
-        assign_date_labels(msgs);
         assign_date_labels(msgs);
         chat_model_.messages.notify();
     }

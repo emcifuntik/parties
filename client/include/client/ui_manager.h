@@ -5,6 +5,7 @@
 #include <RmlUi/Core.h>
 
 #include <memory>
+#include <atomic>
 #include <string>
 #include <functional>
 #include <unordered_map>
@@ -14,7 +15,6 @@ typedef struct HWND__* HWND;
 class ExtendedRenderInterface;
 class SystemInterface_Win32;
 class TextInputMethodEditor_Win32;
-class SlugFontEngine;
 
 namespace parties::client {
 
@@ -23,8 +23,7 @@ public:
     UiManager();
     ~UiManager();
 
-    // renderer_id: 0=DX12, 1=DX11, 2=DX12WL, 3=Vulkan
-    bool init(HWND hwnd, int renderer_id = 0);
+    bool init(HWND hwnd);
     void shutdown();
 
     Rml::ElementDocument* load_document(const std::string& path);
@@ -34,7 +33,7 @@ public:
 
     void update();
     void render();
-    void render_begin();
+    bool render_begin();
     void render_body();
     void render_end();
 
@@ -60,20 +59,23 @@ public:
     TextInputMethodEditor_Win32& text_input_editor();
     ExtendedRenderInterface* renderer() { return render_interface_.get(); }
     float dpi_scale() const { return dpi_scale_; }
-    bool is_minimized() const { return minimized_; }
+    bool is_minimized() const { return minimized_.load(std::memory_order_acquire); }
 
 private:
     std::unique_ptr<ExtendedRenderInterface> render_interface_;
     std::unique_ptr<SystemInterface_Win32> system_interface_;
     std::unique_ptr<TextInputMethodEditor_Win32> text_input_editor_;
-    std::unique_ptr<SlugFontEngine> slug_font_engine_;
     EmbeddedFileInterface file_interface_;
 
     Rml::Context* context_ = nullptr;
     HWND hwnd_ = nullptr;
     float dpi_scale_ = 1.0f;
     bool initialised_ = false;
-    bool minimized_ = false;
+    // Written by the Win32 message thread and read by the render thread.
+    std::atomic<bool> minimized_{false};
+    // Render-thread-only snapshot: once BeginFrame succeeds, the frame must be
+    // completed even if a minimize notification arrives midway through it.
+    bool frame_started_ = false;
     bool fullscreen_ = false;
     long saved_style_ = 0;
     long saved_ex_style_ = 0;

@@ -1,7 +1,8 @@
 {
   "name": "rmlui",
   "version": "6.3.0",
-  "description": "RmlUi with DX12 support (wh1t3lord fork)",
+  "port-version": 6,
+  "description": "RmlUi from the original mikke89/RmlUi repository, including the upstream Win32/DX12 backend",
   "dependencies": [
     {
       "name": "vcpkg-cmake",
@@ -23,6 +24,12 @@
           "name": "freetype",
           "default-features": false
         }
+      ]
+    },
+    "lottie": {
+      "description": "Enable plugin for Lottie animations",
+      "dependencies": [
+        "rlottie"
       ]
     },
     "svg": {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <parties/types.h>
+#include <client/document_router.h>
 #include <client/rml_binding.h>
 
 #include <RmlUi/Core/Types.h>
@@ -76,7 +77,7 @@ public:
 
     rml::Prop<bool>        is_muted{false};
     rml::Prop<bool>        is_deafened{false};
-    rml::Prop<bool>        show_settings{false};
+    DocumentRouter         router;
 
     // Audio settings
     rml::Prop<Rml::Vector<AudioDevice>> capture_devices;
@@ -96,6 +97,9 @@ public:
     // (karaoke / join sounds / plugin audio).
     rml::Prop<float>       voice_volume{1.0f};
     rml::Prop<float>       secondary_volume{1.0f};
+    // Gain applied to locally captured application audio before it is encoded
+    // and sent as the secondary VOICE2 stream.
+    rml::Prop<float>       music_send_volume{1.0f};
 
     // Notification sounds
     rml::Prop<float>       notification_volume{1.0f};   // 0.0 - 2.0
@@ -108,6 +112,7 @@ public:
     rml::Prop<Rml::String> ptt_key_name;    // display name for UI
     rml::Prop<bool>        ptt_binding{false};  // true when waiting for key press
     rml::Prop<float>       ptt_delay{0.0f}; // release delay in ms (0-1000, step 50)
+    rml::Prop<Rml::String> ptt_delay_text{"0 ms"};
 
     // Global hotkeys
     rml::Prop<int>         mute_key{0};     // Toggle mute hotkey (0 = not set)
@@ -124,11 +129,10 @@ public:
     // Mobile navigation (iOS: sidebar vs content panel)
     rml::Prop<bool>        mobile_show_content{false};
 
-    // Chat view active (hides voice channel-content area)
-    rml::Prop<bool>        show_chat{false};
-
     // Screen sharing
     rml::Prop<bool>        is_sharing{false};
+    rml::Prop<bool>        is_audio_sharing{false};
+    rml::Prop<Rml::String> audio_share_target_name;
     rml::Prop<bool>        someone_sharing{false};      // convenience: !sharers.empty()
     rml::Prop<Rml::Vector<ActiveSharer>> sharers;       // all active sharers in channel
     rml::Prop<Rml::Vector<WatchedStream>> watched;      // sharers shown in the viewer grid
@@ -139,13 +143,15 @@ public:
     rml::Prop<int>         stream_fps{0};               // current stream FPS (encode or decode)
 
     // Share picker
-    rml::Prop<bool>        show_share_picker{false};
     rml::Prop<bool>        use_native_picker{false};  // true on macOS (native picker, no target list)
     rml::Prop<Rml::Vector<ShareTarget>> share_targets;
-    rml::Prop<float>       share_bitrate{2.0f};    // Mbps (0.5 - 20.0)
+    rml::Prop<int>         selected_share_target{-1};
+    rml::Prop<int>         share_picker_mode{0}; // 0 = screen/video, 1 = application audio only
+    rml::Prop<float>       share_bitrate{2.0f};    // Average Mbps (0.5 - 20.0), VBR peak is 2x
     rml::Prop<int>         share_fps{2};           // 0=15, 1=30, 2=60, 3=120
     rml::Prop<int>         share_codec{0};         // 0=AV1, 1=H.265, 2=H.264
     rml::Prop<int>         share_scale{0};         // 0=Source, 1=x0.75, 2=x0.5, 3=x0.25
+    rml::Prop<int>         share_preset{-1};        // -1=Custom, 0=Data saver, 1=Balanced, 2=Best quality
 
     // Auto-update
     rml::Prop<bool>        update_available{false};
@@ -165,6 +171,7 @@ public:
     rml::Prop<Rml::String> menu_user_name;
     rml::Prop<int>         menu_user_role{0};
     rml::Prop<float>       menu_user_volume{1.0f};         // 0.0 - 2.0
+    rml::Prop<float>       menu_user_music_volume{1.0f};   // received VOICE2 volume, 0.0 - 2.0
     rml::Prop<bool>        menu_user_compress{false};      // per-user voice compression enabled
     rml::Prop<float>       menu_user_compress_target{0.8f}; // compression target (0.0 - 1.0)
     rml::Prop<bool>        menu_can_roles{false};          // can we change this user's role?
@@ -208,6 +215,7 @@ public:
     std::function<void(float)> on_vad_threshold_changed;
     std::function<void(float)> on_voice_volume_changed;
     std::function<void(float)> on_secondary_volume_changed;
+    std::function<void(float)> on_music_send_volume_changed;
     std::function<void(float)> on_notification_volume_changed;
     std::function<void()>      on_test_notification_sound;
     std::function<void()>      on_toggle_ptt;
@@ -216,6 +224,7 @@ public:
     std::function<void()>      on_mute_bind;
     std::function<void()>      on_deafen_bind;
     std::function<void()>      on_toggle_share;
+    std::function<void()>      on_toggle_audio_share;
     std::function<void(int)>   on_select_share_target;
     std::function<void()>      on_cancel_share;
     std::function<void()>      on_start_native_share;  // macOS: trigger native picker
@@ -250,6 +259,7 @@ public:
     std::function<void(int, int)>    on_set_user_role;       // (user_id, new_role)
     std::function<void(int)>         on_kick_user;           // (user_id)
     std::function<void(int, float)>  on_user_volume_changed; // (user_id, volume)
+    std::function<void(int, float)>  on_user_music_volume_changed; // (user_id, VOICE2 volume)
     std::function<void(int, bool, float)> on_user_compress_changed; // (user_id, enabled, target)
 
 protected:

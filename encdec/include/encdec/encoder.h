@@ -33,7 +33,7 @@ public:
     // Force next frame to be a keyframe
     virtual void force_keyframe() = 0;
 
-    // Dynamically change bitrate (bits per second)
+    // Dynamically change the average VBR target (bits per second).
     virtual void set_bitrate(uint32_t bitrate) = 0;
 
     // Metadata about the active encoder

@@ -21,10 +21,11 @@
 #endif
 #include <windows.h>
 
-class RenderInterface_DX12;
+class PartiesRenderInterface_DX12;
 class SystemInterface_Win32;
 class TextInputMethodEditor_Win32;
-class SlugFontEngine;
+
+namespace parties::rml { class ElementRegistry; }
 
 namespace designer {
 
@@ -154,6 +155,14 @@ public:
 	bool Init(const std::string& initial_file = "");
 	void Shutdown();
 	int Run(); // Message loop, returns exit code
+	int RunScreenshot(const std::string& output_path, int settle_frames = 240);
+	void SetPreviewSize(int width, int height);
+	void SetDensity(float density) { density_override_ = density; }
+	void SetManagerVisible(bool visible) { manager_visible_ = visible; }
+	void SetDebuggerEnabled(bool enabled) { debugger_enabled_ = enabled; }
+	void SetAutoLoadBindVars(bool enabled) { auto_load_bind_vars_ = enabled; }
+	void ConfigurePartiesFixture(std::string scenario);
+	bool LastDocumentLoadSucceeded() const { return last_document_load_succeeded_; }
 
 	// Actions (called by manager UI or externally)
 	void LoadDocument(const std::string& rml_path);
@@ -199,16 +208,17 @@ private:
 	HWND manager_hwnd_ = nullptr;
 
 	// DX12 renderers (one per window)
-	std::unique_ptr<RenderInterface_DX12> preview_renderer_;
-	std::unique_ptr<RenderInterface_DX12> manager_renderer_;
+	std::unique_ptr<PartiesRenderInterface_DX12> preview_renderer_;
+	std::unique_ptr<PartiesRenderInterface_DX12> manager_renderer_;
 
 	// Shared interfaces
 	std::unique_ptr<SystemInterface_Win32> system_interface_;
 	std::unique_ptr<TextInputMethodEditor_Win32> text_input_editor_;
 	FilesystemFileInterface file_interface_;
 
-	// Slug font engine
-	std::unique_ptr<SlugFontEngine> slug_font_engine_;
+	std::unique_ptr<parties::rml::ElementRegistry> element_registry_;
+	struct PartiesFixture;
+	std::unique_ptr<PartiesFixture> parties_fixture_;
 
 	// RmlUi contexts
 	Rml::Context* preview_context_ = nullptr;
@@ -220,8 +230,19 @@ private:
 	// State
 	std::string document_path_;
 	float dpi_scale_ = 1.0f;
+	float density_override_ = 0.0f;
 	bool preview_minimized_ = false;
 	bool manager_minimized_ = false;
+	bool manager_visible_ = true;
+	bool auto_load_bind_vars_ = true;
+	bool last_document_load_succeeded_ = false;
+	int rml_error_count_ = 0;
+	int rml_data_binding_warning_count_ = 0;
+	bool debugger_initialized_ = false;
+	bool debugger_enabled_ = true;
+	int preview_width_ = 1440;
+	int preview_height_ = 900;
+	std::string parties_fixture_scenario_;
 
 	// Debounce: time of last file change, reload after 100ms
 	DWORD last_change_tick_ = 0;

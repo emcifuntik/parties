@@ -2,6 +2,8 @@
 
 #include <RmlUi/Core/Event.h>
 
+#include <algorithm>
+
 namespace parties::client {
 
 void LobbyModel::build(rml::Builder& b) {
@@ -70,8 +72,8 @@ void LobbyModel::build(rml::Builder& b) {
      .bind("current_channel_name",  current_channel_name)
      .bind("is_muted",          is_muted)
      .bind("is_deafened",       is_deafened)
-     .bind("show_settings",     show_settings)
-     .bind("show_chat",         show_chat)
+     .bind("route",             router.route_binding())
+     .bind("settings_section",  router.settings_section_binding())
      .bind("capture_devices",   capture_devices)
      .bind("playback_devices",  playback_devices)
      .bind("selected_capture",  selected_capture)
@@ -85,12 +87,14 @@ void LobbyModel::build(rml::Builder& b) {
      .bind("voice_level",       voice_level)
      .bind("voice_volume",      voice_volume)
      .bind("secondary_volume",  secondary_volume)
+     .bind("music_send_volume", music_send_volume)
      .bind("notification_volume", notification_volume)
      .bind("ptt_enabled",       ptt_enabled)
      .bind("ptt_key",           ptt_key)
      .bind("ptt_key_name",      ptt_key_name)
      .bind("ptt_binding",       ptt_binding)
      .bind("ptt_delay",         ptt_delay)
+     .bind("ptt_delay_text",    ptt_delay_text)
      .bind("mute_key",          mute_key)
      .bind("mute_key_name",     mute_key_name)
      .bind("mute_binding",      mute_binding)
@@ -99,6 +103,8 @@ void LobbyModel::build(rml::Builder& b) {
      .bind("deafen_binding",    deafen_binding)
      .bind("mobile_show_content", mobile_show_content)
      .bind("is_sharing",        is_sharing)
+     .bind("is_audio_sharing",  is_audio_sharing)
+     .bind("audio_share_target_name", audio_share_target_name)
      .bind("someone_sharing",   someone_sharing)
      .bind("sharers",           sharers)
      .bind("watched",           watched)
@@ -107,13 +113,15 @@ void LobbyModel::build(rml::Builder& b) {
      .bind("stream_volume",     stream_volume)
      .bind("stream_fullscreen", stream_fullscreen)
      .bind("stream_fps",        stream_fps)
-     .bind("show_share_picker", show_share_picker)
      .bind("use_native_picker", use_native_picker)
      .bind("share_targets",     share_targets)
+     .bind("selected_share_target", selected_share_target)
+     .bind("share_picker_mode", share_picker_mode)
      .bind("share_bitrate",     share_bitrate)
      .bind("share_fps",         share_fps)
      .bind("share_codec",       share_codec)
      .bind("share_scale",       share_scale)
+     .bind("share_preset",      share_preset)
      .bind("update_available",   update_available)
      .bind("update_downloading", update_downloading)
      .bind("update_ready",       update_ready)
@@ -134,6 +142,7 @@ void LobbyModel::build(rml::Builder& b) {
      .bind("menu_user_name",     menu_user_name)
      .bind("menu_user_role",     menu_user_role)
      .bind("menu_user_volume",   menu_user_volume)
+     .bind("menu_user_music_volume", menu_user_music_volume)
      .bind("menu_user_compress", menu_user_compress)
      .bind("menu_user_compress_target", menu_user_compress_target)
      .bind("menu_can_roles",     menu_can_roles)
@@ -175,9 +184,22 @@ void LobbyModel::build(rml::Builder& b) {
         if (on_toggle_deafen) on_toggle_deafen();
     });
 
-    b.on("toggle_settings", [this] {
-        show_settings = !show_settings.get();
-        mobile_show_content = show_settings.get();
+    b.on("open_settings", [this] {
+        router.open_settings();
+        mobile_show_content = true;
+    });
+
+    b.on_args<int>("navigate_settings", [this](int section) {
+        const int first = static_cast<int>(SettingsSection::AudioVoice);
+        const int last = static_cast<int>(SettingsSection::AccountKeys);
+        section = std::clamp(section, first, last);
+        router.select_settings(static_cast<SettingsSection>(section));
+        mobile_show_content = true;
+    });
+
+    b.on("route_back", [this] {
+        router.back();
+        mobile_show_content = !router.is(DocumentRoute::Room);
     });
 
     b.on_args<int>("select_capture", [this](int idx) {
@@ -185,9 +207,17 @@ void LobbyModel::build(rml::Builder& b) {
         if (on_select_capture) on_select_capture(idx);
     });
 
+    b.on("capture_selection_changed", [this] {
+        if (on_select_capture) on_select_capture(selected_capture.get());
+    });
+
     b.on_args<int>("select_playback", [this](int idx) {
         selected_playback = idx;
         if (on_select_playback) on_select_playback(idx);
+    });
+
+    b.on("playback_selection_changed", [this] {
+        if (on_select_playback) on_select_playback(selected_playback.get());
     });
 
     b.on("toggle_denoise", [this] {
@@ -230,6 +260,11 @@ void LobbyModel::build(rml::Builder& b) {
         if (on_secondary_volume_changed) on_secondary_volume_changed(secondary_volume.get());
     });
 
+    b.on("music_send_volume_changed", [this] {
+        if (on_music_send_volume_changed)
+            on_music_send_volume_changed(music_send_volume.get());
+    });
+
     b.on("test_notification_sound", [this] {
         if (on_test_notification_sound) on_test_notification_sound();
     });
@@ -251,6 +286,7 @@ void LobbyModel::build(rml::Builder& b) {
     });
 
     b.on("ptt_delay_changed", [this] {
+        ptt_delay_text = std::to_string(static_cast<int>(ptt_delay.get())) + " ms";
         if (on_ptt_delay_changed) on_ptt_delay_changed(ptt_delay.get());
     });
 
@@ -258,8 +294,21 @@ void LobbyModel::build(rml::Builder& b) {
         if (on_toggle_share) on_toggle_share();
     });
 
+    b.on("toggle_audio_share", [this] {
+        if (on_toggle_audio_share) on_toggle_audio_share();
+    });
+
     b.on_args<int>("select_share_target", [this](int idx) {
         if (on_select_share_target) on_select_share_target(idx);
+    });
+
+    b.on_args<int>("choose_share_target", [this](int idx) {
+        selected_share_target = idx;
+    });
+
+    b.on("start_selected_share", [this] {
+        if (selected_share_target.get() >= 0 && on_select_share_target)
+            on_select_share_target(selected_share_target.get());
     });
 
     b.on("cancel_share", [this] {
@@ -272,22 +321,63 @@ void LobbyModel::build(rml::Builder& b) {
 
     b.on_args<int>("select_share_fps", [this](int v) {
         share_fps = v;
+        share_preset = -1;
     });
 
     b.on("share_bitrate_changed", [this] {
+        share_preset = -1;
         if (on_share_bitrate_changed) on_share_bitrate_changed(share_bitrate.get());
     });
 
     b.on_args<int>("select_share_codec", [this](int v) {
         share_codec = v;
+        share_preset = -1;
     });
 
     b.on_args<int>("select_share_scale", [this](int v) {
         share_scale = v;
+        share_preset = -1;
+    });
+
+    b.on_args<int>("select_share_preset", [this](int preset) {
+        share_preset = preset;
+        share_codec = 0;
+        if (preset == 0) {
+            share_fps = 1;
+            share_scale = 2;
+            share_bitrate = 2.0f;
+        } else if (preset == 1) {
+            share_fps = 2;
+            share_scale = 1;
+            share_bitrate = 6.0f;
+        } else {
+            share_fps = 2;
+            share_scale = 0;
+            share_bitrate = 12.0f;
+        }
+        if (on_share_bitrate_changed)
+            on_share_bitrate_changed(share_bitrate.get());
     });
 
     b.on_args<int>("watch_sharer", [this](int id) {
         if (on_watch_sharer) {
+            on_watch_sharer(id);
+            mobile_show_content = true;
+        }
+    });
+
+    b.on_args<int>("watch_user_stream", [this](int id) {
+        bool streaming = false;
+        for (const auto& channel : channels.get()) {
+            for (const auto& user : channel.users) {
+                if (user.id == id) {
+                    streaming = user.streaming;
+                    break;
+                }
+            }
+            if (streaming) break;
+        }
+        if (streaming && on_watch_sharer) {
             on_watch_sharer(id);
             mobile_show_content = true;
         }
@@ -309,8 +399,11 @@ void LobbyModel::build(rml::Builder& b) {
 
     b.on("mobile_back", [this] {
         mobile_show_content = false;
-        show_settings = false;
-        if (on_stop_watching) on_stop_watching();
+        if (router.is(DocumentRoute::Streams)) {
+            if (on_stop_watching) on_stop_watching();
+        } else {
+            router.back();
+        }
     });
 
     b.on("stream_volume_changed", [this] {
@@ -392,6 +485,11 @@ void LobbyModel::build(rml::Builder& b) {
     b.on("user_volume_changed", [this] {
         if (on_user_volume_changed)
             on_user_volume_changed(menu_user_id.get(), menu_user_volume.get());
+    });
+
+    b.on("user_music_volume_changed", [this] {
+        if (on_user_music_volume_changed)
+            on_user_music_volume_changed(menu_user_id.get(), menu_user_music_volume.get());
     });
 
     b.on("toggle_user_compress", [this] {

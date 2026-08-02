@@ -6,6 +6,7 @@
 #include <memory>
 
 struct ID3D11Device;
+struct ID3D12Device;
 
 namespace parties::encdec {
 
@@ -26,7 +27,8 @@ std::unique_ptr<Encoder> create_encoder(
 std::unique_ptr<Decoder> create_decoder(
     VideoCodecId codec,
     uint32_t width = 0,
-    uint32_t height = 0);
+    uint32_t height = 0,
+    ID3D12Device* render_device = nullptr);
 
 // Create a software-only decoder (skips NVDEC/AMF).
 // Used after GPU context loss to avoid re-triggering the same failure.

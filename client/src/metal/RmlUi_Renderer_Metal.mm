@@ -14,8 +14,6 @@
 
 #include <lunasvg/lunasvg.h>
 
-#include <client/slug_font_engine.h>
-
 #include <cstring>
 #include <memory>
 
@@ -140,236 +138,6 @@ fragment float4 rmlui_fragment_gradient(VertexOut in [[stage_in]],
     return in.color * color;
 }
 
-// ---------------------------------------------------------------------------
-// Slug GPU font rendering shaders (Eric Lengyel, MIT/Apache-2.0)
-// Reference: https://jcgt.org/published/0006/02/02/
-// Ported verbatim from the DX12 HLSL implementation. The algorithm evaluates
-// glyph Bezier coverage per-pixel from the curve/band textures; no glyph atlas.
-// ---------------------------------------------------------------------------
-
-// Constant buffer mirroring the DX12 ParamStruct (b0). slug_matrix holds the
-// four float4 rows of the combined MVP (incl. translation), slug_viewport.xy =
-// drawable size in pixels. Passed via setVertexBytes at buffer index 1.
-struct SlugParams {
-    float4 slug_matrix[4];
-    float4 slug_viewport;
-};
-
-// 80-byte SlugVertex: 5 x float4 (pos, tex, jac, bnd, col).
-struct SlugVertexIn {
-    float4 pos [[attribute(0)]]; // xy = object-space position, zw = outward normal
-    float4 tex [[attribute(1)]]; // xy = em-space sample coords, zw = packed glyph/band
-    float4 jac [[attribute(2)]]; // inverse Jacobian (d_em/d_obj): 00,01,10,11
-    float4 bnd [[attribute(3)]]; // xy = band scale, zw = band offset
-    float4 col [[attribute(4)]]; // rgba premultiplied vertex color
-};
-
-struct SlugVertexOut {
-    float4 position [[position]];
-    float4 color;
-    float2 texcoord;
-    float4 banding         [[flat]]; // nointerpolation
-    int4   glyph           [[flat]]; // nointerpolation
-};
-
-static void SlugUnpack(float4 tex, float4 bnd, thread float4& vbnd, thread int4& vgly)
-{
-    uint2 g = as_type<uint2>(tex.zw);
-    vgly = int4(int(g.x & 0xFFFFU), int(g.x >> 16U), int(g.y & 0xFFFFU), int(g.y >> 16U));
-    vbnd = bnd;
-}
-
-static float2 SlugDilate(float4 pos, float4 tex, float4 jac, float4 m0, float4 m1,
-                         float4 m3, float2 dim, thread float2& vpos)
-{
-    float2 n = normalize(pos.zw);
-    float s = dot(m3.xy, pos.xy) + m3.w;
-    float t = dot(m3.xy, n);
-
-    float u = (s * dot(m0.xy, n) - t * (dot(m0.xy, pos.xy) + m0.w)) * dim.x;
-    float v = (s * dot(m1.xy, n) - t * (dot(m1.xy, pos.xy) + m1.w)) * dim.y;
-
-    float s2 = s * s;
-    float st = s * t;
-    float uv = u * u + v * v;
-    float2 d = pos.zw * (s2 * (st + sqrt(uv)) / (uv - st * st));
-
-    vpos = pos.xy + d;
-    return float2(tex.x + dot(d, jac.xy), tex.y + dot(d, jac.zw));
-}
-
-vertex SlugVertexOut slug_vertex(SlugVertexIn in [[stage_in]],
-                                 constant SlugParams& p [[buffer(1)]])
-{
-    SlugVertexOut out;
-    float2 pos2;
-
-    out.texcoord = SlugDilate(in.pos, in.tex, in.jac,
-                              p.slug_matrix[0], p.slug_matrix[1], p.slug_matrix[3],
-                              p.slug_viewport.xy, pos2);
-
-    // Literal component math (matches DX12) so row/column-major is irrelevant:
-    // slug_matrix[r] holds row r of the MVP.
-    out.position.x = pos2.x * p.slug_matrix[0].x + pos2.y * p.slug_matrix[0].y + p.slug_matrix[0].w;
-    out.position.y = pos2.x * p.slug_matrix[1].x + pos2.y * p.slug_matrix[1].y + p.slug_matrix[1].w;
-    out.position.z = pos2.x * p.slug_matrix[2].x + pos2.y * p.slug_matrix[2].y + p.slug_matrix[2].w;
-    out.position.w = pos2.x * p.slug_matrix[3].x + pos2.y * p.slug_matrix[3].y + p.slug_matrix[3].w;
-
-    SlugUnpack(in.tex, in.bnd, out.banding, out.glyph);
-    out.color = in.col;
-    return out;
-}
-
-#define SLUG_LOG_BAND_TEX_WIDTH 12
-// Texel fetch — coord is an int2; read() takes uint2 and ignores sampling.
-#define SlugTexelLoad(tex, coord) tex.read(uint2(coord))
-
-static uint Slug_CalcRootCode(float y1, float y2, float y3)
-{
-    uint i1 = as_type<uint>(y1) >> 31U;
-    uint i2 = as_type<uint>(y2) >> 30U;
-    uint i3 = as_type<uint>(y3) >> 29U;
-
-    uint shift = (i2 & 2U) | (i1 & ~2U);
-    shift = (i3 & 4U) | (shift & ~4U);
-
-    return ((0x2E74U >> shift) & 0x0101U);
-}
-
-static float2 Slug_SolveHorizPoly(float4 p12, float2 p3)
-{
-    float2 a = p12.xy - p12.zw * 2.0 + p3;
-    float2 b = p12.xy - p12.zw;
-    float ra = 1.0 / a.y;
-    float rb = 0.5 / b.y;
-
-    float d = sqrt(max(b.y * b.y - a.y * p12.y, 0.0));
-    float t1 = (b.y - d) * ra;
-    float t2 = (b.y + d) * ra;
-
-    if (abs(a.y) < 1.0 / 65536.0) t1 = t2 = p12.y * rb;
-
-    return float2((a.x * t1 - b.x * 2.0) * t1 + p12.x, (a.x * t2 - b.x * 2.0) * t2 + p12.x);
-}
-
-static float2 Slug_SolveVertPoly(float4 p12, float2 p3)
-{
-    float2 a = p12.xy - p12.zw * 2.0 + p3;
-    float2 b = p12.xy - p12.zw;
-    float ra = 1.0 / a.x;
-    float rb = 0.5 / b.x;
-
-    float d = sqrt(max(b.x * b.x - a.x * p12.x, 0.0));
-    float t1 = (b.x - d) * ra;
-    float t2 = (b.x + d) * ra;
-
-    if (abs(a.x) < 1.0 / 65536.0) t1 = t2 = p12.x * rb;
-
-    return float2((a.y * t1 - b.y * 2.0) * t1 + p12.y, (a.y * t2 - b.y * 2.0) * t2 + p12.y);
-}
-
-static int2 Slug_CalcBandLoc(int2 glyphLoc, uint offset)
-{
-    int2 bandLoc = int2(glyphLoc.x + int(offset), glyphLoc.y);
-    bandLoc.y += bandLoc.x >> SLUG_LOG_BAND_TEX_WIDTH;
-    bandLoc.x &= (1 << SLUG_LOG_BAND_TEX_WIDTH) - 1;
-    return bandLoc;
-}
-
-static float Slug_CalcCoverage(float xcov, float ycov, float xwgt, float ywgt, int flags)
-{
-    float coverage = max(abs(xcov * xwgt + ycov * ywgt) / max(xwgt + ywgt, 1.0 / 65536.0),
-                         min(abs(xcov), abs(ycov)));
-    coverage = saturate(coverage);
-    return coverage;
-}
-
-static float SlugRender(texture2d<float> curveData, texture2d<uint> bandData,
-                        float2 renderCoord, float4 bandTransform, int4 glyphData)
-{
-    int curveIndex;
-
-    float2 emsPerPixel = fwidth(renderCoord);
-    float2 pixelsPerEm = 1.0 / emsPerPixel;
-
-    int2 bandMax = glyphData.zw;
-    bandMax.y &= 0x00FF;
-
-    int2 bandIndex = clamp(int2(renderCoord * bandTransform.xy + bandTransform.zw), int2(0, 0), bandMax);
-    int2 glyphLoc = glyphData.xy;
-
-    float xcov = 0.0;
-    float xwgt = 0.0;
-
-    uint2 hbandData = SlugTexelLoad(bandData, int2(glyphLoc.x + bandIndex.y, glyphLoc.y)).xy;
-    int2 hbandLoc = Slug_CalcBandLoc(glyphLoc, hbandData.y);
-
-    for (curveIndex = 0; curveIndex < int(hbandData.x); curveIndex++)
-    {
-        int2 curveLoc = int2(SlugTexelLoad(bandData, int2(hbandLoc.x + curveIndex, hbandLoc.y)).xy);
-        float4 p12 = SlugTexelLoad(curveData, curveLoc) - float4(renderCoord, renderCoord);
-        float2 p3 = SlugTexelLoad(curveData, int2(curveLoc.x + 1, curveLoc.y)).xy - renderCoord;
-
-        if (max(max(p12.x, p12.z), p3.x) * pixelsPerEm.x < -0.5) break;
-
-        uint code = Slug_CalcRootCode(p12.y, p12.w, p3.y);
-        if (code != 0U)
-        {
-            float2 r = Slug_SolveHorizPoly(p12, p3) * pixelsPerEm.x;
-            if ((code & 1U) != 0U)
-            {
-                xcov += saturate(r.x + 0.5);
-                xwgt = max(xwgt, saturate(1.0 - abs(r.x) * 2.0));
-            }
-            if (code > 1U)
-            {
-                xcov -= saturate(r.y + 0.5);
-                xwgt = max(xwgt, saturate(1.0 - abs(r.y) * 2.0));
-            }
-        }
-    }
-
-    float ycov = 0.0;
-    float ywgt = 0.0;
-
-    uint2 vbandData = SlugTexelLoad(bandData, int2(glyphLoc.x + bandMax.y + 1 + bandIndex.x, glyphLoc.y)).xy;
-    int2 vbandLoc = Slug_CalcBandLoc(glyphLoc, vbandData.y);
-
-    for (curveIndex = 0; curveIndex < int(vbandData.x); curveIndex++)
-    {
-        int2 curveLoc = int2(SlugTexelLoad(bandData, int2(vbandLoc.x + curveIndex, vbandLoc.y)).xy);
-        float4 p12 = SlugTexelLoad(curveData, curveLoc) - float4(renderCoord, renderCoord);
-        float2 p3 = SlugTexelLoad(curveData, int2(curveLoc.x + 1, curveLoc.y)).xy - renderCoord;
-
-        if (max(max(p12.y, p12.w), p3.y) * pixelsPerEm.y < -0.5) break;
-
-        uint code = Slug_CalcRootCode(p12.x, p12.z, p3.x);
-        if (code != 0U)
-        {
-            float2 r = Slug_SolveVertPoly(p12, p3) * pixelsPerEm.y;
-            if ((code & 1U) != 0U)
-            {
-                ycov -= saturate(r.x + 0.5);
-                ywgt = max(ywgt, saturate(1.0 - abs(r.x) * 2.0));
-            }
-            if (code > 1U)
-            {
-                ycov += saturate(r.y + 0.5);
-                ywgt = max(ywgt, saturate(1.0 - abs(r.y) * 2.0));
-            }
-        }
-    }
-
-    return Slug_CalcCoverage(xcov, ycov, xwgt, ywgt, glyphData.w);
-}
-
-fragment float4 slug_fragment(SlugVertexOut in [[stage_in]],
-                              texture2d<float> curveTexture [[texture(0)]],
-                              texture2d<uint>  bandTexture  [[texture(1)]])
-{
-    float coverage = SlugRender(curveTexture, bandTexture, in.texcoord, in.banding, in.glyph);
-    return in.color * coverage;
-}
 )MSL";
 
 // ---- Internal data types --------------------------------------------------------
@@ -380,26 +148,10 @@ struct Uniforms {
     simd_float2   _padding;
 };
 
-// Slug vertex-stage constants — layout must match SlugParams in the MSL shader.
-// slug_matrix holds the four float4 rows of the combined MVP (incl. translation);
-// slug_viewport.xy = drawable size in pixels.
-struct SlugParams {
-    simd_float4 slug_matrix[4];
-    simd_float4 slug_viewport;
-};
-
 struct MetalGeometry {
     id<MTLBuffer> vertex_buffer;
     id<MTLBuffer> index_buffer;
     NSUInteger    index_count;
-
-    // ---- Slug GPU font batch ----
-    // When the font engine tags geometry with SLUG_MAGIC_U, CompileGeometry
-    // builds a separate 80-byte-per-vertex buffer here and flags it. The
-    // standard index_buffer above is reused for the Slug draw.
-    bool          is_slug = false;
-    id<MTLBuffer> slug_vertex_buffer = nil;   // SlugVertex array (80 bytes/vertex)
-    NSUInteger    slug_index_count   = 0;
 };
 
 struct MetalTexture {
@@ -484,16 +236,6 @@ struct RenderInterface_Metal::Data {
     id<MTLDepthStencilState> active_dss;         // current DSS for RenderGeometry
     uint32_t active_stencil_ref = 0;
 
-    // ---- Slug GPU font rendering ----
-    SlugFontEngine* slug_font_engine = nullptr;
-    id<MTLRenderPipelineState> pipeline_slug = nil;  // Bezier-coverage glyph shader
-
-    // Curve texture (RGBA32F) and band texture (RGBA32Uint), uploaded from the
-    // glyph cache. Re-uploaded only when the cache version changes.
-    id<MTLTexture> slug_curve_texture = nil;
-    id<MTLTexture> slug_band_texture  = nil;
-    uint32_t       slug_uploaded_version = 0;
-    bool           slug_textures_created = false;
 };
 
 // ---- Helper: build orthographic projection ---------------------------------------
@@ -531,15 +273,21 @@ static id<MTLRenderPipelineState> BuildPipeline(id<MTLDevice> device,
                                                  BOOL write_color)
 {
     MTLRenderPipelineDescriptor* desc = [MTLRenderPipelineDescriptor new];
-    desc.vertexFunction   = [library newFunctionWithName:@"rmlui_vertex"];
-    desc.fragmentFunction = [library newFunctionWithName:frag_name];
+    id<MTLFunction> vertex_function = [library newFunctionWithName:@"rmlui_vertex"];
+    id<MTLFunction> fragment_function = [library newFunctionWithName:frag_name];
+    desc.vertexFunction = vertex_function;
+    desc.fragmentFunction = fragment_function;
 
     if (!desc.vertexFunction)
         NSLog(@"[RmlUi] Metal: 'rmlui_vertex' not found in library");
     if (!desc.fragmentFunction)
         NSLog(@"[RmlUi] Metal: '%@' not found in library", frag_name);
-    if (!desc.vertexFunction || !desc.fragmentFunction)
+    if (!desc.vertexFunction || !desc.fragmentFunction) {
+        [vertex_function release];
+        [fragment_function release];
+        [desc release];
         return nil;
+    }
 
     // Vertex layout: matches Rml::Vertex (20 bytes per vertex)
     MTLVertexDescriptor* vd = [MTLVertexDescriptor new];
@@ -585,60 +333,10 @@ static id<MTLRenderPipelineState> BuildPipeline(id<MTLDevice> device,
     if (!pso)
         Rml::Log::Message(Rml::Log::LT_ERROR, "Metal pipeline error: %s",
                           error.localizedDescription.UTF8String);
-    return pso;
-}
-
-// ---- Build Slug pipeline ---------------------------------------------------------
-// Separate vertex descriptor for the 80-byte SlugVertex (5 x float4). Uses the
-// same premultiplied-alpha blend as the color/text pipeline so coverage-weighted
-// premultiplied fragments composite correctly.
-
-static id<MTLRenderPipelineState> BuildSlugPipeline(id<MTLDevice> device,
-                                                    id<MTLLibrary> library,
-                                                    MTLPixelFormat color_format,
-                                                    MTLPixelFormat depth_stencil_format)
-{
-    MTLRenderPipelineDescriptor* desc = [MTLRenderPipelineDescriptor new];
-    desc.vertexFunction   = [library newFunctionWithName:@"slug_vertex"];
-    desc.fragmentFunction = [library newFunctionWithName:@"slug_fragment"];
-
-    if (!desc.vertexFunction)
-        NSLog(@"[RmlUi] Metal: 'slug_vertex' not found in library");
-    if (!desc.fragmentFunction)
-        NSLog(@"[RmlUi] Metal: 'slug_fragment' not found in library");
-    if (!desc.vertexFunction || !desc.fragmentFunction)
-        return nil;
-
-    // SlugVertex layout: 5 attributes, each float4, stride 80.
-    // pos(0)=0, tex(1)=16, jac(2)=32, bnd(3)=48, col(4)=64.
-    MTLVertexDescriptor* vd = [MTLVertexDescriptor new];
-    for (int i = 0; i < 5; ++i) {
-        vd.attributes[i].format      = MTLVertexFormatFloat4;
-        vd.attributes[i].offset      = (NSUInteger)(i * 16);
-        vd.attributes[i].bufferIndex = 0;
-    }
-    vd.layouts[0].stride       = 80;
-    vd.layouts[0].stepFunction = MTLVertexStepFunctionPerVertex;
-    desc.vertexDescriptor = vd;
-
-    if (depth_stencil_format != MTLPixelFormatInvalid) {
-        desc.depthAttachmentPixelFormat   = depth_stencil_format;
-        desc.stencilAttachmentPixelFormat = depth_stencil_format;
-    }
-
-    MTLRenderPipelineColorAttachmentDescriptor* ca = desc.colorAttachments[0];
-    ca.pixelFormat                 = color_format;
-    ca.blendingEnabled             = YES;
-    ca.sourceRGBBlendFactor        = MTLBlendFactorOne;
-    ca.destinationRGBBlendFactor   = MTLBlendFactorOneMinusSourceAlpha;
-    ca.sourceAlphaBlendFactor      = MTLBlendFactorOne;
-    ca.destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
-
-    NSError* error = nil;
-    id<MTLRenderPipelineState> pso = [device newRenderPipelineStateWithDescriptor:desc error:&error];
-    if (!pso)
-        Rml::Log::Message(Rml::Log::LT_ERROR, "Metal Slug pipeline error: %s",
-                          error.localizedDescription.UTF8String);
+    [vd release];
+    [vertex_function release];
+    [fragment_function release];
+    [desc release];
     return pso;
 }
 
@@ -662,7 +360,10 @@ static id<MTLDepthStencilState> BuildDSS(id<MTLDevice> device,
     dsd.depthWriteEnabled    = NO;
     dsd.frontFaceStencil     = s;
     dsd.backFaceStencil      = s;
-    return [device newDepthStencilStateWithDescriptor:dsd];
+    id<MTLDepthStencilState> state = [device newDepthStencilStateWithDescriptor:dsd];
+    [dsd release];
+    [s release];
+    return state;
 }
 
 // ---- Constructor / Destructor ----------------------------------------------------
@@ -681,6 +382,7 @@ RenderInterface_Metal::RenderInterface_Metal(id<MTLDevice> device, MTKView* view
     id<MTLLibrary> library = [device newLibraryWithSource:kRmlUiShaderSource
                                                   options:opts
                                                     error:&error];
+    [opts release];
     if (!library) {
         NSLog(@"[RmlUi] Metal shader compilation failed: %@",
               error.localizedDescription);
@@ -696,14 +398,13 @@ RenderInterface_Metal::RenderInterface_Metal(id<MTLDevice> device, MTKView* view
     m_data->pipeline_stencil  = BuildPipeline(device, library, @"rmlui_fragment_color",    color_fmt, stencil_fmt, NO);
     m_data->pipeline_gradient = BuildPipeline(device, library, @"rmlui_fragment_gradient", color_fmt, stencil_fmt, YES);
     m_data->pipeline_nv12     = BuildPipeline(device, library, @"rmlui_fragment_nv12",     color_fmt, stencil_fmt, YES);
-    m_data->pipeline_slug     = BuildSlugPipeline(device, library, color_fmt, stencil_fmt);
-    NSLog(@"[RmlUi] Pipelines: color=%s texture=%s stencil=%s gradient=%s nv12=%s slug=%s",
+    [library release];
+    NSLog(@"[RmlUi] Pipelines: color=%s texture=%s stencil=%s gradient=%s nv12=%s",
           m_data->pipeline_color    ? "OK" : "FAILED",
           m_data->pipeline_texture  ? "OK" : "FAILED",
           m_data->pipeline_stencil  ? "OK" : "FAILED",
           m_data->pipeline_gradient ? "OK" : "FAILED",
-          m_data->pipeline_nv12     ? "OK" : "FAILED",
-          m_data->pipeline_slug     ? "OK" : "FAILED");
+          m_data->pipeline_nv12     ? "OK" : "FAILED");
 
     // Depth-stencil states
     m_data->dss_normal     = BuildDSS(device, MTLCompareFunctionAlways, MTLStencilOperationKeep,           0);
@@ -720,155 +421,27 @@ RenderInterface_Metal::RenderInterface_Metal(id<MTLDevice> device, MTKView* view
     sd.sAddressMode = MTLSamplerAddressModeClampToEdge;
     sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
     m_data->sampler = [device newSamplerStateWithDescriptor:sd];
+    [sd release];
 
     m_data->transform = Rml::Matrix4f::Identity();
 }
 
 RenderInterface_Metal::~RenderInterface_Metal()
 {
+	if (m_data) {
+		[m_data->pipeline_color release];
+		[m_data->pipeline_texture release];
+		[m_data->pipeline_stencil release];
+		[m_data->pipeline_gradient release];
+		[m_data->pipeline_nv12 release];
+		[m_data->dss_normal release];
+		[m_data->dss_test release];
+		[m_data->dss_write release];
+		[m_data->dss_write_incr release];
+		[m_data->sampler release];
+		[m_data->command_queue release];
+	}
     delete m_data;
-}
-
-// ---- Slug GPU font rendering -----------------------------------------------------
-
-void RenderInterface_Metal::SetSlugFontEngine(SlugFontEngine* engine)
-{
-    if (!m_data) return;
-    m_data->slug_font_engine = engine;
-}
-
-// Create the curve (RGBA32F) and band (RGBA32Uint) textures matching the glyph
-// cache dimensions. Storage mode Managed (macOS) / Shared (iOS) so replaceRegion
-// can update them directly from CPU memory.
-void RenderInterface_Metal::CreateSlugTextures()
-{
-    Data* d = m_data;
-    if (d->slug_textures_created || !d->slug_font_engine) return;
-    SlugGlyphCache& cache = d->slug_font_engine->GetGlyphCache();
-    int curve_w = cache.GetCurveTexWidth();
-    int band_w  = cache.GetBandTexWidth();
-    int tex_h   = cache.GetTexHeight();
-
-#if TARGET_OS_IOS
-    const MTLStorageMode storage = MTLStorageModeShared;
-#else
-    const MTLStorageMode storage = MTLStorageModeManaged;
-#endif
-
-    {
-        MTLTextureDescriptor* td = [MTLTextureDescriptor
-            texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA32Float
-                                         width:curve_w height:tex_h mipmapped:NO];
-        td.usage       = MTLTextureUsageShaderRead;
-        td.storageMode = storage;
-        d->slug_curve_texture = [d->device newTextureWithDescriptor:td];
-        d->slug_curve_texture.label = @"Slug_CurveTexture";
-    }
-    {
-        MTLTextureDescriptor* td = [MTLTextureDescriptor
-            texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA32Uint
-                                         width:band_w height:tex_h mipmapped:NO];
-        td.usage       = MTLTextureUsageShaderRead;
-        td.storageMode = storage;
-        d->slug_band_texture = [d->device newTextureWithDescriptor:td];
-        d->slug_band_texture.label = @"Slug_BandTexture";
-    }
-
-    d->slug_textures_created = (d->slug_curve_texture != nil && d->slug_band_texture != nil);
-}
-
-// Re-upload curve/band texel data only when the glyph cache version changed.
-// Called before the first Slug draw of the frame, mirroring DX12 UploadSlugTextures.
-void RenderInterface_Metal::UploadSlugTextures()
-{
-    Data* d = m_data;
-    if (!d->slug_font_engine) return;
-    SlugGlyphCache& cache = d->slug_font_engine->GetGlyphCache();
-    uint32_t version = cache.GetVersion();
-    if (d->slug_textures_created && version == d->slug_uploaded_version) return;
-
-    if (!d->slug_textures_created)
-        CreateSlugTextures();
-    if (!d->slug_textures_created) return;
-
-    int curve_w = cache.GetCurveTexWidth();
-    int band_w  = cache.GetBandTexWidth();
-    int tex_h   = cache.GetTexHeight();
-
-    // Curve texture: RGBA32F → 16 bytes/texel.
-    [d->slug_curve_texture replaceRegion:MTLRegionMake2D(0, 0, curve_w, tex_h)
-                             mipmapLevel:0
-                               withBytes:cache.GetCurveTexData()
-                             bytesPerRow:(NSUInteger)curve_w * 4 * sizeof(float)];
-
-    // Band texture: RGBA32Uint → 16 bytes/texel.
-    [d->slug_band_texture replaceRegion:MTLRegionMake2D(0, 0, band_w, tex_h)
-                            mipmapLevel:0
-                              withBytes:cache.GetBandTexData()
-                            bytesPerRow:(NSUInteger)band_w * 4 * sizeof(uint32_t)];
-
-    d->slug_uploaded_version = version;
-}
-
-void RenderInterface_Metal::RenderSlugGeometry(Rml::CompiledGeometryHandle handle,
-                                               Rml::Vector2f translation)
-{
-    Data* d = m_data;
-    if (!d || !d->current_encoder || !handle) return;
-    if (!d->pipeline_slug) return;
-
-    auto* geo = reinterpret_cast<MetalGeometry*>(handle);
-    if (!geo->slug_vertex_buffer || !geo->index_buffer) return;
-
-    // Lazily ensure the glyph atlas is current. GenerateString() may have
-    // rasterized new glyphs after BeginFrame(), bumping the cache version.
-    UploadSlugTextures();
-    if (!d->slug_textures_created) return;
-
-    id<MTLRenderCommandEncoder> enc = d->current_encoder;
-
-    // --- Build the Slug constant buffer (matrix rows + viewport) ---
-    // Same MVP the standard path uses (projection [* model transform]), with the
-    // per-draw translation baked into the matrix exactly as DX12 does. The Slug VS
-    // uses explicit per-component math (pos.x*m[0].x + pos.y*m[0].y + m[0].w), so
-    // slug_matrix[r] must hold row r of the MVP.
-    simd_float4x4 proj = OrthoMatrix((float)d->viewport_width, (float)d->viewport_height);
-    simd_float4x4 mvp  = d->has_transform
-                       ? simd_mul(proj, RmlMatrixToSimd(d->transform))
-                       : proj;
-
-    // Bake translation: column-major, column 3 += column 0 * tx + column 1 * ty.
-    // (Standard path translates positions before projection; this folds it in.)
-    for (int r = 0; r < 4; ++r) {
-        mvp.columns[3][r] += mvp.columns[0][r] * translation.x
-                           + mvp.columns[1][r] * translation.y;
-    }
-
-    SlugParams params;
-    // simd is column-major: columns[col][row]. Slug row r = {M(r,0),M(r,1),M(r,2),M(r,3)}.
-    for (int r = 0; r < 4; ++r) {
-        params.slug_matrix[r] = simd_make_float4(mvp.columns[0][r], mvp.columns[1][r],
-                                                 mvp.columns[2][r], mvp.columns[3][r]);
-    }
-    params.slug_viewport = simd_make_float4((float)d->viewport_width,
-                                            (float)d->viewport_height, 0.0f, 0.0f);
-
-    // --- Encode draw ---
-    [enc setDepthStencilState:d->active_dss];
-    [enc setStencilReferenceValue:d->active_stencil_ref];
-    [enc setRenderPipelineState:d->pipeline_slug];
-
-    [enc setVertexBuffer:geo->slug_vertex_buffer offset:0 atIndex:0];
-    [enc setVertexBytes:&params length:sizeof(params) atIndex:1];
-
-    [enc setFragmentTexture:d->slug_curve_texture atIndex:0];
-    [enc setFragmentTexture:d->slug_band_texture  atIndex:1];
-
-    [enc drawIndexedPrimitives:MTLPrimitiveTypeTriangle
-                    indexCount:geo->slug_index_count
-                     indexType:MTLIndexTypeUInt32
-                   indexBuffer:geo->index_buffer
-             indexBufferOffset:0];
 }
 
 // ---- Frame control ---------------------------------------------------------------
@@ -935,7 +508,7 @@ RenderInterface_Metal::CompileGeometry(Rml::Span<const Rml::Vertex> vertices,
 {
     if (!m_data) return 0;
 
-    auto* geo = new MetalGeometry();
+	auto* geo = new MetalGeometry();
 
     size_t v_size = vertices.size() * sizeof(Rml::Vertex);
     size_t i_size = indices.size() * sizeof(int);
@@ -947,32 +520,6 @@ RenderInterface_Metal::CompileGeometry(Rml::Span<const Rml::Vertex> vertices,
                                                       length:i_size
                                                      options:MTLResourceStorageModeShared];
     geo->index_count   = (NSUInteger)indices.size();
-
-    // ---- Slug font batch detection ----
-    // The font engine tags Slug geometry by bit-encoding SLUG_MAGIC_U in the first
-    // vertex's tex_coord.x and the uint32 batch id in tex_coord.y. When detected,
-    // pull the real 80-byte SlugVertex data and build a separate vertex buffer; the
-    // standard index buffer above (which already holds the Slug index list) is reused.
-    if (m_data->slug_font_engine && vertices.size() >= 4) {
-        float magic_test;
-        std::memcpy(&magic_test, &vertices[0].tex_coord.x, sizeof(float));
-        if (magic_test == SLUG_MAGIC_U) {
-            uint32_t batch_id;
-            std::memcpy(&batch_id, &vertices[0].tex_coord.y, sizeof(uint32_t));
-
-            std::unique_ptr<SlugBatchData> batch =
-                m_data->slug_font_engine->ConsumePendingBatch(batch_id);
-            if (batch && !batch->vertices.empty()) {
-                size_t slug_vb_size = batch->vertices.size() * sizeof(SlugVertex);
-                geo->slug_vertex_buffer =
-                    [m_data->device newBufferWithBytes:batch->vertices.data()
-                                                length:slug_vb_size
-                                               options:MTLResourceStorageModeShared];
-                geo->slug_index_count = (NSUInteger)batch->indices.size();
-                geo->is_slug = (geo->slug_vertex_buffer != nil);
-            }
-        }
-    }
 
     return reinterpret_cast<Rml::CompiledGeometryHandle>(geo);
 }
@@ -990,12 +537,6 @@ void RenderInterface_Metal::RenderGeometry(Rml::CompiledGeometryHandle handle,
     }
 
     auto* geo = reinterpret_cast<MetalGeometry*>(handle);
-
-    // Slug font batch: GPU-evaluate Bezier coverage instead of sampling a glyph atlas.
-    if (geo->is_slug) {
-        RenderSlugGeometry(handle, translation);
-        return;
-    }
 
     id<MTLRenderCommandEncoder> enc = m_data->current_encoder;
 
@@ -1039,13 +580,11 @@ void RenderInterface_Metal::ReleaseGeometry(Rml::CompiledGeometryHandle handle)
 {
     if (!handle) return;
     auto* geo = reinterpret_cast<MetalGeometry*>(handle);
-    // Free the Slug vertex buffer (created with newBufferWithBytes: → +1 under MRR).
-    // The standard vertex/index buffers follow the renderer's existing lifetime
-    // model and are reclaimed when the C++ object is destroyed.
-    if (geo->slug_vertex_buffer) {
-        [geo->slug_vertex_buffer release];
-        geo->slug_vertex_buffer = nil;
-    }
+	// All buffers are returned at the RmlUi compiled-geometry lifetime boundary.
+	[geo->vertex_buffer release];
+	[geo->index_buffer release];
+	geo->vertex_buffer = nil;
+	geo->index_buffer = nil;
     delete geo;
 }
 

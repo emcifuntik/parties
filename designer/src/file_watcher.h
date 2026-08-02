@@ -1,7 +1,7 @@
 #pragma once
 
 // File system watcher using ReadDirectoryChangesW (Windows).
-// Watches directories recursively for .rml, .rcss, .ttf, .otf, .png, .jpg, .svg, .tga changes.
+// Watches directories recursively for RML, RCSS, font, image, SVG, and Lottie JSON changes.
 // Call poll() from the message loop — it invokes the callback on the caller's thread.
 
 #ifndef WIN32_LEAN_AND_MEAN

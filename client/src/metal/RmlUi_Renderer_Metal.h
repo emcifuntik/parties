@@ -8,8 +8,6 @@
 #import <MetalKit/MetalKit.h>
 #endif
 
-class SlugFontEngine;
-
 /**
  * Metal render interface for RmlUi on iOS/macOS.
  *
@@ -88,12 +86,6 @@ public:
     void RenderNV12Geometry(Rml::CompiledGeometryHandle geometry,
         Rml::Vector2f translation, uintptr_t nv12_handle) override;
 
-    // ---- Slug GPU font rendering ----
-    // Wire the font engine to the renderer so it can detect Slug geometry batches
-    // (via the SLUG_MAGIC_U marker in CompileGeometry) and upload the curve/band
-    // glyph textures. Must be called before Rml::Initialise(), mirroring DX12.
-    void SetSlugFontEngine(SlugFontEngine* engine);
-
     // ---- YUV (I420) stubs — not used on Metal ----
     uintptr_t GenerateYUVTexture(
         const uint8_t*, uint32_t, const uint8_t*, const uint8_t*, uint32_t,
@@ -107,8 +99,4 @@ private:
     struct Data;
     Data* m_data = nullptr;
 
-    // ---- Slug GPU font rendering internals ----
-    void CreateSlugTextures();
-    void UploadSlugTextures();
-    void RenderSlugGeometry(Rml::CompiledGeometryHandle handle, Rml::Vector2f translation);
 };

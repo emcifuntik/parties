@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <chrono>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 #include <mutex>
@@ -23,8 +24,40 @@ struct CaptureTarget {
     void* handle = nullptr;  // HWND or HMONITOR
 };
 
+struct CaptureThumbnail {
+    enum class Source { None, WindowsGraphicsCapture, Gdi };
+
+    std::vector<uint8_t> rgba;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    Source source = Source::None;
+
+    explicit operator bool() const { return !rgba.empty() && width > 0 && height > 0; }
+};
+
 class ScreenCapture {
 public:
+    // Reusable preview-capture resources owned by the thumbnail worker. Keeping
+    // this lifetime explicit is important on Windows: releasing D3D11/WinRT
+    // objects from a thread-local destructor during LdrShutdownThread can
+    // deadlock inside the display driver.
+    class ThumbnailSession {
+    public:
+        ThumbnailSession();
+        ~ThumbnailSession();
+
+        ThumbnailSession(const ThumbnailSession&) = delete;
+        ThumbnailSession& operator=(const ThumbnailSession&) = delete;
+
+        CaptureThumbnail capture(const CaptureTarget& target,
+                                 uint32_t max_width = 480,
+                                 uint32_t max_height = 270);
+
+    private:
+        struct Impl;
+        std::unique_ptr<Impl> impl_;
+    };
+
     ScreenCapture();
     ~ScreenCapture();
 

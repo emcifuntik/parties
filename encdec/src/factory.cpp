@@ -61,19 +61,20 @@ std::unique_ptr<Encoder> create_encoder(
 
 std::unique_ptr<Decoder> create_decoder(
     VideoCodecId codec,
-    uint32_t width, uint32_t height) {
+    uint32_t width, uint32_t height,
+    ID3D12Device* render_device) {
 
     // Try NVDEC first
     {
         auto dec = std::make_unique<nvidia::NvdecDecoder>();
-        if (dec->init(codec, width, height))
+        if (dec->init(codec, width, height, render_device))
             return dec;
     }
 
     // Try AMF second
     {
         auto dec = std::make_unique<amd::AmfDecoder>();
-        if (dec->init(codec, width, height))
+        if (dec->init(codec, width, height, render_device))
             return dec;
     }
 

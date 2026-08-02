@@ -79,7 +79,8 @@ bool FileWatcher::IsRelevantExtension(const std::wstring& filename) {
 	// Lowercase
 	for (auto& c : ext) c = static_cast<wchar_t>(towlower(static_cast<wint_t>(c)));
 	return ext == L".rml" || ext == L".rcss" || ext == L".ttf" || ext == L".otf" ||
-	       ext == L".png" || ext == L".jpg" || ext == L".jpeg" || ext == L".svg" || ext == L".tga";
+	       ext == L".png" || ext == L".jpg" || ext == L".jpeg" || ext == L".svg" || ext == L".tga" ||
+	       ext == L".json";
 }
 
 void FileWatcher::Poll() {

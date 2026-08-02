@@ -1,14 +1,15 @@
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
-    REPO wh1t3lord/RmlUi
-    REF b10fdd610f54ef785e27568d7807ada644741a14
-    SHA512 0662e38264ce7eaec04deea04a43f37b57c559b197251afecc18b0884b83f1d5f686eda08daa257cd3cfd1255aecfdbaeaf15571eff1b4b2e2301c889b55c3db
+    REPO mikke89/RmlUi
+    REF 0ae381e00d7426762bb5ed897973366358b16642
+    SHA512 e796b00f2212287b7ad5c73a2fffa2112850e78fb0ee9fb690e61b707497156ff61c2297ba337f578fd54ca3c413775c59412b20dd3b8ff4ad53b0fdf8ed8439
     HEAD_REF master
 )
 
 vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS
     FEATURES
         svg             RMLUI_SVG_PLUGIN
+        lottie          RMLUI_LOTTIE_PLUGIN
 )
 
 if("freetype" IN_LIST FEATURES)
@@ -24,13 +25,25 @@ vcpkg_cmake_configure(
         "-DRMLUI_FONT_ENGINE=${RMLUI_FONT_ENGINE}"
         "-DRMLUI_COMPILER_OPTIONS=OFF"
         "-DRMLUI_INSTALL_RUNTIME_DEPENDENCIES=OFF"
-        "-DBUILD_SAMPLES=OFF"
-        "-DBUILD_TESTING=OFF"
+        "-DRMLUI_SHELL=ON"
+        "-DRMLUI_BACKEND=Win32_DX12"
+        "-DRMLUI_SAMPLES=OFF"
+        "-DRMLUI_TESTS=OFF"
 )
 
 vcpkg_cmake_install()
 vcpkg_cmake_config_fixup(CONFIG_PATH lib/cmake/RmlUi)
 vcpkg_copy_pdbs()
+
+# Upstream installs its backend source bundle to the global share/Backends
+# directory. Keep the package self-contained so consumers can locate the exact
+# backend that belongs to this pinned RmlUi revision without name collisions.
+if(EXISTS "${CURRENT_PACKAGES_DIR}/share/Backends")
+    file(RENAME
+        "${CURRENT_PACKAGES_DIR}/share/Backends"
+        "${CURRENT_PACKAGES_DIR}/share/${PORT}/Backends"
+    )
+endif()
 
 file(REMOVE_RECURSE
     "${CURRENT_PACKAGES_DIR}/debug/include"

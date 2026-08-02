@@ -38,7 +38,7 @@ public:
     // Force next frame to be a keyframe
     void force_keyframe();
 
-    // Dynamically change bitrate
+    // Dynamically change the average VBR target.
     void set_bitrate(uint32_t bitrate);
 
     // Which codec was selected?

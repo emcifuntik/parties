@@ -53,6 +53,10 @@ public:
     // Intended for future karaoke / channel-join-sound / plugin sources. Safe to
     // call from any single producer thread; calls are serialized internally.
     void push_secondary_pcm(const float* pcm, int frame_count);
+    void set_secondary_send_volume(float volume);
+    float secondary_send_volume() const {
+        return secondary_send_volume_.load(std::memory_order_relaxed);
+    }
 
     // Mute/unmute
     void set_muted(bool muted) { muted_ = muted; if (muted) transmitting_ = false; }
@@ -147,6 +151,7 @@ private:
     std::vector<float> secondary_buf_;   // accumulates to OPUS_FRAME_SIZE
     size_t secondary_pos_ = 0;
     uint8_t secondary_opus_buf_[audio::MAX_OPUS_PACKET];
+    std::atomic<float> secondary_send_volume_{1.0f};
 
     // Capture accumulation buffer
     std::vector<float> capture_buf_;

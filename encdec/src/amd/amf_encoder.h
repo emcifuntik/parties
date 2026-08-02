@@ -32,7 +32,9 @@ public:
 
 private:
     bool try_codec(const wchar_t* component_id, VideoCodecId id);
+    bool ensure_staging_texture();
     bool do_encode(ID3D11Texture2D* texture, int64_t timestamp_100ns);
+    bool deliver_output(amf::AMFData* data);
 
     amf::AMFFactory* factory_ = nullptr;
     amf::AMFContext* context_ = nullptr;

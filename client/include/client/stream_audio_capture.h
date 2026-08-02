@@ -15,12 +15,17 @@ namespace parties::client {
 // Uses ActivateAudioInterfaceAsync for process-specific capture (Win10 2004+).
 class StreamAudioCapture {
 public:
+    enum class OutputMode {
+        EncodedStereo,
+        MonoPcm,
+    };
+
     StreamAudioCapture();
     ~StreamAudioCapture();
 
     // target_pid: >0 = capture only this process tree (window share)
     //             0 = capture all system audio except our own process (monitor share)
-    bool init(uint32_t target_pid = 0);
+    bool init(uint32_t target_pid = 0, OutputMode mode = OutputMode::EncodedStereo);
     void shutdown();
 
     bool start();
@@ -28,6 +33,9 @@ public:
 
     // Called from capture thread when an encoded Opus frame is ready
     std::function<void(const uint8_t* opus_data, size_t opus_len)> on_encoded_frame;
+    // Called from the capture thread with 48 kHz mono PCM. Used by the
+    // application-audio feature to feed AudioEngine's existing VOICE2 encoder.
+    std::function<void(const float* mono_pcm, int frame_count)> on_pcm_frame;
 
 private:
     void capture_thread_func();
@@ -44,9 +52,11 @@ private:
 
     OpusCodec encoder_;
     bool encoder_initialized_ = false;
+    OutputMode output_mode_ = OutputMode::EncodedStereo;
 
     // Capture accumulation buffer (stereo interleaved)
     std::vector<float> capture_buf_;
+    std::vector<float> mono_buf_;
     size_t capture_pos_ = 0;
 
     uint8_t opus_buf_[audio::MAX_OPUS_PACKET];

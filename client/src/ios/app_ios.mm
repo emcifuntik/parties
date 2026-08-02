@@ -37,7 +37,6 @@
 #include <client/sound_player.h>
 #include <client/rmlui_backend.h>
 #include <client/video_element.h>
-#include <client/level_meter_element.h>
 #include <client/gradient_circle_element.h>
 #include <client/custom_elements.h>
 
@@ -97,7 +96,6 @@ using namespace parties::protocol;
 
     // Custom element instancers
     parties::rml::ElementRegistry _elementRegistry;
-    LevelMeterElement*      _levelMeter;
 
     // Touch / scroll (channels list)
     Rml::Element*           _channelsEl;
@@ -222,6 +220,8 @@ using namespace parties::protocol;
     Rml::LoadFontFace("ui/fonts/Inter-Regular.ttf");
     Rml::LoadFontFace("ui/fonts/Inter-Medium.ttf");
     Rml::LoadFontFace("ui/fonts/Inter-Bold.ttf");
+    Rml::LoadFontFace("ui/fonts/NotoSans-Regular.ttf", true);
+    Rml::LoadFontFace("ui/fonts/NotoSans-Bold.ttf", true);
 
 #ifdef RMLUI_DEBUG
     Rml::Debugger::Initialise(_rmlContext);
@@ -315,7 +315,6 @@ using namespace parties::protocol;
     if (_doc) {
         _doc->Show();
         _doc->SetClass("platform-ios", true);
-        _levelMeter = static_cast<LevelMeterElement*>(_doc->GetElementById("voice-level-meter"));
     }
 
     _channelsEl = _doc ? _doc->GetElementById("channels") : nullptr;
@@ -651,12 +650,6 @@ using namespace parties::protocol;
 
     // Tick shared logic (network, audio levels, FPS counter, etc.)
     _core.tick();
-
-    // Update voice level meter
-    if (_levelMeter && _core.model_.is_connected) {
-        _levelMeter->SetLevel(audio::rms_to_perceptual(_core.audio_.voice_level()));
-        _levelMeter->SetThreshold(_core.model_.vad_threshold);
-    }
 
     // Update FPS + ping in titlebar (once per second)
     _fpsFrameCount++;

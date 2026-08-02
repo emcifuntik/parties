@@ -1,4 +1,5 @@
 #include "openh264_encoder.h"
+#include <encdec/rate_control.h>
 
 #include <wels/codec_api.h>
 #include <wels/codec_def.h>
@@ -39,8 +40,9 @@ bool OpenH264Encoder::init(ID3D11Device* device, uint32_t width, uint32_t height
     params.iUsageType = SCREEN_CONTENT_REAL_TIME;
     params.iPicWidth = static_cast<int>(width);
     params.iPicHeight = static_cast<int>(height);
-    params.iTargetBitrate = static_cast<int>(bitrate);
-    params.iMaxBitrate = static_cast<int>(bitrate * 3 / 2);
+    const auto rate_control = make_stream_vbr_rate_control(bitrate);
+    params.iTargetBitrate = static_cast<int>(rate_control.average_bitrate);
+    params.iMaxBitrate = static_cast<int>(rate_control.peak_bitrate);
     params.iRCMode = RC_BITRATE_MODE;
     params.fMaxFrameRate = static_cast<float>(fps);
     params.bEnableFrameSkip = false;
@@ -55,8 +57,10 @@ bool OpenH264Encoder::init(ID3D11Device* device, uint32_t width, uint32_t height
     params.sSpatialLayers[0].iVideoWidth = static_cast<int>(width);
     params.sSpatialLayers[0].iVideoHeight = static_cast<int>(height);
     params.sSpatialLayers[0].fFrameRate = static_cast<float>(fps);
-    params.sSpatialLayers[0].iSpatialBitrate = static_cast<int>(bitrate);
-    params.sSpatialLayers[0].iMaxSpatialBitrate = static_cast<int>(bitrate * 3 / 2);
+    params.sSpatialLayers[0].iSpatialBitrate =
+        static_cast<int>(rate_control.average_bitrate);
+    params.sSpatialLayers[0].iMaxSpatialBitrate =
+        static_cast<int>(rate_control.peak_bitrate);
     params.sSpatialLayers[0].uiProfileIdc = PRO_BASELINE;
     params.sSpatialLayers[0].uiLevelIdc = LEVEL_UNKNOWN;
 
@@ -210,12 +214,13 @@ void OpenH264Encoder::force_keyframe() {
 void OpenH264Encoder::set_bitrate(uint32_t bitrate) {
     if (!encoder_) return;
 
+    const auto rate_control = make_stream_vbr_rate_control(bitrate);
     SBitrateInfo info = {};
     info.iLayer = SPATIAL_LAYER_ALL;
-    info.iBitrate = static_cast<int>(bitrate);
+    info.iBitrate = static_cast<int>(rate_control.average_bitrate);
     encoder_->SetOption(ENCODER_OPTION_BITRATE, &info);
 
-    float max_br = static_cast<float>(bitrate * 3 / 2);
+    float max_br = static_cast<float>(rate_control.peak_bitrate);
     encoder_->SetOption(ENCODER_OPTION_MAX_BITRATE, &max_br);
 }
 

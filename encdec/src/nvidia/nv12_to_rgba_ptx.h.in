@@ -1,0 +1,7 @@
+#pragma once
+
+namespace parties::encdec::nvidia {
+inline constexpr char kNv12ToRgbaPtx[] = R"PARTIES_PTX(
+@PARTIES_NV12_TO_RGBA_PTX@
+)PARTIES_PTX";
+} // namespace parties::encdec::nvidia

@@ -1,4 +1,5 @@
 #include <client/stream_audio_capture.h>
+#include <client/application_audio.h>
 #include <parties/profiler.h>
 #include <parties/log.h>
 
@@ -85,18 +86,22 @@ StreamAudioCapture::~StreamAudioCapture() {
     shutdown();
 }
 
-bool StreamAudioCapture::init(uint32_t target_pid) {
+bool StreamAudioCapture::init(uint32_t target_pid, OutputMode mode) {
 	ZoneScopedN("StreamAudioCapture::init");
     // Ensure COM is initialized on the calling thread (needed for IMMDeviceEnumerator)
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 
-    if (!encoder_.init_encoder(kSampleRate, kChannels, 64000)) {
-        LOG_ERROR("Failed to init Opus encoder");
-        return false;
+    output_mode_ = mode;
+    if (output_mode_ == OutputMode::EncodedStereo) {
+        if (!encoder_.init_encoder(kSampleRate, kChannels, 64000)) {
+            LOG_ERROR("Failed to init Opus encoder");
+            return false;
+        }
+        encoder_initialized_ = true;
     }
-    encoder_initialized_ = true;
 
     capture_buf_.resize(kFrameSize * kChannels, 0.0f);
+    mono_buf_.resize(kFrameSize, 0.0f);
     capture_pos_ = 0;
 
     // Build activation params for process loopback
@@ -291,7 +296,10 @@ void StreamAudioCapture::capture_thread_func() {
                 capture_buf_[capture_pos_++] = right;
 
                 if (capture_pos_ >= static_cast<size_t>(samples_per_frame)) {
-                    if (encoder_initialized_ && on_encoded_frame) {
+                    if (output_mode_ == OutputMode::MonoPcm && on_pcm_frame) {
+                        downmix_application_audio(capture_buf_.data(), mono_buf_.data(), kFrameSize);
+                        on_pcm_frame(mono_buf_.data(), kFrameSize);
+                    } else if (encoder_initialized_ && on_encoded_frame) {
                         int encoded = encoder_.encode(capture_buf_.data(), kFrameSize,
                                                        opus_buf_, audio::MAX_OPUS_PACKET);
                         if (encoded > 0)

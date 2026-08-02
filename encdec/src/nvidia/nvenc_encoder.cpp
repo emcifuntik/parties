@@ -1,5 +1,6 @@
 #include "nvenc_encoder.h"
 #include "nvidia_loader.h"
+#include <encdec/rate_control.h>
 
 #include <cstring>
 #include <parties/log.h>
@@ -89,8 +90,10 @@ bool NvencEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
         return false;
     }
 
-    LOG_INFO("Selected codec: {} ({}x{} @ {} fps), bitrate: {} bps",
-             codec_name(codec_), width, height, fps, bitrate);
+    const auto rate_control = make_stream_vbr_rate_control(bitrate);
+    LOG_INFO("Selected codec: {} ({}x{} @ {} fps), VBR average: {} bps, peak: {} bps",
+             codec_name(codec_), width, height, fps,
+             rate_control.average_bitrate, rate_control.peak_bitrate);
 
     GUID encode_guid = (codec_ == VideoCodecId::AV1)  ? NV_ENC_CODEC_AV1_GUID
                      : (codec_ == VideoCodecId::H265) ? NV_ENC_CODEC_HEVC_GUID
@@ -113,11 +116,11 @@ bool NvencEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
 
     encode_config_ = preset_config.presetCfg;
     encode_config_.version = NV_ENC_CONFIG_VER;
-    encode_config_.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR;
-    encode_config_.rcParams.averageBitRate = bitrate;
-    encode_config_.rcParams.maxBitRate = bitrate;
-    encode_config_.rcParams.vbvBufferSize = bitrate;             // 1-second VBV buffer
-    encode_config_.rcParams.vbvInitialDelay = bitrate;
+    encode_config_.rcParams.rateControlMode = NV_ENC_PARAMS_RC_VBR;
+    encode_config_.rcParams.averageBitRate = rate_control.average_bitrate;
+    encode_config_.rcParams.maxBitRate = rate_control.peak_bitrate;
+    encode_config_.rcParams.vbvBufferSize = rate_control.vbv_buffer_size;
+    encode_config_.rcParams.vbvInitialDelay = rate_control.vbv_initial_delay;
     encode_config_.rcParams.multiPass = NV_ENC_TWO_PASS_QUARTER_RESOLUTION;
     encode_config_.rcParams.enableMinQP = 0;
     encode_config_.rcParams.enableMaxQP = 0;
@@ -270,9 +273,8 @@ bool NvencEncoder::do_encode(NV_ENC_REGISTERED_PTR resource, int64_t timestamp_1
         status = funcs_.nvEncEncodePicture(encoder_, &pic);
     }
 
-    funcs_.nvEncUnmapInputResource(encoder_, map.mappedResource);
-
     if (status != NV_ENC_SUCCESS) {
+        funcs_.nvEncUnmapInputResource(encoder_, map.mappedResource);
         LOG_ERROR("EncodePicture failed: {}", (int)status);
         return false;
     }
@@ -286,9 +288,17 @@ bool NvencEncoder::do_encode(NV_ENC_REGISTERED_PTR resource, int64_t timestamp_1
         status = funcs_.nvEncLockBitstream(encoder_, &lock);
     }
     if (status != NV_ENC_SUCCESS) {
+        funcs_.nvEncUnmapInputResource(encoder_, map.mappedResource);
         LOG_ERROR("LockBitstream failed: {}", (int)status);
         return false;
     }
+
+    // nvEncodeAPI requires a mapped input to remain valid until the blocking
+    // bitstream lock confirms completion of the encode that consumes it.
+    const NVENCSTATUS unmap_status =
+        funcs_.nvEncUnmapInputResource(encoder_, map.mappedResource);
+    if (unmap_status != NV_ENC_SUCCESS)
+        LOG_ERROR("UnmapInputResource failed: {}", (int)unmap_status);
 
     bool keyframe = (lock.pictureType == NV_ENC_PIC_TYPE_IDR ||
                      lock.pictureType == NV_ENC_PIC_TYPE_I);
@@ -298,8 +308,11 @@ bool NvencEncoder::do_encode(NV_ENC_REGISTERED_PTR resource, int64_t timestamp_1
                    lock.bitstreamSizeInBytes, keyframe);
     }
 
-    funcs_.nvEncUnlockBitstream(encoder_, output_bitstream_);
-    return true;
+    const NVENCSTATUS unlock_status =
+        funcs_.nvEncUnlockBitstream(encoder_, output_bitstream_);
+    if (unlock_status != NV_ENC_SUCCESS)
+        LOG_ERROR("UnlockBitstream failed: {}", (int)unlock_status);
+    return unmap_status == NV_ENC_SUCCESS && unlock_status == NV_ENC_SUCCESS;
 }
 
 bool NvencEncoder::encode(ID3D11Texture2D* bgra_texture, int64_t timestamp_100ns) {
@@ -361,10 +374,11 @@ void NvencEncoder::force_keyframe() {
 void NvencEncoder::set_bitrate(uint32_t bitrate) {
     if (!initialized_) return;
 
-    encode_config_.rcParams.averageBitRate = bitrate;
-    encode_config_.rcParams.maxBitRate = bitrate;
-    encode_config_.rcParams.vbvBufferSize = bitrate;
-    encode_config_.rcParams.vbvInitialDelay = bitrate;
+    const auto rate_control = make_stream_vbr_rate_control(bitrate);
+    encode_config_.rcParams.averageBitRate = rate_control.average_bitrate;
+    encode_config_.rcParams.maxBitRate = rate_control.peak_bitrate;
+    encode_config_.rcParams.vbvBufferSize = rate_control.vbv_buffer_size;
+    encode_config_.rcParams.vbvInitialDelay = rate_control.vbv_initial_delay;
 
     NV_ENC_RECONFIGURE_PARAMS reconfig{};
     reconfig.version = NV_ENC_RECONFIGURE_PARAMS_VER;
