@@ -491,6 +491,8 @@ struct DesignerApp::PartiesFixture {
 					{"Command Prompt", 9, false},
 					{"Rockstar Games Launcher", 10, false}};
 			}
+			for (auto& target : lobby.share_targets.silent())
+				target.element_id = "share-thumbnail-" + Rml::ToString(target.index);
 		}
 
 		lobby.show_user_menu = scenario == "member";
@@ -1048,6 +1050,19 @@ struct DesignerApp::PartiesFixture {
 					scenario.c_str(), settings_present ? 1 : 0, chat_present ? 1 : 0);
 			}
 			return valid;
+		}
+
+		if (scenario == "share" || scenario == "audio-share") {
+			for (const auto& target : lobby.share_targets.get()) {
+				Rml::Element* preview = document->GetElementById(target.element_id);
+				if (!preview || preview->GetTagName() != "video_frame") {
+					std::fprintf(stderr,
+						"[Designer] Missing share preview surface for target %d (%s)\n",
+						target.index, target.element_id.c_str());
+					return false;
+				}
+			}
+			return !lobby.share_targets.get().empty();
 		}
 
 		const bool stream_scenario = scenario == "stream-single" || scenario == "streams" ||

@@ -485,6 +485,7 @@
                             <div class="share-target-preview">
                                 <div class="share-target-fallback">Preview unavailable</div>
                                 <video_frame class="share-target-thumbnail"
+                                             data-attr-id="target.element_id"
                                              data-attr-thumbnailindex="target.index" />
                             </div>
                             <div class="share-target-meta">
@@ -509,6 +510,7 @@
                             <div class="share-target-preview">
                                 <div class="share-target-fallback">Preview unavailable</div>
                                 <video_frame class="share-target-thumbnail"
+                                             data-attr-id="target.element_id"
                                              data-attr-thumbnailindex="target.index" />
                             </div>
                             <div class="share-target-meta">

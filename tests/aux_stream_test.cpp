@@ -77,6 +77,14 @@ double run_energy(VoiceMixer& mixer, const std::vector<Packet>& pkts, float mast
     return energy;
 }
 
+std::vector<Packet> with_sequence_base(const std::vector<Packet>& packets,
+                                       uint16_t sequence_base) {
+    std::vector<Packet> result = packets;
+    for (size_t index = 0; index < result.size(); ++index)
+        result[index].seq = static_cast<uint16_t>(sequence_base + index);
+    return result;
+}
+
 } // namespace
 
 int main() {
@@ -140,6 +148,26 @@ int main() {
         std::printf("[per-user=2] energy=%.3f (unity=%.3f)\n", loud_energy, aux_energy);
         TEST_ASSERT(loud_energy > aux_energy * 1.5,
                     "per-user music volume scales only that member's VOICE2 stream");
+    }
+
+    // 4. VOICE2 has a 16-bit sequence number, so a continuous stream wraps
+    // every ~21.8 minutes. Exercise the exact 65535 -> 0 transition rather than
+    // waiting that long in the test. No packet may be discarded as stale and
+    // the decoder must not enter PLC/resync at the boundary.
+    {
+        auto wrap_packets = with_sequence_base(encode_music(32), 65524);
+        VoiceMixer wrapped(/*apply_makeup=*/false);
+        double wrap_energy = run_energy(wrapped, wrap_packets, -1.0f);
+        const auto stats = wrapped.decode_stats();
+        std::printf("[sequence-wrap] energy=%.3f normal=%llu plc=%llu resync=%llu\n",
+                    wrap_energy,
+                    static_cast<unsigned long long>(stats.normal),
+                    static_cast<unsigned long long>(stats.plc),
+                    static_cast<unsigned long long>(stats.resync));
+        TEST_ASSERT(wrap_energy > 1.0, "audio survives the uint16 sequence wrap");
+        TEST_ASSERT(stats.normal >= wrap_packets.size(),
+                    "all packets around the sequence wrap decode normally");
+        TEST_ASSERT(stats.resync == 0, "sequence wrap does not trigger jitter resync");
     }
 
     std::printf("=== ALL AUX STREAM TESTS PASSED ===\n");

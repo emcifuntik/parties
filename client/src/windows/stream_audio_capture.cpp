@@ -15,6 +15,8 @@
 #include <wrl/implements.h>
 
 #include <cstring>
+#include <algorithm>
+#include <cmath>
 #include <condition_variable>
 #include <mutex>
 
@@ -276,6 +278,12 @@ void StreamAudioCapture::capture_thread_func() {
             if (FAILED(hr)) break;
 
             bool is_silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
+            if (flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) {
+                // Never splice the tail of the old WASAPI timeline onto the
+                // beginning of a new one. It creates a malformed 20 ms frame and
+                // is especially audible in the stateful music encoder.
+                capture_pos_ = 0;
+            }
 
             for (UINT32 i = 0; i < frames_available; i++) {
                 float left = 0.0f, right = 0.0f;
@@ -291,6 +299,12 @@ void StreamAudioCapture::capture_thread_func() {
                         right = mix_channels >= 2 ? samples[1] / 32768.0f : left;
                     }
                 }
+
+                // Protect both the direct stereo encoder and the VOICE2 downmix.
+                // std::clamp alone does not sanitize NaN (all comparisons are
+                // false), so finite validation must happen first.
+                left = std::isfinite(left) ? std::clamp(left, -1.0f, 1.0f) : 0.0f;
+                right = std::isfinite(right) ? std::clamp(right, -1.0f, 1.0f) : 0.0f;
 
                 capture_buf_[capture_pos_++] = left;
                 capture_buf_[capture_pos_++] = right;

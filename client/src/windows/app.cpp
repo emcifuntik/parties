@@ -683,16 +683,25 @@ static Rml::Element* find_grid_video(Rml::Element* el, uint32_t streamid) {
     return nullptr;
 }
 
-static Rml::Element* find_share_thumbnail(Rml::Element* el, int target_index) {
+static Rml::Element* find_share_thumbnail_recursive(Rml::Element* el, int target_index) {
     if (el->GetTagName() == "video_frame" &&
         el->GetAttribute<int>("thumbnailindex", -1) == target_index)
         return el;
     const int n = el->GetNumChildren();
     for (int i = 0; i < n; ++i) {
-        if (auto* found = find_share_thumbnail(el->GetChild(i), target_index))
+        if (auto* found = find_share_thumbnail_recursive(el->GetChild(i), target_index))
             return found;
     }
     return nullptr;
+}
+
+static Rml::Element* find_share_thumbnail(Rml::ElementDocument* document, int target_index) {
+    if (!document) return nullptr;
+    const Rml::String element_id = "share-thumbnail-" + Rml::ToString(target_index);
+    if (auto* element = document->GetElementById(element_id))
+        return element;
+    // Retain the attribute walk for documents produced by older UI assets.
+    return find_share_thumbnail_recursive(document, target_index);
 }
 
 void App::render_frame() {
@@ -948,6 +957,7 @@ void App::show_share_picker(bool audio_only) {
         for (auto& m : picker->enumerate_monitors()) {
             int idx = static_cast<int>(capture_targets_.size());
             ShareTarget st; st.name = Rml::String(m.name); st.index = idx; st.is_monitor = true;
+            st.element_id = "share-thumbnail-" + Rml::ToString(idx);
             targets.push_back(std::move(st));
             capture_targets_.push_back(std::move(m));
         }
@@ -955,6 +965,7 @@ void App::show_share_picker(bool audio_only) {
     for (auto& w : picker->enumerate_windows()) {
         int idx = static_cast<int>(capture_targets_.size());
         ShareTarget st; st.name = Rml::String(w.name); st.index = idx; st.is_monitor = false;
+        st.element_id = "share-thumbnail-" + Rml::ToString(idx);
         targets.push_back(std::move(st));
         capture_targets_.push_back(std::move(w));
     }
@@ -998,7 +1009,6 @@ void App::cancel_share_thumbnails() {
 
 void App::share_thumbnail_worker(std::stop_token stop_token) {
     TracySetThreadName("Share thumbnails");
-    ScreenCapture::ThumbnailSession thumbnail_session;
     while (!stop_token.stop_requested()) {
         std::vector<CaptureTarget> targets;
         uint64_t generation = 0;
@@ -1014,33 +1024,48 @@ void App::share_thumbnail_worker(std::stop_token stop_token) {
             share_thumbnail_job_pending_ = false;
         }
 
-        for (int index = 0; index < static_cast<int>(targets.size()); ++index) {
-            if (stop_token.stop_requested())
-                break;
-            {
-                std::lock_guard lock(share_thumbnail_mutex_);
-                if (generation != share_thumbnail_generation_)
-                    break;
-            }
+        // WGC may need hundreds of milliseconds before a minimized or throttled
+        // application produces its first frame. Serial capture made one such
+        // window block every card behind it. A small bounded worker set keeps the
+        // picker responsive without creating a GPU device per enumerated window.
+        std::atomic<int> next_target{0};
+        const int worker_count = (std::min)(4, static_cast<int>(targets.size()));
+        std::vector<std::jthread> capture_workers;
+        capture_workers.reserve(worker_count);
+        for (int worker_index = 0; worker_index < worker_count; ++worker_index) {
+            capture_workers.emplace_back([&, generation] {
+                ScreenCapture::ThumbnailSession thumbnail_session;
+                while (!stop_token.stop_requested()) {
+                    const int index = next_target.fetch_add(1, std::memory_order_relaxed);
+                    if (index >= static_cast<int>(targets.size()))
+                        break;
+                    {
+                        std::lock_guard lock(share_thumbnail_mutex_);
+                        if (generation != share_thumbnail_generation_)
+                            break;
+                    }
 
-            // The cards are 250x118dp. 320x180 retains enough detail for high
-            // DPI while reducing capture conversion and texture memory by 56%
-            // compared with the old 480x270 previews.
-            auto thumbnail = thumbnail_session.capture(targets[index], 320, 180);
-            if (!thumbnail)
-                continue;
+                    // The cards are 250x118dp. 320x180 retains enough detail for
+                    // high DPI without uploading full-size window surfaces.
+                    auto thumbnail = thumbnail_session.capture(targets[index], 320, 180);
+                    if (!thumbnail)
+                        continue;
 
-            ShareThumbnail pending;
-            pending.target_index = index;
-            pending.rgba = std::move(thumbnail.rgba);
-            pending.width = thumbnail.width;
-            pending.height = thumbnail.height;
+                    ShareThumbnail pending;
+                    pending.target_index = index;
+                    pending.rgba = std::move(thumbnail.rgba);
+                    pending.width = thumbnail.width;
+                    pending.height = thumbnail.height;
 
-            std::lock_guard lock(share_thumbnail_mutex_);
-            if (generation != share_thumbnail_generation_)
-                break;
-            pending_share_thumbnails_.push_back(std::move(pending));
+                    std::lock_guard lock(share_thumbnail_mutex_);
+                    if (generation != share_thumbnail_generation_)
+                        break;
+                    pending_share_thumbnails_.push_back(std::move(pending));
+                }
+            });
         }
+        for (auto& worker : capture_workers)
+            worker.join();
 
         {
             std::lock_guard lock(share_thumbnail_mutex_);

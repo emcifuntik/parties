@@ -40,7 +40,8 @@ void LobbyModel::build(rml::Builder& b) {
     b.register_struct<ShareTarget>([](auto& s) {
         s.member("name",       &ShareTarget::name)
          .member("index",      &ShareTarget::index)
-         .member("is_monitor", &ShareTarget::is_monitor);
+         .member("is_monitor", &ShareTarget::is_monitor)
+         .member("element_id", &ShareTarget::element_id);
     });
     b.register_array<Rml::Vector<ShareTarget>>();
 

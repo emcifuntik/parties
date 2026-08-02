@@ -42,6 +42,9 @@ struct ShareTarget {
     Rml::String name;
     int index = 0;       // index into App's capture_targets_ vector
     bool is_monitor = false;
+    // Stable DOM id for the preview surface. Looking up an element by this id is
+    // reliable even while RmlUi is reconciling the two filtered data-for lists.
+    Rml::String element_id;
 };
 
 struct ActiveSharer {

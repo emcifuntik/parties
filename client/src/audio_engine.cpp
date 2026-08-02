@@ -118,8 +118,12 @@ void AudioEngine::push_secondary_pcm(const float* pcm, int frame_count) {
     while (remaining > 0) {
         size_t space = audio::OPUS_FRAME_SIZE - secondary_pos_;
         size_t to_copy = std::min(static_cast<size_t>(remaining), space);
-        for (size_t i = 0; i < to_copy; ++i)
-            secondary_buf_[secondary_pos_ + i] = std::clamp(src[i] * gain, -1.0f, 1.0f);
+        for (size_t i = 0; i < to_copy; ++i) {
+            const float scaled = src[i] * gain;
+            secondary_buf_[secondary_pos_ + i] = std::isfinite(scaled)
+                ? std::clamp(scaled, -1.0f, 1.0f)
+                : 0.0f;
+        }
         secondary_pos_ += to_copy;
         src += to_copy;
         remaining -= static_cast<int>(to_copy);
