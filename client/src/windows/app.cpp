@@ -683,25 +683,10 @@ static Rml::Element* find_grid_video(Rml::Element* el, uint32_t streamid) {
     return nullptr;
 }
 
-static Rml::Element* find_share_thumbnail_recursive(Rml::Element* el, int target_index) {
-    if (el->GetTagName() == "video_frame" &&
-        el->GetAttribute<int>("thumbnailindex", -1) == target_index)
-        return el;
-    const int n = el->GetNumChildren();
-    for (int i = 0; i < n; ++i) {
-        if (auto* found = find_share_thumbnail_recursive(el->GetChild(i), target_index))
-            return found;
-    }
-    return nullptr;
-}
-
 static Rml::Element* find_share_thumbnail(Rml::ElementDocument* document, int target_index) {
     if (!document) return nullptr;
     const Rml::String element_id = "share-thumbnail-" + Rml::ToString(target_index);
-    if (auto* element = document->GetElementById(element_id))
-        return element;
-    // Retain the attribute walk for documents produced by older UI assets.
-    return find_share_thumbnail_recursive(document, target_index);
+    return document->GetElementById(element_id);
 }
 
 void App::render_frame() {
@@ -948,8 +933,10 @@ void App::show_share_picker(bool audio_only) {
     }
     capture_targets_.clear();
     cancel_share_thumbnails();
-    auto& targets = core_.model_.share_targets.silent();
-    targets.clear();
+    auto& monitor_targets = core_.model_.share_monitor_targets.silent();
+    auto& application_targets = core_.model_.share_application_targets.silent();
+    monitor_targets.clear();
+    application_targets.clear();
     core_.model_.selected_share_target = -1;
     core_.model_.share_picker_mode = audio_only ? 1 : 0;
 
@@ -958,7 +945,7 @@ void App::show_share_picker(bool audio_only) {
             int idx = static_cast<int>(capture_targets_.size());
             ShareTarget st; st.name = Rml::String(m.name); st.index = idx; st.is_monitor = true;
             st.element_id = "share-thumbnail-" + Rml::ToString(idx);
-            targets.push_back(std::move(st));
+            monitor_targets.push_back(std::move(st));
             capture_targets_.push_back(std::move(m));
         }
     }
@@ -966,11 +953,12 @@ void App::show_share_picker(bool audio_only) {
         int idx = static_cast<int>(capture_targets_.size());
         ShareTarget st; st.name = Rml::String(w.name); st.index = idx; st.is_monitor = false;
         st.element_id = "share-thumbnail-" + Rml::ToString(idx);
-        targets.push_back(std::move(st));
+        application_targets.push_back(std::move(st));
         capture_targets_.push_back(std::move(w));
     }
 
-    core_.model_.share_targets.notify();
+    core_.model_.share_monitor_targets.notify();
+    core_.model_.share_application_targets.notify();
     core_.model_.router.open_share_picker();
     queue_share_thumbnails();
 }

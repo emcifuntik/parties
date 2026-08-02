@@ -42,8 +42,7 @@ struct ShareTarget {
     Rml::String name;
     int index = 0;       // index into App's capture_targets_ vector
     bool is_monitor = false;
-    // Stable DOM id for the preview surface. Looking up an element by this id is
-    // reliable even while RmlUi is reconciling the two filtered data-for lists.
+    // Stable DOM id for direct delivery into this target's preview surface.
     Rml::String element_id;
 };
 
@@ -147,7 +146,12 @@ public:
 
     // Share picker
     rml::Prop<bool>        use_native_picker{false};  // true on macOS (native picker, no target list)
-    rml::Prop<Rml::Vector<ShareTarget>> share_targets;
+    // Keep monitor and application targets in separate collections. RmlUi's
+    // data-if hides non-matching data-for rows but keeps their elements in the
+    // DOM, so filtering one combined collection in markup creates duplicate
+    // preview ids and routes frames into hidden video elements.
+    rml::Prop<Rml::Vector<ShareTarget>> share_monitor_targets;
+    rml::Prop<Rml::Vector<ShareTarget>> share_application_targets;
     rml::Prop<int>         selected_share_target{-1};
     rml::Prop<int>         share_picker_mode{0}; // 0 = screen/video, 1 = application audio only
     rml::Prop<float>       share_bitrate{2.0f};    // Average Mbps (0.5 - 20.0), VBR peak is 2x

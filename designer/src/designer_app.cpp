@@ -472,16 +472,17 @@ struct DesignerApp::PartiesFixture {
 			lobby.share_scale = 1;
 			lobby.share_bitrate = 6.0f;
 			if (scenario == "audio-share") {
-				lobby.share_targets = Rml::Vector<parties::client::ShareTarget>{
+				lobby.share_application_targets = Rml::Vector<parties::client::ShareTarget>{
 					{"Spotify — Karaoke Mix", 0, false},
 					{"Zen Browser — YouTube Music", 1, false},
 					{"VLC media player — Backing track", 2, false},
 					{"foobar2000 — Playlist", 3, false}};
 			} else {
-				lobby.share_targets = Rml::Vector<parties::client::ShareTarget>{
+				lobby.share_monitor_targets = Rml::Vector<parties::client::ShareTarget>{
 					{"Display 1 — 2560 × 1440", 0, true},
 					{"Display 2 — 1920 × 1080", 1, true},
-					{"Display 3 — 1920 × 1080", 2, true},
+					{"Display 3 — 1920 × 1080", 2, true}};
+				lobby.share_application_targets = Rml::Vector<parties::client::ShareTarget>{
 					{"Zen Browser — Parties redesign", 3, false},
 					{"Visual Studio — miniaudio-rnnoise", 4, false},
 					{"OBS Studio — Preview", 5, false},
@@ -491,8 +492,10 @@ struct DesignerApp::PartiesFixture {
 					{"Command Prompt", 9, false},
 					{"Rockstar Games Launcher", 10, false}};
 			}
-			for (auto& target : lobby.share_targets.silent())
-				target.element_id = "share-thumbnail-" + Rml::ToString(target.index);
+			for (auto* targets : {&lobby.share_monitor_targets, &lobby.share_application_targets}) {
+				for (auto& target : targets->silent())
+					target.element_id = "share-thumbnail-" + Rml::ToString(target.index);
+			}
 		}
 
 		lobby.show_user_menu = scenario == "member";
@@ -1053,16 +1056,34 @@ struct DesignerApp::PartiesFixture {
 		}
 
 		if (scenario == "share" || scenario == "audio-share") {
-			for (const auto& target : lobby.share_targets.get()) {
-				Rml::Element* preview = document->GetElementById(target.element_id);
-				if (!preview || preview->GetTagName() != "video_frame") {
-					std::fprintf(stderr,
-						"[Designer] Missing share preview surface for target %d (%s)\n",
-						target.index, target.element_id.c_str());
-					return false;
+			size_t target_count = 0;
+			for (const auto* targets : {&lobby.share_monitor_targets, &lobby.share_application_targets}) {
+				for (const auto& target : targets->get()) {
+					++target_count;
+					Rml::Element* preview = document->GetElementById(target.element_id);
+					if (!preview || preview->GetTagName() != "video_frame") {
+						std::fprintf(stderr,
+							"[Designer] Missing share preview surface for target %d (%s)\n",
+							target.index, target.element_id.c_str());
+						return false;
+					}
 				}
 			}
-			return !lobby.share_targets.get().empty();
+
+			Rml::ElementList preview_elements;
+			document->GetElementsByTagName(preview_elements, "video_frame");
+			size_t share_preview_count = 0;
+			for (Rml::Element* preview : preview_elements) {
+				if (preview->GetId().rfind("share-thumbnail-", 0) == 0)
+					++share_preview_count;
+			}
+			if (share_preview_count != target_count) {
+				std::fprintf(stderr,
+					"[Designer] Duplicate share preview surfaces: targets=%zu elements=%zu\n",
+					target_count, share_preview_count);
+				return false;
+			}
+			return target_count > 0;
 		}
 
 		const bool stream_scenario = scenario == "stream-single" || scenario == "streams" ||

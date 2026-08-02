@@ -478,7 +478,7 @@
                         <span>Screens</span><span>Entire displays</span>
                     </div>
                     <div class="share-target-grid">
-                        <div data-for="target : share_targets" data-if="target.is_monitor"
+                        <div data-for="target : share_monitor_targets"
                              class="share-target-card"
                              data-class-selected="target.index == selected_share_target"
                              data-event-click="choose_share_target(target.index)">
@@ -503,7 +503,7 @@
                         <span data-if="share_picker_mode == 1">Capture sound from one application</span>
                     </div>
                     <div class="share-target-grid">
-                        <div data-for="target : share_targets" data-if="target.is_monitor == false"
+                        <div data-for="target : share_application_targets"
                              class="share-target-card"
                              data-class-selected="target.index == selected_share_target"
                              data-event-click="choose_share_target(target.index)">
