@@ -17,6 +17,8 @@
 // RmlUi core
 #include <RmlUi/Core/Core.h>
 #include <RmlUi/Core/Context.h>
+#include <RmlUi/Core/ComputedValues.h>
+#include <RmlUi/Core/Element.h>
 #include <RmlUi/Core/ElementDocument.h>
 #include <RmlUi/Core/Factory.h>
 #include <RmlUi/Core/Input.h>
@@ -48,6 +50,228 @@
 using namespace parties;
 using namespace parties::client;
 using namespace parties::protocol;
+
+namespace {
+
+enum class IOSScrollAxis {
+    None,
+    Horizontal,
+    Vertical,
+};
+
+#ifndef NDEBUG
+ChannelUser PreviewUser(const char* name, int id, bool speaking = false,
+                        bool muted = false, bool streaming = false, int role = 3)
+{
+    ChannelUser user;
+    user.name = name;
+    user.id = id;
+    user.role = role;
+    user.speaking = speaking;
+    user.muted = muted;
+    user.streaming = streaming;
+    return user;
+}
+
+ChatMessage PreviewMessage(int64_t id, int senderId, const char* sender,
+                           const char* text, const char* time, int color,
+                           bool own = false)
+{
+    ChatMessage message;
+    message.id = id;
+    message.sender_id = senderId;
+    message.sender_name = sender;
+    message.initials = Rml::String(sender).substr(0, (std::min)(size_t(2), std::strlen(sender)));
+    message.text = text;
+    message.timestamp_str = time;
+    message.color_index = color;
+    message.is_own = own;
+    message.segments.push_back({text, false});
+    return message;
+}
+
+bool IsIOSPreviewScenario(const std::string& scenario)
+{
+    static constexpr const char* scenarios[] = {
+        "launcher", "sidebar", "party-modal", "onboarding", "onboarding-restore",
+        "onboarding-key-import", "recovery", "room", "chat", "settings",
+        "settings-screen-share", "settings-hotkeys", "settings-account",
+        "stream-single", "streams", "member", "login", "tofu",
+        "create-channel", "create-text-channel", "rename-channel",
+        "global-name", "server-nickname"
+    };
+    for (const char* value : scenarios)
+        if (scenario == value) return true;
+    return false;
+}
+
+void PopulateIOSPreview(AppCore& core, const std::string& scenario)
+{
+    LobbyModel& lobby = core.model_;
+    ServerListModel& servers = core.server_model_;
+    ChatModel& chat = core.chat_model_;
+
+    const bool disconnected = scenario == "launcher" || scenario == "party-modal" ||
+        scenario == "onboarding" || scenario == "onboarding-restore" ||
+        scenario == "onboarding-key-import" || scenario == "recovery" ||
+        scenario == "login" || scenario == "tofu" ||
+        scenario == "global-name" || scenario == "server-nickname";
+
+    lobby.is_connected = !disconnected;
+    lobby.server_name = "Night Shift";
+    lobby.server_initials = "NS";
+    lobby.username = "tuxick";
+    lobby.current_channel = 1;
+    lobby.current_channel_name = "General";
+    lobby.ping_ms = 24;
+    lobby.can_manage_channels = true;
+    lobby.my_role = 0;
+    lobby.voice_volume = 1.0f;
+    lobby.secondary_volume = 0.8f;
+    lobby.music_send_volume = 0.72f;
+    lobby.notification_volume = 0.75f;
+    lobby.denoise_enabled = true;
+    lobby.vad_enabled = true;
+    lobby.vad_threshold = 0.12f;
+    lobby.share_bitrate = 8.0f;
+    lobby.share_fps = 2;
+    lobby.mobile_show_content = !disconnected && scenario != "sidebar";
+
+    ChannelInfo general;
+    general.id = 1;
+    general.name = "General";
+    general.max_users = 64;
+    general.users = {
+        PreviewUser("tuxick", 1, false, false, false, 0),
+        PreviewUser("IceTroll", 2, true, false, false, 1),
+        PreviewUser("ivan", 3, false, false, true),
+        PreviewUser("Sara", 4), PreviewUser("Maks", 5, false, true),
+        PreviewUser("android", 6), PreviewUser("Noah", 7)
+    };
+    general.user_count = static_cast<int>(general.users.size());
+    ChannelInfo lounge;
+    lounge.id = 2;
+    lounge.name = "Late night";
+    lounge.max_users = 12;
+    lounge.users = {PreviewUser("Maya", 8), PreviewUser("Liam", 9, true)};
+    lounge.user_count = static_cast<int>(lounge.users.size());
+    ChannelInfo focus;
+    focus.id = 3;
+    focus.name = "Quiet focus";
+    focus.max_users = 8;
+    lobby.channels = Rml::Vector<ChannelInfo>{general, lounge, focus};
+
+    lobby.capture_devices = Rml::Vector<AudioDevice>{{"iPhone Microphone", 0}};
+    lobby.playback_devices = Rml::Vector<AudioDevice>{{"iPhone Speaker", 0}, {"AirPods", 1}};
+    lobby.mute_key_name = "Not available on iOS";
+    lobby.deafen_key_name = "Not available on iOS";
+    lobby.ptt_key_name = "Not available on iOS";
+
+    ServerEntry night;
+    night.id = 1; night.name = "Night Shift"; night.initials = "NS";
+    night.color_index = 1; night.host = "night.parties.local";
+    night.online = true; night.users_text = "12 online · 5 in General";
+    ServerEntry studio;
+    studio.id = 2; studio.name = "Creative Studio"; studio.initials = "CS";
+    studio.color_index = 2; studio.host = "studio.parties.local";
+    studio.online = true; studio.users_text = "7 online · 3 in Lounge";
+    ServerEntry guild;
+    guild.id = 3; guild.name = "Old Guild"; guild.initials = "OG";
+    guild.color_index = 3; guild.host = "guild.parties.local";
+    guild.online = false; guild.locked = true;
+    servers.servers = Rml::Vector<ServerEntry>{night, studio, guild};
+    servers.party_count_text = "3 parties · 19 friends online";
+    servers.global_name = "tuxick";
+    servers.connected_server_id = disconnected ? 0 : 1;
+    servers.fingerprint = "5E7A 91C2 4D3F";
+    servers.has_identity = true;
+    servers.seed_phrase = "amber vessel orbit meadow copper velvet island echo marble lunar gentle harbor";
+
+    chat.text_channels = Rml::Vector<TextChannel>{
+        {1, "general", false}, {2, "clips-and-links", true}, {3, "off-topic", false}};
+    chat.active_channel = scenario == "chat" ? 1 : 0;
+    chat.active_channel_name = "general";
+    chat.can_manage_channels = true;
+    chat.messages = Rml::Vector<ChatMessage>{
+        PreviewMessage(1, 2, "IceTroll", "Anyone up for a quick match later?", "20:41", 2),
+        PreviewMessage(2, 3, "ivan", "I can join after I finish this build.", "20:43", 5),
+        PreviewMessage(3, 4, "Sara", "Perfect. I pinned the server details above.", "20:44", 8),
+        PreviewMessage(4, 1, "tuxick", "Give me ten minutes and I'll be there.", "20:45", 3, true)};
+
+    lobby.router.reset();
+    if (scenario == "chat")
+        lobby.router.go(DocumentRoute::Chat);
+    else if (scenario == "settings" || scenario == "settings-screen-share" ||
+             scenario == "settings-hotkeys" || scenario == "settings-account") {
+        lobby.router.go(DocumentRoute::Settings);
+        SettingsSection section = SettingsSection::AudioVoice;
+        if (scenario == "settings-screen-share") section = SettingsSection::ScreenShare;
+        if (scenario == "settings-hotkeys") section = SettingsSection::Hotkeys;
+        if (scenario == "settings-account") section = SettingsSection::AccountKeys;
+        lobby.router.select_settings(section);
+    }
+    else if (scenario == "stream-single" || scenario == "streams") {
+        lobby.router.go(DocumentRoute::Streams);
+        lobby.someone_sharing = true;
+        lobby.watching_count = scenario == "stream-single" ? 1 : 2;
+        lobby.viewing_sharer_id = 2;
+        lobby.stream_fps = 60;
+        lobby.sharers = Rml::Vector<ActiveSharer>{{2, "IceTroll", true}, {3, "ivan", true}};
+        lobby.watched = Rml::Vector<WatchedStream>{{2, "IceTroll · Counter-Strike 2", "screen-share-2"}};
+        if (scenario == "streams")
+            lobby.watched.silent().push_back({3, "ivan · Zen Browser", "screen-share-3"});
+    }
+
+    servers.show_onboarding = scenario == "onboarding" || scenario == "onboarding-restore" ||
+        scenario == "onboarding-key-import" || scenario == "recovery";
+    servers.onboarding_step = scenario == "recovery" ? 1 : 0;
+    servers.show_restore = scenario == "onboarding-restore";
+    servers.show_key_import = scenario == "onboarding-key-import";
+    if (servers.show_onboarding.get()) servers.has_identity = false;
+    servers.show_add_form = scenario == "party-modal";
+    servers.show_login = scenario == "login";
+    servers.login_status = "Secure connection ready";
+    servers.login_show_username = scenario == "login";
+    servers.login_username = "";
+    servers.show_global_name_editor = scenario == "global-name";
+    servers.global_name_input = "tuxick";
+    servers.show_server_nickname_editor = scenario == "server-nickname";
+    servers.server_nickname_server_id = 1;
+    servers.server_nickname_server_name = "Night Shift";
+    servers.server_nickname_input = "";
+    servers.show_tofu_warning = scenario == "tofu";
+    servers.tofu_fingerprint = "71:08:BB:6E:20:91:4F:3A";
+
+    lobby.show_create_channel = scenario == "create-channel";
+    lobby.show_rename_channel = scenario == "rename-channel";
+    lobby.rename_channel_name = "General";
+    lobby.new_rename_channel_name = "General lounge";
+    chat.show_create_text_channel = scenario == "create-text-channel";
+
+    lobby.show_user_menu = scenario == "member";
+    if (scenario == "member") {
+        lobby.menu_user_id = 2;
+        lobby.menu_user_name = "IceTroll";
+        lobby.menu_user_role = 1;
+        lobby.menu_user_volume = 0.86f;
+        lobby.menu_user_music_volume = 0.64f;
+        lobby.menu_user_compress = true;
+        lobby.menu_can_roles = true;
+        lobby.menu_can_kick = true;
+    }
+    if (scenario == "room") {
+        lobby.someone_sharing = true;
+        lobby.sharers = Rml::Vector<ActiveSharer>{{3, "ivan", false}};
+    }
+    if (scenario == "settings-account") {
+        lobby.show_private_key = true;
+        lobby.identity_private_key = "8d99c2eed598508a94eb471d7334ee80d28a57139d1a7b7273e16105106fe0a4";
+        lobby.show_import_identity = true;
+    }
+}
+#endif
+
+} // namespace
 
 // ── Keyboard proxy (UIKeyInput → RmlUi key events) ──────────────────────────
 
@@ -93,6 +317,10 @@ using namespace parties::protocol;
     bool                    _backendInitialized;
     bool                    _rmlInitialized;
     bool                    _debuggerInitialized;
+    bool                    _coreInitialized;
+    bool                    _quicInitialized;
+    bool                    _previewMode;
+    std::string             _previewScenario;
 
     // Embedded file interface (must outlive RmlUi)
     EmbeddedFileInterface   _fileInterface;
@@ -100,13 +328,17 @@ using namespace parties::protocol;
     // Custom element instancers
     parties::rml::ElementRegistry _elementRegistry;
 
-    // Touch / scroll (channels list)
-    Rml::Element*           _channelsEl;
+    // Touch scrolling. The weak observer becomes null if data binding removes
+    // the target while momentum is still active.
+    Rml::ObserverPtr<Rml::Element> _scrollTarget;
+    Rml::ObserverPtr<Rml::Element> _scrollCandidateX;
+    Rml::ObserverPtr<Rml::Element> _scrollCandidateY;
+    IOSScrollAxis           _scrollAxis;
     CGPoint                 _touchStart;
     CGPoint                 _touchLast;
     BOOL                    _isScrolling;
     BOOL                    _isDraggingWidget;  // touched a slider — inhibit scroll
-    float                   _velocityY;
+    float                   _scrollVelocity; // physical pixels per second
     BOOL                    _momentumActive;
     double                  _lastMoveTime;
     double                  _lastFrameTime;
@@ -120,6 +352,8 @@ using namespace parties::protocol;
     // Safe area
     UIEdgeInsets            _safeInsets;
     int                     _viewportTopPx;
+    int                     _viewportHeightPx;
+    CGFloat                 _keyboardInsetPt;
 
     // AppCore — all shared logic
     AppCore                 _core;
@@ -148,7 +382,7 @@ using namespace parties::protocol;
     _view.clearColor              = MTLClearColorMake(0.059, 0.067, 0.090, 1.0); // #0F1117
     _view.clearStencil            = 0;
     _view.delegate                = self;
-    _view.preferredFramesPerSecond = 60;
+    _view.preferredFramesPerSecond = UIScreen.mainScreen.maximumFramesPerSecond;
     self.view = _view;
     [_view release];
     [device release];
@@ -158,22 +392,37 @@ using namespace parties::protocol;
 {
     [super viewDidLoad];
 
-    // ── Audio session — keep audio alive while locked / in background ────
-    AVAudioSession* session = [AVAudioSession sharedInstance];
-    NSError* err = nil;
-    [session setCategory:AVAudioSessionCategoryPlayAndRecord
-             withOptions:AVAudioSessionCategoryOptionDefaultToSpeaker |
-                         AVAudioSessionCategoryOptionAllowBluetoothHFP |
-                         AVAudioSessionCategoryOptionMixWithOthers
-                   error:&err];
-    if (err) NSLog(@"[Parties] Audio session setCategory error: %@", err);
-    [session setActive:YES error:&err];
-    if (err) NSLog(@"[Parties] Audio session setActive error: %@", err);
+#ifndef NDEBUG
+    NSArray<NSString*>* arguments = NSProcessInfo.processInfo.arguments;
+    for (NSUInteger i = 0; i + 1 < arguments.count; ++i) {
+        if ([arguments[i] isEqualToString:@"--ui-fixture"]) {
+            _previewScenario = std::string(arguments[i + 1].UTF8String);
+            _previewMode = IsIOSPreviewScenario(_previewScenario);
+            if (!_previewMode)
+                NSLog(@"[Parties] Unknown iOS UI fixture: %s", _previewScenario.c_str());
+            break;
+        }
+    }
+#endif
 
-    [session requestRecordPermission:^(BOOL granted) {
-        if (!granted)
-            NSLog(@"[Parties] Microphone permission denied — voice chat will not work.");
-    }];
+    // ── Audio session — keep audio alive while locked / in background ────
+    if (!_previewMode) {
+        AVAudioSession* session = [AVAudioSession sharedInstance];
+        NSError* err = nil;
+        [session setCategory:AVAudioSessionCategoryPlayAndRecord
+                 withOptions:AVAudioSessionCategoryOptionDefaultToSpeaker |
+                             AVAudioSessionCategoryOptionAllowBluetoothHFP |
+                             AVAudioSessionCategoryOptionMixWithOthers
+                       error:&err];
+        if (err) NSLog(@"[Parties] Audio session setCategory error: %@", err);
+        [session setActive:YES error:&err];
+        if (err) NSLog(@"[Parties] Audio session setActive error: %@", err);
+
+        [session requestRecordPermission:^(BOOL granted) {
+            if (!granted)
+                NSLog(@"[Parties] Microphone permission denied — voice chat will not work.");
+        }];
+    }
 
     // ── Metal + RmlUi ────────────────────────────────────────────────────
     _commandQueue = [_view.device newCommandQueue];
@@ -215,6 +464,7 @@ using namespace parties::protocol;
         return;
     }
     _rmlContext->SetDensityIndependentPixelRatio((float)_dpRatio);
+    _rmlContext->ActivateTheme("ios", true);
 
     // Keyboard proxy.
     _keyInput = [[RmlKeyInput alloc] initWithFrame:CGRectMake(0, -2, 1, 1)];
@@ -259,7 +509,8 @@ using namespace parties::protocol;
 #endif
 
     // ── Sound player ─────────────────────────────────────────────────────
-    _soundPlayer.init();
+    if (!_previewMode)
+        _soundPlayer.init();
 
     // ── Settings path ────────────────────────────────────────────────────
     NSString* docs = [NSSearchPathForDirectoriesInDomains(
@@ -283,8 +534,31 @@ using namespace parties::protocol;
         bself->_soundPlayer.set_volume(v);
     };
 
-    bridge.show_channel_menu = nullptr;  // no right-click on iOS
-    bridge.show_server_menu  = nullptr;
+    bridge.show_channel_menu = nullptr;
+    bridge.show_server_menu = [bself](int server_id) {
+        UIAlertController* menu = [UIAlertController
+            alertControllerWithTitle:@"Saved Party"
+            message:nil
+            preferredStyle:UIAlertControllerStyleActionSheet];
+        [menu addAction:[UIAlertAction
+            actionWithTitle:@"Change Server Nickname"
+            style:UIAlertActionStyleDefault
+            handler:^(UIAlertAction*) {
+                if (bself->_core.server_model_.on_edit_server_nickname)
+                    bself->_core.server_model_.on_edit_server_nickname(server_id);
+            }]];
+        [menu addAction:[UIAlertAction
+            actionWithTitle:@"Remove Saved Party"
+            style:UIAlertActionStyleDestructive
+            handler:^(UIAlertAction*) {
+                if (bself->_core.server_model_.on_delete_server)
+                    bself->_core.server_model_.on_delete_server(server_id);
+            }]];
+        [menu addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                                style:UIAlertActionStyleCancel
+                                              handler:nil]];
+        [bself presentViewController:menu animated:YES completion:nil];
+    };
 
     bridge.open_share_picker = nullptr;  // iOS: receive-only, no screen share send
 
@@ -304,44 +578,54 @@ using namespace parties::protocol;
     // watchSharer:/stopWatching:. The multi-stream bridge callbacks remain
     // unset so AppCore uses its single-select watching path.
 
-    // ── Init QUIC ─────────────────────────────────────────────────────────
-    if (!parties::quic_init()) {
-        NSLog(@"[Parties] MsQuic init failed");
-        return;
+#ifndef NDEBUG
+    if (_previewMode) {
+        // Simulator-only visual harness. It uses the production document,
+        // models, UIKit shell and Metal backend, while avoiding network/audio
+        // startup so screenshots are deterministic and appear immediately.
+        if (!_core.server_model_.init(_rmlContext) ||
+            !_core.model_.init(_rmlContext) ||
+            !_core.chat_model_.init(_rmlContext)) {
+            NSLog(@"[Parties] Failed to initialize iOS UI fixture models");
+            return;
+        }
+        PopulateIOSPreview(_core, _previewScenario);
+        NSLog(@"[Parties] Loaded iOS UI fixture: %s", _previewScenario.c_str());
+    } else
+#endif
+    {
+        // ── Init QUIC ─────────────────────────────────────────────────────
+        if (!parties::quic_init()) {
+            NSLog(@"[Parties] MsQuic init failed");
+            return;
+        }
+        _quicInitialized = true;
+
+        // ── Init AppCore ─────────────────────────────────────────────────
+        if (!_core.init(std::string(dbPath.UTF8String), std::move(bridge), _rmlContext)) {
+            NSLog(@"[Parties] AppCore init failed");
+            return;
+        }
+        _coreInitialized = true;
+
+        [self installIOSModelCallbacks];
+        _core.on_video_frame_received = [bself](uint32_t sender_id, const uint8_t* data, size_t len) {
+            [bself onVideoFrameData:sender_id data:data len:len];
+        };
+
+        NSString* deviceName = [[UIDevice currentDevice] name];
+        _core.load_or_generate_identity(std::string(deviceName.UTF8String));
+        _core.load_saved_prefs();
+        _core.refresh_server_list();
     }
-
-    // ── Init AppCore ─────────────────────────────────────────────────────
-    if (!_core.init(std::string(dbPath.UTF8String), std::move(bridge), _rmlContext)) {
-        NSLog(@"[Parties] AppCore init failed");
-        return;
-    }
-
-    // ── iOS-specific model callbacks ─────────────────────────────────────
-    [self installIOSModelCallbacks];
-
-    // ── Wire video frame reception to local decoder ──────────────────────
-    _core.on_video_frame_received = [bself](uint32_t sender_id, const uint8_t* data, size_t len) {
-        [bself onVideoFrameData:sender_id data:data len:len];
-    };
-
-    // ── Load identity ────────────────────────────────────────────────────
-    NSString* deviceName = [[UIDevice currentDevice] name];
-    _core.load_or_generate_identity(std::string(deviceName.UTF8String));
-
-    // ── Load saved audio prefs ───────────────────────────────────────────
-    _core.load_saved_prefs();
-
-    // ── Populate server list ─────────────────────────────────────────────
-    _core.refresh_server_list();
 
     // ── UI document ──────────────────────────────────────────────────────
     _doc = _rmlContext->LoadDocument("ui/lobby.rml");
     if (_doc) {
-        _doc->Show();
         _doc->SetClass("platform-ios", true);
+        _doc->Show();
+        [self updateViewportSize];
     }
-
-    _channelsEl = _doc ? _doc->GetElementById("channels") : nullptr;
 }
 
 // ── iOS-specific model callback overrides ────────────────────────────────────
@@ -538,10 +822,12 @@ using namespace parties::protocol;
     // nativeBounds (always portrait).
     CGSize pts = self.view.bounds.size;
     int physW = (int)(pts.width  * _dpRatio);
-    int physH = (int)(pts.height * _dpRatio) - _viewportTopPx;
-    Backend::SetViewport(physW, physH);
+    int keyboardPx = (int)std::round(_keyboardInsetPt * _dpRatio);
+    int physH = (int)(pts.height * _dpRatio) - _viewportTopPx - keyboardPx;
+    _viewportHeightPx = (std::max)(1, physH);
+    Backend::SetViewport(physW, _viewportHeightPx);
     if (_rmlContext)
-        _rmlContext->SetDimensions(Rml::Vector2i(physW, physH));
+        _rmlContext->SetDimensions(Rml::Vector2i(physW, _viewportHeightPx));
 
     [self applySafeAreaToDocument];
 }
@@ -549,6 +835,12 @@ using namespace parties::protocol;
 - (void)viewSafeAreaInsetsDidChange
 {
     [super viewSafeAreaInsetsDidChange];
+    [self updateViewportSize];
+}
+
+- (void)viewDidLayoutSubviews
+{
+    [super viewDidLayoutSubviews];
     [self updateViewportSize];
 }
 
@@ -578,7 +870,7 @@ using namespace parties::protocol;
         char buf[32]; snprintf(buf, sizeof(buf), "%.0fdp", (double)pt); return buf;
     };
     body->SetProperty("padding-top",    "0dp");
-    body->SetProperty("padding-bottom", toDp(_safeInsets.bottom));
+    body->SetProperty("padding-bottom", toDp(_keyboardInsetPt > 0.0 ? 8.0 : _safeInsets.bottom));
     body->SetProperty("padding-left",   toDp(_safeInsets.left));
     body->SetProperty("padding-right",  toDp(_safeInsets.right));
 }
@@ -587,31 +879,27 @@ using namespace parties::protocol;
 
 - (void)keyboardWillShow:(NSNotification*)note
 {
-    CGRect kb     = [note.userInfo[UIKeyboardFrameEndUserInfoKey] CGRectValue];
-    CGRect screen = UIScreen.mainScreen.bounds;
+    CGRect kbScreen = [note.userInfo[UIKeyboardFrameEndUserInfoKey] CGRectValue];
+    CGRect kb = [self.view convertRect:kbScreen fromView:nil];
     NSTimeInterval dur = [note.userInfo[UIKeyboardAnimationDurationUserInfoKey] doubleValue];
-
-    CGFloat shiftY = 0;
-    if (_rmlContext) {
-        Rml::Element* focused = _rmlContext->GetFocusElement();
-        if (focused) {
-            float bottomPt = (focused->GetAbsoluteTop() + focused->GetClientHeight())
-                              / (float)_dpRatio;
-            if (bottomPt > screen.size.height / 2.0f)
-                shiftY = -kb.size.height;
-        }
-    }
+    _keyboardInsetPt = CGRectGetHeight(CGRectIntersection(self.view.bounds, kb));
     [UIView animateWithDuration:dur animations:^{
-        self->_view.frame = CGRectMake(0, shiftY, screen.size.width, screen.size.height);
+        [self updateViewportSize];
     }];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self->_rmlContext) {
+            if (Rml::Element* focused = self->_rmlContext->GetFocusElement())
+                focused->ScrollIntoView(false);
+        }
+    });
 }
 
 - (void)keyboardWillHide:(NSNotification*)note
 {
-    CGRect screen = UIScreen.mainScreen.bounds;
     NSTimeInterval dur = [note.userInfo[UIKeyboardAnimationDurationUserInfoKey] doubleValue];
+    _keyboardInsetPt = 0.0;
     [UIView animateWithDuration:dur animations:^{
-        self->_view.frame = screen;
+        [self updateViewportSize];
     }];
 }
 
@@ -631,7 +919,10 @@ using namespace parties::protocol;
 
     if (self.presentedViewController) return;
 
-    _core.shutdown();
+    if (_coreInitialized) {
+        _core.shutdown();
+        _coreInitialized = false;
+    }
 
     if (_decoder) {
         _decoder->shutdown();
@@ -658,7 +949,10 @@ using namespace parties::protocol;
     }
     [_commandQueue release];
     _commandQueue = nil;
-    parties::quic_cleanup();
+    if (_quicInitialized) {
+        parties::quic_cleanup();
+        _quicInitialized = false;
+    }
 }
 
 #ifdef RMLUI_DEBUG
@@ -674,11 +968,7 @@ using namespace parties::protocol;
 - (void)mtkView:(MTKView*)view drawableSizeWillChange:(CGSize)size
 {
     if (!_backendInitialized) return;
-    int w = (int)size.width;
-    int h = (int)size.height - _viewportTopPx;
-    Backend::SetViewport(w, h);
-    if (_rmlContext)
-        _rmlContext->SetDimensions(Rml::Vector2i(w, h));
+    [self updateViewportSize];
 }
 
 - (void)drawInMTKView:(MTKView*)view
@@ -686,7 +976,8 @@ using namespace parties::protocol;
     if (!_backendInitialized || !_rmlContext || !_commandQueue) return;
 
     // Tick shared logic (network, audio levels, FPS counter, etc.)
-    _core.tick();
+    if (_coreInitialized)
+        _core.tick();
 
     // Update FPS + ping in titlebar (once per second)
     _fpsFrameCount++;
@@ -719,10 +1010,30 @@ using namespace parties::protocol;
         float  dt  = (float)(now - _lastFrameTime);
         _lastFrameTime = now;
         if (dt > 0.0f && dt < 0.1f) {
-            float delta = _velocityY * dt * 0.015f;
-            _rmlContext->ProcessMouseWheel(Rml::Vector2f(0, delta), 0);
-            _velocityY *= powf(0.998f, dt * 1000.0f);
-            if (fabsf(_velocityY) < 30.0f) { _velocityY = 0.0f; _momentumActive = NO; }
+            Rml::Element* target = _scrollTarget.get();
+            if (!target) {
+                _momentumActive = NO;
+                _scrollVelocity = 0.0f;
+            } else {
+                const bool horizontal = _scrollAxis == IOSScrollAxis::Horizontal;
+                float before = horizontal ? target->GetScrollLeft() : target->GetScrollTop();
+                if (horizontal)
+                    target->SetScrollLeft(before + _scrollVelocity * dt);
+                else
+                    target->SetScrollTop(before + _scrollVelocity * dt);
+                float after = horizontal ? target->GetScrollLeft() : target->GetScrollTop();
+                if (fabsf(after - before) < 0.01f)
+                    _momentumActive = NO;
+            }
+            _scrollVelocity *= powf(0.998f, dt * 1000.0f);
+            if (fabsf(_scrollVelocity) < 5.0f * _dpRatio) {
+                _scrollVelocity = 0.0f;
+                _momentumActive = NO;
+            }
+            if (!_momentumActive) {
+                _scrollTarget.reset();
+                _scrollAxis = IOSScrollAxis::None;
+            }
         }
     }
 
@@ -738,7 +1049,7 @@ using namespace parties::protocol;
     {
         id<MTLTexture> colorTex = pass.colorAttachments[0].texture;
         if (colorTex)
-            Backend::SetViewport((int)colorTex.width, (int)colorTex.height - _viewportTopPx);
+            Backend::SetViewport((int)colorTex.width, _viewportHeightPx);
     }
 
     Backend::BeginFrame(cmd, pass);
@@ -773,6 +1084,23 @@ using namespace parties::protocol;
     return NO;
 }
 
+- (Rml::Element*)scrollableAncestorOf:(Rml::Element*)element horizontal:(BOOL)horizontal
+{
+    while (element) {
+        const auto& computed = element->GetComputedValues();
+        const auto overflow = horizontal ? computed.overflow_x() : computed.overflow_y();
+        const bool permitsScroll = overflow == Rml::Style::Overflow::Auto ||
+                                   overflow == Rml::Style::Overflow::Scroll;
+        const bool hasOverflow = horizontal
+            ? element->GetScrollWidth() > element->GetClientWidth() + 0.5f
+            : element->GetScrollHeight() > element->GetClientHeight() + 0.5f;
+        if (permitsScroll && hasOverflow)
+            return element;
+        element = element->GetParentNode();
+    }
+    return nullptr;
+}
+
 - (void)touchesBegan:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)event
 {
     if (!_rmlContext || touches.count == 0) return;
@@ -781,12 +1109,23 @@ using namespace parties::protocol;
     _touchLast      = _touchStart;
     _isScrolling    = NO;
     _momentumActive = NO;
-    _velocityY      = 0.0f;
+    _scrollTarget.reset();
+    _scrollCandidateX.reset();
+    _scrollCandidateY.reset();
+    _scrollAxis     = IOSScrollAxis::None;
+    _scrollVelocity = 0.0f;
     _lastMoveTime   = CACurrentMediaTime();
     Rml::Vector2f pt = [self physFromPt:_touchStart];
     _rmlContext->ProcessMouseMove((int)pt.x, (int)pt.y, 0);
     // Check if we hit a slider before pressing — if so, lock out scrolling.
     _isDraggingWidget = [self hitTestSlider:pt];
+    if (!_isDraggingWidget) {
+        Rml::Element* hovered = _rmlContext->GetHoverElement();
+        if (Rml::Element* target = [self scrollableAncestorOf:hovered horizontal:YES])
+            _scrollCandidateX = target->GetObserverPtr();
+        if (Rml::Element* target = [self scrollableAncestorOf:hovered horizontal:NO])
+            _scrollCandidateY = target->GetObserverPtr();
+    }
     // Only press immediately for drag-based widgets (sliders).
     // For everything else, defer until touchesEnded to avoid
     // toggling checkboxes when the user intends to scroll.
@@ -801,13 +1140,25 @@ using namespace parties::protocol;
     UITouch* touch = touches.anyObject;
     CGPoint  cur   = [touch locationInView:_view];
 
+    float dxPt = (float)(cur.x - _touchLast.x);
     float dyPt = (float)(cur.y - _touchLast.y);
     _touchLast = cur;
 
     if (!_isScrolling && !_isDraggingWidget) {
-        float dy = fabsf((float)(cur.y - _touchStart.y));
-        if (dy > 10.0f) {
+        const float totalX = fabsf((float)(cur.x - _touchStart.x));
+        const float totalY = fabsf((float)(cur.y - _touchStart.y));
+        if ((std::max)(totalX, totalY) > 10.0f) {
             _isScrolling = YES;
+            if (totalX > totalY && _scrollCandidateX.get()) {
+                _scrollAxis = IOSScrollAxis::Horizontal;
+                _scrollTarget = _scrollCandidateX.get()->GetObserverPtr();
+            } else if (_scrollCandidateY.get()) {
+                _scrollAxis = IOSScrollAxis::Vertical;
+                _scrollTarget = _scrollCandidateY.get()->GetObserverPtr();
+            } else if (_scrollCandidateX.get()) {
+                _scrollAxis = IOSScrollAxis::Horizontal;
+                _scrollTarget = _scrollCandidateX.get()->GetObserverPtr();
+            }
         }
     }
 
@@ -815,17 +1166,24 @@ using namespace parties::protocol;
     _rmlContext->ProcessMouseMove((int)pt.x, (int)pt.y, 0);
 
     if (_isScrolling) {
-        // Feed scroll delta to RmlUi (negate — same convention as macOS scrollWheel).
-        float scrollDelta = -dyPt * 0.015f;
-        _rmlContext->ProcessMouseWheel(Rml::Vector2f(0, scrollDelta), 0);
+        // Follow the finger one-to-one. Desktop wheel ticks quantize this drag
+        // and are the source of the non-native, detached iOS scroll feel.
+        const bool horizontal = _scrollAxis == IOSScrollAxis::Horizontal;
+        const float deltaPt = horizontal ? dxPt : dyPt;
+        if (Rml::Element* target = _scrollTarget.get()) {
+            if (horizontal)
+                target->SetScrollLeft(target->GetScrollLeft() - deltaPt * _dpRatio);
+            else if (_scrollAxis == IOSScrollAxis::Vertical)
+                target->SetScrollTop(target->GetScrollTop() - deltaPt * _dpRatio);
+        }
 
         double now = CACurrentMediaTime();
         double dt  = now - _lastMoveTime;
         _lastMoveTime = now;
         if (dt > 0.0 && dt < 0.1) {
-            float sample = -dyPt / (float)dt;
-            _velocityY = 0.6f * _velocityY + 0.4f * sample;
-            _velocityY = std::clamp(_velocityY, -1500.0f, 1500.0f);
+            float sample = -deltaPt * _dpRatio / (float)dt;
+            _scrollVelocity = 0.72f * _scrollVelocity + 0.28f * sample;
+            _scrollVelocity = std::clamp(_scrollVelocity, -12000.0f, 12000.0f);
         }
     }
 }
@@ -839,6 +1197,12 @@ using namespace parties::protocol;
     Rml::Vector2f pt = [self physFromPt:cur];
     _rmlContext->ProcessMouseMove((int)pt.x, (int)pt.y, 0);
 
+    // A finger held still before release must not resume an old velocity
+    // sample. UIPanGestureRecognizer behaves the same way and avoids the
+    // surprising glide that desktop-style emulations often produce.
+    if (_isScrolling && CACurrentMediaTime() - _lastMoveTime > 0.10)
+        _scrollVelocity = 0.0f;
+
     if (!_isScrolling) {
         if (_isDraggingWidget) {
             // Slider drag — button was pressed in touchesBegan, just release.
@@ -848,11 +1212,18 @@ using namespace parties::protocol;
             _rmlContext->ProcessMouseButtonDown(0, 0);
             _rmlContext->ProcessMouseButtonUp(0, 0);
         }
-        _velocityY = 0.0f;
-    } else if (fabsf(_velocityY) > 50.0f) {
+        _scrollVelocity = 0.0f;
+        _scrollTarget.reset();
+        _scrollAxis = IOSScrollAxis::None;
+    } else if (_scrollTarget.get() && fabsf(_scrollVelocity) > 35.0f * _dpRatio) {
         _momentumActive = YES;
         _lastFrameTime = CACurrentMediaTime();
+    } else {
+        _scrollTarget.reset();
+        _scrollAxis = IOSScrollAxis::None;
     }
+    _scrollCandidateX.reset();
+    _scrollCandidateY.reset();
     _isScrolling = NO;
     _isDraggingWidget = NO;
     _rmlContext->ProcessMouseLeave();
@@ -862,6 +1233,12 @@ using namespace parties::protocol;
 {
     _isScrolling = NO;
     _isDraggingWidget = NO;
+    _momentumActive = NO;
+    _scrollVelocity = 0.0f;
+    _scrollTarget.reset();
+    _scrollCandidateX.reset();
+    _scrollCandidateY.reset();
+    _scrollAxis = IOSScrollAxis::None;
     if (_rmlContext) {
         _rmlContext->ProcessMouseButtonUp(0, 0);
         _rmlContext->ProcessMouseLeave();
@@ -918,13 +1295,24 @@ using namespace parties::protocol;
 // Long-press → show system edit menu at touch point
 - (void)handleLongPress:(UILongPressGestureRecognizer*)gesture {
     if (gesture.state != UIGestureRecognizerStateBegan) return;
-    if (![self isInputFocused]) return;
+    if ([self isInputFocused]) {
+        if (@available(iOS 16.0, *)) {
+            CGPoint point = [gesture locationInView:_view];
+            UIEditMenuConfiguration* config =
+                [UIEditMenuConfiguration configurationWithIdentifier:nil sourcePoint:point];
+            [_editMenuInteraction presentEditMenuWithConfiguration:config];
+        }
+        return;
+    }
 
-    if (@available(iOS 16.0, *)) {
+    // Long-press outside an input maps to a secondary click. This gives touch
+    // users the same saved-server context menu as macOS and Windows.
+    if (_rmlContext) {
         CGPoint point = [gesture locationInView:_view];
-        UIEditMenuConfiguration* config =
-            [UIEditMenuConfiguration configurationWithIdentifier:nil sourcePoint:point];
-        [_editMenuInteraction presentEditMenuWithConfiguration:config];
+        Rml::Vector2f physical = [self physFromPt:point];
+        _rmlContext->ProcessMouseMove((int)physical.x, (int)physical.y, 0);
+        _rmlContext->ProcessMouseButtonDown(1, 0);
+        _rmlContext->ProcessMouseButtonUp(1, 0);
     }
 }
 

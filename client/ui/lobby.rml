@@ -3,6 +3,7 @@
     <title>Parties</title>
     <link type="text/rcss" href="style.rcss" />
     <link type="text/rcss" href="redesign.rcss" />
+    <link type="text/rcss" href="ios.rcss" />
 </head>
 <body class="fullscreen">
 
@@ -71,9 +72,9 @@
                         <span class="home-subtitle">{{ party_count_text }}</span>
                     </div>
                     <div class="home-actions" data-model="lobby">
-                        <div class="home-profile">
-                            <gradient_circle class="home-profile-avatar" data-attr-seed="username" />
-                            <span class="home-profile-name">{{ username }}</span>
+                        <div class="home-profile" data-model="serverlist" data-event-click="edit_global_name">
+                            <gradient_circle class="home-profile-avatar" data-attr-seed="global_name" />
+                            <span class="home-profile-name">{{ global_name }}</span>
                         </div>
                         <div class="home-add-button" data-model="serverlist" data-event-click="add_server">+ Add party</div>
                     </div>
@@ -222,7 +223,7 @@
                         <svg class="voice-icon" src="icon-undeafen.svg" width="18" height="18" data-if="is_deafened == false" />
                         <svg class="voice-icon" src="icon-deafen.svg" width="18" height="18" data-if="is_deafened" />
                     </div>
-                    <div class="voice-btn" data-class-active="is_sharing"
+                    <div id="room-share-button" class="voice-btn" data-class-active="is_sharing"
                          data-event-click="toggle_share">
                         <svg class="voice-icon" src="icon-share.svg" width="18" height="18" data-if="is_sharing == false" />
                         <svg class="voice-icon" src="icon-sharing.svg" width="18" height="18" data-if="is_sharing" />
@@ -244,9 +245,10 @@
     <!-- Main content -->
     <div class="main-content" data-if="is_connected" data-model="lobby">
         <!-- Mobile back button (iOS only, shown via CSS) -->
-        <div class="mobile-back-bar" data-event-click="mobile_back">
-            <span class="mobile-back-arrow">&lt;</span>
+        <div class="mobile-back-bar" data-if="route != 'streams'" data-event-click="mobile_back">
+            <span class="mobile-back-arrow"></span>
             <span class="mobile-back-label">Channels</span>
+            <span class="mobile-back-context" data-if="route == 'room' && current_channel > 0">{{ current_channel_name }}</span>
         </div>
 
         <!-- Not connected: empty state -->
@@ -411,7 +413,11 @@
 
                 <div class="settings-scroll" id="settings-screen-share-page" data-if="settings_section == 1">
                     <div class="settings-page-intro" id="settings-screen-share-intro">Choose the defaults used when you start a new screen share.</div>
-                    <div class="settings-config-card">
+                    <div class="settings-ios-unavailable settings-ios-share-unavailable">
+                        <span class="settings-ios-unavailable-title">Screen sharing isn't available on iOS yet</span>
+                        <span>You can watch streams shared by other members. Starting a new screen share remains available on desktop.</span>
+                    </div>
+                    <div class="settings-config-card settings-share-config">
                         <div class="share-setting-group"><div class="settings-field-label">Codec</div><div class="share-codec-buttons">
                             <div class="share-codec-btn" data-class-active="share_codec == 0" data-event-click="select_share_codec(0)">AV1</div>
                             <div class="share-codec-btn" data-class-active="share_codec == 1" data-event-click="select_share_codec(1)">H.265</div>
@@ -427,7 +433,7 @@
                             <div class="share-codec-btn" data-class-active="share_fps == 0" data-event-click="select_share_fps(0)">15</div>
                             <div class="share-codec-btn" data-class-active="share_fps == 1" data-event-click="select_share_fps(1)">30</div>
                             <div class="share-codec-btn" data-class-active="share_fps == 2" data-event-click="select_share_fps(2)">60</div>
-                            <div class="share-codec-btn" data-class-active="share_fps == 3" data-event-click="select_share_fps(3)">120</div>
+                            <div class="share-codec-btn share-fps-120" data-class-active="share_fps == 3" data-event-click="select_share_fps(3)">120</div>
                         </div></div>
                         <div class="share-setting-group"><div class="settings-slider-heading settings-bitrate-heading"><span class="settings-field-label" id="settings-bitrate-label">Average bitrate</span><span class="settings-field-label settings-bitrate-value" id="settings-bitrate-value">{{ share_bitrate }} Mbps</span></div>
                             <input type="range" class="settings-wide-slider" id="settings-bitrate-slider" min="0.5" max="20" step="0.5"
@@ -438,6 +444,10 @@
 
                 <div class="settings-scroll" id="settings-hotkeys-page" data-if="settings_section == 2">
                     <div class="settings-page-intro" id="settings-hotkeys-intro">Global shortcuts continue to work while Parties is in the background.</div>
+                    <div class="settings-ios-unavailable">
+                        <span class="settings-ios-unavailable-title">Hotkeys aren't available on iOS</span>
+                        <span>Use the in-app microphone and audio controls instead. iOS does not allow Parties to register system-wide shortcuts.</span>
+                    </div>
                     <div class="settings-config-card settings-keybind-list">
                         <div class="settings-keybind-row"><div class="settings-row-copy"><span class="settings-feature-title">Toggle Mute</span><span class="settings-feature-copy">Mute or restore your microphone</span></div><div class="settings-keycap" data-event-click="mute_bind"><span data-if="mute_binding">Press a key...</span><span data-if="mute_binding == false && mute_key > 0">{{ mute_key_name }}</span><span data-if="mute_binding == false && mute_key == 0">Not set</span></div></div>
                         <div class="settings-keybind-row"><div class="settings-row-copy"><span class="settings-feature-title">Toggle Deafen</span><span class="settings-feature-copy">Mute all incoming room audio</span></div><div class="settings-keycap" data-event-click="deafen_bind"><span data-if="deafen_binding">Press a key...</span><span data-if="deafen_binding == false && deafen_key > 0">{{ deafen_key_name }}</span><span data-if="deafen_binding == false && deafen_key == 0">Not set</span></div></div>
@@ -541,7 +551,7 @@
 
         <!-- Channel content (voice) -->
         <div class="channel-content" data-if="route == 'room' || route == 'streams'">
-            <div class="channel-header" data-if="route == 'room' && current_channel > 0">
+            <div class="channel-header room-channel-header" data-if="route == 'room' && current_channel > 0">
                 <div class="channel-heading">
                     <span class="channel-kicker">Voice room</span>
                     <span class="channel-title">{{ current_channel_name }}</span>
@@ -625,6 +635,7 @@
             <div class="screen-share-area" data-if="route == 'streams' && watching_count > 0"
                  data-class-fullscreen="stream_fullscreen">
                 <div class="screen-share-header">
+                    <div class="stream-mobile-back" data-event-click="stop_watching"><span class="stream-mobile-back-arrow"></span><span>Room</span></div>
                     <div class="stream-room-context">
                         <span class="stream-room-live">LIVE</span>
                         <span class="stream-room-name">{{ current_channel_name }}</span>
@@ -641,7 +652,7 @@
                     <div class="stream-playback-tools">
                         <div class="stream-volume-control" title="Stream volume">
                             <svg class="stream-volume-icon" src="icon-volume.svg" width="16" height="16" />
-                            <input type="range" class="stream-volume-slider" id="stream-volume-slider" min="0" max="2" step="0.01"
+                            <input type="range" class="settings-wide-slider stream-volume-slider" id="stream-volume-slider" min="0" max="2" step="0.01"
                                    data-value="stream_volume"
                                    data-event-change="stream_volume_changed" />
                         </div>
@@ -676,11 +687,11 @@
                             <svg src="icon-undeafen.svg" width="18" height="18" data-if="is_deafened == false" />
                             <svg src="icon-deafen.svg" width="18" height="18" data-if="is_deafened" />
                         </div>
-                        <div class="dock-button" data-class-active="is_sharing" data-event-click="toggle_share" title="Share a screen">
+                        <div class="dock-button dock-share" data-class-active="is_sharing" data-event-click="toggle_share" title="Share a screen">
                             <svg src="icon-share.svg" width="18" height="18" data-if="is_sharing == false" />
                             <svg src="icon-sharing.svg" width="18" height="18" data-if="is_sharing" />
                         </div>
-                        <div class="dock-button" data-class-active="is_audio_sharing" data-event-click="toggle_audio_share" title="Share application audio">
+                        <div class="dock-button dock-audio-share" data-class-active="is_audio_sharing" data-event-click="toggle_audio_share" title="Share application audio">
                             <svg src="icon-music.svg" width="18" height="18" />
                         </div>
                         <div class="dock-button dock-end-streams" data-event-click="stop_watching" title="Leave all video streams">
@@ -769,8 +780,10 @@
                     <div class="chat-welcome-icon">
                         <svg src="icon-chat.svg" width="22" height="22" />
                     </div>
-                    <span class="chat-welcome-title">Welcome to {{ active_channel_name }}</span>
-                    <span class="chat-welcome-copy">This is the beginning of the conversation. Share an idea, a link, or simply say hello.</span>
+                    <div class="chat-welcome-copy-block">
+                        <span class="chat-welcome-title">Welcome to {{ active_channel_name }}</span>
+                        <span class="chat-welcome-copy">This is the beginning of the conversation. Share an idea, a link, or simply say hello.</span>
+                    </div>
                 </div>
                 <div class="date-separator">
                     <span class="date-separator-line"></span>
@@ -937,14 +950,45 @@
         </div>
     </div>
 
-    <!-- Login modal (identity-based — display name only) -->
+    <!-- Global launcher profile name. Per-server nicknames are edited from the
+         saved server context menu and remain independent from this value. -->
+    <div class="modal-backdrop" data-model="serverlist" data-if="show_global_name_editor">
+        <div class="modal-box name-editor-dialog">
+            <h1>Change Display Name</h1>
+            <div class="subtitle">This name is used as the default nickname for new parties.</div>
+            <div class="label">Global name</div>
+            <input type="text" data-value="global_name_input" />
+            <div class="error-text" data-if="global_name_error != ''">{{ global_name_error }}</div>
+            <div class="btn" data-event-click="save_global_name">Save</div>
+            <div class="btn btn-secondary" data-event-click="cancel_global_name">Cancel</div>
+        </div>
+    </div>
+
+    <!-- Per-server nickname, opened from the saved party context menu. -->
+    <div class="modal-backdrop" data-model="serverlist" data-if="show_server_nickname_editor">
+        <div class="modal-box name-editor-dialog">
+            <h1>Change Server Nickname</h1>
+            <div class="subtitle">Nickname used when connecting to {{ server_nickname_server_name }}.</div>
+            <div class="label">Nickname</div>
+            <input type="text" data-value="server_nickname_input"
+                   data-attr-placeholder="global_name" />
+            <div class="error-text" data-if="server_nickname_error != ''">{{ server_nickname_error }}</div>
+            <div class="btn" data-event-click="save_server_nickname">Save</div>
+            <div class="btn btn-secondary" data-event-click="cancel_server_nickname">Cancel</div>
+        </div>
+    </div>
+
+    <!-- Login modal for password-protected or not-yet-queried servers. -->
     <div class="modal-backdrop" data-model="serverlist" data-if="show_login">
         <div class="modal-box">
             <h1>Connect</h1>
             <div class="subtitle">{{ login_status }}</div>
 
-            <div class="label">Display Name</div>
-            <input type="text" data-value="login_username" />
+            <div data-if="login_show_username">
+                <div class="label">Nickname</div>
+                <input type="text" data-value="login_username"
+                       data-attr-placeholder="global_name" />
+            </div>
 
             <div class="label">Server Password</div>
             <input type="password" class="password" data-value="login_password" />
@@ -990,17 +1034,17 @@
                     <h1>How would you like to begin?</h1>
                     <p class="onboarding-lead">Create a new local identity or bring one you already own.</p>
                     <div class="identity-path primary" data-event-click="generate_identity">
-                        <div class="identity-path-icon"><span>+</span></div>
+                        <div class="identity-path-icon"><svg src="icon-identity-add.svg" width="22" height="22" /></div>
                         <div><h2>Create a new identity</h2><p>Generate a secure recovery phrase on this device.</p></div>
                         <span class="identity-path-arrow">›</span>
                     </div>
                     <div class="identity-path" data-event-click="show_restore">
-                        <div class="identity-path-icon"><span>R</span></div>
+                        <div class="identity-path-icon"><svg src="icon-identity-recover.svg" width="22" height="22" /></div>
                         <div><h2>Restore with recovery phrase</h2><p>Continue with your portable 12-word identity.</p></div>
                         <span class="identity-path-arrow">›</span>
                     </div>
                     <div class="identity-path" data-event-click="show_key_import">
-                        <div class="identity-path-icon"><span>K</span></div>
+                        <div class="identity-path-icon"><svg src="icon-identity-key.svg" width="22" height="22" /></div>
                         <div><h2>Import a private key</h2><p>For advanced users migrating an existing key.</p></div>
                         <span class="identity-path-arrow">›</span>
                     </div>
@@ -1053,16 +1097,12 @@
                 <div><div class="modal-kicker">New connection</div><h1>Create or join a party</h1></div>
                 <div class="close-icon" data-event-click="cancel_edit"><div class="close-icon-a"></div><div class="close-icon-b"></div></div>
             </div>
-            <div class="party-connect-tabs">
-                <span>Join with invite</span><span class="active">Direct connect</span><span>Host new</span>
-            </div>
             <div class="party-connect-body">
                 <div class="party-connect-form">
                     <div class="label">Server address</div>
                     <input type="text" data-value="edit_host" placeholder="voice.example.com" />
                     <div class="label">Port</div>
                     <input type="text" data-value="edit_port" />
-                    <div class="connection-security"><span>✓</span><div><b>Identity protected</b><p>The server will see your public fingerprint, never your private key.</p></div></div>
                 </div>
                 <div class="party-connect-preview">
                     <span class="preview-label">Connection preview</span>

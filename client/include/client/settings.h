@@ -54,6 +54,7 @@ public:
                      const std::string& fingerprint, const std::string& last_username,
                      const std::string& password = "");
     std::vector<SavedServer> get_saved_servers();
+    bool update_server_username(int id, const std::string& username);
     bool delete_server(int id);
 
     // --- Resumption tickets (0-RTT) ---

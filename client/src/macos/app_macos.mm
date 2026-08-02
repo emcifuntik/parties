@@ -474,11 +474,15 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         if (!bself->_contextMenus) return;
         bself->_contextMenus->SetAnchorPoint(bself->_metalView.contextMenuPoint);
         std::vector<MacOSContextAction> actions = {
-            {1, "Remove Saved Party", "Delete this saved connection", true},
+            {1, "Change Server Nickname", "Override your name for this party"},
+            {0, "", "", false, true, true},
+            {2, "Remove Saved Party", "Delete this saved connection", true},
         };
         bself->_contextMenus->ShowActions("Saved Party", std::move(actions),
             [bself, server_id](int command) {
-                if (command == 1 && bself->_core.server_model_.on_delete_server)
+                if (command == 1 && bself->_core.server_model_.on_edit_server_nickname)
+                    bself->_core.server_model_.on_edit_server_nickname(server_id);
+                else if (command == 2 && bself->_core.server_model_.on_delete_server)
                     bself->_core.server_model_.on_delete_server(server_id);
             });
     };

@@ -271,16 +271,24 @@ bool App::init(HWND hwnd) {
         });
     };
     bridge.show_server_menu = [this](int id) {
-        constexpr int ID_DELETE = 1;
+        constexpr int ID_NICKNAME = 1;
+        constexpr int ID_DELETE   = 2;
         ContextWindowManager::ActionRequest request;
         request.title = "Saved party";
         request.subtitle = "Connection actions";
         request.icon_text = "P";
-        request.actions = {{ID_DELETE, "Remove saved party", "Delete this connection", true, false}};
+        request.actions = {
+            {ID_NICKNAME, "Change server nickname", "Override your name for this party", false, false},
+            {ID_DELETE, "Remove saved party", "Delete this connection", true, false},
+        };
         context_windows_.show_actions(request, [this, id](int command) {
-            if (command != ID_DELETE) return;
-            core_.settings_.delete_server(id);
-            core_.refresh_server_list();
+            if (command == ID_NICKNAME) {
+                if (core_.server_model_.on_edit_server_nickname)
+                    core_.server_model_.on_edit_server_nickname(id);
+            } else if (command == ID_DELETE) {
+                if (core_.server_model_.on_delete_server)
+                    core_.server_model_.on_delete_server(id);
+            }
         });
     };
 
@@ -410,17 +418,15 @@ bool App::init(HWND hwnd) {
         }
     };
 
-    // Load identity
-    if (core_.settings_.has_identity()) {
-        auto id = core_.settings_.load_identity();
-        if (id) {
-            core_.secret_key_  = id->secret_key;
-            core_.public_key_  = id->public_key;
-            core_.has_identity_ = true;
-            LOG_INFO("Identity loaded: {}",
-                        parties::public_key_fingerprint(core_.public_key_));
-        }
-    }
+    // Load identity and the cross-platform global display name. The computer
+    // name is used only as the first-run fallback; subsequent launches read the
+    // user-edited value from preferences.
+    char computer_name[MAX_COMPUTERNAME_LENGTH + 1] = {};
+    DWORD computer_name_len = MAX_COMPUTERNAME_LENGTH + 1;
+    std::string username_hint = "User";
+    if (GetComputerNameA(computer_name, &computer_name_len) && computer_name_len > 0)
+        username_hint.assign(computer_name, computer_name_len);
+    core_.load_or_generate_identity(username_hint);
 
     // Load saved prefs into model/audio
     core_.load_saved_prefs();

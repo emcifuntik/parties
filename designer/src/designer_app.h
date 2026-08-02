@@ -13,6 +13,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -158,6 +159,7 @@ public:
 	int RunScreenshot(const std::string& output_path, int settle_frames = 240);
 	void SetPreviewSize(int width, int height);
 	void SetDensity(float density) { density_override_ = density; }
+	void SetTheme(std::string theme) { preview_theme_ = std::move(theme); }
 	void SetManagerVisible(bool visible) { manager_visible_ = visible; }
 	void SetDebuggerEnabled(bool enabled) { debugger_enabled_ = enabled; }
 	void SetAutoLoadBindVars(bool enabled) { auto_load_bind_vars_ = enabled; }
@@ -243,6 +245,7 @@ private:
 	int preview_width_ = 1440;
 	int preview_height_ = 900;
 	std::string parties_fixture_scenario_;
+	std::string preview_theme_;
 
 	// Debounce: time of last file change, reload after 100ms
 	DWORD last_change_tick_ = 0;

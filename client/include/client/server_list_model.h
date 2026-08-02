@@ -34,6 +34,21 @@ public:
     rml::Prop<Rml::Vector<ServerEntry>> servers;
     rml::Prop<Rml::String> party_count_text;  // e.g. "2 parties"
 
+    // Global profile name shown on the server launcher. This is independent
+    // from the optional nickname override stored for each saved server.
+    rml::Prop<Rml::String> global_name;
+    rml::Prop<bool>        show_global_name_editor{false};
+    rml::Prop<Rml::String> global_name_input;
+    rml::Prop<Rml::String> global_name_error;
+
+    // Per-server nickname editor, opened from the saved server context menu.
+    // An empty input resolves to `global_name` when saved/connected.
+    rml::Prop<bool>        show_server_nickname_editor{false};
+    rml::Prop<int>         server_nickname_server_id{0};
+    rml::Prop<Rml::String> server_nickname_server_name;
+    rml::Prop<Rml::String> server_nickname_input;
+    rml::Prop<Rml::String> server_nickname_error;
+
     // Add server form
     rml::Prop<bool>        show_add_form{false};
     rml::Prop<Rml::String> edit_host;
@@ -42,6 +57,7 @@ public:
 
     // Login overlay
     rml::Prop<bool>        show_login{false};
+    rml::Prop<bool>        login_show_username{false};
     rml::Prop<Rml::String> login_username;
     rml::Prop<Rml::String> login_password;
     rml::Prop<Rml::String> login_error;
@@ -72,6 +88,9 @@ public:
     // --- Callbacks (set by App) ---
     std::function<void(int)>  on_connect_server;
     std::function<void(int)>  on_delete_server;
+    std::function<void()>     on_save_global_name;
+    std::function<void(int)>  on_edit_server_nickname;
+    std::function<void()>     on_save_server_nickname;
     std::function<void()>     on_save_server;
     std::function<void()>     on_do_connect;
     std::function<void()>     on_cancel_login;

@@ -27,6 +27,10 @@ static constexpr unsigned char embed_redesign_rcss[] = {
     #embed "../ui/redesign.rcss"
 };
 
+static constexpr unsigned char embed_ios_rcss[] = {
+    #embed "../ui/ios.rcss"
+};
+
 static constexpr unsigned char embed_logo_svg[] = {
     #embed "../ui/logo.svg"
 };
@@ -89,6 +93,18 @@ static constexpr unsigned char embed_icon_appearance[] = {
 
 static constexpr unsigned char embed_icon_key[] = {
     #embed "../ui/icon-key.svg"
+};
+
+static constexpr unsigned char embed_icon_identity_add[] = {
+    #embed "../ui/icon-identity-add.svg"
+};
+
+static constexpr unsigned char embed_icon_identity_recover[] = {
+    #embed "../ui/icon-identity-recover.svg"
+};
+
+static constexpr unsigned char embed_icon_identity_key[] = {
+    #embed "../ui/icon-identity-key.svg"
 };
 
 static constexpr unsigned char embed_icon_close[] = {
@@ -181,6 +197,7 @@ EmbeddedFileInterface::EmbeddedFileInterface() {
     entries_["ui/context_window.rml"] = { embed_context_window_rml, sizeof(embed_context_window_rml) };
     entries_["ui/style.rcss"] = { embed_style_rcss, sizeof(embed_style_rcss) };
     entries_["ui/redesign.rcss"] = { embed_redesign_rcss, sizeof(embed_redesign_rcss) };
+    entries_["ui/ios.rcss"] = { embed_ios_rcss, sizeof(embed_ios_rcss) };
     entries_["ui/logo.svg"] = { embed_logo_svg, sizeof(embed_logo_svg) };
     entries_["ui/icon-unmute.svg"] = { embed_icon_unmute, sizeof(embed_icon_unmute) };
     entries_["ui/icon-mute.svg"] = { embed_icon_mute, sizeof(embed_icon_mute) };
@@ -197,6 +214,9 @@ EmbeddedFileInterface::EmbeddedFileInterface() {
     entries_["ui/icon-keyboard.svg"] = { embed_icon_keyboard, sizeof(embed_icon_keyboard) };
     entries_["ui/icon-appearance.svg"] = { embed_icon_appearance, sizeof(embed_icon_appearance) };
     entries_["ui/icon-key.svg"] = { embed_icon_key, sizeof(embed_icon_key) };
+    entries_["ui/icon-identity-add.svg"] = { embed_icon_identity_add, sizeof(embed_icon_identity_add) };
+    entries_["ui/icon-identity-recover.svg"] = { embed_icon_identity_recover, sizeof(embed_icon_identity_recover) };
+    entries_["ui/icon-identity-key.svg"] = { embed_icon_identity_key, sizeof(embed_icon_identity_key) };
     entries_["ui/icon-close.svg"] = { embed_icon_close, sizeof(embed_icon_close) };
     entries_["ui/icon-disconnect.svg"] = { embed_icon_disconnect, sizeof(embed_icon_disconnect) };
     entries_["ui/icon-room.svg"] = { embed_icon_room, sizeof(embed_icon_room) };

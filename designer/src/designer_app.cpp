@@ -1384,6 +1384,8 @@ bool DesignerApp::Init(const std::string& initial_file) {
 			return false;
 		}
 		preview_context_->SetDensityIndependentPixelRatio(dpi_scale_);
+		if (!preview_theme_.empty())
+			preview_context_->ActivateTheme(preview_theme_, true);
 	}
 
 	// Create manager context (uses manager_renderer_)
