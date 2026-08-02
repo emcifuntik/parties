@@ -28,6 +28,12 @@ public:
 
     ~RenderInterface_Metal();
 
+    /// Returns false when the Metal device, shaders, or pipeline states failed to initialize.
+    explicit operator bool() const override;
+
+    /// Returns whether a render command encoder is currently recording a frame.
+    bool IsFrameActive() const override;
+
     /// Update the viewport dimensions (call when the drawable size changes).
     void SetViewport(int width, int height, bool force = false) override;
 
@@ -48,6 +54,9 @@ public:
     void ReleaseGeometry(Rml::CompiledGeometryHandle handle) override;
     void UpdateGeometryVertices(Rml::CompiledGeometryHandle geometry,
                                 Rml::Span<const Rml::Vertex> vertices) override;
+    void UpdateTextureData(Rml::TextureHandle texture_handle,
+                           Rml::Span<const Rml::byte> source_data,
+                           Rml::Vector2i source_dimensions) override;
 
     Rml::TextureHandle LoadTexture(Rml::Vector2i& texture_dimensions,
                                    const Rml::String& source) override;

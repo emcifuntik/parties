@@ -21,6 +21,7 @@ Self-hosted voice chat and screen sharing app. No accounts, no tracking — just
 - Clang/LLVM 20+ (clang-cl on Windows)
 - vcpkg (manifest mode, auto-bootstrapped)
 - Ninja
+- macOS/iOS: Xcode, the macOS/iOS SDKs, and `pkg-config`
 
 ### Build
 
@@ -36,6 +37,25 @@ cmake --build --preset default
 | `default` | Debug build |
 | `release` | Optimized release build |
 | `asan` | RelWithDebInfo + AddressSanitizer |
+| `macos-arm64-debug` | macOS ARM64 Debug app bundle |
+| `macos-arm64-release` | macOS ARM64 Release app bundle |
+| `ios-arm64-debug` | iOS device ARM64 Debug app bundle (unsigned without a team ID) |
+| `ios-arm64-release` | iOS device ARM64 Release app bundle (unsigned without a team ID) |
+
+Apple builds use the same configure/build workflow:
+
+```bash
+cmake --preset macos-arm64-debug
+cmake --build --preset macos-arm64-debug
+
+cmake --preset ios-arm64-debug
+cmake --build --preset ios-arm64-debug
+```
+
+Pass `-DAPPLE_DEVELOPMENT_TEAM=<TEAM_ID>` while configuring an iOS preset to
+enable automatic signing for device installation or archiving. Without a team
+ID the generated iOS project remains unsigned, which is suitable for CI compile
+checks.
 
 ## Architecture
 

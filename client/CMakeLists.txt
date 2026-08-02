@@ -7,6 +7,18 @@ find_package(RapidJSON CONFIG REQUIRED)
 find_package(RmlUi CONFIG REQUIRED)
 find_path(MINIAUDIO_INCLUDE_DIRS "miniaudio.h")
 
+# rlottie's exported Apple target carries an explicit `-undefined error` flag.
+# Modern ld treats that mode as the default and warns that the explicit option
+# is deprecated, so remove only that exact stale interface item.
+if(APPLE AND TARGET rlottie::rlottie)
+    get_target_property(_RLottie_INTERFACE_LIBS rlottie::rlottie INTERFACE_LINK_LIBRARIES)
+    if(_RLottie_INTERFACE_LIBS)
+        list(REMOVE_ITEM _RLottie_INTERFACE_LIBS "-Wl, -undefined error")
+        set_property(TARGET rlottie::rlottie PROPERTY
+            INTERFACE_LINK_LIBRARIES "${_RLottie_INTERFACE_LIBS}")
+    endif()
+endif()
+
 
 find_path(SPEEXDSP_INCLUDE_DIRS "speex/speex_echo.h")
 find_library(SPEEXDSP_LIBRARY speexdsp)
@@ -92,6 +104,7 @@ elseif(APPLE)
         # Entry point & window (AppKit / Metal)
         src/macos/main.mm
         src/macos/app_macos.mm
+        src/macos/context_menu_macos.mm
 
         # RmlUI Metal backend (shared with iOS)
         src/metal/RmlUi_Renderer_Metal.mm
@@ -240,6 +253,22 @@ if(APPLE)
             XCODE_ATTRIBUTE_SKIP_INSTALL "NO"
             XCODE_ATTRIBUTE_INSTALL_PATH "$(LOCAL_APPS_DIR)"
         )
+        # Keep local/CI compile checks usable without a provisioning profile.
+        # Supplying APPLE_DEVELOPMENT_TEAM opts back into automatic signing for
+        # device installation and archives.
+        if(APPLE_DEVELOPMENT_TEAM STREQUAL "")
+            set_target_properties(parties_client PROPERTIES
+                XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED "NO"
+                XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED "NO"
+            )
+        else()
+            set_target_properties(parties_client PROPERTIES
+                XCODE_ATTRIBUTE_DEVELOPMENT_TEAM "${APPLE_DEVELOPMENT_TEAM}"
+                XCODE_ATTRIBUTE_CODE_SIGN_STYLE "Automatic"
+                XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED "YES"
+                XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED "YES"
+            )
+        endif()
     else()
         set_target_properties(parties_client PROPERTIES
             MACOSX_BUNDLE_GUI_IDENTIFIER "org.parties.client"
@@ -257,8 +286,8 @@ endif()
 
 target_link_libraries(parties_client
     PRIVATE
-        parties_common
         parties_encdec
+        parties_common
         rnnoise::rnnoise
         unofficial::sqlite3::sqlite3
         RmlUi::RmlUi

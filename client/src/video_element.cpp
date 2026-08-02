@@ -69,7 +69,6 @@ void VideoElement::UpdateYUVFrame(
     SetTextureCrop(width, height, 0, 0, width, height);
 
     // Store plane data — uploaded to GPU in OnRender (must happen on render thread)
-    uint32_t half_w = width / 2;
     uint32_t half_h = height / 2;
 
     yuv_y_.resize(static_cast<size_t>(y_stride) * height);

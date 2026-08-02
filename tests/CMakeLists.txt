@@ -1,7 +1,9 @@
 find_package(unofficial-sqlite3 CONFIG REQUIRED)
 find_package(toml11 CONFIG REQUIRED)
 find_package(RapidJSON CONFIG REQUIRED)
-find_package(RmlUi CONFIG REQUIRED)
+if(BUILD_CLIENT)
+    find_package(RmlUi CONFIG REQUIRED)
+endif()
 set_target_properties(toml11::toml11 PROPERTIES INTERFACE_COMPILE_OPTIONS "")
 
 add_executable(parties_integration_test
@@ -66,13 +68,19 @@ target_link_libraries(parties_aux_stream_test
         Opus::opus
 )
 
-# ── RCSS design tokens (offline, deterministic) ─────────────────────────────
-add_executable(parties_ui_stylesheet_test ui_stylesheet_test.cpp)
-target_link_libraries(parties_ui_stylesheet_test PRIVATE RmlUi::RmlUi)
+# ── RmlUi client tests (offline, deterministic) ─────────────────────────────
+if(BUILD_CLIENT)
+    add_executable(parties_ui_stylesheet_test ui_stylesheet_test.cpp)
+    target_link_libraries(parties_ui_stylesheet_test PRIVATE RmlUi::RmlUi)
 
-add_executable(parties_document_router_test document_router_test.cpp)
-target_include_directories(parties_document_router_test PRIVATE ../client/include)
-target_link_libraries(parties_document_router_test PRIVATE RmlUi::RmlUi)
+    add_executable(parties_document_router_test document_router_test.cpp)
+    target_include_directories(parties_document_router_test PRIVATE ../client/include)
+    target_link_libraries(parties_document_router_test PRIVATE RmlUi::RmlUi)
+
+    add_executable(parties_context_render_manager_lifecycle_test
+        context_render_manager_lifecycle_test.cpp)
+    target_link_libraries(parties_context_render_manager_lifecycle_test PRIVATE RmlUi::RmlUi)
+endif()
 
 add_executable(parties_server_query_wake_test server_query_wake_test.cpp)
 target_include_directories(parties_server_query_wake_test PRIVATE ../client/include)
@@ -82,9 +90,6 @@ target_include_directories(parties_video_decode_gate_test PRIVATE ../client/incl
 
 add_executable(parties_video_rate_control_test video_rate_control_test.cpp)
 target_include_directories(parties_video_rate_control_test PRIVATE ../encdec/include)
-
-add_executable(parties_context_render_manager_lifecycle_test context_render_manager_lifecycle_test.cpp)
-target_link_libraries(parties_context_render_manager_lifecycle_test PRIVATE RmlUi::RmlUi)
 
 add_executable(parties_application_audio_test
     application_audio_test.cpp
@@ -145,12 +150,14 @@ endif()
 
 add_test(NAME parties_voice_loss COMMAND parties_voice_loss_test)
 add_test(NAME parties_aux_stream COMMAND parties_aux_stream_test)
-add_test(NAME parties_ui_stylesheet_variables COMMAND parties_ui_stylesheet_test)
-add_test(NAME parties_document_router COMMAND parties_document_router_test)
+if(BUILD_CLIENT)
+    add_test(NAME parties_ui_stylesheet_variables COMMAND parties_ui_stylesheet_test)
+    add_test(NAME parties_document_router COMMAND parties_document_router_test)
+    add_test(NAME parties_context_render_manager_lifecycle COMMAND parties_context_render_manager_lifecycle_test)
+endif()
 add_test(NAME parties_server_query_wake COMMAND parties_server_query_wake_test)
 add_test(NAME parties_video_decode_gate COMMAND parties_video_decode_gate_test)
 add_test(NAME parties_video_rate_control COMMAND parties_video_rate_control_test)
-add_test(NAME parties_context_render_manager_lifecycle COMMAND parties_context_render_manager_lifecycle_test)
 add_test(NAME parties_application_audio_downmix COMMAND parties_application_audio_test)
 if(WIN32)
     add_test(NAME parties_amf_decode_state COMMAND parties_amf_decode_state_test)

@@ -42,6 +42,12 @@ configure_file(
 
 if(APPLE)
     enable_language(OBJCXX)
+    # Xcode adds -fobjc-link-runtime for targets containing Objective-C++.
+    # Avoid also forwarding CMake's detected implicit `objc` library, which
+    # makes modern ld report a duplicate libobjc on every iOS link.
+    if(CMAKE_GENERATOR STREQUAL "Xcode")
+        list(REMOVE_ITEM CMAKE_OBJCXX_IMPLICIT_LINK_LIBRARIES objc)
+    endif()
 endif()
 
 set(CMAKE_CXX_STANDARD 23)
@@ -63,6 +69,7 @@ option(ENABLE_SENTRY "Enable Sentry crash reporting" OFF)
 # Heap allocation tracker (leak hunting): replaces global new/delete with a
 # size-bucketed, stack-capturing tracking allocator. Windows client only.
 option(PARTIES_ALLOC_TRACKER "Enable heap allocation tracker" OFF)
+set(APPLE_DEVELOPMENT_TEAM "" CACHE STRING "Apple Development Team ID used for signed Apple builds")
 set(SENTRY_DSN_CLIENT "" CACHE STRING "Sentry DSN for the client (per-platform)")
 set(SENTRY_DSN_SERVER "" CACHE STRING "Sentry DSN for the server")
 if(ENABLE_ASAN)
@@ -94,9 +101,12 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     endif()
 endif()
 
-# Generate dSYM bundles for Xcode archives (required for App Store symbol upload)
+# Generate dSYM bundles for optimized Xcode builds and archives. Debug builds
+# keep DWARF in the binary, avoiding redundant dsymutil work (and duplicate-map
+# warnings from third-party static archives such as dav1d).
 if(APPLE)
-    set(CMAKE_XCODE_ATTRIBUTE_DEBUG_INFORMATION_FORMAT "dwarf-with-dsym")
+    set(CMAKE_XCODE_ATTRIBUTE_DEBUG_INFORMATION_FORMAT
+        "$<$<CONFIG:Debug>:dwarf>$<$<NOT:$<CONFIG:Debug>>:dwarf-with-dsym>")
 endif()
 
 add_subdirectory(common)

@@ -92,8 +92,34 @@ bool Settings::create_schema() {
 
     if (!exec(schema)) return false;
 
-    // Migration: add password column to existing databases
-    exec("ALTER TABLE saved_servers ADD COLUMN password TEXT NOT NULL DEFAULT ''");
+    // Migration: add password only to databases created before this column existed.
+    // SQLite has no portable `ADD COLUMN IF NOT EXISTS`, so inspect the schema
+    // first instead of treating "duplicate column" as an expected error.
+    sqlite3_stmt* table_info = nullptr;
+    if (sqlite3_prepare_v2(db_, "PRAGMA table_info(saved_servers)", -1,
+                           &table_info, nullptr) != SQLITE_OK) {
+        LOG_ERROR("Failed to inspect saved_servers schema: {}", sqlite3_errmsg(db_));
+        return false;
+    }
+
+    bool has_password = false;
+    int step_result = SQLITE_ROW;
+    while ((step_result = sqlite3_step(table_info)) == SQLITE_ROW) {
+        const unsigned char* column_name = sqlite3_column_text(table_info, 1);
+        if (column_name && std::strcmp(reinterpret_cast<const char*>(column_name), "password") == 0) {
+            has_password = true;
+            break;
+        }
+    }
+    sqlite3_finalize(table_info);
+
+    if (!has_password && step_result != SQLITE_DONE) {
+        LOG_ERROR("Failed to read saved_servers schema: {}", sqlite3_errmsg(db_));
+        return false;
+    }
+    if (!has_password &&
+        !exec("ALTER TABLE saved_servers ADD COLUMN password TEXT NOT NULL DEFAULT ''"))
+        return false;
 
     return true;
 }

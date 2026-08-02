@@ -4,7 +4,6 @@ find_package(msquic CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 
 add_library(parties_common STATIC
-    src/protocol.cpp
     src/serialization.cpp
     src/server_query.cpp
     src/crypto.cpp

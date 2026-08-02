@@ -14,15 +14,23 @@ static BackendData* g_data = nullptr;
 
 bool Backend::Initialize(id<MTLDevice> device, MTKView* view)
 {
-    RMLUI_ASSERT(!g_data);
+    if (g_data || !device || !view)
+        return false;
     g_data = new BackendData();
     g_data->render_interface = new RenderInterface_Metal(device, view);
+    if (!*g_data->render_interface) {
+        delete g_data->render_interface;
+        delete g_data;
+        g_data = nullptr;
+        return false;
+    }
     return true;
 }
 
 void Backend::Shutdown()
 {
-    RMLUI_ASSERT(g_data);
+    if (!g_data)
+        return;
     delete g_data->render_interface;
     delete g_data;
     g_data = nullptr;

@@ -51,8 +51,7 @@
         "VCPKG_MANIFEST_FEATURES": "client-macos",
         "CMAKE_OSX_ARCHITECTURES": "arm64",
         "CMAKE_OSX_DEPLOYMENT_TARGET": "13.3",
-        "ENABLE_TRACY": "OFF",
-        "CMAKE_MAKE_PROGRAM": "/opt/homebrew/bin/ninja"
+        "ENABLE_TRACY": "OFF"
       }
     },
     {
@@ -69,8 +68,35 @@
         "VCPKG_MANIFEST_FEATURES": "client-macos",
         "CMAKE_OSX_ARCHITECTURES": "arm64",
         "CMAKE_OSX_DEPLOYMENT_TARGET": "13.3",
-        "ENABLE_TRACY": "OFF",
-        "CMAKE_MAKE_PROGRAM": "/opt/homebrew/bin/ninja"
+        "ENABLE_TRACY": "OFF"
+      }
+    },
+    {
+      "name": "ios-arm64-debug",
+      "displayName": "iOS Device ARM64 Debug",
+      "generator": "Xcode",
+      "binaryDir": "${sourceDir}/build-ios",
+      "cacheVariables": {
+        "CMAKE_CONFIGURATION_TYPES": "Debug",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/vendor/ports",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vendor/triplets",
+        "VCPKG_TARGET_TRIPLET": "arm64-ios",
+        "VCPKG_MANIFEST_FEATURES": "client-ios",
+        "CMAKE_SYSTEM_NAME": "iOS",
+        "CMAKE_OSX_SYSROOT": "iphoneos",
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "16.3",
+        "ENABLE_TRACY": "OFF"
+      }
+    },
+    {
+      "name": "ios-arm64-release",
+      "displayName": "iOS Device ARM64 Release",
+      "inherits": "ios-arm64-debug",
+      "binaryDir": "${sourceDir}/build-ios-release",
+      "cacheVariables": {
+        "CMAKE_CONFIGURATION_TYPES": "Release"
       }
     },
     {
@@ -120,6 +146,18 @@
     {
       "name": "macos-arm64-release",
       "configurePreset": "macos-arm64-release"
+    },
+    {
+      "name": "ios-arm64-debug",
+      "configurePreset": "ios-arm64-debug",
+      "configuration": "Debug",
+      "targets": ["parties_client"]
+    },
+    {
+      "name": "ios-arm64-release",
+      "configurePreset": "ios-arm64-release",
+      "configuration": "Release",
+      "targets": ["parties_client"]
     },
     {
       "name": "retail",

@@ -90,6 +90,9 @@ using namespace parties::protocol;
     Rml::Context*           _rmlContext;
     Rml::ElementDocument*   _doc;
     CGFloat                 _dpRatio;
+    bool                    _backendInitialized;
+    bool                    _rmlInitialized;
+    bool                    _debuggerInitialized;
 
     // Embedded file interface (must outlive RmlUi)
     EmbeddedFileInterface   _fileInterface;
@@ -147,6 +150,8 @@ using namespace parties::protocol;
     _view.delegate                = self;
     _view.preferredFramesPerSecond = 60;
     self.view = _view;
+    [_view release];
+    [device release];
 }
 
 - (void)viewDidLoad
@@ -158,7 +163,7 @@ using namespace parties::protocol;
     NSError* err = nil;
     [session setCategory:AVAudioSessionCategoryPlayAndRecord
              withOptions:AVAudioSessionCategoryOptionDefaultToSpeaker |
-                         AVAudioSessionCategoryOptionAllowBluetooth |
+                         AVAudioSessionCategoryOptionAllowBluetoothHFP |
                          AVAudioSessionCategoryOptionMixWithOthers
                    error:&err];
     if (err) NSLog(@"[Parties] Audio session setCategory error: %@", err);
@@ -172,12 +177,24 @@ using namespace parties::protocol;
 
     // ── Metal + RmlUi ────────────────────────────────────────────────────
     _commandQueue = [_view.device newCommandQueue];
-    Backend::Initialize(_view.device, _view);
+    if (!_commandQueue || !Backend::Initialize(_view.device, _view)) {
+        NSLog(@"[Parties] Failed to initialize the Metal renderer");
+        _view.paused = YES;
+        return;
+    }
+    _backendInitialized = true;
 
     Rml::SetFileInterface(&_fileInterface);
     Rml::SetSystemInterface(Backend::GetSystemInterface());
     Rml::SetRenderInterface(Backend::GetRenderInterface());
-    Rml::Initialise();
+    if (!Rml::Initialise()) {
+        NSLog(@"[Parties] Failed to initialize RmlUi");
+        Backend::Shutdown();
+        _backendInitialized = false;
+        _view.paused = YES;
+        return;
+    }
+    _rmlInitialized = true;
 
     // Register window-action as no-op to suppress warnings (used on Windows for caption hit-testing)
     Rml::StyleSheetSpecification::RegisterProperty("window-action", "none", true)
@@ -192,6 +209,11 @@ using namespace parties::protocol;
     Backend::SetViewport(physW, physH);
 
     _rmlContext = Rml::CreateContext("main", Rml::Vector2i(physW, physH));
+    if (!_rmlContext) {
+        NSLog(@"[Parties] Failed to create the RmlUi context");
+        _view.paused = YES;
+        return;
+    }
     _rmlContext->SetDensityIndependentPixelRatio((float)_dpRatio);
 
     // Keyboard proxy.
@@ -224,8 +246,11 @@ using namespace parties::protocol;
     Rml::LoadFontFace("ui/fonts/NotoSans-Bold.ttf", true);
 
 #ifdef RMLUI_DEBUG
-    Rml::Debugger::Initialise(_rmlContext);
-    Rml::Debugger::SetVisible(false);
+    _debuggerInitialized = Rml::Debugger::Initialise(_rmlContext);
+    if (_debuggerInitialized)
+        Rml::Debugger::SetVisible(false);
+    else
+        NSLog(@"[Parties] Failed to initialize the RmlUi debugger");
     UITapGestureRecognizer* dbgTap =
         [[UITapGestureRecognizer alloc] initWithTarget:self
                                                 action:@selector(toggleDebugger)];
@@ -275,10 +300,9 @@ using namespace parties::protocol;
     // are torn down by the binding when they leave model_.watched.
     bridge.clear_video_element = []() {};
 
-    // iOS manages the decoder directly in watchSharer:/stopWatching:
-    // (same pattern as macOS) — no start/stop_decode_thread needed.
-    bridge.start_decode_thread = nullptr;
-    bridge.stop_decode_thread  = nullptr;
+    // iOS manages its single hardware decoder directly in
+    // watchSharer:/stopWatching:. The multi-stream bridge callbacks remain
+    // unset so AppCore uses its single-select watching path.
 
     // ── Init QUIC ─────────────────────────────────────────────────────────
     if (!parties::quic_init()) {
@@ -614,22 +638,34 @@ using namespace parties::protocol;
         _decoder.reset();
     }
 
+#ifdef RMLUI_DEBUG
+    if (_debuggerInitialized) {
+        Rml::Debugger::Shutdown();
+        _debuggerInitialized = false;
+    }
+#endif
     if (_rmlContext) {
         Rml::RemoveContext(_rmlContext->GetName());
         _rmlContext = nullptr;
     }
-#ifdef RMLUI_DEBUG
-    Rml::Debugger::Shutdown();
-#endif
-    Rml::Shutdown();
-    Backend::Shutdown();
+    if (_rmlInitialized) {
+        Rml::Shutdown();
+        _rmlInitialized = false;
+    }
+    if (_backendInitialized) {
+        Backend::Shutdown();
+        _backendInitialized = false;
+    }
+    [_commandQueue release];
+    _commandQueue = nil;
     parties::quic_cleanup();
 }
 
 #ifdef RMLUI_DEBUG
 - (void)toggleDebugger
 {
-    Rml::Debugger::SetVisible(!Rml::Debugger::IsVisible());
+    if (_debuggerInitialized)
+        Rml::Debugger::SetVisible(!Rml::Debugger::IsVisible());
 }
 #endif
 
@@ -637,6 +673,7 @@ using namespace parties::protocol;
 
 - (void)mtkView:(MTKView*)view drawableSizeWillChange:(CGSize)size
 {
+    if (!_backendInitialized) return;
     int w = (int)size.width;
     int h = (int)size.height - _viewportTopPx;
     Backend::SetViewport(w, h);
@@ -646,7 +683,7 @@ using namespace parties::protocol;
 
 - (void)drawInMTKView:(MTKView*)view
 {
-    if (!_rmlContext) return;
+    if (!_backendInitialized || !_rmlContext || !_commandQueue) return;
 
     // Tick shared logic (network, audio levels, FPS counter, etc.)
     _core.tick();

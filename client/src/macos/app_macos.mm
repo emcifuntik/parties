@@ -4,6 +4,7 @@
 // of UIKit.  NSWindow + MTKView host the Metal-backed RmlUI context.
 
 #import "PartiesAppDelegate.h"
+#import "context_menu_macos.h"
 #import "screen_capture_macos.h"
 #import <encdec/apple/video_encoder_macos.h>
 
@@ -144,6 +145,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
 @interface PartiesView : MTKView
 @property (nonatomic, assign) Rml::Context* rmlContext;
+@property (nonatomic, assign) NSPoint contextMenuPoint;
 @end
 
 @implementation PartiesView
@@ -172,6 +174,10 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 - (void)mouseDown:(NSEvent*)event
 {
     if (!_rmlContext) return;
+    if (event.modifierFlags & NSEventModifierFlagControl) {
+        [self forwardSecondaryClick:event];
+        return;
+    }
     auto p = [self rmlPoint:event];
     _rmlContext->ProcessMouseMove((int)p.x, (int)p.y, 0);
     _rmlContext->ProcessMouseButtonDown(0, macos_modifiers_to_rml(event.modifierFlags));
@@ -179,19 +185,30 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 - (void)mouseUp:(NSEvent*)event
 {
     if (!_rmlContext) return;
+    // A Control-click is completed as a secondary click in mouseDown:. Sending
+    // an unmatched primary up is harmless and guarantees that RmlUi cannot
+    // retain a stale primary-button state if AppKit consumes the physical up.
     _rmlContext->ProcessMouseButtonUp(0, macos_modifiers_to_rml(event.modifierFlags));
+}
+- (void)forwardSecondaryClick:(NSEvent*)event
+{
+    if (!_rmlContext) return;
+    self.contextMenuPoint = [self convertPoint:event.locationInWindow fromView:nil];
+    auto p = [self rmlPoint:event];
+    int modifiers = macos_modifiers_to_rml(event.modifierFlags);
+    _rmlContext->ProcessMouseMove((int)p.x, (int)p.y, modifiers);
+    _rmlContext->ProcessMouseButtonDown(1, modifiers);
+    // Native menu tracking can consume the physical mouse-up event. Complete
+    // the RmlUi click now so its secondary button never remains stuck down.
+    _rmlContext->ProcessMouseButtonUp(1, modifiers);
 }
 - (void)rightMouseDown:(NSEvent*)event
 {
-    if (!_rmlContext) return;
-    auto p = [self rmlPoint:event];
-    _rmlContext->ProcessMouseMove((int)p.x, (int)p.y, 0);
-    _rmlContext->ProcessMouseButtonDown(1, macos_modifiers_to_rml(event.modifierFlags));
+    [self forwardSecondaryClick:event];
 }
 - (void)rightMouseUp:(NSEvent*)event
 {
-    if (!_rmlContext) return;
-    _rmlContext->ProcessMouseButtonUp(1, macos_modifiers_to_rml(event.modifierFlags));
+    // The complete secondary click is forwarded from rightMouseDown:.
 }
 
 - (void)scrollWheel:(NSEvent*)event
@@ -239,6 +256,10 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     id<MTLCommandQueue>   _commandQueue;
     Rml::Context*         _rmlContext;
     Rml::ElementDocument* _doc;
+    bool                  _backendInitialized;
+    bool                  _rmlInitialized;
+    bool                  _debuggerInitialized;
+    std::unique_ptr<MacOSContextMenuController> _contextMenus;
 
     // Embedded file interface (must outlive RmlUi)
     EmbeddedFileInterface _fileInterface;
@@ -294,6 +315,8 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     _metalView.paused                  = NO;
     _metalView.enableSetNeedsDisplay   = NO;
     self.view = _metalView;
+    [_metalView release];
+    [device release];
 }
 
 - (void)viewDidLoad
@@ -304,13 +327,25 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
     // ── Metal + RmlUi ─────────────────────────────────────────────────────
     _commandQueue = [device newCommandQueue];
-    Backend::Initialize(device, _metalView);
+    if (!_commandQueue || !Backend::Initialize(device, _metalView)) {
+        NSLog(@"[Parties] Failed to initialize the Metal renderer");
+        _metalView.paused = YES;
+        return;
+    }
+    _backendInitialized = true;
 
     Rml::SetFileInterface(&_fileInterface);
     Rml::SetSystemInterface(Backend::GetSystemInterface());
     Rml::SetRenderInterface(Backend::GetRenderInterface());
 
-    Rml::Initialise();
+    if (!Rml::Initialise()) {
+        NSLog(@"[Parties] Failed to initialize RmlUi");
+        Backend::Shutdown();
+        _backendInitialized = false;
+        _metalView.paused = YES;
+        return;
+    }
+    _rmlInitialized = true;
 
     // Register window-action as no-op to suppress warnings (used on Windows for caption hit-testing)
     Rml::StyleSheetSpecification::RegisterProperty("window-action", "none", true)
@@ -325,11 +360,19 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
     _rmlContext = Rml::CreateContext("main",
         Rml::Vector2i((int)physical.width, (int)physical.height));
+    if (!_rmlContext) {
+        NSLog(@"[Parties] Failed to create the RmlUi context");
+        _metalView.paused = YES;
+        return;
+    }
     _rmlContext->SetDensityIndependentPixelRatio(dpRatio);
     _metalView.rmlContext = _rmlContext;
+    _contextMenus = std::make_unique<MacOSContextMenuController>(_metalView);
 
 #ifndef PARTIES_RETAIL
-    Rml::Debugger::Initialise(_rmlContext);
+    _debuggerInitialized = Rml::Debugger::Initialise(_rmlContext);
+    if (!_debuggerInitialized)
+        NSLog(@"[Parties] Failed to initialize the RmlUi debugger");
 #endif
 
     // ── Fonts ─────────────────────────────────────────────────────────────
@@ -377,9 +420,109 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         bself->_soundPlayer.set_volume(v);
     };
 
-    bridge.show_channel_menu = nullptr; // TODO: macOS channel context menu
+    bridge.show_user_menu = [bself](const UserContextWindowRequest& request) {
+        if (!bself->_contextMenus) return;
+        bself->_contextMenus->SetAnchorPoint(bself->_metalView.contextMenuPoint);
 
-    bridge.show_server_menu = nullptr;  // TODO: macOS server context menu
+        MacOSUserMenuCallbacks callbacks;
+        const int user_id = request.user_id;
+        callbacks.set_volume = [bself, user_id](float volume) {
+            if (bself->_core.model_.on_user_volume_changed)
+                bself->_core.model_.on_user_volume_changed(user_id, volume);
+        };
+        callbacks.set_music_volume = [bself, user_id](float volume) {
+            if (bself->_core.model_.on_user_music_volume_changed)
+                bself->_core.model_.on_user_music_volume_changed(user_id, volume);
+        };
+        callbacks.set_compression = [bself, user_id](bool enabled, float target) {
+            if (bself->_core.model_.on_user_compress_changed)
+                bself->_core.model_.on_user_compress_changed(user_id, enabled, target);
+        };
+        callbacks.set_role = [bself, user_id](int role) {
+            if (bself->_core.model_.on_set_user_role)
+                bself->_core.model_.on_set_user_role(user_id, role);
+        };
+        callbacks.kick = [bself, user_id] {
+            if (bself->_core.model_.on_kick_user)
+                bself->_core.model_.on_kick_user(user_id);
+        };
+        bself->_contextMenus->ShowUser(request, std::move(callbacks));
+    };
+
+    bridge.show_channel_menu = [bself](int channel_id, const std::string& name) {
+        if (!bself->_contextMenus) return;
+        bself->_contextMenus->SetAnchorPoint(bself->_metalView.contextMenuPoint);
+        std::vector<MacOSContextAction> actions = {
+            {1, "Rename Channel", "Change the channel name"},
+            {0, "", "", false, true, true},
+            {2, "Delete Channel", "Remove it for everyone", true},
+        };
+        bself->_contextMenus->ShowActions(name, std::move(actions),
+            [bself, channel_id, name](int command) {
+                if (command == 1) {
+                    bself->_core.model_.rename_channel_id = channel_id;
+                    bself->_core.model_.rename_channel_name = name;
+                    bself->_core.model_.new_rename_channel_name = name;
+                    bself->_core.model_.show_rename_channel = true;
+                } else if (command == 2 && bself->_core.model_.on_delete_channel) {
+                    bself->_core.model_.on_delete_channel(channel_id);
+                }
+            });
+    };
+
+    bridge.show_server_menu = [bself](int server_id) {
+        if (!bself->_contextMenus) return;
+        bself->_contextMenus->SetAnchorPoint(bself->_metalView.contextMenuPoint);
+        std::vector<MacOSContextAction> actions = {
+            {1, "Remove Saved Party", "Delete this saved connection", true},
+        };
+        bself->_contextMenus->ShowActions("Saved Party", std::move(actions),
+            [bself, server_id](int command) {
+                if (command == 1 && bself->_core.server_model_.on_delete_server)
+                    bself->_core.server_model_.on_delete_server(server_id);
+            });
+    };
+
+    bridge.show_message_menu = [bself](int64_t message_id) {
+        if (!bself->_contextMenus) return;
+
+        std::string text;
+        bool pinned = false;
+        for (const auto& message : bself->_core.chat_model_.messages.get()) {
+            if (message.id == message_id) {
+                text = std::string(message.text);
+                pinned = message.pinned;
+                break;
+            }
+        }
+
+        bself->_contextMenus->SetAnchorPoint(bself->_metalView.contextMenuPoint);
+        std::vector<MacOSContextAction> actions;
+        if (!text.empty())
+            actions.push_back({1, "Copy Text", "Copy the message to the clipboard"});
+        actions.push_back({2, pinned ? "Unpin Message" : "Pin Message",
+                           pinned ? "Remove it from pinned messages" : "Keep it visible"});
+        actions.push_back({0, "", "", false, true, true});
+        actions.push_back({3, "Delete Message", "Remove it permanently", true});
+
+        bself->_contextMenus->ShowActions("Message", std::move(actions),
+            [bself, message_id, text = std::move(text), pinned](int command) {
+                if (command == 1) {
+                    NSString* value = [NSString stringWithUTF8String:text.c_str()];
+                    if (value) {
+                        [[NSPasteboard generalPasteboard] clearContents];
+                        [[NSPasteboard generalPasteboard] setString:value
+                                                            forType:NSPasteboardTypeString];
+                    }
+                } else if (command == 2) {
+                    auto& callback = pinned ? bself->_core.chat_model_.on_unpin_message
+                                            : bself->_core.chat_model_.on_pin_message;
+                    if (callback) callback(message_id);
+                } else if (command == 3 && bself->_core.chat_model_.on_delete_message) {
+                    bself->_core.chat_model_.on_delete_message(message_id);
+                }
+            });
+    };
 
     bridge.open_share_picker = [bself]() { [bself showSharePicker]; };
 
@@ -447,6 +590,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
 - (void)mtkView:(MTKView*)view drawableSizeWillChange:(CGSize)size
 {
+    if (!_backendInitialized) return;
     Backend::SetViewport((int)size.width, (int)size.height);
     if (_rmlContext) {
         _rmlContext->SetDimensions(Rml::Vector2i((int)size.width, (int)size.height));
@@ -458,6 +602,8 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
 - (void)drawInMTKView:(MTKView*)view
 {
+    if (!_backendInitialized || !_rmlContext || !_commandQueue) return;
+
     // Tick shared logic (network messages, FPS counter, audio levels, etc.)
     _core.tick();
 
@@ -849,8 +995,34 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
 - (void)shutdown
 {
+    if (_contextMenus) {
+        _contextMenus->Close();
+        _contextMenus.reset();
+    }
     _core.shutdown();
     _soundPlayer.shutdown();
+
+#ifndef PARTIES_RETAIL
+    if (_debuggerInitialized) {
+        Rml::Debugger::Shutdown();
+        _debuggerInitialized = false;
+    }
+#endif
+    if (_rmlContext) {
+        Rml::RemoveContext(_rmlContext->GetName());
+        _rmlContext = nullptr;
+        _metalView.rmlContext = nullptr;
+    }
+    if (_rmlInitialized) {
+        Rml::Shutdown();
+        _rmlInitialized = false;
+    }
+    if (_backendInitialized) {
+        Backend::Shutdown();
+        _backendInitialized = false;
+    }
+    [_commandQueue release];
+    _commandQueue = nil;
 }
 
 @end
@@ -996,8 +1168,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 - (void)applicationWillTerminate:(NSNotification*)notification
 {
     [_viewController shutdown];
-    Rml::Shutdown();
-    Backend::Shutdown();
     parties::quic_cleanup();
 }
 

@@ -1,7 +1,7 @@
 {
   "name": "rmlui",
   "version": "6.3.0",
-  "port-version": 6,
+  "port-version": 7,
   "description": "RmlUi from the original mikke89/RmlUi repository, including the upstream Win32/DX12 backend",
   "dependencies": [
     {

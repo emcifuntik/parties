@@ -18,15 +18,28 @@ else()
     set(RMLUI_FONT_ENGINE "none")
 endif()
 
+# The shell target exists only to build upstream samples. Parties consumes the
+# RmlUi libraries directly and supplies its own Metal backend on Apple. Keep the
+# pinned Win32/DX12 shell on Windows, where its backend sources are packaged for
+# the Parties DX12 renderer, but do not cross-compile it for Apple platforms.
+if(VCPKG_TARGET_IS_WINDOWS)
+    set(RMLUI_SHELL_OPTIONS
+        "-DRMLUI_SHELL=ON"
+        "-DRMLUI_BACKEND=Win32_DX12"
+    )
+else()
+    set(RMLUI_SHELL_OPTIONS
+        "-DRMLUI_SHELL=OFF"
+    )
+endif()
+
 vcpkg_cmake_configure(
     SOURCE_PATH ${SOURCE_PATH}
     OPTIONS
         ${FEATURE_OPTIONS}
         "-DRMLUI_FONT_ENGINE=${RMLUI_FONT_ENGINE}"
         "-DRMLUI_COMPILER_OPTIONS=OFF"
-        "-DRMLUI_INSTALL_RUNTIME_DEPENDENCIES=OFF"
-        "-DRMLUI_SHELL=ON"
-        "-DRMLUI_BACKEND=Win32_DX12"
+        ${RMLUI_SHELL_OPTIONS}
         "-DRMLUI_SAMPLES=OFF"
         "-DRMLUI_TESTS=OFF"
 )

@@ -31,10 +31,21 @@
 #endif
 #endif
 
-    self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
-    self.window.rootViewController = [[PartiesViewController alloc] init];
+    UIWindow* window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
+    self.window = window;
+    [window release];
+
+    PartiesViewController* viewController = [[PartiesViewController alloc] init];
+    self.window.rootViewController = viewController;
+    [viewController release];
     [self.window makeKeyAndVisible];
     return YES;
+}
+
+- (void)dealloc
+{
+    self.window = nil;
+    [super dealloc];
 }
 
 @end
