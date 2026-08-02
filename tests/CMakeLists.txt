@@ -34,8 +34,6 @@ endif()
 
 # ── Voice packet-loss resilience (offline, deterministic) ─────────────────────
 find_package(Opus CONFIG REQUIRED)
-find_path(SPEEXDSP_INCLUDE_DIRS "speex/speex_echo.h")
-find_library(SPEEXDSP_LIBRARY speexdsp)
 
 add_executable(parties_voice_loss_test
     voice_loss_test.cpp
@@ -99,18 +97,23 @@ add_executable(parties_application_audio_test
 )
 target_include_directories(parties_application_audio_test PRIVATE ../client/include)
 
-add_executable(parties_echo_cancellation_test
-    echo_cancellation_test.cpp
-    ../client/src/echo_canceller.cpp
-)
-target_include_directories(parties_echo_cancellation_test PRIVATE
-    ../client/include
-    ${SPEEXDSP_INCLUDE_DIRS})
-target_link_libraries(parties_echo_cancellation_test PRIVATE
-    parties_common
-    ${SPEEXDSP_LIBRARY})
+if(BUILD_CLIENT)
+    find_path(SPEEXDSP_INCLUDE_DIRS "speex/speex_echo.h" REQUIRED)
+    find_library(SPEEXDSP_LIBRARY speexdsp REQUIRED)
 
-if(WIN32)
+    add_executable(parties_echo_cancellation_test
+        echo_cancellation_test.cpp
+        ../client/src/echo_canceller.cpp
+    )
+    target_include_directories(parties_echo_cancellation_test PRIVATE
+        ../client/include
+        ${SPEEXDSP_INCLUDE_DIRS})
+    target_link_libraries(parties_echo_cancellation_test PRIVATE
+        parties_common
+        ${SPEEXDSP_LIBRARY})
+endif()
+
+if(WIN32 AND BUILD_CLIENT)
     find_path(AMD_AMF_INCLUDE_DIRS "AMF/core/Result.h" REQUIRED)
     add_executable(parties_amf_decode_state_test amf_decode_state_test.cpp)
     target_include_directories(parties_amf_decode_state_test PRIVATE
@@ -172,8 +175,10 @@ add_test(NAME parties_server_query_wake COMMAND parties_server_query_wake_test)
 add_test(NAME parties_video_decode_gate COMMAND parties_video_decode_gate_test)
 add_test(NAME parties_video_rate_control COMMAND parties_video_rate_control_test)
 add_test(NAME parties_application_audio_downmix COMMAND parties_application_audio_test)
-add_test(NAME parties_echo_cancellation COMMAND parties_echo_cancellation_test)
-if(WIN32)
+if(BUILD_CLIENT)
+    add_test(NAME parties_echo_cancellation COMMAND parties_echo_cancellation_test)
+endif()
+if(WIN32 AND BUILD_CLIENT)
     add_test(NAME parties_amf_decode_state COMMAND parties_amf_decode_state_test)
     add_test(NAME parties_amf_decoder_hardware COMMAND parties_amf_decoder_hardware_test)
     set_tests_properties(parties_amf_decoder_hardware PROPERTIES SKIP_RETURN_CODE 77)

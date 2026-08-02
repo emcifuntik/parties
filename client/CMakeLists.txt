@@ -20,8 +20,8 @@ if(APPLE AND TARGET rlottie::rlottie)
 endif()
 
 
-find_path(SPEEXDSP_INCLUDE_DIRS "speex/speex_echo.h")
-find_library(SPEEXDSP_LIBRARY speexdsp)
+find_path(SPEEXDSP_INCLUDE_DIRS "speex/speex_echo.h" REQUIRED)
+find_library(SPEEXDSP_LIBRARY speexdsp REQUIRED)
 
 if(NOT APPLE)
     find_path(AMD_AMF_INCLUDE_DIRS "AMF/core/D3D12AMF.h" REQUIRED)
