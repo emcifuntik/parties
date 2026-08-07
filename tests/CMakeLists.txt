@@ -77,6 +77,14 @@ if(BUILD_CLIENT)
     target_include_directories(parties_document_router_test PRIVATE ../client/include)
     target_link_libraries(parties_document_router_test PRIVATE RmlUi::RmlUi)
 
+    add_executable(parties_audio_device_selection_model_test
+        audio_device_selection_model_test.cpp
+        ../client/src/lobby_model.cpp)
+    target_include_directories(parties_audio_device_selection_model_test PRIVATE
+        ../client/include
+        ../common/include)
+    target_link_libraries(parties_audio_device_selection_model_test PRIVATE RmlUi::RmlUi)
+
     add_executable(parties_context_render_manager_lifecycle_test
         context_render_manager_lifecycle_test.cpp)
     target_link_libraries(parties_context_render_manager_lifecycle_test PRIVATE RmlUi::RmlUi)
@@ -169,6 +177,7 @@ add_test(NAME parties_aux_stream COMMAND parties_aux_stream_test)
 if(BUILD_CLIENT)
     add_test(NAME parties_ui_stylesheet_variables COMMAND parties_ui_stylesheet_test)
     add_test(NAME parties_document_router COMMAND parties_document_router_test)
+    add_test(NAME parties_audio_device_selection_model COMMAND parties_audio_device_selection_model_test)
     add_test(NAME parties_context_render_manager_lifecycle COMMAND parties_context_render_manager_lifecycle_test)
 endif()
 add_test(NAME parties_server_query_wake COMMAND parties_server_query_wake_test)

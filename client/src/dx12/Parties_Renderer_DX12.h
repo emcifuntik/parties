@@ -50,6 +50,8 @@ public:
 		const Rml::String& source) override;
 	Rml::TextureHandle GenerateTexture(Rml::Span<const Rml::byte> source_data,
 		Rml::Vector2i source_dimensions) override;
+	Rml::TextureHandle GenerateDynamicTexture(Rml::Span<const Rml::byte> source_data,
+		Rml::Vector2i source_dimensions) override;
 	void ReleaseTexture(Rml::TextureHandle texture_handle) override;
 	void UpdateTextureData(Rml::TextureHandle texture_handle,
 		Rml::Span<const Rml::byte> source_data, Rml::Vector2i source_dimensions) override;

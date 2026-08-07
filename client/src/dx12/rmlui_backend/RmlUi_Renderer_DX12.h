@@ -311,7 +311,8 @@ public:
 			size_t size_for_placed_heap = RMLUI_RENDER_BACKEND_FIELD_VIDEOMEMORY_FOR_TEXTURE_ALLOCATION);
 		void Shutdown();
 
-		ID3D12Resource* Alloc_Texture(D3D12_RESOURCE_DESC& desc, TextureHandleType* p_impl, const Rml::byte* p_data
+		ID3D12Resource* Alloc_Texture(D3D12_RESOURCE_DESC& desc, TextureHandleType* p_impl, const Rml::byte* p_data,
+			bool force_committed
 #ifdef RMLUI_DX_DEBUG
 			,
 			const Rml::String& debug_name
@@ -342,12 +343,12 @@ public:
 		// use index for obtaining heap from m_heaps_placed
 		D3D12MA::VirtualBlock* Get_AvailableBlock(size_t total_memory_for_allocation, int* result_index);
 
-		void Alloc_As_Committed(size_t base_memory, size_t total_memory, D3D12_RESOURCE_DESC& desc, TextureHandleType* p_impl,
+		bool Alloc_As_Committed(size_t base_memory, size_t total_memory, D3D12_RESOURCE_DESC& desc, TextureHandleType* p_impl,
 			const Rml::byte* p_data);
 		// we don't upload to GPU because it is render target and needed to be written
 		void Alloc_As_Committed(size_t base_memory, size_t total_memory, D3D12_RESOURCE_DESC& desc, D3D12_RESOURCE_STATES initial_state,
 			TextureHandleType* p_texture, Gfx::FramebufferData* p_impl);
-		void Alloc_As_Placed(size_t base_memory, size_t total_memory, D3D12_RESOURCE_DESC& desc, TextureHandleType* p_impl, const Rml::byte* p_data);
+		bool Alloc_As_Placed(size_t base_memory, size_t total_memory, D3D12_RESOURCE_DESC& desc, TextureHandleType* p_impl, const Rml::byte* p_data);
 
 		void Upload(bool is_committed, TextureHandleType* p_texture_handle, const D3D12_RESOURCE_DESC& desc, const Rml::byte* p_data,
 			ID3D12Resource* p_impl);
@@ -481,6 +482,8 @@ public:
 
 	Rml::TextureHandle LoadTexture(Rml::Vector2i& texture_dimensions, const Rml::String& source) override;
 	Rml::TextureHandle GenerateTexture(Rml::Span<const Rml::byte> source_data, Rml::Vector2i source_dimensions) override;
+	// Dynamic video/preview textures bypass the placed-resource suballocator.
+	Rml::TextureHandle GenerateTextureCommitted(Rml::Span<const Rml::byte> source_data, Rml::Vector2i source_dimensions);
 	void ReleaseTexture(Rml::TextureHandle texture_handle) override;
 
 	void SetTransform(const Rml::Matrix4f* transform) override;
@@ -542,6 +545,9 @@ public:
 	bool CaptureScreen(int& width, int& height, int& num_components, Rml::UniquePtr<Rml::byte[]>& data);
 
 private:
+	Rml::TextureHandle GenerateTextureInternal(
+		Rml::Span<const Rml::byte> source_data, Rml::Vector2i source_dimensions, bool force_committed);
+
 	void Initialize_Device() noexcept;
 	void Initialize_Adapter() noexcept;
 	void Initialize_DebugLayer() noexcept;

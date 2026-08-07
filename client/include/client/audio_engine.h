@@ -70,8 +70,14 @@ public:
     std::vector<DeviceInfo> get_playback_devices() const;
     int default_capture_index() const { return default_capture_; }
     int default_playback_index() const { return default_playback_; }
-    void set_capture_device(int index);
-    void set_playback_device(int index);
+    int selected_capture_index() const {
+        return selected_capture_ >= 0 ? selected_capture_ : default_capture_;
+    }
+    int selected_playback_index() const {
+        return selected_playback_ >= 0 ? selected_playback_ : default_playback_;
+    }
+    bool set_capture_device(int index);
+    bool set_playback_device(int index);
 
     // Denoise toggle
     void set_denoise_enabled(bool enabled) { denoise_enabled_ = enabled; }
@@ -105,6 +111,8 @@ private:
     void process_playback(float* output, ma_uint32 frame_count);
 
     bool init_devices();
+    void uninit_devices();
+    bool reconfigure_devices(int capture_index, int playback_index);
 
     // miniaudio context (owns device enumeration)
     ma_context context_{};

@@ -209,14 +209,7 @@ bool AudioEngine::init_devices() {
 
 void AudioEngine::shutdown() {
     stop();
-    if (playback_initialized_) {
-        ma_device_uninit(&playback_device_);
-        playback_initialized_ = false;
-    }
-    if (capture_initialized_) {
-        ma_device_uninit(&capture_device_);
-        capture_initialized_ = false;
-    }
+    uninit_devices();
     echo_canceller_.shutdown();
     if (rnn_) {
         rnnoise_destroy(rnn_);
@@ -267,40 +260,65 @@ std::vector<DeviceInfo> AudioEngine::get_playback_devices() const {
     return result;
 }
 
-void AudioEngine::set_capture_device(int index) {
-    if (index == selected_capture_) return;
-    selected_capture_ = index;
-
-    bool was_running = running_;
-    stop();
-    if (capture_initialized_) {
-        ma_device_uninit(&capture_device_);
-        capture_initialized_ = false;
-    }
+void AudioEngine::uninit_devices() {
     if (playback_initialized_) {
         ma_device_uninit(&playback_device_);
         playback_initialized_ = false;
     }
-    if (init_devices() && was_running)
-        start();
+    if (capture_initialized_) {
+        ma_device_uninit(&capture_device_);
+        capture_initialized_ = false;
+    }
 }
 
-void AudioEngine::set_playback_device(int index) {
-    if (index == selected_playback_) return;
-    selected_playback_ = index;
+bool AudioEngine::reconfigure_devices(int capture_index, int playback_index) {
+    const bool capture_valid = capture_index == -1 ||
+        (capture_index >= 0 && capture_index < static_cast<int>(capture_ids_.size()));
+    const bool playback_valid = playback_index == -1 ||
+        (playback_index >= 0 && playback_index < static_cast<int>(playback_ids_.size()));
+    if (!capture_valid || !playback_valid) {
+        LOG_ERROR("Rejected invalid audio device selection: capture={} playback={}",
+                  capture_index, playback_index);
+        return false;
+    }
 
-    bool was_running = running_;
+    if (capture_index == selected_capture_ && playback_index == selected_playback_)
+        return true;
+
+    const int previous_capture = selected_capture_;
+    const int previous_playback = selected_playback_;
+    const bool was_running = running_;
+
     stop();
-    if (capture_initialized_) {
-        ma_device_uninit(&capture_device_);
-        capture_initialized_ = false;
+    uninit_devices();
+
+    selected_capture_ = capture_index;
+    selected_playback_ = playback_index;
+
+    if (init_devices() && (!was_running || start())) {
+        LOG_INFO("Audio device selection applied: capture={} playback={}",
+                 selected_capture_index(), selected_playback_index());
+        return true;
     }
-    if (playback_initialized_) {
-        ma_device_uninit(&playback_device_);
-        playback_initialized_ = false;
-    }
-    if (init_devices() && was_running)
-        start();
+
+    LOG_ERROR("Failed to apply audio device selection; restoring capture={} playback={}",
+              previous_capture, previous_playback);
+    stop();
+    uninit_devices();
+    selected_capture_ = previous_capture;
+    selected_playback_ = previous_playback;
+
+    if (!init_devices() || (was_running && !start()))
+        LOG_ERROR("Failed to restore the previous audio devices");
+    return false;
+}
+
+bool AudioEngine::set_capture_device(int index) {
+    return reconfigure_devices(index, selected_playback_);
+}
+
+bool AudioEngine::set_playback_device(int index) {
+    return reconfigure_devices(selected_capture_, index);
 }
 
 void AudioEngine::capture_callback(ma_device* device, void* /*output*/,

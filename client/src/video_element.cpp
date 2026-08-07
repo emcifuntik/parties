@@ -522,7 +522,7 @@ void VideoElement::OnRender() {
                     ri->ReleaseTexture(video_texture_);
                     video_texture_ = 0;
                 }
-                video_texture_ = ri->GenerateTexture(data, dims);
+                video_texture_ = ext_ri->GenerateDynamicTexture(data, dims);
                 texture_w_ = frame_width_;
                 texture_h_ = frame_height_;
             }

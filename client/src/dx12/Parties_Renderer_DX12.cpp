@@ -288,6 +288,13 @@ Rml::TextureHandle PartiesRenderInterface_DX12::GenerateTexture(
 	return wrapped;
 }
 
+Rml::TextureHandle PartiesRenderInterface_DX12::GenerateDynamicTexture(
+	Rml::Span<const Rml::byte> data, Rml::Vector2i dimensions) {
+	Rml::TextureHandle wrapped = WrapTexture(upstream_.GenerateTextureCommitted(data, dimensions));
+	if (wrapped) Texture(wrapped)->dimensions = dimensions;
+	return wrapped;
+}
+
 void PartiesRenderInterface_DX12::ReleaseTexture(Rml::TextureHandle handle) {
 	if (!handle) return;
 	std::unique_ptr<TextureProxy> proxy(Texture(handle));
@@ -315,7 +322,7 @@ void PartiesRenderInterface_DX12::CollectRetiredTextures(uint32_t completed_fram
 
 void PartiesRenderInterface_DX12::ReplaceTexture(TextureProxy& proxy,
 	Rml::Span<const Rml::byte> data, Rml::Vector2i dimensions) {
-	Rml::TextureHandle replacement = upstream_.GenerateTexture(data, dimensions);
+	Rml::TextureHandle replacement = upstream_.GenerateTextureCommitted(data, dimensions);
 	if (!replacement) return;
 	if (proxy.upstream)
 		RetireTexture(proxy.upstream, std::move(proxy.native_owner), proxy.last_use_frame);
@@ -435,7 +442,7 @@ uintptr_t PartiesRenderInterface_DX12::GenerateYUVTexture(const uint8_t* y_data,
 	}
 	std::vector<Rml::byte> rgba;
 	ConvertI420ToRgba(rgba, y_data, y_stride, u_data, v_data, uv_stride, width, height);
-	return GenerateTexture(rgba, {static_cast<int>(width), static_cast<int>(height)});
+	return GenerateDynamicTexture(rgba, {static_cast<int>(width), static_cast<int>(height)});
 }
 
 void PartiesRenderInterface_DX12::UpdateYUVTexture(uintptr_t handle, const uint8_t* y_data,
@@ -477,7 +484,7 @@ uintptr_t PartiesRenderInterface_DX12::GenerateNV12Texture(const uint8_t* y_data
 	}
 	std::vector<Rml::byte> rgba;
 	ConvertNV12ToRgba(rgba, y_data, y_stride, uv_data, uv_stride, width, height);
-	return GenerateTexture(rgba, {static_cast<int>(width), static_cast<int>(height)});
+	return GenerateDynamicTexture(rgba, {static_cast<int>(width), static_cast<int>(height)});
 }
 
 void PartiesRenderInterface_DX12::UpdateNV12Texture(uintptr_t handle, const uint8_t* y_data,

@@ -351,8 +351,8 @@ void AppCore::load_saved_prefs()
     model_.capture_devices.notify();
     model_.playback_devices.notify();
 
-    model_.selected_capture  = audio_.default_capture_index();
-    model_.selected_playback = audio_.default_playback_index();
+    model_.selected_capture  = audio_.selected_capture_index();
+    model_.selected_playback = audio_.selected_playback_index();
 
     std::string v;
 
@@ -420,8 +420,8 @@ void AppCore::load_saved_prefs()
     if (!v.empty()) {
         for (size_t i = 0; i < capture_devs.size(); i++) {
             if (capture_devs[i].name == v) {
-                audio_.set_capture_device(static_cast<int>(i));
-                model_.selected_capture = static_cast<int>(i);
+                if (audio_.set_capture_device(static_cast<int>(i)))
+                    model_.selected_capture = static_cast<int>(i);
                 break;
             }
         }
@@ -431,8 +431,8 @@ void AppCore::load_saved_prefs()
     if (!v.empty()) {
         for (size_t i = 0; i < playback_devs.size(); i++) {
             if (playback_devs[i].name == v) {
-                audio_.set_playback_device(static_cast<int>(i));
-                model_.selected_playback = static_cast<int>(i);
+                if (audio_.set_playback_device(static_cast<int>(i)))
+                    model_.selected_playback = static_cast<int>(i);
                 break;
             }
         }
@@ -1854,17 +1854,25 @@ void AppCore::setup_model_callbacks()
     };
 
     model_.on_select_capture = [this](int index) {
-        audio_.set_capture_device(index);
         auto devs = audio_.get_capture_devices();
-        if (index >= 0 && index < static_cast<int>(devs.size()))
+        if (index >= 0 && index < static_cast<int>(devs.size()) &&
+            audio_.set_capture_device(index)) {
+            model_.selected_capture = index;
             settings_.set_pref("audio.capture_device", devs[index].name);
+        } else {
+            model_.selected_capture = audio_.selected_capture_index();
+        }
     };
 
     model_.on_select_playback = [this](int index) {
-        audio_.set_playback_device(index);
         auto devs = audio_.get_playback_devices();
-        if (index >= 0 && index < static_cast<int>(devs.size()))
+        if (index >= 0 && index < static_cast<int>(devs.size()) &&
+            audio_.set_playback_device(index)) {
+            model_.selected_playback = index;
             settings_.set_pref("audio.playback_device", devs[index].name);
+        } else {
+            model_.selected_playback = audio_.selected_playback_index();
+        }
     };
 
     model_.on_denoise_changed           = [this](bool e) { audio_.set_denoise_enabled(e); settings_.set_pref("audio.denoise", e?"1":"0"); };

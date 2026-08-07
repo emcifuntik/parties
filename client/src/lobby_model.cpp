@@ -209,8 +209,11 @@ void LobbyModel::build(rml::Builder& b) {
         if (on_select_capture) on_select_capture(idx);
     });
 
-    b.on("capture_selection_changed", [this] {
-        if (on_select_capture) on_select_capture(selected_capture.get());
+    b.on_event("capture_selection_changed", [this](Rml::Event& event, const Rml::VariantList&) {
+        const int index = event.GetParameter<int>("value", -1);
+        if (index < 0) return;
+        selected_capture = index;
+        if (on_select_capture) on_select_capture(index);
     });
 
     b.on_args<int>("select_playback", [this](int idx) {
@@ -218,8 +221,11 @@ void LobbyModel::build(rml::Builder& b) {
         if (on_select_playback) on_select_playback(idx);
     });
 
-    b.on("playback_selection_changed", [this] {
-        if (on_select_playback) on_select_playback(selected_playback.get());
+    b.on_event("playback_selection_changed", [this](Rml::Event& event, const Rml::VariantList&) {
+        const int index = event.GetParameter<int>("value", -1);
+        if (index < 0) return;
+        selected_playback = index;
+        if (on_select_playback) on_select_playback(index);
     });
 
     b.on("toggle_denoise", [this] {

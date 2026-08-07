@@ -532,16 +532,16 @@ static void SetTexCoordLimits(Rml::Vector2f& p_tex_coord_min, Rml::Vector2f& p_t
 
 /// Helper function from the d3dx12 header (MIT License - Microsoft). We avoid the full header for lightness.
 /// https://github.com/microsoft/DirectX-Graphics-Samples/blob/71f3c57648b6cecde532f67dccd07265485e2313/TechniqueDemos/D3D12MemoryManagement/src/d3dx12.h#L1761C5-L1762C43)
-inline UINT64 GetRequiredIntermediateSize(_In_ ID3D12Resource* pDestinationResource, _In_range_(0, D3D12_REQ_SUBRESOURCES) UINT FirstSubresource,
+inline UINT64 GetRequiredIntermediateSize(_In_ ID3D12Device* pDevice, const D3D12_RESOURCE_DESC& destination_desc,
+	_In_range_(0, D3D12_REQ_SUBRESOURCES) UINT FirstSubresource,
 	_In_range_(0, D3D12_REQ_SUBRESOURCES - FirstSubresource) UINT NumSubresources)
 {
-	D3D12_RESOURCE_DESC Desc = pDestinationResource->GetDesc();
-	UINT64 RequiredSize = 0;
+	if (!pDevice)
+		return 0;
 
-	ID3D12Device* pDevice = nullptr;
-	pDestinationResource->GetDevice(__uuidof(*pDevice), reinterpret_cast<void**>(&pDevice));
-	pDevice->GetCopyableFootprints(&Desc, FirstSubresource, NumSubresources, 0, nullptr, nullptr, nullptr, &RequiredSize);
-	pDevice->Release();
+	UINT64 RequiredSize = 0;
+	pDevice->GetCopyableFootprints(
+		&destination_desc, FirstSubresource, NumSubresources, 0, nullptr, nullptr, nullptr, &RequiredSize);
 
 	return RequiredSize;
 }
@@ -574,14 +574,17 @@ inline void MemcpySubresource(const _In_ D3D12_MEMCPY_DEST* pDest, const _In_ D3
 /// Helper function from the d3dx12 header (MIT License, Microsoft). We avoid the full header for lightness.
 /// https://github.com/microsoft/DirectX-Graphics-Samples/blob/71f3c57648b6cecde532f67dccd07265485e2313/TechniqueDemos/D3D12MemoryManagement/src/d3dx12.h#L1780C15-L1780C33
 inline UINT64 UpdateSubresources(_In_ ID3D12GraphicsCommandList* pCmdList, _In_ ID3D12Resource* pDestinationResource,
-	_In_ ID3D12Resource* pIntermediate, _In_range_(0, D3D12_REQ_SUBRESOURCES) UINT FirstSubresource,
+	const D3D12_RESOURCE_DESC& DestinationDesc, _In_ ID3D12Resource* pIntermediate,
+	_In_range_(0, D3D12_REQ_SUBRESOURCES) UINT FirstSubresource,
 	_In_range_(0, D3D12_REQ_SUBRESOURCES - FirstSubresource) UINT NumSubresources, UINT64 RequiredSize,
 	_In_reads_(NumSubresources) const D3D12_PLACED_SUBRESOURCE_FOOTPRINT* pLayouts, _In_reads_(NumSubresources) const UINT* pNumRows,
 	_In_reads_(NumSubresources) const UINT64* pRowSizesInBytes, _In_reads_(NumSubresources) const D3D12_SUBRESOURCE_DATA* pSrcData)
 {
 	// Minor validation
+	if (!pCmdList || !pDestinationResource || !pIntermediate || !pLayouts || !pNumRows || !pRowSizesInBytes || !pSrcData)
+		return 0;
+
 	D3D12_RESOURCE_DESC IntermediateDesc = pIntermediate->GetDesc();
-	D3D12_RESOURCE_DESC DestinationDesc = pDestinationResource->GetDesc();
 	if (IntermediateDesc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER || IntermediateDesc.Width < RequiredSize + pLayouts[0].Offset ||
 		RequiredSize > (SIZE_T)-1 ||
 		(DestinationDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER && (FirstSubresource != 0 || NumSubresources != 1)))
@@ -599,7 +602,10 @@ inline UINT64 UpdateSubresources(_In_ ID3D12GraphicsCommandList* pCmdList, _In_ 
 	for (UINT i = 0; i < NumSubresources; ++i)
 	{
 		if (pRowSizesInBytes[i] > (SIZE_T)-1)
+		{
+			pIntermediate->Unmap(0, NULL);
 			return 0;
+		}
 		D3D12_MEMCPY_DEST DestData = {pData + pLayouts[i].Offset, pLayouts[i].Footprint.RowPitch, pLayouts[i].Footprint.RowPitch * pNumRows[i]};
 		MemcpySubresource(&DestData, &pSrcData[i], (SIZE_T)pRowSizesInBytes[i], pNumRows[i], pLayouts[i].Footprint.Depth);
 	}
@@ -642,22 +648,23 @@ inline UINT64 UpdateSubresources(_In_ ID3D12GraphicsCommandList* pCmdList, _In_ 
 /// Helper function from the d3dx12 header (MIT License, Microsoft). We avoid the full header for lightness.
 /// https://github.com/microsoft/DirectX-Graphics-Samples/blob/71f3c57648b6cecde532f67dccd07265485e2313/TechniqueDemos/D3D12MemoryManagement/src/d3dx12.h#L1876
 template <UINT MaxSubresources>
-inline UINT64 UpdateSubresources(_In_ ID3D12GraphicsCommandList* pCmdList, _In_ ID3D12Resource* pDestinationResource,
-	_In_ ID3D12Resource* pIntermediate, UINT64 IntermediateOffset, _In_range_(0, MaxSubresources) UINT FirstSubresource,
+inline UINT64 UpdateSubresources(_In_ ID3D12Device* pDevice, const D3D12_RESOURCE_DESC& DestinationDesc,
+	_In_ ID3D12GraphicsCommandList* pCmdList, _In_ ID3D12Resource* pDestinationResource, _In_ ID3D12Resource* pIntermediate,
+	UINT64 IntermediateOffset, _In_range_(0, MaxSubresources) UINT FirstSubresource,
 	_In_range_(1, MaxSubresources - FirstSubresource) UINT NumSubresources, _In_reads_(NumSubresources) D3D12_SUBRESOURCE_DATA* pSrcData)
 {
+	if (!pDevice || !pDestinationResource || !pIntermediate)
+		return 0;
+
 	UINT64 RequiredSize = 0;
 	D3D12_PLACED_SUBRESOURCE_FOOTPRINT Layouts[MaxSubresources];
 	UINT NumRows[MaxSubresources];
 	UINT64 RowSizesInBytes[MaxSubresources];
 
-	D3D12_RESOURCE_DESC Desc = pDestinationResource->GetDesc();
-	ID3D12Device* pDevice = nullptr;
-	pDestinationResource->GetDevice(__uuidof(*pDevice), reinterpret_cast<void**>(&pDevice));
-	pDevice->GetCopyableFootprints(&Desc, FirstSubresource, NumSubresources, IntermediateOffset, Layouts, NumRows, RowSizesInBytes, &RequiredSize);
-	pDevice->Release();
+	pDevice->GetCopyableFootprints(
+		&DestinationDesc, FirstSubresource, NumSubresources, IntermediateOffset, Layouts, NumRows, RowSizesInBytes, &RequiredSize);
 
-	return UpdateSubresources(pCmdList, pDestinationResource, pIntermediate, FirstSubresource, NumSubresources, RequiredSize, Layouts, NumRows,
+	return UpdateSubresources(pCmdList, pDestinationResource, DestinationDesc, pIntermediate, FirstSubresource, NumSubresources, RequiredSize, Layouts, NumRows,
 		RowSizesInBytes, pSrcData);
 }
 
@@ -1928,6 +1935,18 @@ Rml::TextureHandle RenderInterface_DX12::LoadTexture(Rml::Vector2i& texture_dime
 
 Rml::TextureHandle RenderInterface_DX12::GenerateTexture(Rml::Span<const Rml::byte> source_data, Rml::Vector2i source_dimensions)
 {
+	return GenerateTextureInternal(source_data, source_dimensions, false);
+}
+
+Rml::TextureHandle RenderInterface_DX12::GenerateTextureCommitted(
+	Rml::Span<const Rml::byte> source_data, Rml::Vector2i source_dimensions)
+{
+	return GenerateTextureInternal(source_data, source_dimensions, true);
+}
+
+Rml::TextureHandle RenderInterface_DX12::GenerateTextureInternal(
+	Rml::Span<const Rml::byte> source_data, Rml::Vector2i source_dimensions, bool force_committed)
+{
 	RMLUI_ZoneScopedN("DirectX 12 - GenerateTexture");
 
 	// RMLUI_ASSERTMSG(source_data.data(), "must be valid source");
@@ -1959,12 +1978,17 @@ Rml::TextureHandle RenderInterface_DX12::GenerateTexture(Rml::Span<const Rml::by
 	}
 #endif
 
-	m_manager_texture.Alloc_Texture(desc_texture, p_resource, source_data.data()
+	ID3D12Resource* texture = m_manager_texture.Alloc_Texture(desc_texture, p_resource, source_data.data(), force_committed
 #ifdef RMLUI_DX_DEBUG
 																  ,
 		p_resource->Get_ResourceName()
 #endif
 	);
+	if (!texture)
+	{
+		delete p_resource;
+		return {};
+	}
 
 	return reinterpret_cast<Rml::TextureHandle>(p_resource);
 }
@@ -9021,7 +9045,7 @@ void RenderInterface_DX12::TextureMemoryManager::Shutdown()
 }
 
 ID3D12Resource* RenderInterface_DX12::TextureMemoryManager::Alloc_Texture(D3D12_RESOURCE_DESC& desc, TextureHandleType* p_impl,
-	const Rml::byte* p_data
+	const Rml::byte* p_data, bool force_committed
 #ifdef RMLUI_DX_DEBUG
 	,
 	const Rml::String& debug_name
@@ -9066,15 +9090,24 @@ ID3D12Resource* RenderInterface_DX12::TextureMemoryManager::Alloc_Texture(D3D12_
 #endif
 
 	// we need to pass full memory with mipmaps otherwise the DirectX API will validate it by its own. we must ensure what we do.
-	if (CanBePlacedResource(total_memory_for_allocation))
+	bool allocated = false;
+	if (!force_committed && CanBePlacedResource(total_memory_for_allocation))
 	{
-		Alloc_As_Placed(base_memory_size_for_allocation_in_bytes, total_memory_for_allocation, desc, p_impl, p_data);
-		p_result = static_cast<ID3D12Resource*>(p_impl->Get_Resource());
+		allocated = Alloc_As_Placed(base_memory_size_for_allocation_in_bytes, total_memory_for_allocation, desc, p_impl, p_data);
+		if (allocated)
+			p_result = static_cast<ID3D12Resource*>(p_impl->Get_Resource());
 	}
-	else
+	if (!allocated)
 	{
-		Alloc_As_Committed(base_memory_size_for_allocation_in_bytes, total_memory_for_allocation, desc, p_impl, p_data);
-		p_result = static_cast<D3D12MA::Allocation*>(p_impl->Get_Resource())->GetResource();
+		// Committed resources use the device-default alignment. In particular,
+		// do not carry a failed 4 KiB placed-resource request into D3D12MA.
+		desc.Alignment = 0;
+		allocated = Alloc_As_Committed(base_memory_size_for_allocation_in_bytes, total_memory_for_allocation, desc, p_impl, p_data);
+		if (allocated)
+		{
+			auto* allocation = static_cast<D3D12MA::Allocation*>(p_impl->Get_Resource());
+			p_result = allocation ? allocation->GetResource() : nullptr;
+		}
 	}
 
 	return p_result;
@@ -9345,7 +9378,7 @@ D3D12MA::VirtualBlock* RenderInterface_DX12::TextureMemoryManager::Get_Available
 	return p_result;
 }
 
-void RenderInterface_DX12::TextureMemoryManager::Alloc_As_Committed(RMLUI_ATTR_ASSERT_VARIABLE size_t base_memory,
+bool RenderInterface_DX12::TextureMemoryManager::Alloc_As_Committed(RMLUI_ATTR_ASSERT_VARIABLE size_t base_memory,
 	RMLUI_ATTR_ASSERT_VARIABLE size_t total_memory, D3D12_RESOURCE_DESC& desc, TextureHandleType* p_impl, const Rml::byte* p_data)
 {
 	RMLUI_ZoneScopedN("DirectX 12 - TextureMemoryManager::Alloc_As_Committed");
@@ -9359,7 +9392,9 @@ void RenderInterface_DX12::TextureMemoryManager::Alloc_As_Committed(RMLUI_ATTR_A
 	RMLUI_ASSERTMSG(m_p_copy_command_list, "must be valid!");
 	RMLUI_ASSERTMSG(m_p_allocator, "allocator must be valid!");
 
-	if (m_p_allocator)
+	if (!m_p_allocator || !p_impl)
+		return false;
+
 	{
 		D3D12MA::ALLOCATION_DESC desc_allocation = {};
 		desc_allocation.HeapType = D3D12_HEAP_TYPE_DEFAULT;
@@ -9370,6 +9405,16 @@ void RenderInterface_DX12::TextureMemoryManager::Alloc_As_Committed(RMLUI_ATTR_A
 			m_p_allocator->CreateResource(&desc_allocation, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, &p_allocation, IID_PPV_ARGS(&p_resource));
 
 		RMLUI_DX_VERIFY_MSG(status, "failed to CreateResource (D3D12MA)");
+		if (FAILED(status) || !p_allocation || !p_resource)
+		{
+			Rml::Log::Message(Rml::Log::Type::LT_ERROR,
+				"[DirectX-12]: failed to allocate committed texture (HRESULT=0x%08lx)", static_cast<unsigned long>(status));
+			if (p_resource)
+				p_resource->Release();
+			if (p_allocation)
+				p_allocation->Release();
+			return false;
+		}
 
 		if (p_impl)
 		{
@@ -9389,6 +9434,7 @@ void RenderInterface_DX12::TextureMemoryManager::Alloc_As_Committed(RMLUI_ATTR_A
 		}
 
 		Upload(true, p_impl, desc, p_data, p_resource);
+		return true;
 	}
 }
 
@@ -9484,7 +9530,7 @@ void RenderInterface_DX12::TextureMemoryManager::Alloc_As_Committed(RMLUI_ATTR_A
 	}
 }
 
-void RenderInterface_DX12::TextureMemoryManager::Alloc_As_Placed(size_t base_memory, RMLUI_ATTR_ASSERT_VARIABLE size_t total_memory,
+bool RenderInterface_DX12::TextureMemoryManager::Alloc_As_Placed(size_t base_memory, RMLUI_ATTR_ASSERT_VARIABLE size_t total_memory,
 	D3D12_RESOURCE_DESC& desc, TextureHandleType* p_impl, const Rml::byte* p_data)
 {
 	RMLUI_ZoneScopedN("DirectX 12 - TextureMemoryManager::Alloc_As_Placed");
@@ -9503,8 +9549,21 @@ void RenderInterface_DX12::TextureMemoryManager::Alloc_As_Placed(size_t base_mem
 	{
 		desc.Alignment = D3D12_SMALL_RESOURCE_PLACEMENT_ALIGNMENT;
 		info_for_alloc = m_p_device->GetResourceAllocationInfo(0, 1, &desc);
+		// A raw byte-size check is not sufficient to determine whether a texture
+		// qualifies for 4 KiB placement. Drivers report UINT64_MAX when the
+		// requested small-resource alignment is unsupported. Retry with the
+		// default 64 KiB alignment instead of feeding the invalid result into the
+		// virtual allocator and CreatePlacedResource.
+		if (info_for_alloc.SizeInBytes == UINT64_MAX ||
+			info_for_alloc.Alignment != D3D12_SMALL_RESOURCE_PLACEMENT_ALIGNMENT)
+		{
+			desc.Alignment = 0;
+			info_for_alloc = m_p_device->GetResourceAllocationInfo(0, 1, &desc);
+		}
 
-		RMLUI_ASSERTMSG(info_for_alloc.Alignment == D3D12_SMALL_RESOURCE_PLACEMENT_ALIGNMENT, "wrong calculation! check CanBeSmallResource method!");
+		RMLUI_ASSERTMSG(info_for_alloc.Alignment == D3D12_SMALL_RESOURCE_PLACEMENT_ALIGNMENT ||
+			info_for_alloc.Alignment == D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT,
+			"driver returned an unsupported texture placement alignment");
 
 #ifdef RMLUI_DX_DEBUG
 		if (total_memory != info_for_alloc.SizeInBytes)
@@ -9536,8 +9595,16 @@ void RenderInterface_DX12::TextureMemoryManager::Alloc_As_Placed(size_t base_mem
 #endif
 	}
 
+	if (info_for_alloc.SizeInBytes == UINT64_MAX || info_for_alloc.Alignment == 0 ||
+		info_for_alloc.SizeInBytes > m_size_for_placed_heap)
+	{
+		return false;
+	}
+
 	int heap_index{-1};
 	auto* p_block = Get_AvailableBlock(info_for_alloc.SizeInBytes, &heap_index);
+	if (!p_block || heap_index < 0 || static_cast<size_t>(heap_index) >= m_heaps_placed.size())
+		return false;
 
 	RMLUI_ASSERTMSG(heap_index != -1, "something is wrong!");
 	RMLUI_ASSERTMSG(p_block, "something is wrong!");
@@ -9617,11 +9684,28 @@ void RenderInterface_DX12::TextureMemoryManager::Alloc_As_Placed(size_t base_mem
 	}
 
 	RMLUI_DX_VERIFY_MSG(status, "can't allocate virtual alloc!");
+	if (FAILED(status) || !p_heap || heap_index < 0 || static_cast<size_t>(heap_index) >= m_blocks.size())
+	{
+		if (SUCCEEDED(status) && heap_index >= 0 && static_cast<size_t>(heap_index) < m_blocks.size())
+			m_blocks[heap_index]->FreeAllocation(alloc_virtual);
+		return false;
+	}
 
 	ID3D12Resource* p_resource{};
 	status = m_p_device->CreatePlacedResource(p_heap, offset, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&p_resource));
 
 	RMLUI_DX_VERIFY_MSG(status, "failed to CreatePlacedResource!");
+	if (FAILED(status) || !p_resource)
+	{
+		Rml::Log::Message(Rml::Log::Type::LT_WARNING,
+			"[DirectX-12]: placed texture allocation failed for %llux%u (alignment=%llu, HRESULT=0x%08lx); retrying as committed",
+			static_cast<unsigned long long>(desc.Width), static_cast<unsigned>(desc.Height),
+			static_cast<unsigned long long>(desc.Alignment), static_cast<unsigned long>(status));
+		if (p_resource)
+			p_resource->Release();
+		m_blocks[heap_index]->FreeAllocation(alloc_virtual);
+		return false;
+	}
 	RMLUI_ASSERTMSG(p_resource, "must be valid pointer of ID3D12Resource*!");
 
 	if (p_impl)
@@ -9656,6 +9740,7 @@ void RenderInterface_DX12::TextureMemoryManager::Alloc_As_Placed(size_t base_mem
 	}
 
 	Upload(false, p_impl, desc, p_data, p_resource);
+	return true;
 }
 
 void RenderInterface_DX12::TextureMemoryManager::Upload(bool is_committed, TextureHandleType* p_texture_handle, const D3D12_RESOURCE_DESC& desc,
@@ -9676,7 +9761,22 @@ void RenderInterface_DX12::TextureMemoryManager::Upload(bool is_committed, Textu
 	RMLUI_ASSERTMSG(m_p_fence, "must be valid!");
 	RMLUI_ASSERTMSG(m_p_fence_event, "must be valid!");
 
-	auto upload_size = GetRequiredIntermediateSize(p_resource, 0, 1);
+	if (!p_resource)
+	{
+		Rml::Log::Message(Rml::Log::Type::LT_ERROR, "[DirectX-12]: refusing to upload a null texture resource");
+		return;
+	}
+
+	// We already own the authoritative resource description and device. Avoid
+	// querying the just-created destination COM object for metadata here: this
+	// was both redundant and the exact access-violation site when a driver
+	// rejected a placed resource and returned an unusable interface pointer.
+	auto upload_size = GetRequiredIntermediateSize(m_p_device, desc, 0, 1);
+	if (upload_size == 0)
+	{
+		Rml::Log::Message(Rml::Log::Type::LT_ERROR, "[DirectX-12]: failed to calculate the texture upload footprint");
+		return;
+	}
 
 	D3D12MA::Allocation* p_allocation{};
 
@@ -9758,12 +9858,37 @@ void RenderInterface_DX12::TextureMemoryManager::Upload(bool is_committed, Textu
 	RMLUI_DX_VERIFY_MSG(status, "failed to CreateResource (upload buffer for texture)");
 #endif
 
+	ID3D12Resource* upload_resource = p_allocation ? p_allocation->GetResource() : nullptr;
+	if (FAILED(status) || !upload_resource)
+	{
+		Rml::Log::Message(Rml::Log::Type::LT_ERROR,
+			"[DirectX-12]: failed to allocate texture upload buffer (HRESULT=0x%08lx)", static_cast<unsigned long>(status));
+		if (p_allocation && p_allocation != m_p_upload_buffer)
+		{
+			if (p_allocation->GetResource())
+				p_allocation->GetResource()->Release();
+			p_allocation->Release();
+		}
+		return;
+	}
+
 	D3D12_SUBRESOURCE_DATA desc_data{};
 	desc_data.pData = p_data;
 	desc_data.RowPitch = desc.Width * BytesPerPixel(desc.Format);
 	desc_data.SlicePitch = desc_data.RowPitch * desc.Height;
 
-	auto allocated_size = UpdateSubresources<1>(m_p_copy_command_list, p_resource, p_allocation->GetResource(), 0, 0, 1, &desc_data);
+	auto allocated_size = UpdateSubresources<1>(
+		m_p_device, desc, m_p_copy_command_list, p_resource, upload_resource, 0, 0, 1, &desc_data);
+	if (allocated_size == 0)
+	{
+		Rml::Log::Message(Rml::Log::Type::LT_ERROR, "[DirectX-12]: failed to stage texture upload data");
+		if (p_allocation != m_p_upload_buffer)
+		{
+			upload_resource->Release();
+			p_allocation->Release();
+		}
+		return;
+	}
 
 #ifdef RMLUI_DX_DEBUG
 	constexpr const char* p_committed = "committed";
@@ -9997,24 +10122,22 @@ size_t RenderInterface_DX12::TextureMemoryManager::BitsPerPixel(DXGI_FORMAT form
 
 Rml::Pair<ID3D12Heap*, D3D12MA::VirtualBlock*> RenderInterface_DX12::TextureMemoryManager::Create_HeapPlaced(size_t size_for_creation)
 {
-	(void)(size_for_creation);
-
 	RMLUI_ZoneScopedN("DirectX 12 - TextureMemoryManager::Create_HeapPlaced");
 	RMLUI_ASSERTMSG(m_p_device, "must be valid!");
 
 	D3D12MA::VIRTUAL_BLOCK_DESC desc_block{};
 
-	desc_block.Size = m_size_for_placed_heap;
+	desc_block.Size = size_for_creation;
 	D3D12MA::VirtualBlock* p_block{};
 	auto status = D3D12MA::CreateVirtualBlock(&desc_block, &p_block);
 
 	RMLUI_DX_VERIFY_MSG(status, "failed to D3D12MA::CreateVirtualBlock");
-
-	m_blocks.push_back(p_block);
+	if (FAILED(status) || !p_block)
+		return {};
 
 	D3D12_HEAP_DESC desc_heap;
 	desc_heap.Flags = D3D12_HEAP_FLAG_DENY_BUFFERS | D3D12_HEAP_FLAG_DENY_RT_DS_TEXTURES;
-	desc_heap.SizeInBytes = m_size_for_placed_heap;
+	desc_heap.SizeInBytes = size_for_creation;
 	desc_heap.Alignment = 0;
 	desc_heap.Properties.Type = D3D12_HEAP_TYPE::D3D12_HEAP_TYPE_DEFAULT;
 	desc_heap.Properties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
@@ -10026,7 +10149,13 @@ Rml::Pair<ID3D12Heap*, D3D12MA::VirtualBlock*> RenderInterface_DX12::TextureMemo
 	status = m_p_device->CreateHeap(&desc_heap, IID_PPV_ARGS(&p_heap));
 
 	RMLUI_DX_VERIFY_MSG(status, "failed to CreateHeap!");
+	if (FAILED(status) || !p_heap)
+	{
+		p_block->Release();
+		return {};
+	}
 
+	m_blocks.push_back(p_block);
 	m_heaps_placed.push_back(p_heap);
 
 	return {p_heap, p_block};

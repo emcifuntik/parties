@@ -52,6 +52,15 @@ public:
 	// The Windows adapter overrides this; Metal does not currently implement it.
 	virtual void UpdateTextureData(Rml::TextureHandle /*texture_handle*/, Rml::Span<const Rml::byte> /*source_data*/, Rml::Vector2i /*source_dimensions*/) {}
 
+	// Creates a frequently replaced texture, such as a software-decoded video
+	// frame or a capture preview. Backends may keep these resources out of
+	// suballocated heaps whose lifetime and aliasing rules are intended for
+	// long-lived UI assets.
+	virtual Rml::TextureHandle GenerateDynamicTexture(
+		Rml::Span<const Rml::byte> source_data, Rml::Vector2i source_dimensions) {
+		return GenerateTexture(source_data, source_dimensions);
+	}
+
 	// YUV texture support (I420: 3 x R8 planes -> RGB in pixel shader)
 	virtual uintptr_t GenerateYUVTexture(
 		const uint8_t* y_data, uint32_t y_stride,
