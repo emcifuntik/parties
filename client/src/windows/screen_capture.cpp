@@ -35,6 +35,16 @@ using Microsoft::WRL::ComPtr;
 
 namespace parties::client {
 
+namespace {
+
+// Windows.Graphics.Capture activation and one-shot session creation cross an
+// out-of-process COM/RPC boundary. Concurrent callers can wedge the capture
+// broker and leave every caller waiting in NtAlpcSendWaitReceivePort. Keep this
+// critical system interaction serialized; frame delivery remains concurrent.
+std::mutex g_wgc_session_setup_mutex;
+
+} // namespace
+
 // ─── Helper: Win32 D3D11 device → WinRT IDirect3DDevice ─────────────────────
 
 static IDirect3DDevice CreateWinRTDevice(ID3D11Device* d3dDevice) {
@@ -255,6 +265,7 @@ static CaptureThumbnail CaptureWindowThumbnailWgc(ThumbnailCaptureContext& captu
     if (!capture_context)
         return {};
 
+    std::lock_guard setup_lock(g_wgc_session_setup_mutex);
     try {
         if (!GraphicsCaptureSession::IsSupported())
             return {};
@@ -653,6 +664,7 @@ bool ScreenCapture::start(const CaptureTarget& target, uint32_t target_fps) {
 	ZoneScopedN("ScreenCapture::start");
     if (capturing_ || !impl_) return false;
 
+    std::lock_guard setup_lock(g_wgc_session_setup_mutex);
     frame_count_ = 0;
 
     try {

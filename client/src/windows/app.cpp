@@ -26,6 +26,7 @@
 #endif
 #include <windows.h>
 #include <windowsx.h>
+#include <roapi.h>
 
 #include <algorithm>
 #include <array>
@@ -496,6 +497,17 @@ void App::shutdown() {
         render_thread_.join();
 
     context_windows_.prepare_shutdown();
+    // WGC activation is performed on a detached worker because Windows may
+    // block indefinitely in its out-of-process GraphicsCapture RPC. Dropping
+    // our references is safe: an in-flight job owns its ScreenCapture until
+    // the system call returns, without retaining App.
+    auto abandoned_capture_start = std::move(screen_share_start_job_);
+    if (abandoned_capture_start &&
+        !abandoned_capture_start->complete.load(std::memory_order_acquire)) {
+        // The detached job owns the capture object until the non-cancellable
+        // Windows RPC returns. Do not race shutdown against ScreenCapture::start.
+        capture_.reset();
+    }
     if (stream_audio_capture_) { stream_audio_capture_->stop(); stream_audio_capture_.reset(); }
     stop_application_audio_share();
     // Stop producing frames first, but keep the capture D3D11 device alive
@@ -908,6 +920,8 @@ void App::tick_message_thread() {
         stop_screen_share();
     }
 
+    poll_screen_share_start();
+
     // Tick shared logic (network messages, speaking state, model updates, etc.)
     core_.tick();
 
@@ -942,6 +956,7 @@ void App::defer_dpi(float scale) {
 void App::show_share_picker(bool audio_only) {
     ZoneScopedN("App::show_share_picker");
     if ((!audio_only && sharing_screen_) ||
+        (!audio_only && screen_share_start_job_) ||
         (audio_only && application_audio_sharing_.load(std::memory_order_acquire)) ||
         !core_.authenticated_ || core_.current_channel_ == 0) return;
     std::unique_ptr<ScreenCapture> audio_picker_capture;
@@ -950,7 +965,7 @@ void App::show_share_picker(bool audio_only) {
         audio_picker_capture = std::make_unique<ScreenCapture>();
         picker = audio_picker_capture.get();
     } else {
-        capture_ = std::make_unique<ScreenCapture>();
+        capture_ = std::make_shared<ScreenCapture>();
         picker = capture_.get();
     }
 
@@ -1004,7 +1019,6 @@ void App::queue_share_thumbnails() {
         share_thumbnail_job_targets_ = capture_targets_;
         pending_share_thumbnails_.clear();
         share_thumbnail_job_pending_ = true;
-        share_thumbnail_job_active_ = true;
     }
     share_thumbnail_cv_.notify_all();
 }
@@ -1019,7 +1033,8 @@ void App::cancel_share_thumbnails() {
     share_thumbnail_job_targets_.clear();
     pending_share_thumbnails_.clear();
     share_thumbnail_job_pending_ = false;
-    share_thumbnail_job_active_ = false;
+    // An active WGC call cannot be cancelled. Keep the active flag set until
+    // the worker has actually returned so capture startup never overlaps it.
     share_thumbnail_cv_.notify_all();
 }
 
@@ -1038,56 +1053,47 @@ void App::share_thumbnail_worker(std::stop_token stop_token) {
             targets = share_thumbnail_job_targets_;
             generation = share_thumbnail_generation_;
             share_thumbnail_job_pending_ = false;
+            share_thumbnail_job_active_ = true;
         }
 
-        // WGC may need hundreds of milliseconds before a minimized or throttled
-        // application produces its first frame. Serial capture made one such
-        // window block every card behind it. A small bounded worker set keeps the
-        // picker responsive without creating a GPU device per enumerated window.
-        std::atomic<int> next_target{0};
-        const int worker_count = (std::min)(4, static_cast<int>(targets.size()));
-        std::vector<std::jthread> capture_workers;
-        capture_workers.reserve(worker_count);
-        for (int worker_index = 0; worker_index < worker_count; ++worker_index) {
-            capture_workers.emplace_back([&, generation] {
-                ScreenCapture::ThumbnailSession thumbnail_session;
-                while (!stop_token.stop_requested()) {
-                    const int index = next_target.fetch_add(1, std::memory_order_relaxed);
-                    if (index >= static_cast<int>(targets.size()))
-                        break;
-                    {
-                        std::lock_guard lock(share_thumbnail_mutex_);
-                        if (generation != share_thumbnail_generation_)
-                            break;
-                    }
+        // GraphicsCapture activation is an out-of-process COM/RPC call. Four
+        // concurrent preview sessions were enough to wedge the service on a
+        // real machine, after which capture startup blocked the UI thread too.
+        // One reusable session keeps the expensive work off the UI thread and
+        // avoids saturating the system capture broker.
+        ScreenCapture::ThumbnailSession thumbnail_session;
+        for (int index = 0; index < static_cast<int>(targets.size()); ++index) {
+            if (stop_token.stop_requested())
+                break;
+            {
+                std::lock_guard lock(share_thumbnail_mutex_);
+                if (generation != share_thumbnail_generation_)
+                    break;
+            }
 
-                    // The cards are 250x118dp. 320x180 retains enough detail for
-                    // high DPI without uploading full-size window surfaces.
-                    auto thumbnail = thumbnail_session.capture(targets[index], 320, 180);
-                    if (!thumbnail)
-                        continue;
+            // The cards are 250x118dp. 320x180 retains enough detail for high
+            // DPI without uploading full-size window surfaces.
+            auto thumbnail = thumbnail_session.capture(targets[index], 320, 180);
+            if (!thumbnail)
+                continue;
 
-                    ShareThumbnail pending;
-                    pending.target_index = index;
-                    pending.rgba = std::move(thumbnail.rgba);
-                    pending.width = thumbnail.width;
-                    pending.height = thumbnail.height;
+            ShareThumbnail pending;
+            pending.target_index = index;
+            pending.rgba = std::move(thumbnail.rgba);
+            pending.width = thumbnail.width;
+            pending.height = thumbnail.height;
 
-                    std::lock_guard lock(share_thumbnail_mutex_);
-                    if (generation != share_thumbnail_generation_)
-                        break;
-                    pending_share_thumbnails_.push_back(std::move(pending));
-                }
-            });
+            std::lock_guard lock(share_thumbnail_mutex_);
+            if (generation != share_thumbnail_generation_)
+                break;
+            pending_share_thumbnails_.push_back(std::move(pending));
         }
-        for (auto& worker : capture_workers)
-            worker.join();
 
         {
             std::lock_guard lock(share_thumbnail_mutex_);
-            if (generation == share_thumbnail_generation_)
-                share_thumbnail_job_active_ = false;
+            share_thumbnail_job_active_ = false;
         }
+        share_thumbnail_cv_.notify_all();
     }
 }
 
@@ -1178,7 +1184,8 @@ void App::init_scale_pipeline(ID3D11Device* device) {
 
 void App::start_screen_share(int target_index) {
     ZoneScopedN("App::start_screen_share");
-    if (sharing_screen_ || !core_.authenticated_ || core_.current_channel_ == 0) return;
+    if (sharing_screen_ || screen_share_start_job_ ||
+        !core_.authenticated_ || core_.current_channel_ == 0) return;
 
     if (target_index < 0 || target_index >= static_cast<int>(capture_targets_.size())) {
         capture_targets_.clear();
@@ -1187,7 +1194,7 @@ void App::start_screen_share(int target_index) {
     }
     if (!capture_) return;
 
-    const auto& target = capture_targets_[target_index];
+    const auto target = capture_targets_[target_index];
 
     uint32_t target_process_id = 0;
     if (target.type == CaptureTarget::Type::Window && target.handle) {
@@ -1200,14 +1207,82 @@ void App::start_screen_share(int target_index) {
     int fps_idx = (std::max)(0, (std::min)(core_.model_.share_fps.get(), 3));
     encode_fps_ = fps_presets[fps_idx];
 
-    if (!capture_->start(target, encode_fps_)) {
-        LOG_ERROR("Failed to start capture");
-        capture_->shutdown(); capture_.reset(); capture_targets_.clear();
+    auto job = std::make_shared<ScreenShareStartJob>();
+    job->capture = capture_;
+    job->target = target;
+    job->fps = encode_fps_;
+    job->target_process_id = target_process_id;
+    screen_share_start_job_ = std::move(job);
+    capture_targets_.clear();
+
+    LOG_INFO("Queued asynchronous screen capture startup for '{}' at {} FPS",
+             target.name, encode_fps_);
+}
+
+void App::poll_screen_share_start() {
+    auto job = screen_share_start_job_;
+    if (!job)
+        return;
+
+    if (!job->launched) {
+        bool thumbnail_capture_idle = false;
+        {
+            std::lock_guard lock(share_thumbnail_mutex_);
+            thumbnail_capture_idle = !share_thumbnail_job_active_ &&
+                                     !share_thumbnail_job_pending_;
+        }
+        if (!thumbnail_capture_idle)
+            return;
+
+        job->launched = true;
+        std::thread([job] {
+            TracySetThreadName("Capture startup");
+            const HRESULT apartment_result = RoInitialize(RO_INIT_MULTITHREADED);
+            if (FAILED(apartment_result) && apartment_result != RPC_E_CHANGED_MODE) {
+                LOG_ERROR("Capture startup COM initialization failed: {:#010x}",
+                          static_cast<unsigned>(apartment_result));
+                job->complete.store(true, std::memory_order_release);
+                return;
+            }
+
+            job->succeeded = job->capture->start(job->target, job->fps);
+            if (SUCCEEDED(apartment_result))
+                RoUninitialize();
+            job->complete.store(true, std::memory_order_release);
+        }).detach();
         return;
     }
 
+    if (!job->complete.load(std::memory_order_acquire))
+        return;
+
+    screen_share_start_job_.reset();
+    if (capture_ != job->capture || !core_.authenticated_ ||
+        core_.current_channel_ == 0) {
+        LOG_WARN("Discarding completed screen capture startup after application state changed");
+        if (job->succeeded)
+            job->capture->shutdown();
+        if (capture_ == job->capture)
+            capture_.reset();
+        return;
+    }
+
+    if (!job->succeeded) {
+        LOG_ERROR("Failed to start capture for '{}'", job->target.name);
+        capture_->shutdown();
+        capture_.reset();
+        return;
+    }
+
+    finish_screen_share_start(job->target_process_id);
+}
+
+void App::finish_screen_share_start(uint32_t target_process_id) {
+    ZoneScopedN("App::finish_screen_share_start");
+    if (!capture_)
+        return;
+
     capture_->on_closed = [this]() { capture_lost_.store(true, std::memory_order_relaxed); };
-    capture_targets_.clear();
 
     core_.settings_.set_pref("video.share_bitrate", std::to_string(core_.model_.share_bitrate.get()));
     core_.settings_.set_pref("video.share_fps",     std::to_string(core_.model_.share_fps.get()));

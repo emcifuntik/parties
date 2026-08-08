@@ -119,8 +119,9 @@ int main(int argc, char** argv) {
     target.type = parties::client::CaptureTarget::Type::Window;
     target.name = "thumbnail test";
     target.handle = window;
-    // Match the production picker: a bounded set of workers, each reusing its
-    // own session for more than one application capture.
+    // Exercise concurrent callers deliberately. Production uses one preview
+    // worker, while ScreenCapture serializes access to the out-of-process WGC
+    // broker as a second line of defence against activation deadlocks.
     std::array<parties::client::CaptureThumbnail, 4> thumbnails;
     std::array<std::jthread, 4> capture_workers;
     for (size_t worker = 0; worker < capture_workers.size(); ++worker) {

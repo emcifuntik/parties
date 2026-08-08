@@ -90,6 +90,8 @@ private:
     void cancel_share_thumbnails();
     void share_thumbnail_worker(std::stop_token stop_token);
     void start_screen_share(int target_index);
+    void poll_screen_share_start();
+    void finish_screen_share_start(uint32_t target_process_id);
     void stop_screen_share();
     void start_application_audio_share(int target_index);
     void stop_application_audio_share();
@@ -163,7 +165,17 @@ private:
     uint64_t share_thumbnail_generation_ = 0;
     bool share_thumbnail_job_pending_ = false;
     bool share_thumbnail_job_active_ = false;
-    std::unique_ptr<ScreenCapture> capture_;
+    struct ScreenShareStartJob {
+        std::shared_ptr<ScreenCapture> capture;
+        CaptureTarget target;
+        uint32_t fps = 0;
+        uint32_t target_process_id = 0;
+        bool launched = false; // Message-thread only.
+        bool succeeded = false;
+        std::atomic<bool> complete{false};
+    };
+    std::shared_ptr<ScreenShareStartJob> screen_share_start_job_;
+    std::shared_ptr<ScreenCapture> capture_;
     std::unique_ptr<VideoEncoder> encoder_;
     std::unique_ptr<VideoDecoder> decoder_;
     parties::rml::ElementRegistry element_registry_;
