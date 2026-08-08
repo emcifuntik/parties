@@ -15,6 +15,7 @@
 
 #include "RmlUi_DirectX/D3D12MemAlloc.h"
 #include "RmlUi_DirectX/offsetAllocator.hpp"
+#include <RmlUi/Core/Log.h>
 #include <bitset>
 #include <chrono>
 #include <d3d12.h>
@@ -155,12 +156,27 @@ inline constexpr const char* DXGIFormatToString(DXGI_FORMAT format)
 } // namespace Rml
 
 #ifdef RMLUI_DEBUG
-	#define RMLUI_DX_VERIFY_MSG(statement, msg) RMLUI_ASSERTMSG(SUCCEEDED(statement), msg)
+	#define RMLUI_DX_VERIFY_MSG(statement, msg) do { \
+		const HRESULT rmlui_dx_status = (statement); \
+		if (FAILED(rmlui_dx_status)) \
+			Rml::Log::Message(Rml::Log::Type::LT_ERROR, \
+				"[DirectX 12] %s (HRESULT=0x%08lx, %s:%d)", msg, \
+				static_cast<unsigned long>(rmlui_dx_status), __FILE__, __LINE__); \
+		RMLUI_ASSERTMSG(SUCCEEDED(rmlui_dx_status), msg); \
+	} while (false)
 
 // Uncomment the following line to enable additional DirectX debugging.
 // #define RMLUI_DX_DEBUG
 #else
-	#define RMLUI_DX_VERIFY_MSG(statement, msg) static_cast<void>(statement)
+	// Release builds used to discard every HRESULT here. Keep the checks cheap,
+	// but preserve failures in the production log for driver diagnostics.
+	#define RMLUI_DX_VERIFY_MSG(statement, msg) do { \
+		const HRESULT rmlui_dx_status = (statement); \
+		if (FAILED(rmlui_dx_status)) \
+			Rml::Log::Message(Rml::Log::Type::LT_ERROR, \
+				"[DirectX 12] %s (HRESULT=0x%08lx, %s:%d)", msg, \
+				static_cast<unsigned long>(rmlui_dx_status), __FILE__, __LINE__); \
+	} while (false)
 #endif
 
 #if defined _MSC_VER

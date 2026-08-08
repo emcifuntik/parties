@@ -17,6 +17,8 @@ bool VideoDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height,
     codec_ = codec;
     width_ = width;
     height_ = height;
+    last_slow_decode_log_ = {};
+    suppressed_slow_decodes_ = 0;
 
     if (!hardware_disabled_) {
         // Full chain: NVDEC → AMF → dav1d/MFT
@@ -46,9 +48,19 @@ bool VideoDecoder::decode(const uint8_t* data, size_t len, int64_t timestamp) {
     const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - start).count();
     if (elapsed >= 20'000) {
-        LOG_WARN("VIDEO_DECODE_SLOW backend={} total_ms={:.2f} bytes={} ts={} result={}",
-                 backend_name(), static_cast<double>(elapsed) / 1000.0, len,
-                 timestamp, decoded);
+        const auto now = std::chrono::steady_clock::now();
+        if (last_slow_decode_log_.time_since_epoch().count() == 0 ||
+            now - last_slow_decode_log_ >= std::chrono::seconds(5)) {
+            LOG_WARN("VIDEO_DECODE_SLOW backend={} codec={} size={}x{} total_ms={:.2f} "
+                     "bytes={} ts={} result={} suppressed_since_previous={}",
+                     backend_name(), encdec::codec_name(codec_), width_, height_,
+                     static_cast<double>(elapsed) / 1000.0, len, timestamp,
+                     decoded, suppressed_slow_decodes_);
+            last_slow_decode_log_ = now;
+            suppressed_slow_decodes_ = 0;
+        } else {
+            ++suppressed_slow_decodes_;
+        }
     }
     return decoded;
 }

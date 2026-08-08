@@ -273,6 +273,8 @@ private:
     // FPS counters (render + stream)
     uint32_t fps_frame_count_ = 0;
     std::chrono::steady_clock::time_point fps_last_update_{std::chrono::steady_clock::now()};
+    std::chrono::steady_clock::time_point last_render_stall_log_{};
+    uint32_t suppressed_render_stalls_ = 0;
     // Last titlebar strings — SetInnerRML rebuilds the text element (and its
     // render geometry) even for identical content, so skip unchanged updates.
     Rml::String titlebar_fps_last_;

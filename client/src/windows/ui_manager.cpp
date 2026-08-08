@@ -17,6 +17,35 @@
 
 namespace parties::client {
 
+namespace {
+
+class PartiesSystemInterface_Win32 final : public SystemInterface_Win32 {
+public:
+    bool LogMessage(Rml::Log::Type type, const Rml::String& message) override {
+        switch (type) {
+        case Rml::Log::LT_ERROR:
+        case Rml::Log::LT_ASSERT:
+            LOG_ERROR("RmlUi: {}", message);
+            break;
+        case Rml::Log::LT_WARNING:
+            LOG_WARN("RmlUi: {}", message);
+            break;
+        case Rml::Log::LT_DEBUG:
+            LOG_DEBUG("RmlUi: {}", message);
+            break;
+        case Rml::Log::LT_ALWAYS:
+        case Rml::Log::LT_INFO:
+        default:
+            LOG_INFO("RmlUi: {}", message);
+            break;
+        }
+        // Production diagnostics must never open a debugger assertion dialog.
+        return true;
+    }
+};
+
+} // namespace
+
 // ═══════════════════════════════════════════════════════════════════════
 // UiManager
 // ═══════════════════════════════════════════════════════════════════════
@@ -29,7 +58,7 @@ bool UiManager::init(HWND hwnd) {
     hwnd_ = hwnd;
 
     // Create system interface (from vendored Win32 platform)
-    system_interface_ = std::make_unique<SystemInterface_Win32>();
+    system_interface_ = std::make_unique<PartiesSystemInterface_Win32>();
     system_interface_->SetWindow(hwnd);
 
     Rml::SetSystemInterface(system_interface_.get());

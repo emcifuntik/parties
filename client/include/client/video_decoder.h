@@ -3,6 +3,7 @@
 #include <encdec/decoder.h>
 
 #include <cstdint>
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <stop_token>
@@ -55,6 +56,8 @@ private:
     uint32_t height_ = 0;
     bool initialized_ = false;
     bool hardware_disabled_ = false;
+    std::chrono::steady_clock::time_point last_slow_decode_log_{};
+    uint32_t suppressed_slow_decodes_ = 0;
 };
 
 } // namespace parties::client

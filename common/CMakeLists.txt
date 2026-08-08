@@ -49,8 +49,9 @@ target_link_libraries(parties_common
 target_compile_definitions(parties_common PUBLIC
     SPDLOG_USE_STD_FORMAT
     $<$<BOOL:${BUILD_IN_RETAIL}>:PARTIES_RETAIL=1>
-    $<$<CONFIG:Debug>:SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG>
-    $<$<NOT:$<CONFIG:Debug>>:SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_INFO>
+    # Keep debug statements available in production binaries, but disabled at
+    # runtime by default. Support can opt in with PARTIES_LOG_LEVEL=debug.
+    SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG
 )
 
 if(ENABLE_SENTRY AND NOT APPLE)

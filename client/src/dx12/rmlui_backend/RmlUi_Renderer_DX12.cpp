@@ -1388,7 +1388,15 @@ void RenderInterface_DX12::EndFrame()
 		UINT sync_interval = m_is_use_vsync ? 1 : 0;
 		UINT present_flags = (m_is_use_tearing && !m_is_use_vsync) ? DXGI_PRESENT_ALLOW_TEARING : 0;
 
-		RMLUI_DX_VERIFY_MSG(m_p_swapchain->Present(sync_interval, present_flags), "failed to Present");
+		const HRESULT present_result = m_p_swapchain->Present(sync_interval, present_flags);
+		if (FAILED(present_result) && m_p_device)
+		{
+			const HRESULT removed_reason = m_p_device->GetDeviceRemovedReason();
+			Rml::Log::Message(Rml::Log::Type::LT_ERROR,
+				"[DirectX 12] Present failed (HRESULT=0x%08lx, device_removed_reason=0x%08lx)",
+				static_cast<unsigned long>(present_result), static_cast<unsigned long>(removed_reason));
+		}
+		RMLUI_DX_VERIFY_MSG(present_result, "failed to Present");
 
 		auto fence_value = Signal(m_current_back_buffer_index);
 

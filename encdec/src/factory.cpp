@@ -29,30 +29,46 @@ std::unique_ptr<Encoder> create_encoder(
     // Try NVENC first
     {
         auto enc = std::make_unique<nvidia::NvencEncoder>();
-        if (enc->init(device, enc_w, enc_h, fps, bitrate, preferred_codec))
+        if (enc->init(device, enc_w, enc_h, fps, bitrate, preferred_codec)) {
+            LOG_INFO("Selected video encoder backend={} codec={} size={}x{} fps={} bitrate={}",
+                     backend_name(enc->info().backend), codec_name(enc->info().codec),
+                     enc_w, enc_h, fps, bitrate);
             return enc;
+        }
     }
 
     // Try AMF second
     {
         auto enc = std::make_unique<amd::AmfEncoder>();
-        if (enc->init(device, enc_w, enc_h, fps, bitrate, preferred_codec))
+        if (enc->init(device, enc_w, enc_h, fps, bitrate, preferred_codec)) {
+            LOG_INFO("Selected video encoder backend={} codec={} size={}x{} fps={} bitrate={}",
+                     backend_name(enc->info().backend), codec_name(enc->info().codec),
+                     enc_w, enc_h, fps, bitrate);
             return enc;
+        }
     }
 
     // Try MFT fallback
     {
         auto enc = std::make_unique<mft::MftEncoder>();
         if (enc->init(device, enc_w, enc_h, input_width, input_height,
-                      fps, bitrate, preferred_codec))
+                      fps, bitrate, preferred_codec)) {
+            LOG_INFO("Selected video encoder backend={} codec={} size={}x{} fps={} bitrate={}",
+                     backend_name(enc->info().backend), codec_name(enc->info().codec),
+                     enc_w, enc_h, fps, bitrate);
             return enc;
+        }
     }
 
     // Last resort: OpenH264 software encoder (H.264 only)
     {
         auto enc = std::make_unique<openh264::OpenH264Encoder>();
-        if (enc->init(device, enc_w, enc_h, fps, bitrate))
+        if (enc->init(device, enc_w, enc_h, fps, bitrate)) {
+            LOG_INFO("Selected video encoder backend={} codec={} size={}x{} fps={} bitrate={}",
+                     backend_name(enc->info().backend), codec_name(enc->info().codec),
+                     enc_w, enc_h, fps, bitrate);
             return enc;
+        }
     }
 
     LOG_ERROR("No encoder available");
@@ -67,15 +83,21 @@ std::unique_ptr<Decoder> create_decoder(
     // Try NVDEC first
     {
         auto dec = std::make_unique<nvidia::NvdecDecoder>();
-        if (dec->init(codec, width, height, render_device))
+        if (dec->init(codec, width, height, render_device)) {
+            LOG_INFO("Selected video decoder backend={} codec={} size={}x{}",
+                     backend_name(dec->info().backend), codec_name(codec), width, height);
             return dec;
+        }
     }
 
     // Try AMF second
     {
         auto dec = std::make_unique<amd::AmfDecoder>();
-        if (dec->init(codec, width, height, render_device))
+        if (dec->init(codec, width, height, render_device)) {
+            LOG_INFO("Selected video decoder backend={} codec={} size={}x{}",
+                     backend_name(dec->info().backend), codec_name(codec), width, height);
             return dec;
+        }
     }
 
     // Software fallback
@@ -88,31 +110,46 @@ std::unique_ptr<Decoder> create_software_decoder(
 
     if (codec == VideoCodecId::AV1) {
         auto dec = std::make_unique<dav1d::Dav1dDecoder>();
-        if (dec->init(codec, width, height))
+        if (dec->init(codec, width, height)) {
+            LOG_INFO("Selected video decoder backend={} codec={} size={}x{}",
+                     backend_name(dec->info().backend), codec_name(codec), width, height);
             return dec;
+        }
     } else if (codec == VideoCodecId::H265) {
         // H.265: try MFT first, then libhevc software fallback
         {
             auto dec = std::make_unique<mft::MftDecoder>();
-            if (dec->init(codec, width, height))
+            if (dec->init(codec, width, height)) {
+                LOG_INFO("Selected video decoder backend={} codec={} size={}x{}",
+                         backend_name(dec->info().backend), codec_name(codec), width, height);
                 return dec;
+            }
         }
         {
             auto dec = std::make_unique<libhevc::LibhevcDecoder>();
-            if (dec->init(codec, width, height))
+            if (dec->init(codec, width, height)) {
+                LOG_INFO("Selected video decoder backend={} codec={} size={}x{}",
+                         backend_name(dec->info().backend), codec_name(codec), width, height);
                 return dec;
+            }
         }
     } else {
         // H.264: try MFT first, then OpenH264
         {
             auto dec = std::make_unique<mft::MftDecoder>();
-            if (dec->init(codec, width, height))
+            if (dec->init(codec, width, height)) {
+                LOG_INFO("Selected video decoder backend={} codec={} size={}x{}",
+                         backend_name(dec->info().backend), codec_name(codec), width, height);
                 return dec;
+            }
         }
         {
             auto dec = std::make_unique<openh264::OpenH264Decoder>();
-            if (dec->init(codec, width, height))
+            if (dec->init(codec, width, height)) {
+                LOG_INFO("Selected video decoder backend={} codec={} size={}x{}",
+                         backend_name(dec->info().backend), codec_name(codec), width, height);
                 return dec;
+            }
         }
     }
 

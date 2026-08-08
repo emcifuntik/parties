@@ -1,4 +1,5 @@
 #include <parties/crash_reporter.h>
+#include <parties/log.h>
 #include <parties/version.h>
 
 #ifdef SENTRY_ENABLED
@@ -25,6 +26,9 @@ void crash_reporter_init(const char* dsn, [[maybe_unused]] const char* exe_path)
 #endif
     sentry_options_set_database_path(options, ".sentry-native");
     sentry_options_set_auto_session_tracking(options, 1);
+    const std::string persistent_log = log_file_path();
+    if (!persistent_log.empty())
+        sentry_options_add_attachment(options, persistent_log.c_str());
     sentry_init(options);
     sentry_start_session();
 #else

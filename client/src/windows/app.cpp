@@ -692,10 +692,13 @@ static Rml::Element* find_share_thumbnail(Rml::ElementDocument* document, int ta
 void App::render_frame() {
     ZoneScopedN("App::render_frame");
 
+    const auto frame_start = std::chrono::steady_clock::now();
+
     if (!ui_.render_begin()) {  // BeginFrame: GPU/vsync wait — no context, no lock
         Sleep(16);              // Invalid/lost renderer: avoid a busy retry loop.
         return;
     }
+    const auto begin_complete = std::chrono::steady_clock::now();
     {
         std::lock_guard<std::recursive_mutex> lock(ui_mutex_);
 
@@ -854,10 +857,35 @@ void App::render_frame() {
         }
         ui_.render_body();
     }
+    const auto body_complete = std::chrono::steady_clock::now();
     ui_.render_end();           // EndFrame: present (+ DwmFlush) — no context, no lock
+    const auto present_complete = std::chrono::steady_clock::now();
     {
         std::lock_guard<std::recursive_mutex> lock(ui_mutex_);
         context_windows_.render();
+    }
+    const auto frame_complete = std::chrono::steady_clock::now();
+
+    const auto milliseconds = [](auto duration) {
+        return std::chrono::duration<double, std::milli>(duration).count();
+    };
+    const double total_ms = milliseconds(frame_complete - frame_start);
+    if (total_ms >= 50.0) {
+        if (last_render_stall_log_.time_since_epoch().count() == 0 ||
+            frame_complete - last_render_stall_log_ >= std::chrono::seconds(5)) {
+            LOG_WARN("RENDER_STALL total_ms={:.2f} begin_wait_ms={:.2f} ui_record_ms={:.2f} "
+                     "present_ms={:.2f} context_windows_ms={:.2f} "
+                     "suppressed_since_previous={}",
+                     total_ms, milliseconds(begin_complete - frame_start),
+                     milliseconds(body_complete - begin_complete),
+                     milliseconds(present_complete - body_complete),
+                     milliseconds(frame_complete - present_complete),
+                     suppressed_render_stalls_);
+            last_render_stall_log_ = frame_complete;
+            suppressed_render_stalls_ = 0;
+        } else {
+            ++suppressed_render_stalls_;
+        }
     }
 }
 

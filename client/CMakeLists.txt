@@ -123,6 +123,7 @@ else()
         # Platform specific
         src/windows/main.cpp
         src/windows/app.cpp
+        src/windows/system_diagnostics.cpp
         src/windows/stream_audio_capture.cpp
         src/windows/ui_manager.cpp
         src/windows/context_window_manager.cpp

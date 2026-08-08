@@ -10,6 +10,7 @@
 #include <parties/alloc_tracker.h>
 
 #include "RmlUi_Platform_Win32.h"
+#include "system_diagnostics.h"
 
 #include <dwmapi.h>
 #include <windowsx.h>
@@ -270,12 +271,14 @@ int main(int argc, char* argv[]) {
     parties::crash_reporter_is_crashpad_handler(argc, argv);
 
     TracySetThreadName("Main");
+    // Initialise the persistent file logger before Sentry so the current log
+    // can be attached to crash reports from production builds.
+    parties::log_init(parties::LogTarget::Client);
 #ifdef SENTRY_DSN_VALUE
     parties::crash_reporter_init(SENTRY_DSN_VALUE, argv[0]);
 #else
     parties::crash_reporter_init(nullptr);
 #endif
-    parties::log_init(parties::LogTarget::Client);
     LOG_INFO("{} Client v{}", parties::APP_NAME, parties::APP_VERSION);
     parties::alloctrack::start_reporting(10);
 
@@ -284,6 +287,7 @@ int main(int argc, char* argv[]) {
 
     // Per-monitor DPI awareness (must be set before creating any windows)
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    log_windows_system_diagnostics();
 
     if (!parties::crypto_init()) {
         LOG_ERROR("Failed to initialize crypto");
@@ -402,6 +406,7 @@ int main(int argc, char* argv[]) {
     parties::net_cleanup();
     parties::crypto_cleanup();
     parties::alloctrack::stop_reporting();
+    LOG_INFO("{} Client shutdown completed", parties::APP_NAME);
     parties::log_shutdown();
     parties::crash_reporter_shutdown();
     return 0;
