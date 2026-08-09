@@ -27,11 +27,12 @@ public:
     // Falls back to capturing the main display on macOS 12-13.
     // Calls on_started(true) on success, on_started(false) if user cancels or error.
     //
-    // output_scale (0..1] scales the captured frame on the GPU inside
+    // audio_only restricts the system picker to a single application and starts
+    // an audio-only SCStream. output_scale (0..1] scales video frames on the GPU inside
     // ScreenCaptureKit, and the long edge is additionally capped (see the .mm)
     // so the encoder receives sensibly-sized, even-dimensioned frames. This
     // replaces per-frame CPU/Core Image downscaling.
-    void pick_and_start(uint32_t target_fps, float output_scale,
+    void pick_and_start(uint32_t target_fps, float output_scale, bool audio_only,
                         std::function<void(bool success)> on_started);
     void stop();
 
@@ -44,8 +45,9 @@ public:
     // Caller must CFRetain/CFRelease if it needs to hold the buffer.
     std::function<void(CVPixelBufferRef, uint32_t width, uint32_t height)> on_frame;
 
-    // Called on an internal queue with interleaved float32 stereo PCM at 48 kHz.
-    // frame_count is the number of stereo sample pairs.
+    // Called on an internal queue with float32 PCM at 48 kHz. Video capture
+    // delivers interleaved stereo; audio-only capture requests mono.
+    // frame_count is the number of frames, independent of channel count.
     std::function<void(const float* samples, uint32_t frame_count)> on_audio;
 
     // Called when the captured window/display is removed.

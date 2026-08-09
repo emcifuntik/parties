@@ -12,6 +12,7 @@
 #include <RmlUi/Core/Core.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -37,6 +38,15 @@ namespace {
 int reconnect_backoff_ms(int attempts) {
     const int shift = (std::min)(attempts, 5);
     return (std::min)(15000, 500 * (1 << shift));
+}
+
+std::string trim_display_name(std::string value) {
+    auto is_space = [](unsigned char c) { return std::isspace(c) != 0; };
+    value.erase(value.begin(), std::find_if(value.begin(), value.end(),
+        [&](unsigned char c) { return !is_space(c); }));
+    value.erase(std::find_if(value.rbegin(), value.rend(),
+        [&](unsigned char c) { return !is_space(c); }).base(), value.end());
+    return value;
 }
 } // namespace
 
@@ -463,8 +473,13 @@ void AppCore::load_or_generate_identity(const std::string& username_hint)
         server_model_.show_onboarding = true;
     }
 
-    if (!username_hint.empty())
-        username_ = username_hint;
+    auto saved_global_name = settings_.get_pref("profile.global_name");
+    global_name_ = saved_global_name && !saved_global_name->empty()
+        ? trim_display_name(*saved_global_name)
+        : trim_display_name(username_hint);
+    if (global_name_.empty()) global_name_ = "User";
+    server_model_.global_name = Rml::String(global_name_);
+    if (username_.empty()) username_ = global_name_;
 
     server_model_.has_identity = has_identity_;
     server_model_.fingerprint  = Rml::String(settings_.get_fingerprint());
@@ -633,7 +648,12 @@ void AppCore::do_connect()
     // Manual connect supersedes any in-flight auto-reconnect.
     cancel_reconnect();
 
-    username_ = server_model_.login_username;
+    username_ = trim_display_name(std::string(server_model_.login_username));
+    if (username_.empty()) username_ = global_name_;
+    if (username_.empty()) {
+        server_model_.login_error = "Choose a display name first";
+        return;
+    }
     server_password_ = std::string(server_model_.login_password);
     server_model_.login_error = "";
 
@@ -646,6 +666,7 @@ void AppCore::do_connect()
     if (!net_.connect(server_host_, server_port_,
                       ticket.empty() ? nullptr : ticket.data(), ticket.size())) {
         server_model_.login_error = "Failed to connect to server";
+        server_model_.show_login = true;
         return;
     }
     awaiting_connection_ = true;
@@ -667,6 +688,7 @@ void AppCore::poll_connecting()
         } else {
             server_model_.login_error  = "Failed to connect to server";
             server_model_.login_status = "";
+            server_model_.show_login   = true;
         }
         return;
     }
@@ -720,6 +742,7 @@ void AppCore::send_auth_identity()
     if (!parties::ed25519_sign(sig_msg.data().data(), sig_msg.data().size(),
                                 secret_key_, public_key_, sig)) {
         server_model_.login_error = "Failed to sign auth message";
+        server_model_.show_login = true;
         return;
     }
 
@@ -896,7 +919,8 @@ void AppCore::attempt_reconnect()
         return;
     }
 
-    username_        = match->last_username;
+    username_        = trim_display_name(match->last_username);
+    if (username_.empty()) username_ = global_name_;
     server_password_ = match->password;
     server_host_     = match->host;
     server_port_     = static_cast<uint16_t>(match->port);
@@ -1681,7 +1705,8 @@ void AppCore::on_server_error(const uint8_t* data, size_t len)
             bridge_.play_sound(SoundPlayer::Effect::ServerDisconnected);
     }
 
-    if (server_model_.show_login) {
+    if (server_model_.show_login || (!authenticated_ && connecting_server_id_ != 0)) {
+        server_model_.show_login  = true;
         server_model_.login_error  = Rml::String(msg);
         server_model_.login_status = "";
     }
@@ -2166,18 +2191,31 @@ void AppCore::setup_server_model_callbacks()
             server_model_.show_onboarding = true;
             return;
         }
+        bool udp_says_passwordless = false;
+        for (const auto& entry : server_model_.servers.get()) {
+            if (entry.id == id) {
+                udp_says_passwordless = entry.online && !entry.locked;
+                break;
+            }
+        }
+
         auto saved = settings_.get_saved_servers();
         for (auto& srv : saved) {
             if (srv.id == id) {
                 connecting_server_id_ = id;
                 server_host_ = srv.host;
                 server_port_ = static_cast<uint16_t>(srv.port);
-                server_model_.login_username = Rml::String(srv.last_username);
-                server_model_.login_password = Rml::String(srv.password);
+                std::string nickname = trim_display_name(srv.last_username);
+                server_model_.login_show_username = nickname.empty();
+                server_model_.login_username = Rml::String(nickname);
+                server_model_.login_password = udp_says_passwordless
+                    ? Rml::String()
+                    : Rml::String(srv.password);
                 server_model_.login_error    = "";
                 server_model_.login_status   = Rml::String(
                     srv.name + " - " + srv.host + ":" + std::to_string(srv.port));
-                server_model_.show_login = true;
+                server_model_.show_login = !udp_says_passwordless;
+                if (udp_says_passwordless) do_connect();
                 break;
             }
         }
@@ -2188,11 +2226,67 @@ void AppCore::setup_server_model_callbacks()
         refresh_server_list();
     };
 
+    server_model_.on_save_global_name = [this]() {
+        std::string name = trim_display_name(std::string(server_model_.global_name_input));
+        if (name.empty()) {
+            server_model_.global_name_error = "Enter a display name";
+            return;
+        }
+        if (name.size() > 64) {
+            server_model_.global_name_error = "Display name is too long";
+            return;
+        }
+        if (!settings_.set_pref("profile.global_name", name)) {
+            server_model_.global_name_error = "Failed to save display name";
+            return;
+        }
+        global_name_ = name;
+        server_model_.global_name = Rml::String(name);
+        server_model_.global_name_input = Rml::String(name);
+        server_model_.global_name_error = "";
+        server_model_.show_global_name_editor = false;
+    };
+
+    server_model_.on_edit_server_nickname = [this](int id) {
+        for (const auto& srv : settings_.get_saved_servers()) {
+            if (srv.id != id) continue;
+            server_model_.server_nickname_server_id = id;
+            server_model_.server_nickname_server_name = Rml::String(srv.name);
+            server_model_.server_nickname_input = Rml::String(srv.last_username);
+            server_model_.server_nickname_error = "";
+            server_model_.show_server_nickname_editor = true;
+            return;
+        }
+    };
+
+    server_model_.on_save_server_nickname = [this]() {
+        std::string nickname = trim_display_name(
+            std::string(server_model_.server_nickname_input));
+        if (nickname.empty()) nickname = global_name_;
+        if (nickname.empty()) {
+            server_model_.server_nickname_error = "Enter a nickname";
+            return;
+        }
+        if (nickname.size() > 64) {
+            server_model_.server_nickname_error = "Nickname is too long";
+            return;
+        }
+        if (!settings_.update_server_username(
+                server_model_.server_nickname_server_id, nickname)) {
+            server_model_.server_nickname_error = "Failed to save nickname";
+            return;
+        }
+        server_model_.server_nickname_input = Rml::String(nickname);
+        server_model_.server_nickname_error = "";
+        server_model_.show_server_nickname_editor = false;
+        refresh_server_list();
+    };
+
     server_model_.on_save_server = [this]() {
         const Rml::String& host     = server_model_.edit_host;
         const Rml::String& port_str = server_model_.edit_port;
         if (host.empty() || port_str.empty()) {
-            server_model_.edit_error = "Please fill in all fields";
+            server_model_.edit_error = "Enter a server address and port";
             return;
         }
         int port = std::atoi(port_str.c_str());
@@ -2200,8 +2294,25 @@ void AppCore::setup_server_model_callbacks()
             server_model_.edit_error = "Invalid port number";
             return;
         }
+        std::string nickname = trim_display_name(
+            std::string(server_model_.edit_nickname));
+        if (nickname.empty()) nickname = global_name_;
+        if (nickname.empty()) {
+            server_model_.edit_error = "Enter a server nickname";
+            return;
+        }
+        if (nickname.size() > 64) {
+            server_model_.edit_error = "Nickname is too long";
+            return;
+        }
         std::string name = std::string(host) + ":" + std::string(port_str);
-        settings_.save_server(name, std::string(host), port, "", "");
+        if (!settings_.save_server(
+                name, std::string(host), port, "", nickname, "")) {
+            server_model_.edit_error = "Failed to save party";
+            return;
+        }
+        server_model_.edit_nickname = Rml::String(nickname);
+        server_model_.edit_error = "";
         server_model_.show_add_form = false;
         refresh_server_list();
     };
@@ -2210,6 +2321,7 @@ void AppCore::setup_server_model_callbacks()
 
     server_model_.on_cancel_login = [this]() {
         server_model_.show_login = false;
+        server_model_.login_show_username = false;
         disconnect_intentionally();
         awaiting_connection_ = false;
     };
@@ -2357,6 +2469,11 @@ void AppCore::setup_chat_model_callbacks()
         // Show chat while keeping the voice connection intact. The document
         // router guarantees this replaces settings/room/stream presentation.
         model_.router.go(DocumentRoute::Chat);
+        // On iOS the connected shell is sidebar-first. Selecting a text
+        // channel must also reveal the main pane, just like selecting a room;
+        // otherwise the route changes correctly but remains hidden behind the
+        // full-width channel sidebar.
+        model_.mobile_show_content = true;
 
         // Request history
         BinaryWriter writer;

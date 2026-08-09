@@ -23,11 +23,22 @@ void ServerListModel::build(rml::Builder& b) {
     // Bind variables.
     b.bind("servers",          servers)
      .bind("party_count_text", party_count_text)
+     .bind("global_name",      global_name)
+     .bind("show_global_name_editor", show_global_name_editor)
+     .bind("global_name_input", global_name_input)
+     .bind("global_name_error", global_name_error)
+     .bind("show_server_nickname_editor", show_server_nickname_editor)
+     .bind("server_nickname_server_id", server_nickname_server_id)
+     .bind("server_nickname_server_name", server_nickname_server_name)
+     .bind("server_nickname_input", server_nickname_input)
+     .bind("server_nickname_error", server_nickname_error)
      .bind("show_add_form",    show_add_form)
      .bind("edit_host",        edit_host)
      .bind("edit_port",        edit_port)
+     .bind("edit_nickname",    edit_nickname)
      .bind("edit_error",       edit_error)
      .bind("show_login",       show_login)
+     .bind("login_show_username", login_show_username)
      .bind("login_username",   login_username)
      .bind("login_password",   login_password)
      .bind("login_error",      login_error)
@@ -64,8 +75,33 @@ void ServerListModel::build(rml::Builder& b) {
     b.on("add_server", [this] {
         edit_host = "";
         edit_port = "7800";
+        edit_nickname = "";
         edit_error = "";
         show_add_form = true;
+    });
+
+    b.on("edit_global_name", [this] {
+        global_name_input = global_name;
+        global_name_error = "";
+        show_global_name_editor = true;
+    });
+
+    b.on("save_global_name", [this] {
+        if (on_save_global_name) on_save_global_name();
+    });
+
+    b.on("cancel_global_name", [this] {
+        show_global_name_editor = false;
+        global_name_error = "";
+    });
+
+    b.on("save_server_nickname", [this] {
+        if (on_save_server_nickname) on_save_server_nickname();
+    });
+
+    b.on("cancel_server_nickname", [this] {
+        show_server_nickname_editor = false;
+        server_nickname_error = "";
     });
 
     b.on("save_server", [this] {
@@ -74,6 +110,7 @@ void ServerListModel::build(rml::Builder& b) {
 
     b.on("cancel_edit", [this] {
         show_add_form = false;
+        edit_error = "";
     });
 
     b.on("do_connect", [this] {

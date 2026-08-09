@@ -25,6 +25,7 @@ int main(int argc, char* argv[]) {
 	std::string initial_file;
 	std::string vars_file;
 	std::string fixture;
+	std::string theme;
 	std::string screenshot_path;
 	std::vector<std::string> asset_dirs;
 	int preview_width = 1440;
@@ -41,6 +42,18 @@ int main(int argc, char* argv[]) {
 			vars_file = argv[++i];
 		} else if (std::strcmp(argv[i], "--fixture") == 0 && i + 1 < argc) {
 			fixture = argv[++i];
+		} else if (std::strcmp(argv[i], "--theme") == 0 && i + 1 < argc) {
+			theme = argv[++i];
+		} else if (std::strcmp(argv[i], "--profile") == 0 && i + 1 < argc) {
+			const char* profile = argv[++i];
+			if (std::strcmp(profile, "iphone-17-pro") != 0) {
+				std::fprintf(stderr, "Unknown --profile '%s'\n", profile);
+				return 2;
+			}
+			preview_width = 1206;
+			preview_height = 2622;
+			density = 3.0f;
+			theme = "ios";
 		} else if (std::strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) {
 			screenshot_path = argv[++i];
 			manager_visible = false;
@@ -66,7 +79,9 @@ int main(int argc, char* argv[]) {
 				"Usage: rmlui_designer FILE [options]\n"
 				"  --asset-dir DIR       Add an asset search directory\n"
 				"  --vars FILE           Load scalar preview variables before the document\n"
-				"  --fixture SCENARIO    Real models: launcher, party-modal, onboarding, recovery, room, settings, settings-screen-share, settings-account, chat, chat-segment-churn, stream-single, streams, member, share\n"
+				"  --fixture SCENARIO    Real models: launcher, party-modal, onboarding, recovery, room, settings, settings-screen-share, settings-hotkeys, settings-account, chat, chat-segment-churn, stream-single, streams, member, share\n"
+				"  --theme NAME          Activate an RCSS media theme (for example: ios)\n"
+				"  --profile NAME        Device preset (currently: iphone-17-pro)\n"
 				"  --size WIDTHxHEIGHT   Set exact preview client size (default 1440x900)\n"
 				"  --screenshot FILE     Render, save a BMP, and exit\n"
 				"  --frames COUNT        Minimum settle frames before capture (default 240)\n"
@@ -92,6 +107,8 @@ int main(int argc, char* argv[]) {
 		std::printf("  Vars: %s\n", vars_file.c_str());
 	if (!fixture.empty())
 		std::printf("  Fixture: %s\n", fixture.c_str());
+	if (!theme.empty())
+		std::printf("  Theme: %s\n", theme.c_str());
 	if (!screenshot_path.empty())
 		std::printf("  Screenshot: %s (%dx%d)\n", screenshot_path.c_str(), preview_width, preview_height);
 	for (auto& d : asset_dirs)
@@ -99,6 +116,7 @@ int main(int argc, char* argv[]) {
 
 	designer::DesignerApp app;
 	app.SetPreviewSize(preview_width, preview_height);
+	app.SetTheme(theme);
 	if (density > 0.0f)
 		app.SetDensity(density);
 	else if (!screenshot_path.empty())

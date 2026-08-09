@@ -1,0 +1,244 @@
+/* Reusable UI components
+   Appearance and interaction states are shared; platform modules own density and placement. */
+
+/* Page headers ----------------------------------------------------------- */
+.ui-header {
+    display: flex;
+    height: var(--header-height);
+    min-height: var(--header-height);
+    flex: none;
+    flex-direction: row;
+    align-items: center;
+    padding: 0dp var(--space-4);
+    box-sizing: border-box;
+    background-color: var(--color-canvas);
+    border-bottom: 1dp var(--color-border);
+}
+.ui-header-title {
+    display: block;
+    color: var(--color-text);
+    overflow: hidden;
+    white-space: nowrap;
+}
+.ui-header-copy {
+    display: flex;
+    min-width: 0dp;
+    flex: 1;
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-3);
+}
+.ui-header-description {
+    display: block;
+    min-width: 0dp;
+    color: var(--color-text-muted);
+    font-size: var(--type-caption);
+    overflow: hidden;
+    white-space: nowrap;
+}
+.ui-header-actions {
+    display: flex;
+    flex: none;
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-1);
+}
+
+/* Buttons ---------------------------------------------------------------- */
+.ui-button {
+    display: flex;
+    width: auto;
+    min-height: var(--control-height);
+    align-items: center;
+    justify-content: center;
+    padding: 0dp 15dp;
+    box-sizing: border-box;
+    background-color: var(--color-accent);
+    color: var(--color-accent-ink);
+    border: 1dp transparent;
+    border-radius: var(--radius-md);
+    font-size: var(--type-control);
+    font-weight: bold;
+    line-height: 16dp;
+    text-align: center;
+    white-space: nowrap;
+    cursor: pointer;
+}
+.ui-button:hover { background-color: var(--color-accent-hover); }
+.ui-button:active { background-color: #50D8C3; }
+.ui-button-label { display: block; }
+.ui-button.ui-button-block { width: 100%; }
+.ui-button.ui-button-compact {
+    min-height: var(--control-height-compact);
+    padding-left: 11dp;
+    padding-right: 11dp;
+    border-radius: var(--radius-sm);
+}
+.ui-button.ui-button-secondary,
+.ui-button.btn-secondary {
+    background-color: var(--color-surface-raised);
+    color: var(--color-text-soft);
+    border-color: var(--color-border-strong);
+    font-weight: bold;
+}
+.ui-button.ui-button-secondary:hover,
+.ui-button.btn-secondary:hover {
+    background-color: var(--color-surface-hover);
+    color: var(--color-text);
+}
+.ui-button.ui-button-danger,
+.ui-button.btn-danger {
+    background-color: var(--color-danger-surface);
+    color: #FCA5A5;
+    border-color: #F8717138;
+}
+.ui-button.ui-button-danger:hover,
+.ui-button.btn-danger:hover { background-color: #54242C; }
+.btn.ui-button {
+    width: 100%;
+    margin-top: var(--space-3);
+    padding-top: 0dp;
+    padding-bottom: 0dp;
+}
+.btn.ui-button.btn-small {
+    width: auto;
+    min-height: 30dp;
+    margin-top: 0dp;
+    padding: 0dp 10dp;
+    font-size: var(--type-caption);
+}
+
+.ui-icon-button {
+    display: flex;
+    width: var(--control-height-compact);
+    height: var(--control-height-compact);
+    min-width: var(--control-height-compact);
+    min-height: var(--control-height-compact);
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    padding: 0dp;
+    box-sizing: border-box;
+    background-color: transparent;
+    border: 1dp transparent;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+}
+.ui-icon-button:hover {
+    background-color: var(--color-surface-hover);
+    border-color: var(--color-border);
+}
+.ui-icon-button svg { display: block; }
+
+.ui-input {
+    display: block;
+    width: 100%;
+    height: var(--control-height);
+    min-height: var(--control-height);
+    padding: 0dp 12dp;
+    box-sizing: border-box;
+    background-color: var(--color-shell);
+    color: var(--color-text);
+    border: 1dp var(--color-border-strong);
+    border-radius: var(--radius-md);
+    font-size: var(--type-control);
+    line-height: 16dp;
+}
+.ui-input:hover { border-color: #FFFFFF2B; }
+.ui-input:focus { border-color: #5EEAD499; }
+.ui-input.ui-input-multiline {
+    height: auto;
+    min-height: 70dp;
+    padding-top: 12dp;
+    padding-bottom: 12dp;
+}
+
+/* Range input ------------------------------------------------------------ */
+input.ui-range {
+    display: block;
+    width: 100%;
+    height: 16dp;
+    min-height: 16dp;
+    margin-top: 0dp;
+}
+input.ui-range slidertrack {
+    height: 5dp;
+    margin-top: 5dp;
+    background-color: #0A0E14;
+    border-radius: 4dp;
+    overflow: visible;
+    cursor: pointer;
+}
+input.ui-range sliderprogress {
+    height: 5dp;
+    background-color: var(--color-accent);
+    border-radius: 4dp;
+    cursor: pointer;
+}
+input.ui-range sliderbar,
+input.ui-range sliderbar:hover,
+input.ui-range sliderbar:active {
+    width: 13dp;
+    height: 13dp;
+    margin: 1dp -6dp 0dp -6dp;
+    background-color: #FFFFFF;
+    border: 0dp;
+    border-radius: 7dp;
+    cursor: pointer;
+}
+input.ui-range sliderbar:hover { background-color: #E8FFFB; }
+input.ui-range sliderarrowdec,
+input.ui-range sliderarrowinc { width: 0dp; height: 0dp; }
+
+/* Segmented controls ----------------------------------------------------- */
+.ui-segment-group {
+    display: flex;
+    flex-direction: row;
+    gap: var(--space-1);
+    padding: 3dp;
+    background-color: #0D1118;
+    border: 1dp var(--color-border);
+    border-radius: var(--radius-md);
+}
+.ui-segment {
+    display: flex;
+    min-height: var(--control-height-compact);
+    min-width: 0dp;
+    flex: 1;
+    align-items: center;
+    justify-content: center;
+    padding: 0dp 12dp;
+    box-sizing: border-box;
+    background-color: transparent;
+    color: var(--color-text-muted);
+    border-radius: var(--radius-sm);
+    font-size: var(--type-control);
+    cursor: pointer;
+}
+.ui-segment:hover { background-color: var(--color-surface-hover); color: var(--color-text); }
+.ui-segment.active { background-color: #17312D; color: var(--color-accent); }
+
+/* Cards and dialogs ------------------------------------------------------ */
+.ui-card {
+    background-color: var(--color-surface);
+    border: 1dp var(--color-border);
+    border-radius: var(--radius-lg);
+}
+.ui-dialog {
+    padding: var(--space-6);
+    background-color: var(--color-surface);
+    border-color: var(--color-border-strong);
+    border-radius: var(--radius-lg);
+}
+.ui-dialog > h1 {
+    margin: 0dp 0dp var(--space-1) 0dp;
+    color: var(--color-text);
+    font-size: var(--type-page);
+    line-height: 24dp;
+}
+.ui-dialog > .subtitle {
+    margin-bottom: var(--space-5);
+    color: var(--color-text-muted);
+    font-size: var(--type-body);
+    line-height: 17dp;
+}

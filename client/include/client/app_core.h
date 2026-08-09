@@ -91,6 +91,7 @@ public:
     // Shared state
     bool        authenticated_        = false;
     UserId      user_id_              = 0;
+    std::string global_name_;          // launcher profile/default for new servers
     std::string username_;
     int         role_                 = 3;
     std::string server_host_;

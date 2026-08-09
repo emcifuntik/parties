@@ -100,6 +100,25 @@
       }
     },
     {
+      "name": "ios-simulator-arm64-debug",
+      "displayName": "iOS Simulator ARM64 Debug",
+      "generator": "Xcode",
+      "binaryDir": "${sourceDir}/build-ios-simulator",
+      "cacheVariables": {
+        "CMAKE_CONFIGURATION_TYPES": "Debug",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/vendor/ports",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/vendor/triplets",
+        "VCPKG_TARGET_TRIPLET": "arm64-ios-simulator",
+        "VCPKG_MANIFEST_FEATURES": "client-ios",
+        "CMAKE_SYSTEM_NAME": "iOS",
+        "CMAKE_OSX_SYSROOT": "iphonesimulator",
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "16.3",
+        "ENABLE_TRACY": "OFF"
+      }
+    },
+    {
       "name": "retail",
       "displayName": "Retail (clang-cl Release, no debugger/console)",
       "inherits": "release",
@@ -157,6 +176,12 @@
       "name": "ios-arm64-release",
       "configurePreset": "ios-arm64-release",
       "configuration": "Release",
+      "targets": ["parties_client"]
+    },
+    {
+      "name": "ios-simulator-arm64-debug",
+      "configurePreset": "ios-simulator-arm64-debug",
+      "configuration": "Debug",
       "targets": ["parties_client"]
     },
     {

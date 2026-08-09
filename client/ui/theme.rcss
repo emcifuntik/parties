@@ -1,0 +1,64 @@
+/* Parties theme
+   Color, spacing, radius and density tokens shared by every platform. */
+
+/* Shared visual tokens. Platform modules override density, never color semantics. */
+body {
+    --color-canvas: #0A0C11;
+    --color-shell: #0D1118;
+    --color-surface: #10141C;
+    --color-surface-raised: #151B25;
+    --color-surface-hover: #1B222D;
+    --color-border: #FFFFFF0F;
+    --color-border-strong: #FFFFFF1F;
+    --color-text: #EEF1F6;
+    --color-text-soft: #AAB2BE;
+    --color-text-muted: #687280;
+    --color-text-faint: #4F5967;
+    --color-accent: #5EEAD4;
+    --color-accent-hover: #79F3DE;
+    --color-accent-ink: #06231F;
+    --color-success: #34D399;
+    --color-danger: #F87171;
+    --color-warning: #FBBF24;
+    --radius-sm: 8dp;
+    --radius-md: 12dp;
+    --radius-lg: 16dp;
+    --radius-pill: 999dp;
+    --space-1: 4dp;
+    --space-2: 8dp;
+    --space-3: 12dp;
+    --space-4: 16dp;
+    --space-5: 20dp;
+    --space-6: 24dp;
+    --titlebar-height: 38dp;
+    --sidebar-width: 286dp;
+    --color-danger-surface: #3B1D23;
+    --type-page: 20dp;
+    --type-display: 38dp;
+    --type-section: 17dp;
+    --type-title: 14dp;
+    --type-item: 13dp;
+    --type-body: 12dp;
+    --type-control: 12dp;
+    --type-label: 10dp;
+    --type-caption: 10dp;
+    --type-micro: 9dp;
+    --header-height: 48dp;
+    --control-height: 38dp;
+    --control-height-compact: 32dp;
+}
+
+/* RmlUI defaults elements to inline, unlike browser CSS. */
+div, h1, h2, h3, p, form, hr {
+    display: block;
+}
+
+.fullscreen {
+    display: flex;
+    width: 100%;
+    height: 100%;
+    flex-direction: column;
+    position: relative;
+    overflow: hidden;
+    background-color: var(--color-canvas);
+}

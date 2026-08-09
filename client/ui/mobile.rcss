@@ -1,0 +1,639 @@
+/* Mobile platform
+   Touch density, navigation, safe areas and responsive behavior for iOS. */
+
+@media (theme: ios) {
+    body {
+        --header-height: 54dp;
+        --control-height: 44dp;
+        --control-height-compact: 44dp;
+        --titlebar-height: 0dp;
+        --sidebar-width: 100%;
+        box-sizing: border-box;
+        font-size: 15dp;
+    }
+
+    .fullscreen, .app-content, .home-screen, .home-inner,
+    .main-content, .route-page, .channel-content, .chat-content,
+    .settings-overlay, .settings-page {
+        min-width: 0dp;
+        min-height: 0dp;
+    }
+
+    .titlebar, .titlebar-update, .share-picker-overlay,
+    .keybind-row, .ptt-settings {
+        display: none;
+    }
+
+    .app-content { width: 100%; }
+
+    /* Launcher ---------------------------------------------------------- */
+    .home-inner {
+        width: 100%;
+        padding: 0dp;
+        overflow-y: auto;
+    }
+    .home-content {
+        width: 100%;
+        padding: 28dp 16dp 32dp 16dp;
+        box-sizing: border-box;
+    }
+    .home-toolbar {
+        flex-direction: column;
+        margin-bottom: 24dp;
+    }
+    .home-title { font-size: 28dp; }
+    .home-actions {
+        width: 100%;
+        margin-top: 18dp;
+        justify-content: space-between;
+    }
+    .home-profile { min-height: 44dp; box-sizing: border-box; }
+    .home-add-button {
+        min-height: 44dp;
+        padding: 13dp 16dp;
+        box-sizing: border-box;
+    }
+    .home-grid {
+        width: 100%;
+        flex-direction: column;
+        flex-wrap: nowrap;
+        gap: 12dp;
+    }
+    .home-grid > div { width: 100%; }
+    .party-card, .party-card-add {
+        width: 100%;
+        height: 190dp;
+    }
+    .party-card-banner { height: 58dp; }
+    .party-card-body { padding-bottom: 14dp; }
+    .party-card-action { min-height: 44dp; box-sizing: border-box; }
+
+    /* Sidebar-first navigation ---------------------------------------- */
+    .sidebar {
+        width: 100%;
+        flex: 1;
+        border-right: 0dp;
+    }
+    .server-header {
+        min-height: 62dp;
+        padding: 8dp 16dp;
+    }
+    .server-disconnect-btn {
+        display: flex;
+        width: 44dp;
+        height: 44dp;
+        flex-shrink: 0;
+        align-items: center;
+        justify-content: center;
+        padding: 0dp;
+    }
+    .server-disconnect-btn svg { display: block; }
+    .server-disconnect-btn,
+    .settings-btn,
+    .channel-add-btn,
+    .channel-item,
+    .chat-item {
+        min-height: 44dp;
+        box-sizing: border-box;
+    }
+    .channel-section { padding: 4dp 6dp; }
+    .channel-category-row { min-height: 44dp; padding: 4dp 6dp; box-sizing: border-box; }
+    .channel-add-btn {
+        width: 44dp;
+        height: 44dp;
+        flex-shrink: 0;
+        padding: 0dp;
+        line-height: 44dp;
+        text-align: center;
+    }
+    .channel-item, .chat-item { margin: 2dp 4dp; padding: 0dp 12dp; }
+    .channel-user-item {
+        min-height: 44dp;
+        margin-left: 22dp;
+        padding: 4dp 10dp;
+        box-sizing: border-box;
+    }
+    .channel-user-item .user-dot-wrap {
+        width: 30dp;
+        height: 30dp;
+        border-radius: 15dp;
+    }
+    .channel-user-item .user-dot {
+        width: 24dp;
+        height: 24dp;
+    }
+    .channel-user-item .channel-username { font-size: 13dp; }
+    .settings-btn {
+        display: flex;
+        width: 44dp;
+        height: 44dp;
+        flex-shrink: 0;
+        align-items: center;
+        justify-content: center;
+        padding: 0dp;
+    }
+    .settings-btn svg {
+        display: block;
+        width: 20dp;
+        height: 20dp;
+    }
+    .user-island { margin: 8dp; padding: 10dp; }
+    .voice-btn-row { gap: 6dp; }
+    .voice-btn { min-width: 44dp; height: 44dp; }
+
+    .main-content { display: none; width: 100%; }
+    .mobile-content .sidebar { display: none; }
+    .mobile-content .main-content { display: flex; }
+
+    .mobile-back-bar {
+        display: flex;
+        flex: none;
+        min-height: 44dp;
+        align-items: center;
+        padding: 0dp 14dp;
+        gap: 6dp;
+        box-sizing: border-box;
+        background-color: #0D1118;
+        border-bottom: 1dp #FFFFFF0D;
+    }
+    .mobile-back-arrow, .mobile-back-label { color: #5EEAD4; }
+    .mobile-back-arrow {
+        display: block;
+        width: 10dp;
+        height: 10dp;
+        flex-shrink: 0;
+        margin-left: 3dp;
+        border-left: 2dp #5EEAD4;
+        border-bottom: 2dp #5EEAD4;
+        transform: rotate(45deg);
+        transform-origin: 50% 50%;
+    }
+    .mobile-back-label { font-size: 15dp; }
+    .mobile-back-context {
+        display: block;
+        margin-left: auto;
+        color: #EEF1F6;
+        font-size: 15dp;
+        font-weight: bold;
+    }
+
+    /* Room ------------------------------------------------------------- */
+    .room-channel-header { display: none; }
+    .channel-header { min-height: 62dp; padding: 10dp 16dp; }
+    .channel-header .channel-hint { display: none; }
+    .voice-stage { padding: 12dp; }
+    .voice-stage-grid {
+        width: 100%;
+        flex-direction: column;
+        flex-wrap: nowrap;
+        gap: 10dp;
+    }
+    .voice-stage-card {
+        width: 100%;
+        min-width: 0dp;
+        height: 150dp;
+        flex-shrink: 0;
+    }
+
+    /* Streams ---------------------------------------------------------- */
+    .screen-share-area { padding: 8dp 8dp 72dp 8dp; }
+    .screen-share-header {
+        height: auto;
+        min-height: 0dp;
+        flex-wrap: wrap;
+        align-content: flex-start;
+        justify-content: flex-start;
+        padding: 8dp;
+        box-sizing: border-box;
+    }
+    .stream-room-live { display: none; }
+    .stream-room-context {
+        display: flex;
+        min-height: 36dp;
+        flex: 1;
+        justify-content: flex-end;
+        margin-right: 4dp;
+    }
+    .stream-room-name { font-size: 14dp; }
+    .sharer-tabs {
+        width: 100%;
+        min-width: 0dp;
+        flex: none;
+        gap: 8dp;
+        margin-top: 6dp;
+        margin-bottom: 12dp;
+        overflow-x: auto;
+    }
+    .sharer-tab {
+        display: block;
+        height: 36dp;
+        min-height: 36dp;
+        flex-shrink: 0;
+        padding: 0dp 14dp;
+        box-sizing: border-box;
+        line-height: 36dp;
+        text-align: center;
+    }
+    .stream-playback-tools {
+        width: 100%;
+        height: 44dp;
+        min-height: 44dp;
+        margin-left: 0dp;
+        gap: 8dp;
+    }
+    .stream-volume-control { width: auto; height: 44dp; flex: 1; padding: 0dp 12dp; }
+    .stream-volume-slider {
+        height: 16dp;
+        min-height: 16dp;
+    }
+    .stream-fps { width: 68dp; height: 44dp; padding: 0dp 7dp; }
+    .stream-fps-value { width: 27dp; }
+    .stream-grid {
+        flex-direction: column;
+        flex-wrap: nowrap;
+        overflow-y: auto;
+    }
+    .stream-grid .stream-cell {
+        width: 100%;
+        min-width: 0dp;
+        min-height: 210dp;
+        flex: 0 0 46%;
+    }
+    .stream-grid.single .stream-cell { flex: 1 1 100%; }
+    .stream-call-dock { bottom: 10dp; }
+    .dock-button { width: 48dp; height: 44dp; }
+
+    /* Chat ------------------------------------------------------------- */
+    .chat-header { min-height: 54dp; padding: 0dp 12dp; }
+    .chat-header-btn {
+        display: flex;
+        width: 44dp;
+        height: 44dp;
+        align-items: center;
+        justify-content: center;
+        padding: 0dp;
+        box-sizing: border-box;
+        opacity: 0.8;
+    }
+    .chat-welcome {
+        flex-direction: row;
+        align-items: center;
+        gap: 12dp;
+        padding: 18dp 14dp;
+    }
+    .chat-welcome-icon { flex-shrink: 0; }
+    .chat-welcome-copy-block { flex: 1; }
+    .chat-welcome-title { margin-top: 0dp; }
+    .chat-welcome-copy { margin-top: 4dp; }
+    .chat-messages {
+        padding-left: 8dp;
+        padding-right: 8dp;
+        box-sizing: border-box;
+    }
+    .msg-row {
+        width: 100%;
+        min-width: 0dp;
+        margin-left: 0dp;
+        margin-right: 0dp;
+        padding-left: 8dp;
+        padding-right: 8dp;
+        box-sizing: border-box;
+    }
+    .msg-avatar-wrap, .msg-avatar { width: 34dp; height: 34dp; }
+    .msg-body { min-width: 0dp; }
+    .chat-compose { padding: 8dp; }
+    .compose-input-wrap { min-height: 48dp; }
+    .compose-attach-btn { width: 44dp; height: 44dp; }
+    .send-btn { width: 48dp; height: 48dp; border-radius: 24dp; }
+    .chat-search-bar { padding: 8dp; }
+    .chat-search-input { min-height: 44dp; box-sizing: border-box; }
+
+    /* Settings --------------------------------------------------------- */
+    .settings-overlay { flex-direction: column; overflow: hidden; }
+    .settings-nav {
+        display: flex;
+        width: 100%;
+        height: auto;
+        flex: none;
+        flex-direction: row;
+        flex-wrap: nowrap;
+        overflow-x: hidden;
+        padding: 6dp 8dp;
+        box-sizing: border-box;
+        background-color: #0D1118;
+        border-right: 0dp;
+        border-bottom: 1dp #FFFFFF0D;
+    }
+    .settings-nav-title, .settings-nav-group { display: none; }
+    #settings-nav-screen-share, #settings-nav-hotkeys { display: none; }
+    .settings-nav-item {
+        width: 50%;
+        min-width: 0dp;
+        min-height: 48dp;
+        flex-shrink: 1;
+        justify-content: center;
+        margin: 0dp;
+        padding: 0dp 3dp;
+        box-sizing: border-box;
+        font-size: 12dp;
+        line-height: 1.2;
+        text-align: center;
+    }
+    .settings-nav-icon { display: none; }
+    .settings-page { width: 100%; flex: 1; }
+    .settings-header { min-height: 58dp; padding: 0dp 16dp; }
+    .settings-page-title {
+        position: relative;
+        top: 4dp;
+    }
+    .settings-close { width: 44dp; height: 44dp; }
+    .settings-scroll { padding: 14dp 12dp 30dp 12dp; }
+    .settings-field-label { font-size: 11dp; }
+    .settings-page-intro { font-size: 14dp; line-height: 20dp; }
+    .settings-feature-title { font-size: 14dp; line-height: 18dp; }
+    .settings-feature-copy { font-size: 12dp; line-height: 16dp; }
+    .settings-device-grid,
+    .settings-feature-grid,
+    .settings-level-grid {
+        flex-direction: column;
+        flex-wrap: nowrap;
+        gap: 10dp;
+    }
+    .settings-device-field,
+    .settings-feature-card,
+    .settings-level-card {
+        width: 100%;
+        min-width: 0dp;
+    }
+    .settings-device-field { flex: none; }
+    .settings-feature-card { min-height: 72dp; }
+    .settings-level-card { min-height: 102dp; }
+    .settings-device-select-wrap,
+    .settings-test-output { min-height: 44dp; box-sizing: border-box; }
+    .settings-meter-row { height: 30dp; margin-top: 8dp; }
+    .settings-mic-meter {
+        width: auto;
+        min-width: 0dp;
+        height: 8dp;
+        flex: 1;
+        background-color: #1B2530;
+        border-radius: 4dp;
+        overflow: hidden;
+    }
+    .settings-mic-meter .level-meter {
+        height: 8dp;
+        margin-top: 0dp;
+        background-color: #1B2530;
+        border-radius: 4dp;
+    }
+    .settings-switch { width: 48dp; height: 28dp; border-radius: 14dp; }
+    .settings-switch-knob { width: 20dp; height: 20dp; border-radius: 10dp; }
+    .settings-switch.on .settings-switch-knob { margin-left: 20dp; }
+    .settings-vad-toggle { min-width: 48dp; min-height: 44dp; align-items: center; justify-content: center; }
+    .settings-ptt-card, .share-fps-120 { display: none; }
+    #settings-hotkeys-intro, .settings-keybind-list,
+    #settings-screen-share-intro, .settings-share-config { display: none; }
+    .settings-ios-unavailable {
+        display: flex;
+        flex-direction: column;
+        padding: 18dp;
+        background-color: #10141C;
+        border: 1dp #FFFFFF0F;
+        border-radius: 13dp;
+        color: #8B93A1;
+        font-size: 13dp;
+        line-height: 19dp;
+    }
+    .settings-ios-unavailable-title {
+        margin-bottom: 6dp;
+        color: #EEF1F6;
+        font-size: 15dp;
+        font-weight: bold;
+    }
+
+    /* The current iOS bridge receives streams but intentionally does not
+       expose capture or application-audio sending. Never present dead actions. */
+    #room-share-button, #room-audio-share-button,
+    .dock-share, .dock-audio-share { display: none; }
+    .stream-mobile-back {
+        display: flex;
+        min-width: 54dp;
+        height: 36dp;
+        min-height: 36dp;
+        flex-shrink: 0;
+        align-items: center;
+        gap: 4dp;
+        margin-right: 8dp;
+        color: #5EEAD4;
+        font-size: 12dp;
+        cursor: pointer;
+    }
+    .stream-mobile-back-arrow {
+        display: block;
+        width: 8dp;
+        height: 8dp;
+        flex-shrink: 0;
+        border-left: 2dp #5EEAD4;
+        border-bottom: 2dp #5EEAD4;
+        transform: rotate(45deg);
+        transform-origin: 50% 50%;
+    }
+    .settings-config-card { width: 100%; padding: 14dp; box-sizing: border-box; }
+    .share-codec-buttons { flex-wrap: wrap; }
+    .share-codec-btn { min-height: 44dp; box-sizing: border-box; }
+    .settings-keybind-row, .settings-account-row {
+        min-height: 70dp;
+        gap: 10dp;
+    }
+    .settings-secondary-action, .settings-danger-action,
+    .settings-keycap { min-height: 44dp; }
+    .settings-account-actions .seed-phrase-display { padding: 12dp; }
+    .settings-overlay .private-key-text { word-break: break-all; }
+
+    /* Modals and onboarding ------------------------------------------- */
+    .modal-backdrop {
+        top: 0dp;
+        padding: 16dp;
+        box-sizing: border-box;
+        align-items: center;
+        overflow-y: auto;
+    }
+    .modal-box, .party-connect-dialog {
+        width: 100%;
+        max-width: none;
+        max-height: none;
+        box-sizing: border-box;
+    }
+    .party-connect-header { flex: none; padding: 18dp 16dp 12dp 16dp; }
+    .party-connect-body { flex: none; padding: 16dp; }
+    .party-connect-form { flex: none; width: 100%; }
+    .party-connect-footer {
+        flex: none;
+        gap: 10dp;
+        padding: 12dp 16dp;
+    }
+    .party-connect-footer .btn {
+        flex: 1;
+        width: auto;
+        height: 48dp;
+        min-height: 48dp;
+        margin: 0dp;
+        padding: 0dp;
+        box-sizing: border-box;
+        line-height: 48dp;
+        text-align: center;
+    }
+
+    .onboarding-backdrop { padding: 0dp; overflow-y: hidden; }
+    .onboarding-shell { flex-direction: column; overflow-y: auto; }
+    .onboarding-story {
+        width: 100%;
+        height: auto;
+        flex: none;
+        padding: 20dp 20dp 16dp 20dp;
+        border-right: 0dp;
+        border-bottom: 1dp #FFFFFF0D;
+    }
+    .onboarding-story-copy,
+    .onboarding-proof,
+    .onboarding-recovery-aside,
+    .onboarding-story-footer { display: none; }
+    .onboarding-main {
+        width: 100%;
+        flex: none;
+        align-items: stretch;
+        justify-content: flex-start;
+        padding: 54dp 16dp 28dp 16dp;
+        box-sizing: border-box;
+    }
+    .onboarding-progress { top: 24dp; right: 16dp; }
+    .onboarding-choice, .onboarding-form, .onboarding-recovery { width: 100%; }
+    .onboarding-main h1 { font-size: 25dp; line-height: 1.15; }
+    .onboarding-lead { margin-bottom: 18dp; font-size: 13dp; line-height: 1.45; }
+    .identity-path {
+        min-height: 92dp;
+        padding: 12dp;
+        box-sizing: border-box;
+    }
+    .identity-path-icon { width: 44dp; height: 44dp; margin-right: 11dp; }
+    .identity-path h2 { font-size: 15dp; }
+    .identity-path p { font-size: 12dp; line-height: 1.35; }
+    .onboarding-back {
+        display: block;
+        min-height: 44dp;
+        margin-bottom: 12dp;
+        font-size: 14dp;
+        line-height: 44dp;
+    }
+    .onboarding-security-note { font-size: 11dp; line-height: 15dp; }
+    .onboarding-primary { width: 100%; min-height: 48dp; box-sizing: border-box; text-align: center; }
+    .recovery-input { min-height: 90dp; }
+    .enterprise-seed .seed-phrase-text { font-size: 14dp; }
+    /* Member menu as a bottom sheet ----------------------------------- */
+    .platform-ios .user-menu-backdrop {
+        display: flex;
+        top: 0dp;
+        align-items: flex-end;
+        justify-content: center;
+        padding: 10dp 8dp 0dp 8dp;
+        box-sizing: border-box;
+    }
+    .user-menu-popup {
+        width: 100%;
+        max-height: 88%;
+        margin: 0dp;
+        overflow-y: auto;
+        border-radius: 18dp 18dp 0dp 0dp;
+    }
+    .user-menu-slider-row { min-height: 44dp; }
+    .user-menu-action { min-height: 44dp; box-sizing: border-box; }
+
+    /* Every control below uses an explicit iOS touch target and flex centering.
+       This avoids baseline-dependent padding, which made labels look too low. */
+    .btn, .btn.btn-secondary, .btn.btn-danger,
+    .home-add-button, .party-card-action, .share-codec-btn {
+        display: block;
+        min-height: 48dp;
+        padding-top: 0dp;
+        padding-bottom: 0dp;
+        box-sizing: border-box;
+        line-height: 48dp;
+        text-align: center;
+    }
+    .btn.btn-small, .home-add-button, .party-card-action {
+        min-height: 44dp;
+        line-height: 44dp;
+    }
+    .settings-secondary-action, .settings-danger-action, .settings-keycap {
+        display: flex;
+        min-height: 48dp;
+        align-items: center;
+        justify-content: center;
+        padding-top: 0dp;
+        padding-bottom: 0dp;
+        box-sizing: border-box;
+        line-height: 16dp;
+    }
+    .share-codec-btn.share-fps-120 { display: none; }
+    /* RmlUI lays single-line input text out from the top of its content box.
+       Make that content box exactly one centered line instead of relying on
+       asymmetric font metrics plus vertical padding. */
+    .modal-box input, .party-connect-form input {
+        height: 48dp;
+        min-height: 48dp;
+        padding-top: 0dp;
+        padding-bottom: 0dp;
+        box-sizing: border-box;
+        line-height: 46dp;
+    }
+    .close-icon { width: 44dp; height: 44dp; flex-shrink: 0; }
+    .close-icon-a, .close-icon-b { top: 21dp; left: 14dp; }
+
+    /* Native-sized controls and unobtrusive scrollbars ---------------- */
+    input.range, input.settings-wide-slider { min-height: 28dp; }
+    input.range slidertrack,
+    input.settings-wide-slider slidertrack { height: 7dp; margin-top: 10dp; }
+    input.range sliderprogress,
+    input.settings-wide-slider sliderprogress { display: block; height: 7dp; }
+    input.range sliderbar,
+    input.settings-wide-slider sliderbar,
+    input.range sliderbar:hover,
+    input.settings-wide-slider sliderbar:hover,
+    input.range sliderbar:active,
+    input.settings-wide-slider sliderbar:active {
+        width: 22dp;
+        height: 22dp;
+        margin: 2dp -11dp 0dp -11dp;
+        border-radius: 11dp;
+    }
+    scrollbarvertical { width: 0dp; }
+    scrollbarhorizontal { height: 0dp; }
+    scrollbarvertical sliderarrowdec,
+    scrollbarvertical sliderarrowinc { display: none; }
+}
+
+@media (theme: ios) and (orientation: landscape) {
+    .onboarding-story { display: none; }
+    .onboarding-main { padding-top: 34dp; }
+    .onboarding-progress { top: 14dp; }
+    .voice-stage-grid { flex-direction: row; flex-wrap: wrap; }
+    .voice-stage-card { width: 48%; }
+    .settings-overlay { flex-direction: row; }
+    .settings-nav {
+        width: 190dp;
+        height: 100%;
+        flex-direction: column;
+        flex-wrap: nowrap;
+        overflow-x: hidden;
+        overflow-y: auto;
+        border-right: 1dp #FFFFFF0D;
+        border-bottom: 0dp;
+    }
+    .settings-nav-item {
+        width: 100%;
+        min-width: 0dp;
+        justify-content: flex-start;
+        padding: 0dp 12dp;
+        text-align: left;
+    }
+}

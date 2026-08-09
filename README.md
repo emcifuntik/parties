@@ -41,6 +41,7 @@ cmake --build --preset default
 | `macos-arm64-release` | macOS ARM64 Release app bundle |
 | `ios-arm64-debug` | iOS device ARM64 Debug app bundle (unsigned without a team ID) |
 | `ios-arm64-release` | iOS device ARM64 Release app bundle (unsigned without a team ID) |
+| `ios-simulator-arm64-debug` | iOS Simulator ARM64 Debug app bundle |
 
 Apple builds use the same configure/build workflow:
 
@@ -50,6 +51,13 @@ cmake --build --preset macos-arm64-debug
 
 cmake --preset ios-arm64-debug
 cmake --build --preset ios-arm64-debug
+```
+
+For an Apple Silicon iOS Simulator build, use the matching simulator preset:
+
+```sh
+cmake --preset ios-simulator-arm64-debug
+cmake --build --preset ios-simulator-arm64-debug
 ```
 
 Pass `-DAPPLE_DEVELOPMENT_TEAM=<TEAM_ID>` while configuring an iOS preset to

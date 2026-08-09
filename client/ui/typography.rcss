@@ -1,0 +1,184 @@
+/* Typography
+   This is the only stylesheet allowed to define font families, sizes, weights,
+   line heights, letter spacing, or text transforms. Components choose a
+   semantic class and only own layout and colour. */
+
+body {
+    font-family: Inter;
+    font-size: 14dp;
+    color: var(--color-text);
+}
+
+/* ── Typography ────────────────────────────────────── */
+
+h1 {
+    font-size: 22dp;
+    font-weight: bold;
+    color: #F0F2F8;
+    margin-bottom: 4dp;
+}
+
+h2 {
+    font-size: 17dp;
+    font-weight: bold;
+    color: #F0F2F8;
+    margin-bottom: 8dp;
+}
+
+.subtitle {
+    color: #A0A8C0;
+    margin-bottom: 24dp;
+    font-size: 13dp;
+}
+
+.label {
+    display: block;
+    font-size: 11dp;
+    font-weight: bold;
+    color: #5C6280;
+    text-transform: uppercase;
+    margin-bottom: 6dp;
+    margin-top: 18dp;
+    letter-spacing: 0.5dp;
+}
+
+.error-text {
+    display: block;
+    color: #EF4444;
+    font-size: 13dp;
+    margin-top: 6dp;
+}
+
+.success-text {
+    display: block;
+    color: #22C55E;
+    font-size: 13dp;
+    margin-top: 6dp;
+}
+
+/* Semantic roles --------------------------------------------------------- */
+.ui-display {
+    font-size: 38dp;
+    font-weight: bold;
+    line-height: 44dp;
+}
+.ui-heading-page {
+    font-size: 20dp;
+    font-weight: bold;
+    line-height: 24dp;
+}
+.ui-heading-section {
+    font-size: 17dp;
+    font-weight: bold;
+    line-height: 22dp;
+}
+.ui-heading {
+    font-size: 14dp;
+    font-weight: bold;
+    line-height: 18dp;
+}
+.ui-item-title {
+    font-size: 13dp;
+    font-weight: bold;
+    line-height: 17dp;
+}
+.ui-control {
+    font-size: 12dp;
+    font-weight: bold;
+    line-height: 16dp;
+}
+.ui-body {
+    font-size: 12dp;
+    font-weight: normal;
+    line-height: 17dp;
+}
+.ui-label {
+    font-size: 10dp;
+    font-weight: bold;
+    letter-spacing: 0.9dp;
+    line-height: 14dp;
+    text-transform: uppercase;
+}
+.ui-caption {
+    font-size: 10dp;
+    font-weight: normal;
+    line-height: 13dp;
+}
+.ui-micro {
+    font-size: 9dp;
+    font-weight: normal;
+    line-height: 12dp;
+}
+.ui-symbol {
+    font-size: 14dp;
+    font-weight: bold;
+    line-height: 18dp;
+}
+.ui-weight-regular { font-weight: normal; }
+.ui-weight-medium { font-weight: 500; }
+.ui-weight-bold { font-weight: bold; }
+.ui-uppercase { letter-spacing: 0.9dp; text-transform: uppercase; }
+
+.label,
+.settings-field-label,
+.channel-category,
+.user-menu-section-title,
+.context-window-section-title {
+    color: var(--color-text-muted);
+    font-size: 10dp;
+    font-weight: bold;
+    letter-spacing: 0.9dp;
+    line-height: 14dp;
+    text-transform: uppercase;
+}
+.settings-feature-title {
+    font-size: 13dp;
+    font-weight: bold;
+    line-height: 17dp;
+}
+.settings-page-intro,
+.context-window-volume-row {
+    font-size: 12dp;
+    line-height: 17dp;
+}
+.settings-feature-copy,
+.settings-meta-value,
+.settings-level-value {
+    color: var(--color-text-muted);
+    font-size: 10dp;
+    line-height: 13dp;
+}
+
+/* Legacy compatibility. These selectors keep existing documents on the same
+   scale while touched markup is migrated to the semantic roles above. */
+.settings-overlay { font-size: 12dp; font-weight: normal; }
+.settings-nav-title,
+.settings-page-title { font-size: 20dp; font-weight: bold; line-height: 24dp; }
+.settings-nav-group { font-size: 10dp; font-weight: bold; letter-spacing: 1dp; text-transform: uppercase; }
+.settings-nav-item { font-size: 13dp; font-weight: normal; line-height: 16dp; }
+.settings-field-label { font-size: 10dp; font-weight: bold; }
+.settings-feature-copy { font-size: 10dp; font-weight: normal; line-height: 14dp; }
+.settings-page-intro { font-size: 12dp; font-weight: normal; line-height: 17dp; }
+.settings-device-select { font-size: 12dp; font-weight: bold; line-height: 16dp; }
+select.settings-device-select selectbox option { font-size: 12dp; font-weight: normal; line-height: 16dp; }
+select.settings-device-select selectbox option:checked { font-weight: bold; }
+.settings-meter-row,
+.settings-level-value,
+.settings-meta-value,
+.settings-vad-foot { font-size: 10dp; font-weight: normal; line-height: 14dp; }
+.settings-test-output,
+.settings-ptt-delay-value { font-size: 12dp; font-weight: bold; line-height: 16dp; }
+.settings-keycap,
+.settings-secondary-action,
+.settings-danger-action,
+.share-codec-btn,
+.ui-button { font-size: 12dp; font-weight: bold; line-height: 16dp; }
+.settings-overlay .seed-phrase-display,
+.settings-overlay .import-identity-form { font-size: 12dp; font-weight: normal; line-height: 17dp; }
+.settings-overlay .private-key-text { font-size: 10dp; font-weight: normal; line-height: 15dp; }
+.settings-overlay input.restore-input { font-size: 12dp; font-weight: normal; line-height: 17dp; }
+.settings-overlay .error-text { font-size: 10dp; font-weight: normal; line-height: 14dp; }
+
+@media (max-width: 720dp) {
+    .ui-heading-page { font-size: 18dp; line-height: 22dp; }
+}

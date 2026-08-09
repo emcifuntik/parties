@@ -82,6 +82,17 @@ struct ContextWindowManager::Impl {
     bool initialised = false;
 
     static constexpr wchar_t kClassName[] = L"PartiesRmlContextWindow";
+
+    static void apply_rounded_region(HWND hwnd, int width, int height) {
+        if (!hwnd || width <= 0 || height <= 0)
+            return;
+        const float scale = static_cast<float>(GetDpiForWindow(hwnd)) / 96.0f;
+        const int diameter = std::max(2, static_cast<int>(std::lround(28.0f * scale)));
+        HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1, diameter, diameter);
+        if (region && !SetWindowRgn(hwnd, region, TRUE))
+            DeleteObject(region);
+    }
+
     static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_param) {
         // HWND destruction is thread-affine. This message can be posted after
         // the render thread has released the popup's RmlUI/GPU resources. Do
@@ -130,6 +141,10 @@ struct ContextWindowManager::Impl {
             break;
         case WM_NCHITTEST:
             return HTCLIENT;
+        case WM_SIZE:
+            if (w_param != SIZE_MINIMIZED)
+                apply_rounded_region(hwnd, LOWORD(l_param), HIWORD(l_param));
+            break;
         case WM_ERASEBKGND:
             return 1;
         case WM_PAINT: {
@@ -294,6 +309,7 @@ struct ContextWindowManager::Impl {
             // RmlUI outline around the rounded popup.
             constexpr COLORREF no_border = 0xFFFFFFFEu;
             DwmSetWindowAttribute(active->hwnd, 34, &no_border, sizeof(no_border));
+            apply_rounded_region(active->hwnd, width, height);
 
             active->renderer = make_renderer(active->hwnd);
             if (!active->renderer) {
@@ -335,6 +351,8 @@ struct ContextWindowManager::Impl {
             reset_context();
             return false;
         }
+        active->document->SetClass("platform-windows", true);
+        active->document->SetClass("platform-desktop", true);
         active->document->Show();
         active->context->Update();
         if (resize_to_content())

@@ -293,6 +293,19 @@ std::vector<SavedServer> Settings::get_saved_servers() {
     return result;
 }
 
+bool Settings::update_server_username(int id, const std::string& username) {
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "UPDATE saved_servers SET last_username = ? WHERE id = ?";
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
+        return false;
+
+    sqlite3_bind_text(stmt, 1, username.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, id);
+    const bool ok = sqlite3_step(stmt) == SQLITE_DONE && sqlite3_changes(db_) > 0;
+    sqlite3_finalize(stmt);
+    return ok;
+}
+
 bool Settings::delete_server(int id) {
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "DELETE FROM saved_servers WHERE id = ?";

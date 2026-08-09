@@ -47,6 +47,7 @@
 #include <client/video_element.h>
 #include <client/gradient_circle_element.h>
 #include <client/custom_elements.h>
+#include <client/ui_fixture.h>
 
 #ifdef SENTRY_COCOA_ENABLED
 #import <Sentry/Sentry.h>
@@ -72,6 +73,16 @@ extern void macos_updater_check_in_background();
 using namespace parties;
 using namespace parties::client;
 using namespace parties::protocol;
+
+static std::string macos_ui_fixture_argument()
+{
+    NSArray<NSString*>* arguments = NSProcessInfo.processInfo.arguments;
+    for (NSUInteger i = 0; i + 1 < arguments.count; ++i) {
+        if ([arguments[i] isEqualToString:@"--ui-fixture"])
+            return std::string(arguments[i + 1].UTF8String ?: "");
+    }
+    return {};
+}
 
 // ── Key mapping — NSEvent key codes → RmlUi ──────────────────────────────────
 
@@ -249,6 +260,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 @interface PartiesViewController : NSViewController <MTKViewDelegate>
 // Called by the app delegate before quic_cleanup() to close all MsQuic handles.
 - (void)shutdown;
+- (void)showPreviewNativeUI;
 @end
 
 @implementation PartiesViewController {
@@ -259,6 +271,10 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     bool                  _backendInitialized;
     bool                  _rmlInitialized;
     bool                  _debuggerInitialized;
+    bool                  _coreInitialized;
+    bool                  _soundInitialized;
+    bool                  _previewMode;
+    std::string           _previewScenario;
     std::unique_ptr<MacOSContextMenuController> _contextMenus;
 
     // Embedded file interface (must outlive RmlUi)
@@ -275,10 +291,12 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
     // Screen share — sender (macOS-specific)
     std::unique_ptr<ScreenCaptureMac> _capturer;
+    std::unique_ptr<ScreenCaptureMac> _audioCapturer;
     std::unique_ptr<VideoEncoderMac>  _encoder;
     bool                              _sharing;
     bool                              _encoderReady;
     bool                              _needsKeyframe;
+    bool                              _nativePickerActive;
     uint32_t                          _encodeWidth;
     uint32_t                          _encodeHeight;
 
@@ -322,6 +340,11 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 - (void)viewDidLoad
 {
     [super viewDidLoad];
+
+    _previewScenario = macos_ui_fixture_argument();
+    _previewMode = !_previewScenario.empty() && IsUIFixtureScenario(_previewScenario);
+    if (!_previewScenario.empty() && !_previewMode)
+        NSLog(@"[Parties] Unknown macOS UI fixture: %s", _previewScenario.c_str());
 
     id<MTLDevice> device = _metalView.device;
 
@@ -390,7 +413,10 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     _encodeWidth     = 0;
     _encodeHeight    = 0;
 
-    _soundPlayer.init();
+    if (!_previewMode) {
+        _soundPlayer.init();
+        _soundInitialized = true;
+    }
 
     // ── Settings path ─────────────────────────────────────────────────────
     NSString* appSupport = [NSSearchPathForDirectoriesInDomains(
@@ -474,11 +500,15 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         if (!bself->_contextMenus) return;
         bself->_contextMenus->SetAnchorPoint(bself->_metalView.contextMenuPoint);
         std::vector<MacOSContextAction> actions = {
-            {1, "Remove Saved Party", "Delete this saved connection", true},
+            {1, "Change Server Nickname", "Override your name for this party"},
+            {0, "", "", false, true, true},
+            {2, "Remove Saved Party", "Delete this saved connection", true},
         };
         bself->_contextMenus->ShowActions("Saved Party", std::move(actions),
             [bself, server_id](int command) {
-                if (command == 1 && bself->_core.server_model_.on_delete_server)
+                if (command == 1 && bself->_core.server_model_.on_edit_server_nickname)
+                    bself->_core.server_model_.on_edit_server_nickname(server_id);
+                else if (command == 2 && bself->_core.server_model_.on_delete_server)
                     bself->_core.server_model_.on_delete_server(server_id);
             });
     };
@@ -524,7 +554,10 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
             });
     };
 
-    bridge.open_share_picker = [bself]() { [bself showSharePicker]; };
+    // macOS goes straight to the system picker. The intermediate RML picker is
+    // useful on Windows, but adds an unnecessary second click on Apple platforms.
+    bridge.open_share_picker = [bself]() { [bself startNativeShare]; };
+    bridge.open_audio_share_picker = [bself]() { [bself startNativeAudioShare]; };
 
     bridge.on_authenticated = [bself]() {
         // Open video/audio streams after successful auth
@@ -532,6 +565,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     };
 
     bridge.stop_screen_share = [bself]() { [bself stopScreenShare]; };
+    bridge.stop_audio_share = [bself]() { [bself stopAudioShare]; };
 
     bridge.request_keyframe = [bself]() {
         bself->_needsKeyframe = true;
@@ -542,37 +576,53 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     // model_.watched, so there is no single element to clear here.
     bridge.clear_video_element = []() {};
 
-    // ── Init AppCore ──────────────────────────────────────────────────────
-    if (!_core.init(std::string(dbPath.UTF8String), std::move(bridge), _rmlContext)) {
-        NSLog(@"[Parties] AppCore init failed");
-        return;
+    if (_previewMode) {
+        // Deterministic visual harness: production AppKit shell, Metal backend,
+        // RML document and data models, with no audio, database or network I/O.
+        if (!_core.server_model_.init(_rmlContext) ||
+            !_core.model_.init(_rmlContext) ||
+            !_core.chat_model_.init(_rmlContext)) {
+            NSLog(@"[Parties] Failed to initialize macOS UI fixture models");
+            return;
+        }
+        PopulateUIFixture(_core, _previewScenario, true);
+        NSLog(@"[Parties] Loaded macOS UI fixture: %s", _previewScenario.c_str());
+    } else {
+        // ── Init AppCore ──────────────────────────────────────────────────
+        if (!_core.init(std::string(dbPath.UTF8String), std::move(bridge), _rmlContext)) {
+            NSLog(@"[Parties] AppCore init failed");
+            return;
+        }
+        _coreInitialized = true;
+
+        // ── Wire macOS-specific model callbacks on top of AppCore defaults ─
+        [self installMacOSModelCallbacks];
+
+        // ── Wire video frame reception to local macOS decoder ─────────────
+        _core.on_video_frame_received = [bself](uint32_t sender_id, const uint8_t* data, size_t len) {
+            [bself onVideoFrameData:sender_id data:data len:len];
+        };
+
+        // ── Load identity and saved state ─────────────────────────────────
+        std::string hostname = NSProcessInfo.processInfo.hostName.UTF8String;
+        _core.load_or_generate_identity(hostname);
+        _core.load_saved_prefs();
+        _core.refresh_server_list();
     }
-
-    // ── Wire macOS-specific model callbacks on top of AppCore defaults ────
-    [self installMacOSModelCallbacks];
-
-    // ── Wire video frame reception to local macOS decoder ─────────────────
-    _core.on_video_frame_received = [bself](uint32_t sender_id, const uint8_t* data, size_t len) {
-        [bself onVideoFrameData:sender_id data:data len:len];
-    };
-
-    // ── Load identity ─────────────────────────────────────────────────────
-    std::string hostname = NSProcessInfo.processInfo.hostName.UTF8String;
-    _core.load_or_generate_identity(hostname);
-
-    // ── Load saved audio prefs ────────────────────────────────────────────
-    _core.load_saved_prefs();
-
-    // ── Populate server list ───────────────────────────────────────────────
-    _core.refresh_server_list();
 
     // ── UI document ───────────────────────────────────────────────────────
     _doc = _rmlContext->LoadDocument("ui/lobby.rml");
     if (_doc) {
-        _doc->Show();
         // Mark document as macOS platform so RCSS hides Win32 controls and
         // centres the branding, leaving space for native traffic-light buttons.
         _doc->SetClass("platform-macos", true);
+        _doc->SetClass("platform-desktop", true);
+        _doc->Show();
+        if (_previewMode) {
+            ApplyUIFixtureDocument(_doc, _previewScenario);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(350 * NSEC_PER_MSEC)),
+                           dispatch_get_main_queue(), ^{ [self showPreviewNativeUI]; });
+        }
     }
 
     // ── Mouse tracking area ───────────────────────────────────────────────
@@ -584,6 +634,50 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
                owner:_metalView
             userInfo:nil];
     [_metalView addTrackingArea:area];
+}
+
+- (void)showPreviewNativeUI
+{
+    if (!_previewMode || !_contextMenus) return;
+
+    _contextMenus->SetAnchorPoint(NSMakePoint(420.0, 390.0));
+    if (_previewScenario == "native-user") {
+        UserContextWindowRequest request;
+        request.user_id = 2;
+        request.name = "IceTroll";
+        request.channel_name = "General";
+        request.role = 1;
+        request.can_manage_roles = true;
+        request.can_kick = true;
+        request.volume = 0.86f;
+        request.music_volume = 0.64f;
+        request.compression = true;
+        request.compression_target = 0.55f;
+        _contextMenus->ShowUser(request, {});
+    } else if (_previewScenario == "native-channel") {
+        _contextMenus->ShowActions("General", {
+            {1, "Rename Channel", "Change the channel name"},
+            {0, "", "", false, true, true},
+            {2, "Delete Channel", "Remove it for everyone", true},
+        }, [](int) {});
+    } else if (_previewScenario == "native-server") {
+        _contextMenus->ShowActions("Night Shift", {
+            {1, "Change Server Nickname", "Override your name for this party"},
+            {0, "", "", false, true, true},
+            {2, "Remove Saved Party", "Delete this saved connection", true},
+        }, [](int) {});
+    } else if (_previewScenario == "native-message") {
+        _contextMenus->ShowActions("Message", {
+            {1, "Copy Text", "Copy the message to the clipboard"},
+            {2, "Pin Message", "Keep it visible"},
+            {0, "", "", false, true, true},
+            {3, "Delete Message", "Remove it permanently", true},
+        }, [](int) {});
+    } else if (_previewScenario == "native-share-picker") {
+        [self startNativeShare];
+    } else if (_previewScenario == "native-audio-picker") {
+        [self startNativeAudioShare];
+    }
 }
 
 // ── MTKViewDelegate ───────────────────────────────────────────────────────────
@@ -605,7 +699,8 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     if (!_backendInitialized || !_rmlContext || !_commandQueue) return;
 
     // Tick shared logic (network messages, FPS counter, audio levels, etc.)
-    _core.tick();
+    if (_coreInitialized)
+        _core.tick();
 
     // Update FPS + ping in titlebar (once per second)
     _fpsFrameCount++;
@@ -652,7 +747,13 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         if (bself->_sharing)
             [bself stopScreenShare];
         else
-            [bself showSharePicker];
+            [bself startNativeShare];
+    };
+    _core.model_.on_toggle_audio_share = [bself]() {
+        if (bself->_core.model_.is_audio_sharing)
+            [bself stopAudioShare];
+        else
+            [bself startNativeAudioShare];
     };
 
     // macOS-specific: start native share button in picker overlay
@@ -752,20 +853,16 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
 // ── Screen share — sender (macOS SCK) ────────────────────────────────────────
 
-- (void)showSharePicker
-{
-    NSLog(@"[ScreenShare] showSharePicker");
-    _core.model_.use_native_picker  = true;
-    _core.model_.router.open_share_picker();
-}
-
 - (void)startNativeShare
 {
     NSLog(@"[ScreenShare] startNativeShare");
+    if (_nativePickerActive || _capturer || _sharing) return;
+    if (!_previewMode && (!_core.authenticated_ || _core.current_channel_ == 0)) return;
     if (_core.model_.router.is(DocumentRoute::SharePicker))
         _core.model_.router.back();
 
     _capturer = std::make_unique<ScreenCaptureMac>();
+    _nativePickerActive = true;
     PartiesViewController* bself = self;
 
     static const uint32_t fps_table[] = { 15, 30, 60, 120 };
@@ -776,9 +873,10 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     static const float scale_factors[] = {1.0f, 0.75f, 0.5f, 0.25f};
     float output_scale = scale_factors[std::max(0, std::min(_core.model_.share_scale.get(), 3))];
 
-    _capturer->pick_and_start(capture_fps, output_scale, [bself](bool success) {
+    _capturer->pick_and_start(capture_fps, output_scale, false, [bself](bool success) {
         NSLog(@"[ScreenShare] pick_and_start callback: success=%d", success);
         dispatch_async(dispatch_get_main_queue(), ^{
+            bself->_nativePickerActive = false;
             if (!success) { NSLog(@"[ScreenShare] capture failed, resetting"); bself->_capturer.reset(); return; }
             [bself onCaptureStarted];
         });
@@ -946,6 +1044,57 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         _core.net_.send_message(ControlMessageType::SCREEN_SHARE_STOP, nullptr, 0);
 }
 
+- (void)startNativeAudioShare
+{
+    NSLog(@"[AudioShare] startNativeAudioShare");
+    if (_nativePickerActive || _audioCapturer || _core.model_.is_audio_sharing) return;
+    if (!_previewMode && (!_core.authenticated_ || _core.current_channel_ == 0)) return;
+    if (_core.model_.router.is(DocumentRoute::SharePicker))
+        _core.model_.router.back();
+
+    _audioCapturer = std::make_unique<ScreenCaptureMac>();
+    _nativePickerActive = true;
+    PartiesViewController* bself = self;
+
+    // Audio-only SCK capture requests mono 48 kHz PCM, matching AudioEngine's
+    // secondary VOICE2 encoder without a per-callback allocation or downmix.
+    _audioCapturer->on_audio = [bself](const float* samples, uint32_t frame_count) {
+        if (!bself->_coreInitialized || !bself->_core.authenticated_ ||
+            !bself->_core.model_.is_audio_sharing)
+            return;
+        bself->_core.audio_.push_secondary_pcm(samples, static_cast<int>(frame_count));
+    };
+    _audioCapturer->on_closed = [bself]() {
+        dispatch_async(dispatch_get_main_queue(), ^{ [bself stopAudioShare]; });
+    };
+
+    _audioCapturer->pick_and_start(30, 1.0f, true, [bself](bool success) {
+        NSLog(@"[AudioShare] pick_and_start callback: success=%d", success);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            bself->_nativePickerActive = false;
+            if (!success) {
+                bself->_audioCapturer.reset();
+                return;
+            }
+            bself->_core.model_.is_audio_sharing = true;
+            bself->_core.model_.audio_share_target_name = "Application audio";
+        });
+    });
+}
+
+- (void)stopAudioShare
+{
+    if (_audioCapturer) {
+        // Prevent SCStream's close callback from recursively re-entering this
+        // method while the owner is being reset.
+        _audioCapturer->on_closed = {};
+        _audioCapturer->stop();
+        _audioCapturer.reset();
+    }
+    _core.model_.is_audio_sharing = false;
+    _core.model_.audio_share_target_name = "";
+}
+
 // ── Screen share — receiver (macOS) ──────────────────────────────────────────
 
 - (void)watchSharer:(UserId)sharerId
@@ -999,8 +1148,25 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         _contextMenus->Close();
         _contextMenus.reset();
     }
-    _core.shutdown();
-    _soundPlayer.shutdown();
+    _nativePickerActive = false;
+    if (_capturer) {
+        _capturer->on_closed = {};
+        _capturer->stop();
+        _capturer.reset();
+    }
+    if (_audioCapturer) {
+        _audioCapturer->on_closed = {};
+        _audioCapturer->stop();
+        _audioCapturer.reset();
+    }
+    if (_coreInitialized) {
+        _core.shutdown();
+        _coreInitialized = false;
+    }
+    if (_soundInitialized) {
+        _soundPlayer.shutdown();
+        _soundInitialized = false;
+    }
 
 #ifndef PARTIES_RETAIL
     if (_debuggerInitialized) {
@@ -1032,6 +1198,8 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 @implementation PartiesAppDelegate {
     NSWindow*              _window;
     PartiesViewController* _viewController;
+    bool                   _quicInitialized;
+    bool                   _previewMode;
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification*)notification
@@ -1053,8 +1221,14 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 #endif
 #endif
 
-    if (!parties::quic_init()) {
-        NSLog(@"[Parties] Failed to initialize MsQuic");
+    const std::string fixture = macos_ui_fixture_argument();
+    _previewMode = !fixture.empty() && IsUIFixtureScenario(fixture);
+    if (!_previewMode) {
+        if (!parties::quic_init()) {
+            NSLog(@"[Parties] Failed to initialize MsQuic");
+        } else {
+            _quicInitialized = true;
+        }
     }
 
     _viewController = [[PartiesViewController alloc] init];
@@ -1088,13 +1262,15 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     [self installMainMenu];
 
 #ifdef SPARKLE_ENABLED
-    macos_updater_init();
-    // Proactively check shortly after launch so an available update is offered
-    // promptly, rather than only on Sparkle's periodic background schedule.
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        macos_updater_check_in_background();
-    });
+    if (!_previewMode) {
+        macos_updater_init();
+        // Proactively check shortly after launch so an available update is offered
+        // promptly, rather than only on Sparkle's periodic background schedule.
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            macos_updater_check_in_background();
+        });
+    }
 #endif
 }
 
@@ -1168,7 +1344,10 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 - (void)applicationWillTerminate:(NSNotification*)notification
 {
     [_viewController shutdown];
-    parties::quic_cleanup();
+    if (_quicInitialized) {
+        parties::quic_cleanup();
+        _quicInitialized = false;
+    }
 }
 
 @end

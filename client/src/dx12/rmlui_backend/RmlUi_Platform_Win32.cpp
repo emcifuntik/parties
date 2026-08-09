@@ -209,6 +209,12 @@ bool RmlWin32::WindowProcedure(Rml::Context* context, TextInputMethodEditor_Win3
 		return true;
 
 	static bool tracking_mouse_leave = false;
+	const auto refresh_mouse_position = [&]() {
+		return context->ProcessMouseMove(
+			static_cast<int>(static_cast<short>(LOWORD(l_param))),
+			static_cast<int>(static_cast<short>(HIWORD(l_param))),
+			RmlWin32::GetKeyModifierState());
+	};
 
 	// If the user tries to interact with the window by using the mouse in any way, end the
 	// composition by committing the current string. This behavior is identical to other
@@ -221,17 +227,35 @@ bool RmlWin32::WindowProcedure(Rml::Context* context, TextInputMethodEditor_Win3
 	switch (message)
 	{
 	case WM_LBUTTONDOWN:
+		// Button messages carry the authoritative client-space cursor position.
+		// Refresh RmlUi's pointer state before starting the interaction so a
+		// coalesced or delayed WM_MOUSEMOVE cannot create a stale slider drag
+		// anchor (visually offsetting the thumb from the cursor).
+		refresh_mouse_position();
 		result = context->ProcessMouseButtonDown(0, RmlWin32::GetKeyModifierState());
 		SetCapture(window_handle);
 		break;
 	case WM_LBUTTONUP:
+		refresh_mouse_position();
 		ReleaseCapture();
 		result = context->ProcessMouseButtonUp(0, RmlWin32::GetKeyModifierState());
 		break;
-	case WM_RBUTTONDOWN: result = context->ProcessMouseButtonDown(1, RmlWin32::GetKeyModifierState()); break;
-	case WM_RBUTTONUP: result = context->ProcessMouseButtonUp(1, RmlWin32::GetKeyModifierState()); break;
-	case WM_MBUTTONDOWN: result = context->ProcessMouseButtonDown(2, RmlWin32::GetKeyModifierState()); break;
-	case WM_MBUTTONUP: result = context->ProcessMouseButtonUp(2, RmlWin32::GetKeyModifierState()); break;
+	case WM_RBUTTONDOWN:
+		refresh_mouse_position();
+		result = context->ProcessMouseButtonDown(1, RmlWin32::GetKeyModifierState());
+		break;
+	case WM_RBUTTONUP:
+		refresh_mouse_position();
+		result = context->ProcessMouseButtonUp(1, RmlWin32::GetKeyModifierState());
+		break;
+	case WM_MBUTTONDOWN:
+		refresh_mouse_position();
+		result = context->ProcessMouseButtonDown(2, RmlWin32::GetKeyModifierState());
+		break;
+	case WM_MBUTTONUP:
+		refresh_mouse_position();
+		result = context->ProcessMouseButtonUp(2, RmlWin32::GetKeyModifierState());
+		break;
 	case WM_MOUSEMOVE:
 		result = context->ProcessMouseMove(static_cast<int>((short)LOWORD(l_param)), static_cast<int>((short)HIWORD(l_param)),
 			RmlWin32::GetKeyModifierState());

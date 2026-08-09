@@ -1,0 +1,331 @@
+/* Low-level RmlUI controls
+   Native form elements and renderer pseudo-elements used by screen modules. */
+
+/* ── Form elements ─────────────────────────────────── */
+
+input.text,
+input.password {
+    display: block;
+    width: 100%;
+    padding: 10dp 14dp;
+    background-color: #14171F;
+    border: 1dp #2A3050;
+    border-radius: 6dp;
+    color: #F0F2F8;
+    font-size: 14dp;
+    margin-bottom: 2dp;
+    box-sizing: border-box;
+}
+
+input.text:focus,
+input.password:focus {
+    border-color: #6EECD4;
+}
+
+.btn {
+    display: block;
+    width: 100%;
+    padding: 11dp;
+    margin-top: 20dp;
+    background-color: #6EECD4;
+    color: #0B0D14;
+    font-size: 14dp;
+    font-weight: bold;
+    text-align: center;
+    cursor: pointer;
+    box-sizing: border-box;
+    border-radius: 10dp;
+}
+
+.btn:hover {
+    background-color: #5DD4BC;
+}
+
+.btn:active {
+    background-color: #4ABEA8;
+}
+
+.btn.btn-secondary {
+    background-color: #1C2033;
+    color: #A0A8C0;
+    font-weight: normal;
+    padding: 8dp;
+    margin-top: 12dp;
+    border: 1dp #2A3050;
+}
+
+.btn.btn-secondary:hover {
+    color: #F0F2F8;
+    background-color: #232840;
+}
+
+.btn.btn-danger {
+    background-color: #EF4444;
+    color: #fff;
+    font-weight: bold;
+}
+
+.btn.btn-danger:hover {
+    background-color: #DC2626;
+}
+
+.btn.btn-small {
+    padding: 5dp 8dp;
+    font-size: 12dp;
+    margin-top: 6dp;
+}
+
+/* ── CSS-drawn close icon (reusable X) ─────────────── */
+
+.close-icon {
+    display: block;
+    position: relative;
+    width: 14dp;
+    height: 14dp;
+    cursor: pointer;
+}
+
+.close-icon-a,
+.close-icon-b {
+    display: block;
+    position: absolute;
+    width: 16dp;
+    height: 2dp;
+    background-color: #5C6280;
+    top: 6dp;
+    left: -1dp;
+}
+
+.close-icon-a { transform: rotate(45deg); }
+.close-icon-b { transform: rotate(-45deg); }
+
+.close-icon:hover .close-icon-a,
+.close-icon:hover .close-icon-b {
+    background-color: #EF4444;
+}
+
+.settings-section {
+    display: flex;
+    flex-direction: column;
+    margin-bottom: 18dp;
+    padding-bottom: 14dp;
+    border-bottom: 1dp #1F2438;
+}
+
+.settings-label {
+    display: block;
+    font-size: 11dp;
+    font-weight: bold;
+    color: #5C6280;
+    text-transform: uppercase;
+    margin-bottom: 8dp;
+    letter-spacing: 0.5dp;
+}
+
+/* ── Device list ──────────────────────────────────── */
+
+.device-list {
+    display: flex;
+    flex-direction: column;
+}
+
+.device-item {
+    display: block;
+    padding: 8dp 12dp;
+    color: #A0A8C0;
+    cursor: pointer;
+    margin-bottom: 2dp;
+    border-radius: 6dp;
+}
+
+.device-item:hover {
+    background-color: #1F2438;
+    color: #F0F2F8;
+}
+
+.device-item.selected {
+    background-color: #232840;
+    color: #6EECD4;
+}
+
+/* ── Toggle switches ──────────────────────────────── */
+
+.settings-toggle {
+    display: flex;
+    align-items: center;
+    padding: 8dp 0dp;
+    cursor: pointer;
+}
+
+.settings-toggle:hover .toggle-label {
+    color: #F0F2F8;
+}
+
+.toggle-indicator {
+    width: 16dp;
+    height: 16dp;
+    background-color: #1C2033;
+    border: 1dp #2A3050;
+    border-radius: 4dp;
+    margin-right: 10dp;
+}
+
+.toggle-indicator.on {
+    background-color: #6EECD4;
+    border-color: #6EECD4;
+}
+
+.toggle-label {
+    color: #A0A8C0;
+    font-size: 14dp;
+}
+
+/* ── Sliders ──────────────────────────────────────── */
+
+.slider-row {
+    display: flex;
+    flex-direction: column;
+    padding: 8dp 0dp 4dp 0dp;
+    margin-bottom: 6dp;
+}
+
+.slider-label {
+    display: block;
+    font-size: 12dp;
+    color: #5C6280;
+    margin-bottom: 6dp;
+}
+
+.slider {
+    display: block;
+    width: 100%;
+}
+
+input.range slidertrack {
+    height: 4dp;
+    background-color: #2A3050;
+    border-radius: 2dp;
+    overflow: visible;
+    cursor: pointer;
+}
+
+input.range sliderprogress {
+    height: 4dp;
+    background-color: #6EECD4;
+    border-radius: 2dp;
+    padding-right: 1dp;
+    cursor: pointer;
+}
+
+input.range sliderbar {
+    width: 14dp;
+    height: 14dp;
+    background-color: #FFFFFF;
+    border-radius: 7dp;
+    margin: -5dp -7dp 0dp -7dp;
+    cursor: pointer;
+}
+
+input.range sliderbar:hover {
+    background-color: #E0E0E0;
+    width: 16dp;
+    height: 16dp;
+    border-radius: 8dp;
+    margin: -6dp -8dp 0dp -8dp;
+}
+
+input.range sliderbar:active {
+    background-color: #CCCCCC;
+}
+
+input.range sliderarrowdec,
+input.range sliderarrowinc {
+    width: 0dp;
+}
+
+/* ── Voice level meter ────────────────────────────── */
+
+.vad-settings {
+    display: flex;
+    flex-direction: column;
+}
+
+.level-meter {
+    display: block;
+    height: 6dp;
+    background-color: #1C2033;
+    margin-top: 8dp;
+    position: relative;
+}
+
+.level-fill {
+    display: block;
+    height: 100%;
+    width: 0%;
+    background-color: #6EECD4;
+    border-radius: 3dp;
+}
+
+.threshold-marker {
+    display: block;
+    position: absolute;
+    top: 0dp;
+    width: 2dp;
+    height: 6dp;
+    background-color: #EF4444;
+    left: 2%;
+    border-radius: 1dp;
+}
+
+/* ── Push-to-Talk keybind ──────────────────────────── */
+
+.ptt-settings {
+    display: block;
+}
+
+.keybind-row {
+    display: flex;
+    align-items: center;
+    padding: 8dp 0;
+}
+
+.keybind-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 100dp;
+    height: 28dp;
+    padding: 0 12dp;
+    margin-left: 12dp;
+    background-color: #14171F;
+    border: 1dp #2A3050;
+    border-radius: 6dp;
+    font-size: 12dp;
+    cursor: pointer;
+}
+
+.keybind-btn:hover {
+    border-color: #6EECD4;
+}
+
+/* ── Scrollbar ─────────────────────────────────────── */
+
+scrollbarvertical {
+    width: 4dp;
+    background-color: #0F1117;
+}
+
+scrollbarvertical sliderbar {
+    background-color: #2A3050;
+    border-radius: 2dp;
+}
+
+scrollbarvertical sliderbar:hover {
+    background-color: #3A4060;
+}
+
+scrollbarvertical sliderarrowdec,
+scrollbarvertical sliderarrowinc {
+    width: 0dp;
+    height: 0dp;
+}
