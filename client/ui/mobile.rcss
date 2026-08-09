@@ -243,10 +243,8 @@
     }
     .stream-volume-control { width: auto; height: 44dp; flex: 1; padding: 0dp 12dp; }
     .stream-volume-slider {
-        position: relative;
-        top: -3dp;
-        height: 28dp;
-        min-height: 28dp;
+        height: 16dp;
+        min-height: 16dp;
     }
     .stream-fps { width: 68dp; height: 44dp; padding: 0dp 7dp; }
     .stream-fps-value { width: 27dp; }
@@ -285,8 +283,8 @@
     }
     .chat-welcome-icon { flex-shrink: 0; }
     .chat-welcome-copy-block { flex: 1; }
-    .chat-welcome-title { margin-top: 0dp; font-size: 18dp; }
-    .chat-welcome-copy { margin-top: 4dp; font-size: 12dp; line-height: 16dp; }
+    .chat-welcome-title { margin-top: 0dp; }
+    .chat-welcome-copy { margin-top: 4dp; }
     .chat-messages {
         padding-left: 8dp;
         padding-right: 8dp;
@@ -344,10 +342,9 @@
     .settings-nav-icon { display: none; }
     .settings-page { width: 100%; flex: 1; }
     .settings-header { min-height: 58dp; padding: 0dp 16dp; }
-    .settings-header h2 {
+    .settings-page-title {
         position: relative;
         top: 4dp;
-        font-size: 20dp;
     }
     .settings-close { width: 44dp; height: 44dp; }
     .settings-scroll { padding: 14dp 12dp 30dp 12dp; }
@@ -532,15 +529,6 @@
     .onboarding-primary { width: 100%; min-height: 48dp; box-sizing: border-box; text-align: center; }
     .recovery-input { min-height: 90dp; }
     .enterprise-seed .seed-phrase-text { font-size: 14dp; }
-    .recovery-warning p { font-size: 11dp; line-height: 16dp; }
-    .recovery-warning > span {
-        display: block;
-        color: #FCD34D;
-        font-size: 14dp;
-        line-height: 22dp;
-        text-align: center;
-    }
-
     /* Member menu as a bottom sheet ----------------------------------- */
     .platform-ios .user-menu-backdrop {
         display: flex;

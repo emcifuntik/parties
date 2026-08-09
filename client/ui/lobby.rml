@@ -2,7 +2,6 @@
 <head>
     <title>Parties</title>
     <link type="text/rcss" href="theme.rcss" />
-    <link type="text/rcss" href="typography.rcss" />
     <link type="text/rcss" href="primitives.rcss" />
     <link type="text/rcss" href="components.rcss" />
     <link type="text/rcss" href="shell.rcss" />
@@ -14,6 +13,7 @@
     <link type="text/rcss" href="dialogs.rcss" />
     <link type="text/rcss" href="desktop.rcss" />
     <link type="text/rcss" href="mobile.rcss" />
+    <link type="text/rcss" href="typography.rcss" />
 </head>
 <body class="fullscreen">
 
@@ -146,7 +146,7 @@
                 <gradient_circle class="server-header-gradient" data-attr-seed="server_name" />
                 <span class="server-header-initials">{{ server_initials }}</span>
             </div>
-            <span class="server-title ui-header-title">{{ server_name }}</span>
+            <span class="server-title ui-header-title ui-heading">{{ server_name }}</span>
             <div class="server-disconnect-btn ui-icon-button" data-event-click="disconnect_server">
                 <svg src="icon-disconnect.svg" width="16" height="16" />
             </div>
@@ -297,10 +297,10 @@
 
             <div class="settings-page">
                 <div class="settings-header ui-header">
-                    <h2 class="ui-header-title" data-if="settings_section == 0">Audio &amp; Voice</h2>
-                    <h2 class="ui-header-title" data-if="settings_section == 1">Screen Share</h2>
-                    <h2 class="ui-header-title" data-if="settings_section == 2">Hotkeys</h2>
-                    <h2 class="ui-header-title" data-if="settings_section == 3">Account &amp; Keys</h2>
+                    <div data-if="settings_section == 0"><span class="settings-page-title ui-heading-page">Audio &amp; Voice</span></div>
+                    <div data-if="settings_section == 1"><span class="settings-page-title ui-heading-page">Screen Share</span></div>
+                    <div data-if="settings_section == 2"><span class="settings-page-title ui-heading-page">Hotkeys</span></div>
+                    <div data-if="settings_section == 3"><span class="settings-page-title ui-heading-page">Account &amp; Keys</span></div>
                     <div class="settings-close ui-icon-button" data-event-click="route_back" title="Close settings">
                         <svg src="icon-close.svg" width="17" height="17" />
                     </div>
@@ -481,21 +481,22 @@
         <!-- Share target picker -->
         <div class="share-picker-overlay" data-if="route == 'share-picker'">
             <div class="share-picker-header ui-header">
-                <div class="ui-header-copy">
-                    <div class="share-picker-kicker" data-if="share_picker_mode == 0">Screen share</div>
-                    <div class="share-picker-kicker" data-if="share_picker_mode == 1">Application audio</div>
-                    <h2 class="ui-header-title" data-if="share_picker_mode == 0">Choose what to share</h2>
-                    <h2 class="ui-header-title" data-if="share_picker_mode == 1">Choose what to play</h2>
-                    <div class="share-picker-subtitle ui-header-description" data-if="share_picker_mode == 0">Only the selected screen or application will be visible to the room.</div>
-                    <div class="share-picker-subtitle ui-header-description" data-if="share_picker_mode == 1">Audio from the selected application is sent as a separate high-quality channel stream.</div>
+                <div class="share-picker-heading">
+                    <div class="share-picker-title-block">
+                        <div class="share-picker-kicker ui-label" data-if="share_picker_mode == 0">Screen share</div>
+                        <div class="share-picker-kicker ui-label" data-if="share_picker_mode == 1">Application audio</div>
+                        <div data-if="share_picker_mode == 0"><span class="share-picker-title ui-heading-page">Choose what to share</span></div>
+                        <div data-if="share_picker_mode == 1"><span class="share-picker-title ui-heading-page">Choose what to play</span></div>
+                    </div>
+                    <div class="share-picker-subtitle ui-caption" data-if="share_picker_mode == 0">Only the selected screen or application will be visible to the room.</div>
+                    <div class="share-picker-subtitle ui-caption" data-if="share_picker_mode == 1">Audio from the selected application is sent as a separate high-quality channel stream.</div>
                 </div>
-                <div class="share-close ui-button ui-button-secondary ui-button-compact" data-event-click="cancel_share"><span class="ui-button-label">Close</span></div>
             </div>
 
             <div class="share-picker-scroll" data-if="use_native_picker == false">
                 <div id="share-screens-section" class="share-picker-section" data-if="share_picker_mode == 0">
-                    <div class="share-picker-section-heading">
-                        <span>Screens</span><span>Entire displays</span>
+                    <div class="share-picker-section-heading" id="share-screens-heading">
+                        <span class="share-picker-section-title ui-control">Screens</span>
                     </div>
                     <div class="share-target-grid">
                         <div data-for="target : share_monitor_targets"
@@ -503,24 +504,22 @@
                              data-class-selected="target.index == selected_share_target"
                              data-event-click="choose_share_target(target.index)">
                             <div class="share-target-preview">
-                                <div class="share-target-fallback">Preview unavailable</div>
+                                <div class="share-target-fallback ui-caption">Preview unavailable</div>
                                 <video_frame class="share-target-thumbnail"
                                              data-attr-id="target.element_id"
                                              data-attr-thumbnailindex="target.index" />
                             </div>
                             <div class="share-target-meta">
-                                <span class="share-target-name">{{ target.name }}</span>
-                                <span class="share-target-kind">Screen</span>
+                                <span class="share-target-name ui-caption">{{ target.name }}</span>
+                                <span class="share-target-kind ui-micro">Screen</span>
                             </div>
-                            <span class="share-target-check">✓</span>
+                            <span class="share-target-check ui-symbol">✓</span>
                         </div>
                     </div>
                 </div>
                 <div id="share-applications-section" class="share-picker-section">
-                    <div class="share-picker-section-heading">
-                        <span>Applications</span>
-                        <span data-if="share_picker_mode == 0">Share one window</span>
-                        <span data-if="share_picker_mode == 1">Capture sound from one application</span>
+                    <div class="share-picker-section-heading" id="share-applications-heading">
+                        <span class="share-picker-section-title ui-control">Applications</span>
                     </div>
                     <div class="share-target-grid">
                         <div data-for="target : share_application_targets"
@@ -528,17 +527,17 @@
                              data-class-selected="target.index == selected_share_target"
                              data-event-click="choose_share_target(target.index)">
                             <div class="share-target-preview">
-                                <div class="share-target-fallback">Preview unavailable</div>
+                                <div class="share-target-fallback ui-caption">Preview unavailable</div>
                                 <video_frame class="share-target-thumbnail"
                                              data-attr-id="target.element_id"
                                              data-attr-thumbnailindex="target.index" />
                             </div>
                             <div class="share-target-meta">
-                                <span class="share-target-name">{{ target.name }}</span>
-                                <span class="share-target-kind" data-if="share_picker_mode == 0">Application</span>
-                                <span class="share-target-kind" data-if="share_picker_mode == 1">Application audio</span>
+                                <span class="share-target-name ui-caption">{{ target.name }}</span>
+                                <span class="share-target-kind ui-micro" data-if="share_picker_mode == 0">Application</span>
+                                <span class="share-target-kind ui-micro" data-if="share_picker_mode == 1">Application audio</span>
                             </div>
-                            <span class="share-target-check">✓</span>
+                            <span class="share-target-check ui-symbol">✓</span>
                         </div>
                     </div>
                 </div>
@@ -564,7 +563,7 @@
             <div class="channel-header room-channel-header ui-header" data-if="route == 'room' && current_channel > 0">
                 <div class="channel-heading">
                     <span class="channel-kicker">Voice room</span>
-                    <span class="channel-title ui-header-title">{{ current_channel_name }}</span>
+                    <span class="channel-title ui-header-title ui-heading-section">{{ current_channel_name }}</span>
                 </div>
                 <span class="channel-hint">Drop in, talk, or share something with the room.</span>
             </div>
@@ -585,54 +584,16 @@
                              data-class-muted="user.muted"
                             data-event-click="watch_user_stream(user.id)"
                              data-event-mousedown="user_mousedown(user.id, user.name, user.role)">
-                            <div class="voice-stage-camera-pattern" data-if="user.streaming">
-                                <div class="voice-stage-camera-row row-1">
-                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
-                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
-                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
-                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
-                                </div>
-                                <div class="voice-stage-camera-row row-2">
-                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
-                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
-                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
-                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
-                                </div>
-                                <div class="voice-stage-camera-row row-3">
-                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
-                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
-                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
-                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
-                                </div>
-                                <div class="voice-stage-camera-row row-4">
-                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
-                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
-                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
-                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
-                                </div>
-                                <div class="voice-stage-camera-row row-5">
-                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
-                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
-                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
-                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
-                                </div>
-                                <div class="voice-stage-camera-row row-6">
-                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
-                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
-                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
-                                    <svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" /><svg src="icon-camera.svg" />
-                                </div>
-                            </div>
                             <div class="voice-stage-avatar-wrap">
                                 <gradient_circle class="voice-stage-avatar" data-attr-seed="user.name" />
-                                <span class="voice-stage-initial">{{ user.name }}</span>
+                                <span class="voice-stage-initial ui-control">{{ user.name }}</span>
                                 <span class="voice-stage-speaking" data-if="user.speaking"></span>
                             </div>
-                            <span class="voice-stage-name">{{ user.name }}</span>
-                            <span class="voice-stage-state voice-stage-streaming-state" data-if="user.streaming">Streaming</span>
-                            <span class="voice-stage-state" data-if="user.streaming == false && user.speaking">Speaking</span>
-                            <span class="voice-stage-state" data-if="user.streaming == false && user.speaking == false && user.muted">Muted</span>
-                            <span class="voice-stage-state" data-if="user.streaming == false && user.speaking == false && user.muted == false">Listening</span>
+                            <span class="voice-stage-name ui-heading">{{ user.name }}</span>
+                            <span class="voice-stage-state voice-stage-streaming-state ui-caption" data-if="user.streaming">Streaming</span>
+                            <span class="voice-stage-state ui-caption" data-if="user.streaming == false && user.speaking">Speaking</span>
+                            <span class="voice-stage-state ui-caption" data-if="user.streaming == false && user.speaking == false && user.muted">Muted</span>
+                            <span class="voice-stage-state ui-caption" data-if="user.streaming == false && user.speaking == false && user.muted == false">Listening</span>
                         </div>
                     </div>
                 </div>
@@ -662,7 +623,7 @@
                     <div class="stream-playback-tools">
                         <div class="stream-volume-control" title="Stream volume">
                             <svg class="stream-volume-icon" src="icon-volume.svg" width="16" height="16" />
-                            <input type="range" class="settings-wide-slider stream-volume-slider ui-range" id="stream-volume-slider" min="0" max="2" step="0.01"
+                            <input type="range" class="stream-volume-slider ui-range" id="stream-volume-slider" min="0" max="2" step="0.01"
                                    data-value="stream_volume"
                                    data-event-change="stream_volume_changed" />
                         </div>
@@ -722,7 +683,7 @@
             <div class="chat-header ui-header">
                 <div class="chat-header-left">
                     <svg class="chat-header-icon" src="icon-chat.svg" width="18" height="18" />
-                    <span class="chat-title ui-header-title">{{ active_channel_name }}</span>
+                    <span class="chat-title ui-header-title ui-heading">{{ active_channel_name }}</span>
                 </div>
                 <div class="chat-header-actions ui-header-actions">
                     <div class="chat-header-btn ui-icon-button" data-event-click="toggle_pinned">
@@ -792,8 +753,8 @@
                         <svg src="icon-chat.svg" width="22" height="22" />
                     </div>
                     <div class="chat-welcome-copy-block">
-                        <span class="chat-welcome-title">Welcome to {{ active_channel_name }}</span>
-                        <span class="chat-welcome-copy">This is the beginning of the conversation. Share an idea, a link, or simply say hello.</span>
+                        <span class="chat-welcome-title ui-heading-page">Welcome to {{ active_channel_name }}</span>
+                        <span class="chat-welcome-copy ui-body">This is the beginning of the conversation. Share an idea, a link, or simply say hello.</span>
                     </div>
                 </div>
                 <div class="date-separator">
@@ -882,8 +843,8 @@
                     <gradient_circle class="user-menu-avatar" data-attr-seed="menu_user_name" />
                     <span class="user-menu-presence"></span>
                     <div>
-                        <span class="user-menu-name">{{ menu_user_name }}</span>
-                        <span class="user-menu-status">In voice · {{ current_channel_name }}</span>
+                        <span class="user-menu-name ui-heading-section">{{ menu_user_name }}</span>
+                        <span class="user-menu-status ui-caption">In voice · {{ current_channel_name }}</span>
                     </div>
                 </div>
                 <div class="close-icon" data-event-click="close_user_menu">
@@ -893,38 +854,38 @@
             </div>
 
             <div class="user-menu-role-row">
-                <span class="member-role owner" data-if="menu_user_role == 0">Owner</span>
-                <span class="member-role admin" data-if="menu_user_role == 1">Administrator</span>
-                <span class="member-role moderator" data-if="menu_user_role == 2">Moderator</span>
-                <span class="member-role" data-if="menu_user_role == 3">Member</span>
-                <span class="member-connection">Secure session</span>
+                <span class="member-role owner ui-micro ui-weight-bold ui-uppercase" data-if="menu_user_role == 0">Owner</span>
+                <span class="member-role admin ui-micro ui-weight-bold ui-uppercase" data-if="menu_user_role == 1">Administrator</span>
+                <span class="member-role moderator ui-micro ui-weight-bold ui-uppercase" data-if="menu_user_role == 2">Moderator</span>
+                <span class="member-role ui-micro ui-weight-bold ui-uppercase" data-if="menu_user_role == 3">Member</span>
+                <span class="member-connection ui-micro">Secure session</span>
             </div>
 
             <div class="user-menu-section">
-                <div class="user-menu-section-title">Listening preferences</div>
+                <div class="user-menu-section-title ui-label">Listening preferences</div>
                 <div class="user-menu-slider-row">
-                    <span class="user-menu-sublabel">Personal volume</span>
+                    <span class="user-menu-sublabel ui-caption">Personal volume</span>
                     <input type="range" class="user-menu-slider ui-range" min="0" max="2" step="0.01"
                            data-value="menu_user_volume"
                            data-event-change="user_volume_changed" />
-                    <span class="user-menu-value">{{ menu_user_volume }}×</span>
+                    <span class="user-menu-value ui-micro">{{ menu_user_volume }}×</span>
                 </div>
                 <div class="user-menu-slider-row">
-                    <span class="user-menu-sublabel">Music volume</span>
+                    <span class="user-menu-sublabel ui-caption">Music volume</span>
                     <input type="range" class="user-menu-slider ui-range" min="0" max="2" step="0.01"
                            data-value="menu_user_music_volume"
                            data-event-change="user_music_volume_changed" />
-                    <span class="user-menu-value">{{ menu_user_music_volume }}×</span>
+                    <span class="user-menu-value ui-micro">{{ menu_user_music_volume }}×</span>
                 </div>
                 <div class="user-menu-option user-menu-normalize-row" data-event-click="toggle_user_compress">
                     <div>
-                        <span class="user-menu-sublabel">Normalize voice</span>
-                        <span class="user-menu-option-copy">Keep this member at a consistent level</span>
+                        <span class="user-menu-sublabel ui-caption">Normalize voice</span>
+                        <span class="user-menu-option-copy ui-micro">Keep this member at a consistent level</span>
                     </div>
                     <span class="toggle-indicator toggle-sm" data-class-on="menu_user_compress"></span>
                 </div>
                 <div class="user-menu-slider-row" data-if="menu_user_compress">
-                    <span class="user-menu-sublabel">Target level</span>
+                    <span class="user-menu-sublabel ui-caption">Target level</span>
                     <input type="range" class="user-menu-slider ui-range" min="0.1" max="1" step="0.01"
                            data-value="menu_user_compress_target"
                            data-event-change="user_compress_target_changed" />
@@ -932,17 +893,17 @@
             </div>
 
             <div class="user-menu-actions" data-if="menu_can_roles">
-                <div class="user-menu-section-title">Role management</div>
-                <div class="user-menu-action" data-if="menu_user_role != 1"
+                <div class="user-menu-section-title ui-label">Role management</div>
+                <div class="user-menu-action ui-control" data-if="menu_user_role != 1"
                      data-event-click="set_user_role(1)"><span>Make administrator</span><span class="action-chevron">›</span></div>
-                <div class="user-menu-action" data-if="menu_user_role != 2"
+                <div class="user-menu-action ui-control" data-if="menu_user_role != 2"
                      data-event-click="set_user_role(2)"><span>Make moderator</span><span class="action-chevron">›</span></div>
-                <div class="user-menu-action" data-if="menu_user_role != 3"
+                <div class="user-menu-action ui-control" data-if="menu_user_role != 3"
                      data-event-click="set_user_role(3)"><span>Make member</span><span class="action-chevron">›</span></div>
             </div>
 
             <div class="user-menu-footer" data-if="menu_can_kick">
-                <div class="user-menu-action danger" data-event-click="kick_user"><span>Remove from party</span><span>Kick</span></div>
+                <div class="user-menu-action danger ui-control" data-event-click="kick_user"><span>Remove from party</span><span>Kick</span></div>
             </div>
         </div>
     </div>
@@ -1094,7 +1055,7 @@
                             <div class="btn btn-secondary btn-small ui-button ui-button-secondary ui-button-compact" data-event-click="copy_seed"><span class="ui-button-label">Copy phrase</span></div>
                         </div>
                     </div>
-                    <div class="recovery-warning"><span>!</span><p>Anyone with these words can use your identity. Parties support cannot recover them.</p></div>
+                    <div class="recovery-warning"><span class="recovery-warning-icon ui-symbol">!</span><p class="ui-body">Anyone with these words can use your identity. Parties support cannot recover them.</p></div>
                     <div class="btn onboarding-primary ui-button" data-event-click="save_identity"><span class="ui-button-label">I saved my recovery phrase</span></div>
                 </div>
             </div>

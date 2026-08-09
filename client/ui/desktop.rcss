@@ -61,6 +61,18 @@
     border-right: 0dp;
     border-top: 0dp;
 }
+.platform-desktop .stream-grid {
+    width: auto;
+    margin: 0dp 8dp 8dp 8dp;
+}
+.platform-desktop .stream-grid.single .stream-cell,
+.platform-desktop .stream-grid.single .stream-cell-video {
+    border-radius: var(--radius-md);
+}
+.platform-desktop .screen-share-area.fullscreen .stream-grid {
+    width: 100%;
+    margin: 0dp;
+}
 .platform-desktop .share-picker-header.ui-header {
     height: var(--header-height);
     min-height: var(--header-height);
@@ -69,9 +81,9 @@
     padding: 0dp var(--space-4);
 }
 .platform-desktop .share-picker-header.ui-header .share-picker-kicker { display: none; }
-.platform-desktop .share-picker-header.ui-header h2 { margin: 0dp; }
+.platform-desktop .share-picker-header.ui-header .share-picker-title { margin: 0dp; }
 .platform-desktop .share-picker-header.ui-header .share-picker-subtitle { margin: 0dp; }
-.platform-desktop .share-picker-header.ui-header .share-close.ui-button { min-width: 70dp; }
+.platform-desktop .share-picker-header.ui-header .share-picker-subtitle { margin-left: auto; }
 
 .platform-desktop .home-add-button.ui-button { min-width: 140dp; }
 .platform-desktop .party-card-action.ui-button { min-width: 62dp; }

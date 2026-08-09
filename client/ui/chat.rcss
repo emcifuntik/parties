@@ -470,7 +470,9 @@ input.text.compose-input {
 /* Chat */
 .chat-welcome {
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
+    align-items: center;
+    gap: 14dp;
     padding: 54dp 18dp 24dp 18dp;
 }
 .chat-welcome-icon {
@@ -482,12 +484,10 @@ input.text.compose-input {
     background-color: #17221F;
     color: #5EEAD4;
     border-radius: 15dp;
-    font-size: 23dp;
-    font-weight: bold;
 }
 .chat-welcome-icon svg { display: block; image-color: #5EEAD4; }
 .chat-welcome-copy-block { display: flex; min-width: 0dp; flex-direction: column; }
-.chat-welcome-title { margin-top: 16dp; color: #EEF1F6; font-size: 22dp; font-weight: bold; }
-.chat-welcome-copy { margin-top: 7dp; color: #6F7987; font-size: 12dp; }
+.chat-welcome-title { margin-top: 0dp; color: #EEF1F6; }
+.chat-welcome-copy { margin-top: 4dp; color: #6F7987; }
 .msg-row { padding-top: 8dp; padding-bottom: 8dp; border-radius: 8dp; }
 .msg-row:hover { background-color: #0F141B; }

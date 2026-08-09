@@ -2,22 +2,22 @@
 <head>
     <title>Parties context window</title>
     <link type="text/rcss" href="theme.rcss" />
-    <link type="text/rcss" href="typography.rcss" />
     <link type="text/rcss" href="primitives.rcss" />
     <link type="text/rcss" href="components.rcss" />
     <link type="text/rcss" href="room.rcss" />
     <link type="text/rcss" href="desktop.rcss" />
+    <link type="text/rcss" href="typography.rcss" />
 </head>
 <body class="context-window-root" data-model="context_window">
     <div id="context-window-shell" class="context-window-shell" data-class-user="user_mode">
         <div class="context-window-header ui-popup-header">
             <div class="context-window-avatar">
-                <span data-if="room_icon == false">{{ icon_text }}</span>
+                <span class="ui-control" data-if="room_icon == false">{{ icon_text }}</span>
                 <svg data-if="room_icon" src="icon-room.svg" width="18" height="18" />
             </div>
             <div class="context-window-identity">
-                <span class="context-window-title">{{ title }}</span>
-                <span class="context-window-subtitle">{{ subtitle }}</span>
+                <span class="context-window-title ui-heading">{{ title }}</span>
+                <span class="context-window-subtitle ui-caption">{{ subtitle }}</span>
             </div>
             <div class="context-window-close ui-icon-button" data-event-click="close_context_window">
                 <svg src="icon-close.svg" width="14" height="14" />
@@ -25,29 +25,29 @@
         </div>
 
         <div class="context-window-role" data-if="user_mode">
-            <span>{{ role_label }}</span><span class="context-window-secure">Secure session</span>
+            <span class="ui-micro ui-weight-bold ui-uppercase">{{ role_label }}</span><span class="context-window-secure ui-micro">Secure session</span>
         </div>
 
         <div id="context-window-audio" class="context-window-audio" data-if="user_mode">
-            <span class="context-window-section-title">Listening preferences</span>
+            <span class="context-window-section-title ui-label">Listening preferences</span>
             <div class="context-window-volume-row">
-                <span>Personal volume</span>
+                <span class="ui-caption">Personal volume</span>
                 <input type="range" class="context-window-slider ui-range" min="0" max="2" step="0.01"
                        data-value="volume" data-event-change="volume_changed" />
-                <span class="context-window-value"><span>{{ volume_text }}</span></span>
+                <span class="context-window-value"><span class="ui-caption ui-weight-bold">{{ volume_text }}</span></span>
             </div>
             <div class="context-window-volume-row" id="context-window-music-volume">
-                <span>Music volume</span>
+                <span class="ui-caption">Music volume</span>
                 <input type="range" class="context-window-slider ui-range" min="0" max="2" step="0.01"
                        data-value="music_volume" data-event-change="music_volume_changed" />
-                <span class="context-window-value"><span>{{ music_volume_text }}</span></span>
+                <span class="context-window-value"><span class="ui-caption ui-weight-bold">{{ music_volume_text }}</span></span>
             </div>
             <div class="context-window-option" data-event-click="toggle_compression">
-                <div><b>Normalize voice</b><small>Keep this member at a consistent level</small></div>
+                <div><b class="ui-caption ui-weight-bold">Normalize voice</b><small class="ui-micro">Keep this member at a consistent level</small></div>
                 <span class="settings-switch" data-class-on="compression"><span class="settings-switch-knob"></span></span>
             </div>
             <div class="context-window-target" data-if="compression">
-                <span>Target level</span>
+                <span class="ui-caption">Target level</span>
                 <input type="range" class="context-window-slider ui-range" min="0.1" max="1" step="0.01"
                        data-value="compression_target" data-event-change="compression_target_changed" />
             </div>
@@ -58,8 +58,8 @@
                 <div class="context-window-separator" data-if="action.separator"></div>
                 <div class="context-window-action" data-if="action.separator == false"
                      data-class-danger="action.danger" data-event-click="choose_action(action.id)">
-                    <div><b>{{ action.label }}</b><small data-if="action.detail != ''">{{ action.detail }}</small></div>
-                    <span>›</span>
+                    <div><b class="ui-control">{{ action.label }}</b><small class="ui-micro" data-if="action.detail != ''">{{ action.detail }}</small></div>
+                    <span class="ui-heading-section">›</span>
                 </div>
             </div>
         </div>

@@ -295,7 +295,7 @@ video_frame {
 /* Stream layouts ------------------------------------------------------------ */
 .screen-share-area {
     position: relative;
-    padding: 12dp 14dp 74dp 14dp;
+    padding: 0dp 0dp 74dp 0dp;
     background-color: #07090D;
 }
 .screen-share-header {
@@ -325,7 +325,14 @@ video_frame {
     border-radius: 9dp;
 }
 .stream-volume-icon { display: block; flex-shrink: 0; opacity: 1; image-color: var(--color-text-muted); }
-.stream-volume-slider { display: block; flex: 1; width: auto; height: 16dp; margin-top: 0dp; }
+input.stream-volume-slider {
+    display: block;
+    flex: 1;
+    width: auto;
+    height: 16dp;
+    min-height: 16dp;
+    margin-top: 0dp;
+}
 .stream-fps {
     display: flex;
     width: 66dp;
@@ -355,7 +362,8 @@ video_frame {
     border-radius: var(--radius-md);
     overflow: hidden;
 }
-.stream-grid.single .stream-cell { flex-basis: 100%; }
+.stream-grid.single .stream-cell { flex-basis: 100%; border-radius: 0dp; }
+.stream-grid.single .stream-cell-video { border-radius: 0dp; }
 .stream-grid.pair .stream-cell { flex-basis: 45%; }
 .stream-grid.trio .stream-cell { flex-basis: 45%; }
 .stream-grid.many .stream-cell { flex-basis: 30%; }
@@ -401,7 +409,6 @@ video_frame {
 .dock-end-streams:hover { background-color: #54242C; }
 
 @media (max-width: 1280dp) {
-    .screen-share-area { padding-left: 10dp; padding-right: 10dp; }
     .screen-share-header { padding-left: 10dp; padding-right: 10dp; }
     .stream-grid {
         flex-direction: column;
@@ -419,7 +426,13 @@ video_frame {
 }
 
 /* Share picker -------------------------------------------------------------- */
-.share-picker-overlay { padding: 0dp; overflow: hidden; background-color: var(--color-canvas); }
+.share-picker-overlay {
+    position: relative;
+    min-height: 0dp;
+    padding: 0dp;
+    overflow: hidden;
+    background-color: var(--color-canvas);
+}
 .share-picker-header {
     display: flex;
     flex-shrink: 0;
@@ -429,14 +442,30 @@ video_frame {
     padding: 18dp 24dp;
     border-bottom: 1dp var(--color-border);
 }
-.share-picker-header h2 { margin: 4dp 0dp; font-size: 23dp; }
-.share-picker-kicker { color: var(--color-accent); font-size: 9dp; font-weight: bold; letter-spacing: 1dp; text-transform: uppercase; }
-.share-picker-subtitle { color: var(--color-text-muted); font-size: 10dp; }
-.share-close { padding: 8dp 10dp; color: var(--color-text-muted); border: 1dp var(--color-border); border-radius: var(--radius-sm); cursor: pointer; font-size: 9dp; }
-.share-picker-scroll { display: flex; flex: 1; flex-direction: column; padding: 18dp 24dp 88dp 24dp; overflow-y: auto; }
+.share-picker-heading { display: flex; width: 100%; min-width: 0dp; align-items: center; }
+.share-picker-title-block { display: flex; min-width: 0dp; flex-direction: column; flex-shrink: 0; }
+.share-picker-title { display: block; margin: 4dp 0dp; }
+.share-picker-kicker { color: var(--color-accent); }
+.share-picker-subtitle {
+    display: block;
+    width: 48%;
+    min-width: 0dp;
+    flex-shrink: 0;
+    margin-left: auto;
+    color: var(--color-text-muted);
+    text-align: right;
+}
+.share-picker-scroll {
+    display: flex;
+    min-height: 0dp;
+    flex: 1;
+    flex-direction: column;
+    padding: 18dp 24dp;
+    overflow-y: auto;
+}
 .share-picker-section { margin-bottom: 18dp; }
-.share-picker-section-heading { display: flex; justify-content: space-between; margin-bottom: 9dp; color: var(--color-text); font-size: 11dp; font-weight: bold; }
-.share-picker-section-heading span:last-child { color: var(--color-text-faint); font-size: 9dp; font-weight: normal; }
+.share-picker-section-heading { display: flex; justify-content: space-between; margin-bottom: 9dp; color: var(--color-text); }
+.share-picker-section-title { color: #EEF1F6; }
 .share-target-grid { display: flex; flex-direction: row; flex-wrap: wrap; gap: 11dp; }
 .share-target-card {
     display: flex;
@@ -452,7 +481,7 @@ video_frame {
 .share-target-card:hover { background-color: var(--color-surface-raised); border-color: #FFFFFF24; }
 .share-target-card.selected { background-color: #10201E; border-color: var(--color-accent); }
 .share-target-preview { display: flex; position: relative; height: 118dp; overflow: hidden; align-items: center; justify-content: center; background-color: #111722; border-radius: 8dp; }
-.share-target-fallback { color: var(--color-text-faint); font-size: 9dp; }
+.share-target-fallback { color: var(--color-text-faint); }
 .share-target-thumbnail {
     position: absolute;
     left: 0dp;
@@ -462,26 +491,27 @@ video_frame {
     background-color: transparent;
 }
 .share-target-meta { display: flex; flex-direction: column; padding: 8dp 3dp 2dp 3dp; }
-.share-target-name { color: var(--color-text-soft); font-size: 10dp; overflow: hidden; white-space: nowrap; }
-.share-target-kind { margin-top: 3dp; color: var(--color-text-faint); font-size: 8dp; }
-.share-target-check { display: none; position: absolute; top: 14dp; right: 14dp; width: 20dp; height: 20dp; padding-top: 3dp; background-color: var(--color-accent); color: var(--color-accent-ink); border-radius: 11dp; text-align: center; font-size: 10dp; font-weight: bold; }
+.share-target-name { color: var(--color-text-soft); overflow: hidden; white-space: nowrap; }
+.share-target-kind { margin-top: 3dp; color: var(--color-text-faint); }
+.share-target-check { display: none; position: absolute; top: 14dp; right: 14dp; width: 20dp; height: 20dp; padding-top: 1dp; box-sizing: border-box; background-color: var(--color-accent); color: var(--color-accent-ink); border-radius: 11dp; text-align: center; }
 .share-target-card.selected .share-target-check { display: block; }
 .share-picker-footer {
     display: flex;
-    position: absolute;
-    left: 0dp;
-    right: 0dp;
-    bottom: 0dp;
+    position: relative;
+    width: 100%;
     height: 70dp;
+    min-height: 70dp;
+    flex-shrink: 0;
     align-items: center;
     justify-content: flex-end;
     padding: 0dp 24dp;
+    box-sizing: border-box;
     background-color: #0D1118F5;
     border-top: 1dp var(--color-border);
 }
 .share-picker-footer-actions { display: flex; gap: 9dp; }
 .share-picker-footer .btn { width: auto; margin: 0dp; padding: 10dp 17dp; }
-.share-start-button { background-color: var(--color-accent); color: var(--color-accent-ink); font-weight: bold; }
+.share-start-button { background-color: var(--color-accent); color: var(--color-accent-ink); }
 .share-start-button:hover { background-color: var(--color-accent-hover); }
 .share-start-button.disabled {
     opacity: 1;

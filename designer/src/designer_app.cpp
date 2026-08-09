@@ -402,7 +402,7 @@ struct DesignerApp::PartiesFixture {
 		guild.host = "guild.parties.local"; guild.online = false; guild.locked = true;
 		servers.push_back(guild);
 		server_list.servers = std::move(servers);
-		server_list.party_count_text = "3 parties · 19 friends online";
+		server_list.party_count_text = "3 parties";
 		server_list.connected_server_id = lobby.is_connected.get() ? 1 : 0;
 		server_list.fingerprint = "5E7A 91C2 4D3F";
 		server_list.has_identity = true;
@@ -717,6 +717,34 @@ struct DesignerApp::PartiesFixture {
 				sidebar_visible ? 1 : 0, legacy_party_rails.size());
 			return false;
 		}
+		if (sidebar_visible) {
+			Rml::ElementList settings_buttons;
+			document->GetElementsByClassName(settings_buttons, "settings-btn");
+			Rml::Element* settings_button = nullptr;
+			for (Rml::Element* candidate : settings_buttons) {
+				if (candidate && candidate->IsVisible(true)) {
+					settings_button = candidate;
+					break;
+				}
+			}
+			Rml::ElementList settings_icons;
+			if (settings_button)
+				settings_button->GetElementsByTagName(settings_icons, "svg");
+			Rml::Element* settings_icon = settings_icons.empty() ? nullptr : settings_icons.front();
+			auto center = [](Rml::Element* element) {
+				return element->GetAbsoluteOffset(Rml::BoxArea::Border) +
+					element->GetBox().GetSize(Rml::BoxArea::Border) * 0.5f;
+			};
+			const Rml::Vector2f button_center = settings_button ? center(settings_button) : Rml::Vector2f{};
+			const Rml::Vector2f icon_center = settings_icon ? center(settings_icon) : Rml::Vector2f{999.0f, 999.0f};
+			const Rml::Vector2f icon_offset = icon_center - button_center;
+			if (!settings_button || !settings_icon || std::fabs(icon_offset.x) >= 0.6f || std::fabs(icon_offset.y) >= 0.6f) {
+				std::fprintf(stderr,
+					"[Designer] Sidebar settings icon is not centered: button=%d icon=%d dx=%.2f dy=%.2f\n",
+					settings_button ? 1 : 0, settings_icon ? 1 : 0, icon_offset.x, icon_offset.y);
+				return false;
+			}
+		}
 
 		if (scenario == "launcher") {
 			Rml::ElementList icons;
@@ -744,22 +772,29 @@ struct DesignerApp::PartiesFixture {
 			Rml::Element* screens = document->GetElementById("share-screens-section");
 			Rml::Element* applications = document->GetElementById("share-applications-section");
 			Rml::Element* start_label = document->GetElementById("share-audio-start-label");
+			Rml::ElementList close_buttons;
+			document->GetElementsByClassName(close_buttons, "share-close");
 			const bool valid = !quality && screens && !screens->IsVisible(true) &&
-				applications && applications->IsVisible(true) && start_label && start_label->IsVisible(true);
+				applications && applications->IsVisible(true) && start_label && start_label->IsVisible(true) &&
+				close_buttons.empty();
 			if (!valid)
 				std::fprintf(stderr, "[Designer] Application audio picker layout validation failed\n");
-			return valid;
+			if (!valid)
+				return false;
 		}
 
 		if (scenario == "share") {
 			Rml::Element* quality = document->GetElementById("share-quality-panel");
 			Rml::Element* screens = document->GetElementById("share-screens-section");
 			Rml::Element* applications = document->GetElementById("share-applications-section");
+			Rml::ElementList close_buttons;
+			document->GetElementsByClassName(close_buttons, "share-close");
 			const bool valid = !quality && screens && screens->IsVisible(true) &&
-				applications && applications->IsVisible(true);
+				applications && applications->IsVisible(true) && close_buttons.empty();
 			if (!valid)
 				std::fprintf(stderr, "[Designer] Screen share picker layout validation failed\n");
-			return valid;
+			if (!valid)
+				return false;
 		}
 
 		if (scenario == "room") {
@@ -805,7 +840,7 @@ struct DesignerApp::PartiesFixture {
 					std::fabs((seventh.y - fourth.y) - expected_row_step) < 2.0f;
 			}
 			const bool valid = audio_share && audio_share->IsVisible(true) && packed_grid &&
-				patterns.size() == 1 && pattern_rows.size() == 6 && badges.empty() &&
+				patterns.empty() && pattern_rows.empty() && badges.empty() &&
 				stream_states.empty() && streaming_states.size() == 1 && capacities.empty() &&
 				legacy_sharer_cards.empty() && room_watch_request_count == 1 &&
 				room_watched_user_id == 3;
@@ -862,32 +897,44 @@ struct DesignerApp::PartiesFixture {
 								continue;
 							const auto& computed = element->GetComputedValues();
 							if (std::fabs(computed.font_size() - size) >= 0.1f ||
-								computed.font_weight() != weight)
+								computed.font_weight() != weight) {
+								std::fprintf(stderr,
+									"[Designer] Typography mismatch .%s: size=%.1f expected=%.1f weight=%d expected=%d\n",
+									class_name, computed.font_size(), size,
+									static_cast<int>(computed.font_weight()), static_cast<int>(weight));
 								return false;
+							}
 						}
 						return true;
 					};
 					Rml::ElementList page_titles;
-					document->GetElementsByTagName(page_titles, "h2");
+					document->GetElementsByClassName(page_titles, "settings-page-title");
 					size_t visible_page_titles = 0;
 					for (Rml::Element* title : page_titles) {
 						if (!title || !title->IsVisible(true))
 							continue;
 						++visible_page_titles;
 						const auto& computed = title->GetComputedValues();
+						if (std::fabs(computed.font_size() - 20.0f) >= 0.1f ||
+							computed.font_weight() != Rml::Style::FontWeight::Bold)
+							std::fprintf(stderr,
+								"[Designer] Settings page title mismatch: class='%s' size=%.1f weight=%d\n",
+								title->GetAttribute<Rml::String>("class", "").c_str(), computed.font_size(),
+								static_cast<int>(computed.font_weight()));
 						valid = valid && std::fabs(computed.font_size() - 20.0f) < 0.1f &&
 							computed.font_weight() == Rml::Style::FontWeight::Bold;
 					}
-					valid = valid && visible_page_titles == 1 &&
-						visible_typography_matches("settings-nav-item", 13.0f, Rml::Style::FontWeight::Normal) &&
-						visible_typography_matches("settings-field-label", 10.0f, Rml::Style::FontWeight::Bold) &&
-						visible_typography_matches("settings-feature-title", 13.0f, Rml::Style::FontWeight::Bold) &&
-						visible_typography_matches("settings-feature-copy", 10.0f, Rml::Style::FontWeight::Normal) &&
-						visible_typography_matches("settings-page-intro", 12.0f, Rml::Style::FontWeight::Normal) &&
-						visible_typography_matches("settings-keycap", 12.0f, Rml::Style::FontWeight::Bold) &&
-						visible_typography_matches("settings-secondary-action", 12.0f, Rml::Style::FontWeight::Bold) &&
-						visible_typography_matches("settings-danger-action", 12.0f, Rml::Style::FontWeight::Bold) &&
-						visible_typography_matches("share-codec-btn", 12.0f, Rml::Style::FontWeight::Bold);
+					bool typography_valid = visible_page_titles == 1;
+					typography_valid &= visible_typography_matches("settings-nav-item", 13.0f, Rml::Style::FontWeight::Normal);
+					typography_valid &= visible_typography_matches("settings-field-label", 10.0f, Rml::Style::FontWeight::Bold);
+					typography_valid &= visible_typography_matches("settings-feature-title", 13.0f, Rml::Style::FontWeight::Bold);
+					typography_valid &= visible_typography_matches("settings-feature-copy", 10.0f, Rml::Style::FontWeight::Normal);
+					typography_valid &= visible_typography_matches("settings-page-intro", 12.0f, Rml::Style::FontWeight::Normal);
+					typography_valid &= visible_typography_matches("settings-keycap", 12.0f, Rml::Style::FontWeight::Bold);
+					typography_valid &= visible_typography_matches("settings-secondary-action", 12.0f, Rml::Style::FontWeight::Bold);
+					typography_valid &= visible_typography_matches("settings-danger-action", 12.0f, Rml::Style::FontWeight::Bold);
+					typography_valid &= visible_typography_matches("share-codec-btn", 12.0f, Rml::Style::FontWeight::Bold);
+					valid = valid && typography_valid;
 					if (!valid)
 						std::fprintf(stderr, "[Designer] Settings typography scale validation failed for %s\n", scenario.c_str());
 				}
@@ -1060,6 +1107,53 @@ struct DesignerApp::PartiesFixture {
 		}
 
 		if (scenario == "share" || scenario == "audio-share") {
+			Rml::Element* sidebar = document->GetElementById("channel-sidebar");
+			auto first_visible_by_class = [document](const char* class_name) -> Rml::Element* {
+				Rml::ElementList elements;
+				document->GetElementsByClassName(elements, class_name);
+				for (Rml::Element* element : elements) {
+					if (element && element->IsVisible(true))
+						return element;
+				}
+				return nullptr;
+			};
+			Rml::Element* footer = first_visible_by_class("share-picker-footer");
+			Rml::Element* scroll = first_visible_by_class("share-picker-scroll");
+			Rml::Element* title = first_visible_by_class("share-picker-title");
+			Rml::Element* subtitle = first_visible_by_class("share-picker-subtitle");
+			Rml::Element* screens_heading = document->GetElementById("share-screens-heading");
+			Rml::Element* applications_heading = document->GetElementById("share-applications-heading");
+			Rml::ElementList screen_heading_labels;
+			Rml::ElementList application_heading_labels;
+			if (screens_heading)
+				screens_heading->GetElementsByTagName(screen_heading_labels, "span");
+			if (applications_heading)
+				applications_heading->GetElementsByTagName(application_heading_labels, "span");
+			const auto left = [](Rml::Element* element) {
+				return element->GetAbsoluteOffset(Rml::BoxArea::Border).x;
+			};
+			const auto top = [](Rml::Element* element) {
+				return element->GetAbsoluteOffset(Rml::BoxArea::Border).y;
+			};
+			const auto width = [](Rml::Element* element) {
+				return element->GetBox().GetSize(Rml::BoxArea::Border).x;
+			};
+			const auto height = [](Rml::Element* element) {
+				return element->GetBox().GetSize(Rml::BoxArea::Border).y;
+			};
+			const bool chrome_valid = sidebar && footer && scroll && title && subtitle &&
+				screens_heading && screen_heading_labels.size() == 1 &&
+				applications_heading && application_heading_labels.size() == 1 &&
+				left(footer) >= left(sidebar) + width(sidebar) - 1.0f &&
+				top(scroll) + height(scroll) <= top(footer) + 1.0f &&
+				left(subtitle) >= left(title) + width(title) + 8.0f;
+			if (!chrome_valid) {
+				std::fprintf(stderr,
+					"[Designer] Share chrome validation failed: sidebar=%d footer=%d scroll=%d title=%d caption=%d screen-labels=%zu application-labels=%zu\n",
+					sidebar ? 1 : 0, footer ? 1 : 0, scroll ? 1 : 0, title ? 1 : 0,
+					subtitle ? 1 : 0, screen_heading_labels.size(), application_heading_labels.size());
+				return false;
+			}
 			size_t target_count = 0;
 			for (const auto* targets : {&lobby.share_monitor_targets, &lobby.share_application_targets}) {
 				for (const auto& target : targets->get()) {
@@ -1096,16 +1190,71 @@ struct DesignerApp::PartiesFixture {
 			Rml::Element* slider = document->GetElementById("stream-volume-slider");
 			Rml::Element* track = FindSliderPart(slider, "slidertrack");
 			Rml::Element* bar = FindSliderPart(slider, "sliderbar");
+			Rml::Element* sidebar = document->GetElementById("channel-sidebar");
+			Rml::Element* stream_grid = document->GetElementById("stream-grid");
+			Rml::ElementList headers;
+			document->GetElementsByClassName(headers, "screen-share-header");
+			Rml::Element* first_stream = document->GetElementById("screen-share-2");
+			Rml::Element* first_cell = first_stream ? first_stream->GetParentNode() : nullptr;
+			Rml::Element* header = nullptr;
+			for (Rml::Element* candidate : headers) {
+				if (candidate && candidate->IsVisible(true)) {
+					header = candidate;
+					break;
+				}
+			}
 			auto center_y = [](Rml::Element* element) {
 				return element->GetAbsoluteOffset(Rml::BoxArea::Border).y +
 					element->GetBox().GetSize(Rml::BoxArea::Border).y * 0.5f;
 			};
+			auto center_x = [](Rml::Element* element) {
+				return element->GetAbsoluteOffset(Rml::BoxArea::Border).x +
+					element->GetBox().GetSize(Rml::BoxArea::Border).x * 0.5f;
+			};
 			const float stream_slider_offset = track && bar
 				? std::fabs(center_y(track) - center_y(bar)) : 999.0f;
-			if (!slider || !track || !bar || stream_slider_offset >= 0.6f) {
+			const float header_gutter = sidebar && header
+				? header->GetAbsoluteOffset(Rml::BoxArea::Border).x -
+					(sidebar->GetAbsoluteOffset(Rml::BoxArea::Border).x +
+					 sidebar->GetBox().GetSize(Rml::BoxArea::Border).x)
+				: 999.0f;
+			const float cell_gutter = sidebar && first_cell
+				? first_cell->GetAbsoluteOffset(Rml::BoxArea::Border).x -
+					(sidebar->GetAbsoluteOffset(Rml::BoxArea::Border).x +
+					 sidebar->GetBox().GetSize(Rml::BoxArea::Border).x)
+				: 999.0f;
+			const float grid_right_gutter = stream_grid && header
+				? header->GetAbsoluteOffset(Rml::BoxArea::Border).x +
+					  header->GetBox().GetSize(Rml::BoxArea::Border).x -
+					  stream_grid->GetAbsoluteOffset(Rml::BoxArea::Border).x -
+					  stream_grid->GetBox().GetSize(Rml::BoxArea::Border).x
+				: 999.0f;
+			float stream_slider_click_offset = 999.0f;
+			if (slider && track && bar) {
+				// Exercise the real range hit-test at a point away from the current
+				// value. The visual thumb centre must land under the pointer; this
+				// catches stale input coordinates and CSS margin regressions.
+				const Rml::Vector2f track_offset = track->GetAbsoluteOffset(Rml::BoxArea::Border);
+				const Rml::Vector2f track_size = track->GetBox().GetSize(Rml::BoxArea::Border);
+				const int click_x = static_cast<int>(std::lround(track_offset.x + track_size.x * 0.72f));
+				const int click_y = static_cast<int>(std::lround(center_y(track)));
+				Rml::Context* context = document->GetContext();
+				context->ProcessMouseMove(click_x, click_y, 0);
+				context->ProcessMouseButtonDown(0, 0);
+				context->ProcessMouseButtonUp(0, 0);
+				context->Update();
+				stream_slider_click_offset = std::fabs(center_x(bar) - static_cast<float>(click_x));
+			}
+			if (!slider || !track || !bar || !stream_grid || stream_slider_offset >= 0.6f ||
+				stream_slider_click_offset >= 1.1f ||
+				std::fabs(header_gutter) >= 0.6f ||
+				std::fabs(cell_gutter - 8.0f) >= 0.6f ||
+				std::fabs(grid_right_gutter - 8.0f) >= 0.6f) {
 				std::fprintf(stderr,
-					"[Designer] Stream slider validation failed: slider=%d track=%d bar=%d dy=%.2f\n",
-					slider ? 1 : 0, track ? 1 : 0, bar ? 1 : 0, stream_slider_offset);
+					"[Designer] Stream chrome validation failed: slider=%d track=%d bar=%d grid=%d dy=%.2f click-dx=%.2f header-gutter=%.2f cell-gutter=%.2f grid-right-gutter=%.2f\n",
+					slider ? 1 : 0, track ? 1 : 0, bar ? 1 : 0, stream_grid ? 1 : 0,
+					stream_slider_offset, stream_slider_click_offset, header_gutter,
+					cell_gutter, grid_right_gutter);
 				return false;
 			}
 		}

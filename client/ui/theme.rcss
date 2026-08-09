@@ -34,11 +34,15 @@ body {
     --sidebar-width: 286dp;
     --color-danger-surface: #3B1D23;
     --type-page: 20dp;
+    --type-display: 38dp;
+    --type-section: 17dp;
     --type-title: 14dp;
+    --type-item: 13dp;
     --type-body: 12dp;
     --type-control: 12dp;
     --type-label: 10dp;
-    --type-caption: 9dp;
+    --type-caption: 10dp;
+    --type-micro: 9dp;
     --header-height: 48dp;
     --control-height: 38dp;
     --control-height-compact: 32dp;

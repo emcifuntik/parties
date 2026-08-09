@@ -519,5 +519,17 @@ gradient_circle.party-card-gradient {
 .enterprise-seed .seed-phrase-text { color: #DDFBF6; font-size: 15dp; line-height: 1.8; letter-spacing: 0.4dp; }
 .seed-card-actions { display: flex; margin-top: 14dp; }
 .recovery-warning { display: flex; align-items: center; margin-top: 13dp; padding: 11dp 13dp; background-color: #2A2315; border: 1dp #FBBF2430; border-radius: 10dp; }
-.recovery-warning span { display: flex; width: 22dp; height: 22dp; flex-shrink: 0; align-items: center; justify-content: center; margin-right: 10dp; background-color: #4A3613; color: var(--color-warning); border-radius: 12dp; font-weight: bold; }
-.recovery-warning p { color: #C0A971; font-size: 9dp; line-height: 1.4; }
+.recovery-warning .recovery-warning-icon {
+    display: block;
+    width: 22dp;
+    height: 22dp;
+    flex-shrink: 0;
+    margin-right: 10dp;
+    padding-top: 2dp;
+    box-sizing: border-box;
+    background-color: #4A3613;
+    color: var(--color-warning);
+    border-radius: 12dp;
+    text-align: center;
+}
+.recovery-warning p { color: #C0A971; }

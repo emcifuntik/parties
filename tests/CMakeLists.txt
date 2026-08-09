@@ -72,6 +72,8 @@ target_link_libraries(parties_aux_stream_test
 if(BUILD_CLIENT)
     add_executable(parties_ui_stylesheet_test ui_stylesheet_test.cpp)
     target_link_libraries(parties_ui_stylesheet_test PRIVATE RmlUi::RmlUi)
+    target_compile_definitions(parties_ui_stylesheet_test PRIVATE
+        PARTIES_UI_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../client/ui")
 
     add_executable(parties_document_router_test document_router_test.cpp)
     target_include_directories(parties_document_router_test PRIVATE ../client/include)

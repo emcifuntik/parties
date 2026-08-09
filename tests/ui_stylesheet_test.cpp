@@ -2,6 +2,11 @@
 
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <set>
+#include <sstream>
+#include <string>
 
 namespace {
 
@@ -30,20 +35,72 @@ public:
 
 bool Check(bool condition, const char* message) {
 	if (!condition)
-		std::fprintf(stderr, "RCSS variable test failed: %s\n", message);
+		std::fprintf(stderr, "UI stylesheet test failed: %s\n", message);
 	return condition;
+}
+
+bool CheckTypographyContract() {
+	namespace fs = std::filesystem;
+	const fs::path ui_directory = PARTIES_UI_SOURCE_DIR;
+	const fs::path typography_path = ui_directory / "typography.rcss";
+	std::set<std::string> font_families;
+	bool success = true;
+
+	for (const fs::directory_entry& entry : fs::directory_iterator(ui_directory)) {
+		if (!entry.is_regular_file() || entry.path().extension() != ".rcss")
+			continue;
+		std::ifstream stream(entry.path(), std::ios::binary);
+		std::ostringstream buffer;
+		buffer << stream.rdbuf();
+		const std::string source = buffer.str();
+		size_t offset = 0;
+		while ((offset = source.find("font-family", offset)) != std::string::npos) {
+			if (entry.path().filename() != typography_path.filename()) {
+				std::fprintf(stderr, "Typography declaration outside typography.rcss: %s\n",
+					entry.path().string().c_str());
+				success = false;
+			}
+			const size_t colon = source.find(':', offset);
+			const size_t semicolon = colon == std::string::npos ? std::string::npos : source.find(';', colon);
+			if (colon != std::string::npos && semicolon != std::string::npos) {
+				std::string family = source.substr(colon + 1, semicolon - colon - 1);
+				const size_t first = family.find_first_not_of(" \t\r\n");
+				const size_t last = family.find_last_not_of(" \t\r\n");
+				if (first != std::string::npos)
+					font_families.insert(family.substr(first, last - first + 1));
+			}
+			offset += 11;
+		}
+	}
+
+	std::ifstream typography_stream(typography_path, std::ios::binary);
+	std::ostringstream typography_buffer;
+	typography_buffer << typography_stream.rdbuf();
+	const std::string typography = typography_buffer.str();
+	for (const char* role : {".ui-display", ".ui-heading-page", ".ui-heading-section", ".ui-heading",
+		".ui-item-title", ".ui-body", ".ui-control", ".ui-label", ".ui-caption", ".ui-micro", ".ui-symbol"}) {
+		if (typography.find(role) == std::string::npos) {
+			std::fprintf(stderr, "Missing semantic typography role: %s\n", role);
+			success = false;
+		}
+	}
+	if (font_families.empty() || font_families.size() > 2) {
+		std::fprintf(stderr, "Expected one or two UI font families, found %zu\n", font_families.size());
+		success = false;
+	}
+	return success;
 }
 
 } // namespace
 
 int main() {
+	bool success = CheckTypographyContract();
 	NullRenderInterface renderer;
 	TestSystemInterface system;
 	Rml::SetSystemInterface(&system);
 	Rml::SetRenderInterface(&renderer);
 	if (!Check(Rml::Initialise(), "RmlUi did not initialise"))
 		return 1;
-	bool success = true;
 	success &= Check(Rml::Factory::GetElementInstancer("svg") != nullptr, "SVG plugin element was not registered");
 	success &= Check(Rml::Factory::GetElementInstancer("lottie") != nullptr, "Lottie plugin element was not registered");
 

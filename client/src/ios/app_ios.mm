@@ -180,7 +180,7 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     guild.color_index = 3; guild.host = "guild.parties.local";
     guild.online = false; guild.locked = true;
     servers.servers = Rml::Vector<ServerEntry>{night, studio, guild};
-    servers.party_count_text = "3 parties · 19 friends online";
+    servers.party_count_text = "3 parties";
     servers.global_name = "tuxick";
     servers.connected_server_id = disconnected ? 0 : 1;
     servers.fingerprint = "5E7A 91C2 4D3F";

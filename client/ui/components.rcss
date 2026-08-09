@@ -17,9 +17,6 @@
 .ui-header-title {
     display: block;
     color: var(--color-text);
-    font-size: var(--type-title);
-    font-weight: bold;
-    line-height: 18dp;
     overflow: hidden;
     white-space: nowrap;
 }

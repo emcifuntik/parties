@@ -639,9 +639,6 @@ gradient_circle.user-avatar {
 }
 
 .settings-btn {
-    display: block;
-    cursor: pointer;
-    padding: 4dp;
     opacity: 0.5;
 }
 
@@ -713,7 +710,6 @@ gradient_circle.user-avatar {
 /* Current visual treatment for the shell. */
 /* Foundation */
 body {
-    font-family: Inter;
     font-size: 14dp;
     color: var(--color-text);
 }
