@@ -84,6 +84,7 @@ set(CLIENT_COMMON_SOURCES
     src/chat_model.cpp
     src/chat_selection.cpp
     src/sound_player.cpp
+    src/ui_fixture.cpp
     src/net_client_msquic.cpp
 )
 

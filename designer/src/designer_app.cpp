@@ -454,6 +454,10 @@ struct DesignerApp::PartiesFixture {
 		if (server_list.show_onboarding.get())
 			server_list.has_identity = false;
 		server_list.show_add_form = scenario == "party-modal";
+		server_list.global_name = "tuxick";
+		server_list.edit_host = "voice.example.com";
+		server_list.edit_port = "7800";
+		server_list.edit_nickname = "";
 		if (scenario == "room") {
 			lobby.someone_sharing = true;
 			lobby.sharers = Rml::Vector<parties::client::ActiveSharer>{
@@ -1715,6 +1719,15 @@ void DesignerApp::LoadDocument(const std::string& rml_path) {
 
 		auto* doc = preview_context_->LoadDocument(document_path_);
 		if (doc) {
+			// Match the production platform classes so the shared desktop design
+			// system is exercised by Windows screenshot fixtures. Theme-driven iOS
+			// previews remain isolated from desktop component density.
+			if (preview_theme_ == "ios") {
+				doc->SetClass("platform-ios", true);
+			} else {
+				doc->SetClass("platform-windows", true);
+				doc->SetClass("platform-desktop", true);
+			}
 			doc->Show();
 			if (parties_fixture_)
 				parties_fixture_->ApplyDocumentFixture(doc, parties_fixture_scenario_);

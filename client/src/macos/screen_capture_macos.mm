@@ -154,7 +154,7 @@ struct ScreenCaptureMac::Impl {
     // Nested class has implicit access to ScreenCaptureMac private members (C++11).
     static void start_with_filter(ScreenCaptureMac* cap, Impl* impl,
                                   SCContentFilter* filter, uint32_t target_fps,
-                                  float output_scale,
+                                  float output_scale, bool audio_only,
                                   std::function<void(bool)> on_started);
 };
 
@@ -174,6 +174,7 @@ ScreenCaptureMac::~ScreenCaptureMac()
             auto* picker = [SCContentSharingPicker sharedPicker];
             [picker removeObserver:(PartiesPickerObserver*)impl_->observer];
             impl_->observer = nil;
+            picker.active = NO;
         }
     }
     if (impl_->queue) {
@@ -190,9 +191,11 @@ void ScreenCaptureMac::Impl::start_with_filter(ScreenCaptureMac* cap,
                                                 SCContentFilter* filter,
                                                 uint32_t target_fps,
                                                 float output_scale,
+                                                bool audio_only,
                                                 std::function<void(bool)> on_started)
 {
-    NSLog(@"[ScreenCaptureMac] start_with_filter: fps=%u scale=%.2f", target_fps, output_scale);
+    NSLog(@"[ScreenCaptureMac] start_with_filter: fps=%u scale=%.2f audio_only=%d",
+          target_fps, output_scale, audio_only);
 
     // Wire callbacks into the delegate.
     impl->output.onFrame = [cap](CVPixelBufferRef buf, uint32_t w, uint32_t h) {
@@ -220,7 +223,7 @@ void ScreenCaptureMac::Impl::start_with_filter(ScreenCaptureMac* cap,
     cfg.capturesAudio                = YES;
     cfg.excludesCurrentProcessAudio  = YES;
     cfg.sampleRate                   = 48000;
-    cfg.channelCount                 = 2;
+    cfg.channelCount                 = audio_only ? 1 : 2;
 
     // Determine the output resolution. ScreenCaptureKit scales the captured
     // content to cfg.width/height on the GPU, so we ask it to deliver frames at
@@ -263,15 +266,17 @@ void ScreenCaptureMac::Impl::start_with_filter(ScreenCaptureMac* cap,
                                           configuration:cfg
                                                delegate:impl->output];
 
-    NSError* addErr = nil;
-    [stream addStreamOutput:impl->output
-                       type:SCStreamOutputTypeScreen
-         sampleHandlerQueue:impl->queue
-                      error:&addErr];
-    if (addErr) {
-        NSLog(@"[ScreenCaptureMac] addStreamOutput (screen): %@", addErr.localizedDescription);
-        if (on_started) on_started(false);
-        return;
+    if (!audio_only) {
+        NSError* addErr = nil;
+        [stream addStreamOutput:impl->output
+                           type:SCStreamOutputTypeScreen
+             sampleHandlerQueue:impl->queue
+                          error:&addErr];
+        if (addErr) {
+            NSLog(@"[ScreenCaptureMac] addStreamOutput (screen): %@", addErr.localizedDescription);
+            if (on_started) on_started(false);
+            return;
+        }
     }
 
     // Add audio output on the same queue
@@ -282,7 +287,11 @@ void ScreenCaptureMac::Impl::start_with_filter(ScreenCaptureMac* cap,
                       error:&audioErr];
     if (audioErr) {
         NSLog(@"[ScreenCaptureMac] addStreamOutput (audio): %@", audioErr.localizedDescription);
-        // Non-fatal — continue without audio
+        if (audio_only) {
+            if (on_started) on_started(false);
+            return;
+        }
+        // Screen sharing can still continue without system audio.
     }
 
     NSLog(@"[ScreenCaptureMac] starting capture...");
@@ -301,7 +310,7 @@ void ScreenCaptureMac::Impl::start_with_filter(ScreenCaptureMac* cap,
 
 // ── pick_and_start ───────────────────────────────────────────────────────────
 
-void ScreenCaptureMac::pick_and_start(uint32_t target_fps, float output_scale,
+void ScreenCaptureMac::pick_and_start(uint32_t target_fps, float output_scale, bool audio_only,
                                        std::function<void(bool)> on_started)
 {
     if (capturing_) stop();
@@ -315,9 +324,9 @@ void ScreenCaptureMac::pick_and_start(uint32_t target_fps, float output_scale,
 
         SCContentSharingPickerConfiguration* config =
             [[SCContentSharingPickerConfiguration alloc] init];
-        config.allowedPickerModes =
-            SCContentSharingPickerModeSingleWindow |
-            SCContentSharingPickerModeSingleDisplay;
+        config.allowedPickerModes = audio_only
+            ? SCContentSharingPickerModeSingleApplication
+            : SCContentSharingPickerModeSingleWindow | SCContentSharingPickerModeSingleDisplay;
         picker.defaultConfiguration = config;
 
         auto* observer = [[PartiesPickerObserver alloc] init];
@@ -330,7 +339,8 @@ void ScreenCaptureMac::pick_and_start(uint32_t target_fps, float output_scale,
             cap->impl_->observer = nil;
             picker.active = NO;
 
-            Impl::start_with_filter(cap, cap->impl_, filter, target_fps, output_scale, on_started);
+            Impl::start_with_filter(cap, cap->impl_, filter, target_fps, output_scale,
+                                    audio_only, on_started);
         };
 
         observer.onCancelled = ^{
@@ -362,7 +372,8 @@ void ScreenCaptureMac::pick_and_start(uint32_t target_fps, float output_scale,
                 SCContentFilter* filter = [[SCContentFilter alloc]
                     initWithDisplay:mainDisplay excludingWindows:@[]];
 
-                Impl::start_with_filter(cap, cap->impl_, filter, target_fps, output_scale, on_started);
+                Impl::start_with_filter(cap, cap->impl_, filter, target_fps, output_scale,
+                                        audio_only, on_started);
             }];
     }
 }

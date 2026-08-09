@@ -1,0 +1,117 @@
+/* Typography
+   Font family, semantic scale and compatibility mappings for migrated screen labels. */
+
+body {
+    font-family: Inter;
+    font-size: 14dp;
+    color: var(--color-text);
+}
+
+/* ── Typography ────────────────────────────────────── */
+
+h1 {
+    font-size: 22dp;
+    font-weight: bold;
+    color: #F0F2F8;
+    margin-bottom: 4dp;
+}
+
+h2 {
+    font-size: 17dp;
+    font-weight: bold;
+    color: #F0F2F8;
+    margin-bottom: 8dp;
+}
+
+.subtitle {
+    color: #A0A8C0;
+    margin-bottom: 24dp;
+    font-size: 13dp;
+}
+
+.label {
+    display: block;
+    font-size: 11dp;
+    font-weight: bold;
+    color: #5C6280;
+    text-transform: uppercase;
+    margin-bottom: 6dp;
+    margin-top: 18dp;
+    letter-spacing: 0.5dp;
+}
+
+.error-text {
+    display: block;
+    color: #EF4444;
+    font-size: 13dp;
+    margin-top: 6dp;
+}
+
+.success-text {
+    display: block;
+    color: #22C55E;
+    font-size: 13dp;
+    margin-top: 6dp;
+}
+
+/* Typography ------------------------------------------------------------- */
+.ui-heading-page {
+    color: var(--color-text);
+    font-size: var(--type-page);
+    font-weight: bold;
+    line-height: 24dp;
+}
+.ui-heading {
+    color: var(--color-text);
+    font-size: var(--type-title);
+    font-weight: bold;
+    line-height: 18dp;
+}
+.ui-body {
+    color: var(--color-text-soft);
+    font-size: var(--type-body);
+    font-weight: normal;
+    line-height: 17dp;
+}
+.ui-label {
+    color: var(--color-text-muted);
+    font-size: var(--type-label);
+    font-weight: bold;
+    letter-spacing: 0.9dp;
+    line-height: 14dp;
+    text-transform: uppercase;
+}
+.ui-caption {
+    color: var(--color-text-faint);
+    font-size: var(--type-caption);
+    font-weight: normal;
+    line-height: 13dp;
+}
+
+.label,
+.settings-field-label,
+.channel-category,
+.user-menu-section-title,
+.context-window-section-title {
+    color: var(--color-text-muted);
+    font-size: var(--type-label);
+    font-weight: bold;
+    letter-spacing: 0.9dp;
+    line-height: 14dp;
+    text-transform: uppercase;
+}
+.settings-feature-title,
+.settings-page-intro,
+.user-menu-sublabel,
+.context-window-volume-row {
+    font-size: var(--type-body);
+    line-height: 17dp;
+}
+.settings-feature-copy,
+.settings-meta-value,
+.settings-level-value,
+.user-menu-option-copy {
+    color: var(--color-text-muted);
+    font-size: var(--type-caption);
+    line-height: 13dp;
+}

@@ -2286,7 +2286,7 @@ void AppCore::setup_server_model_callbacks()
         const Rml::String& host     = server_model_.edit_host;
         const Rml::String& port_str = server_model_.edit_port;
         if (host.empty() || port_str.empty()) {
-            server_model_.edit_error = "Please fill in all fields";
+            server_model_.edit_error = "Enter a server address and port";
             return;
         }
         int port = std::atoi(port_str.c_str());
@@ -2294,8 +2294,25 @@ void AppCore::setup_server_model_callbacks()
             server_model_.edit_error = "Invalid port number";
             return;
         }
+        std::string nickname = trim_display_name(
+            std::string(server_model_.edit_nickname));
+        if (nickname.empty()) nickname = global_name_;
+        if (nickname.empty()) {
+            server_model_.edit_error = "Enter a server nickname";
+            return;
+        }
+        if (nickname.size() > 64) {
+            server_model_.edit_error = "Nickname is too long";
+            return;
+        }
         std::string name = std::string(host) + ":" + std::string(port_str);
-        settings_.save_server(name, std::string(host), port, "", "");
+        if (!settings_.save_server(
+                name, std::string(host), port, "", nickname, "")) {
+            server_model_.edit_error = "Failed to save party";
+            return;
+        }
+        server_model_.edit_nickname = Rml::String(nickname);
+        server_model_.edit_error = "";
         server_model_.show_add_form = false;
         refresh_server_list();
     };

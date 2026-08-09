@@ -335,6 +335,8 @@ struct ContextWindowManager::Impl {
             reset_context();
             return false;
         }
+        active->document->SetClass("platform-windows", true);
+        active->document->SetClass("platform-desktop", true);
         active->document->Show();
         active->context->Update();
         if (resize_to_content())

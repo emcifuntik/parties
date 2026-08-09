@@ -465,6 +465,8 @@ bool App::init(HWND hwnd) {
 
     doc_ = ui_.load_document("ui/lobby.rml");
     if (doc_) {
+        doc_->SetClass("platform-windows", true);
+        doc_->SetClass("platform-desktop", true);
         ui_.show_document(doc_);
     }
 

@@ -1,9 +1,11 @@
-/* Parties for iOS.
-   Activated by Context::ActivateTheme("ios") so this stylesheet can also be
-   exercised by rmlui-designer without pretending that Windows is iOS. */
+/* Mobile platform
+   Touch density, navigation, safe areas and responsive behavior for iOS. */
 
 @media (theme: ios) {
     body {
+        --header-height: 54dp;
+        --control-height: 44dp;
+        --control-height-compact: 44dp;
         --titlebar-height: 0dp;
         --sidebar-width: 100%;
         box-sizing: border-box;
@@ -196,6 +198,7 @@
     /* Streams ---------------------------------------------------------- */
     .screen-share-area { padding: 8dp 8dp 72dp 8dp; }
     .screen-share-header {
+        height: auto;
         min-height: 0dp;
         flex-wrap: wrap;
         align-content: flex-start;
@@ -465,9 +468,8 @@
         box-sizing: border-box;
     }
     .party-connect-header { flex: none; padding: 18dp 16dp 12dp 16dp; }
-    .party-connect-body { flex: none; flex-direction: column; gap: 12dp; padding: 16dp; }
+    .party-connect-body { flex: none; padding: 16dp; }
     .party-connect-form { flex: none; width: 100%; }
-    .party-connect-preview { display: none; }
     .party-connect-footer {
         flex: none;
         gap: 10dp;

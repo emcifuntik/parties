@@ -1,9 +1,19 @@
 <rml>
 <head>
     <title>Parties</title>
-    <link type="text/rcss" href="style.rcss" />
-    <link type="text/rcss" href="redesign.rcss" />
-    <link type="text/rcss" href="ios.rcss" />
+    <link type="text/rcss" href="theme.rcss" />
+    <link type="text/rcss" href="typography.rcss" />
+    <link type="text/rcss" href="primitives.rcss" />
+    <link type="text/rcss" href="components.rcss" />
+    <link type="text/rcss" href="shell.rcss" />
+    <link type="text/rcss" href="launcher.rcss" />
+    <link type="text/rcss" href="room.rcss" />
+    <link type="text/rcss" href="chat.rcss" />
+    <link type="text/rcss" href="settings.rcss" />
+    <link type="text/rcss" href="streaming.rcss" />
+    <link type="text/rcss" href="dialogs.rcss" />
+    <link type="text/rcss" href="desktop.rcss" />
+    <link type="text/rcss" href="mobile.rcss" />
 </head>
 <body class="fullscreen">
 
@@ -76,7 +86,7 @@
                             <gradient_circle class="home-profile-avatar" data-attr-seed="global_name" />
                             <span class="home-profile-name">{{ global_name }}</span>
                         </div>
-                        <div class="home-add-button" data-model="serverlist" data-event-click="add_server">+ Add party</div>
+                        <div class="home-add-button ui-button" data-model="serverlist" data-event-click="add_server"><span class="ui-button-label">+ Add party</span></div>
                     </div>
                 </div>
 
@@ -104,8 +114,8 @@
                                 </div>
                                 <div class="party-card-footer">
                                     <span class="party-card-host">{{ srv.host }}</span>
-                                    <span class="party-card-action" data-if="srv.online">Join</span>
-                                    <span class="party-card-action secondary" data-if="srv.online == false">Reconnect</span>
+                                    <span class="party-card-action ui-button ui-button-compact" data-if="srv.online"><span class="ui-button-label">Join</span></span>
+                                    <span class="party-card-action secondary ui-button ui-button-secondary ui-button-compact" data-if="srv.online == false"><span class="ui-button-label">Reconnect</span></span>
                                 </div>
                             </div>
                         </div>
@@ -131,13 +141,13 @@
          Settings is the sole exception because it owns a dedicated settings nav. -->
     <div class="sidebar" id="channel-sidebar" data-model="lobby"
          data-if="is_connected && route != 'settings'">
-        <div class="server-header">
+        <div class="server-header ui-header">
             <div class="server-header-icon-wrap">
                 <gradient_circle class="server-header-gradient" data-attr-seed="server_name" />
                 <span class="server-header-initials">{{ server_initials }}</span>
             </div>
-            <span class="server-title">{{ server_name }}</span>
-            <div class="server-disconnect-btn" data-event-click="disconnect_server">
+            <span class="server-title ui-header-title">{{ server_name }}</span>
+            <div class="server-disconnect-btn ui-icon-button" data-event-click="disconnect_server">
                 <svg src="icon-disconnect.svg" width="16" height="16" />
             </div>
         </div>
@@ -207,33 +217,33 @@
                         <span class="user-name">{{ username }}</span>
                         <span class="user-fingerprint" data-model="serverlist" data-if="fingerprint != ''" data-event-click="copy_fingerprint">{{ fingerprint }}</span>
                     </div>
-                    <div class="settings-btn" data-event-click="open_settings">
+                    <div class="settings-btn ui-icon-button" data-event-click="open_settings">
                         <svg src="icon-settings.svg" width="16" height="16" />
                     </div>
                 </div>
                 <!-- Voice controls (visible when in a channel) -->
                 <div class="voice-btn-row" data-if="current_channel > 0">
-                    <div class="voice-btn" data-class-active="is_muted"
+                    <div class="voice-btn ui-icon-button" data-class-active="is_muted"
                          data-event-click="toggle_mute">
                         <svg class="voice-icon" src="icon-unmute.svg" width="18" height="18" data-if="is_muted == false" />
                         <svg class="voice-icon" src="icon-mute.svg" width="18" height="18" data-if="is_muted" />
                     </div>
-                    <div class="voice-btn" data-class-active="is_deafened"
+                    <div class="voice-btn ui-icon-button" data-class-active="is_deafened"
                          data-event-click="toggle_deafen">
                         <svg class="voice-icon" src="icon-undeafen.svg" width="18" height="18" data-if="is_deafened == false" />
                         <svg class="voice-icon" src="icon-deafen.svg" width="18" height="18" data-if="is_deafened" />
                     </div>
-                    <div id="room-share-button" class="voice-btn" data-class-active="is_sharing"
+                    <div id="room-share-button" class="voice-btn ui-icon-button" data-class-active="is_sharing"
                          data-event-click="toggle_share">
                         <svg class="voice-icon" src="icon-share.svg" width="18" height="18" data-if="is_sharing == false" />
                         <svg class="voice-icon" src="icon-sharing.svg" width="18" height="18" data-if="is_sharing" />
                     </div>
-                    <div id="room-audio-share-button" class="voice-btn audio-share-button"
+                    <div id="room-audio-share-button" class="voice-btn audio-share-button ui-icon-button"
                          data-class-active="is_audio_sharing"
                          data-event-click="toggle_audio_share" title="Share application audio">
                         <svg class="voice-icon" src="icon-music.svg" width="18" height="18" />
                     </div>
-                    <div class="voice-btn btn-disconnect"
+                    <div class="voice-btn btn-disconnect ui-icon-button"
                          data-event-click="leave_channel">
                         <svg class="voice-icon" src="icon-leave.svg" width="18" height="18" />
                     </div>
@@ -286,12 +296,12 @@
             </div>
 
             <div class="settings-page">
-                <div class="settings-header">
-                    <h2 data-if="settings_section == 0">Audio &amp; Voice</h2>
-                    <h2 data-if="settings_section == 1">Screen Share</h2>
-                    <h2 data-if="settings_section == 2">Hotkeys</h2>
-                    <h2 data-if="settings_section == 3">Account &amp; Keys</h2>
-                    <div class="settings-close" data-event-click="route_back" title="Close settings">
+                <div class="settings-header ui-header">
+                    <h2 class="ui-header-title" data-if="settings_section == 0">Audio &amp; Voice</h2>
+                    <h2 class="ui-header-title" data-if="settings_section == 1">Screen Share</h2>
+                    <h2 class="ui-header-title" data-if="settings_section == 2">Hotkeys</h2>
+                    <h2 class="ui-header-title" data-if="settings_section == 3">Account &amp; Keys</h2>
+                    <div class="settings-close ui-icon-button" data-event-click="route_back" title="Close settings">
                         <svg src="icon-close.svg" width="17" height="17" />
                     </div>
                 </div>
@@ -323,7 +333,7 @@
                                     <option data-for="dev : playback_devices" data-attr-value="dev.index">{{ dev.name }}</option>
                                 </select>
                             </div>
-                            <div class="settings-test-output" data-event-click="test_notification_sound">
+                            <div class="settings-test-output ui-button ui-button-secondary ui-button-compact" data-event-click="test_notification_sound">
                                 <svg src="icon-volume.svg" width="13" height="13" /><span>Test output</span>
                             </div>
                         </div>
@@ -351,7 +361,7 @@
                                 <span class="settings-switch" data-class-on="ptt_enabled"><span class="settings-switch-knob"></span></span>
                             </div>
                             <div class="settings-ptt-delay" data-class-inactive="ptt_enabled == false">
-                                <input type="range" class="settings-wide-slider settings-ptt-delay-slider"
+                                <input type="range" class="settings-wide-slider settings-ptt-delay-slider ui-range"
                                        id="settings-ptt-delay-slider" min="0" max="1000" step="50"
                                        data-value="ptt_delay" data-event-change="ptt_delay_changed" />
                                 <span class="settings-ptt-delay-value" id="settings-ptt-delay-value"><span>{{ ptt_delay_text }}</span></span>
@@ -368,7 +378,7 @@
                                 </div>
                                 <span class="settings-level-value">Output level</span>
                             </div>
-                            <input type="range" class="settings-wide-slider" min="0" max="2" step="0.01"
+                            <input type="range" class="settings-wide-slider ui-range" min="0" max="2" step="0.01"
                                    data-value="notification_volume" data-event-change="notification_volume_changed" />
                         </div>
 
@@ -380,7 +390,7 @@
                                 </div>
                                 <span class="settings-level-value">Send level</span>
                             </div>
-                            <input type="range" class="settings-wide-slider" id="settings-music-send-slider"
+                            <input type="range" class="settings-wide-slider ui-range" id="settings-music-send-slider"
                                    min="0" max="2" step="0.01"
                                    data-value="music_send_volume"
                                    data-event-change="music_send_volume_changed" />
@@ -402,7 +412,7 @@
                             <div class="settings-vad-track">
                                 <level_meter id="voice-activation-meter" class="settings-vad-meter"
                                              data-attr-level="voice_level" data-attr-threshold="vad_threshold" />
-                                <input type="range" class="settings-vad-slider" min="0" max="1" step="0.01"
+                                <input type="range" class="settings-vad-slider ui-range" min="0" max="1" step="0.01"
                                        data-value="vad_threshold" data-event-change="vad_threshold_changed" />
                             </div>
                             <div class="settings-vad-foot"><span>Drag marker to set threshold</span></div>
@@ -418,25 +428,25 @@
                         <span>You can watch streams shared by other members. Starting a new screen share remains available on desktop.</span>
                     </div>
                     <div class="settings-config-card settings-share-config">
-                        <div class="share-setting-group"><div class="settings-field-label">Codec</div><div class="share-codec-buttons">
-                            <div class="share-codec-btn" data-class-active="share_codec == 0" data-event-click="select_share_codec(0)">AV1</div>
-                            <div class="share-codec-btn" data-class-active="share_codec == 1" data-event-click="select_share_codec(1)">H.265</div>
-                            <div class="share-codec-btn" data-class-active="share_codec == 2" data-event-click="select_share_codec(2)">H.264</div>
+                        <div class="share-setting-group"><div class="settings-field-label ui-label">Codec</div><div class="share-codec-buttons ui-segment-group">
+                            <div class="share-codec-btn ui-segment" data-class-active="share_codec == 0" data-event-click="select_share_codec(0)">AV1</div>
+                            <div class="share-codec-btn ui-segment" data-class-active="share_codec == 1" data-event-click="select_share_codec(1)">H.265</div>
+                            <div class="share-codec-btn ui-segment" data-class-active="share_codec == 2" data-event-click="select_share_codec(2)">H.264</div>
                         </div></div>
-                        <div class="share-setting-group"><div class="settings-field-label">Scale</div><div class="share-codec-buttons">
-                            <div class="share-codec-btn" data-class-active="share_scale == 0" data-event-click="select_share_scale(0)">Source</div>
-                            <div class="share-codec-btn" data-class-active="share_scale == 1" data-event-click="select_share_scale(1)">75%</div>
-                            <div class="share-codec-btn" data-class-active="share_scale == 2" data-event-click="select_share_scale(2)">50%</div>
-                            <div class="share-codec-btn" data-class-active="share_scale == 3" data-event-click="select_share_scale(3)">25%</div>
+                        <div class="share-setting-group"><div class="settings-field-label ui-label">Scale</div><div class="share-codec-buttons ui-segment-group">
+                            <div class="share-codec-btn ui-segment" data-class-active="share_scale == 0" data-event-click="select_share_scale(0)">Source</div>
+                            <div class="share-codec-btn ui-segment" data-class-active="share_scale == 1" data-event-click="select_share_scale(1)">75%</div>
+                            <div class="share-codec-btn ui-segment" data-class-active="share_scale == 2" data-event-click="select_share_scale(2)">50%</div>
+                            <div class="share-codec-btn ui-segment" data-class-active="share_scale == 3" data-event-click="select_share_scale(3)">25%</div>
                         </div></div>
-                        <div class="share-setting-group"><div class="settings-field-label">Frame Rate</div><div class="share-codec-buttons">
-                            <div class="share-codec-btn" data-class-active="share_fps == 0" data-event-click="select_share_fps(0)">15</div>
-                            <div class="share-codec-btn" data-class-active="share_fps == 1" data-event-click="select_share_fps(1)">30</div>
-                            <div class="share-codec-btn" data-class-active="share_fps == 2" data-event-click="select_share_fps(2)">60</div>
-                            <div class="share-codec-btn share-fps-120" data-class-active="share_fps == 3" data-event-click="select_share_fps(3)">120</div>
+                        <div class="share-setting-group"><div class="settings-field-label ui-label">Frame Rate</div><div class="share-codec-buttons ui-segment-group">
+                            <div class="share-codec-btn ui-segment" data-class-active="share_fps == 0" data-event-click="select_share_fps(0)">15</div>
+                            <div class="share-codec-btn ui-segment" data-class-active="share_fps == 1" data-event-click="select_share_fps(1)">30</div>
+                            <div class="share-codec-btn ui-segment" data-class-active="share_fps == 2" data-event-click="select_share_fps(2)">60</div>
+                            <div class="share-codec-btn share-fps-120 ui-segment" data-class-active="share_fps == 3" data-event-click="select_share_fps(3)">120</div>
                         </div></div>
                         <div class="share-setting-group"><div class="settings-slider-heading settings-bitrate-heading"><span class="settings-field-label" id="settings-bitrate-label">Average bitrate</span><span class="settings-field-label settings-bitrate-value" id="settings-bitrate-value">{{ share_bitrate }} Mbps</span></div>
-                            <input type="range" class="settings-wide-slider" id="settings-bitrate-slider" min="0.5" max="20" step="0.5"
+                            <input type="range" class="settings-wide-slider ui-range" id="settings-bitrate-slider" min="0.5" max="20" step="0.5"
                                    data-value="share_bitrate" data-event-change="share_bitrate_changed" />
                         </div>
                     </div>
@@ -452,17 +462,17 @@
                         <div class="settings-keybind-row"><div class="settings-row-copy"><span class="settings-feature-title">Toggle Mute</span><span class="settings-feature-copy">Mute or restore your microphone</span></div><div class="settings-keycap" data-event-click="mute_bind"><span data-if="mute_binding">Press a key...</span><span data-if="mute_binding == false && mute_key > 0">{{ mute_key_name }}</span><span data-if="mute_binding == false && mute_key == 0">Not set</span></div></div>
                         <div class="settings-keybind-row"><div class="settings-row-copy"><span class="settings-feature-title">Toggle Deafen</span><span class="settings-feature-copy">Mute all incoming room audio</span></div><div class="settings-keycap" data-event-click="deafen_bind"><span data-if="deafen_binding">Press a key...</span><span data-if="deafen_binding == false && deafen_key > 0">{{ deafen_key_name }}</span><span data-if="deafen_binding == false && deafen_key == 0">Not set</span></div></div>
                         <div class="settings-keybind-row"><div class="settings-row-copy"><span class="settings-feature-title">Push to Talk</span><span class="settings-feature-copy">Transmit while the assigned shortcut is held</span></div><div class="settings-keycap" data-event-click="ptt_bind"><span data-if="ptt_binding">Press a key...</span><span data-if="ptt_binding == false && ptt_key > 0">{{ ptt_key_name }}</span><span data-if="ptt_binding == false && ptt_key == 0">Not set</span></div></div>
-                        <div class="settings-keybind-delay" data-if="ptt_enabled"><div class="settings-slider-heading"><span class="settings-feature-title">Push-to-talk release delay</span><span class="settings-meta-value">{{ ptt_delay_text }}</span></div><input type="range" class="settings-wide-slider" min="0" max="1000" step="50" data-value="ptt_delay" data-event-change="ptt_delay_changed" /></div>
+                        <div class="settings-keybind-delay" data-if="ptt_enabled"><div class="settings-slider-heading"><span class="settings-feature-title">Push-to-talk release delay</span><span class="settings-meta-value">{{ ptt_delay_text }}</span></div><input type="range" class="settings-wide-slider ui-range" min="0" max="1000" step="50" data-value="ptt_delay" data-event-change="ptt_delay_changed" /></div>
                     </div>
                 </div>
 
                 <div class="settings-scroll" id="settings-account-page" data-if="settings_section == 3">
                     <div class="settings-page-intro" id="settings-account-intro">Your identity is stored locally. Keep an offline recovery copy before replacing it.</div>
                     <div class="settings-config-card settings-account-actions">
-                        <div class="settings-account-row"><div><span class="settings-feature-title">Private key</span><span class="settings-feature-copy">Reveal the key for this local identity</span></div><div class="settings-secondary-action" data-event-click="toggle_private_key"><span data-if="show_private_key == false">Show</span><span data-if="show_private_key">Hide</span></div></div>
-                        <div class="seed-phrase-display" data-if="show_private_key"><div class="private-key-text">{{ identity_private_key }}</div><div class="settings-secondary-action" id="settings-copy-private-key" data-event-click="copy_private_key"><span>Copy</span></div></div>
-                        <div class="settings-account-row" data-if="show_import_identity == false"><div><span class="settings-feature-title">Import identity</span><span class="settings-feature-copy">Restore from 12 words or a private key</span></div><div class="settings-secondary-action" id="settings-show-import" data-event-click="show_import_form"><span>Import</span></div></div>
-                        <div class="import-identity-form" data-if="show_import_identity"><div class="settings-feature-copy">Enter a 12-word recovery phrase or 64-character private key.</div><input type="text" class="restore-input" data-value="import_phrase" /><div class="error-text" data-if="import_error != ''">{{ import_error }}</div><div class="settings-danger-action" id="settings-replace-identity" data-event-click="do_import_identity"><span>Replace Identity</span></div><div class="settings-secondary-action" id="settings-cancel-import" data-event-click="cancel_import"><span>Cancel</span></div></div>
+                        <div class="settings-account-row"><div><span class="settings-feature-title">Private key</span><span class="settings-feature-copy">Reveal the key for this local identity</span></div><div class="settings-secondary-action ui-button ui-button-secondary ui-button-compact" data-event-click="toggle_private_key"><span data-if="show_private_key == false">Show</span><span data-if="show_private_key">Hide</span></div></div>
+                        <div class="seed-phrase-display" data-if="show_private_key"><div class="private-key-text">{{ identity_private_key }}</div><div class="settings-secondary-action ui-button ui-button-secondary ui-button-compact" id="settings-copy-private-key" data-event-click="copy_private_key"><span>Copy</span></div></div>
+                        <div class="settings-account-row" data-if="show_import_identity == false"><div><span class="settings-feature-title">Import identity</span><span class="settings-feature-copy">Restore from 12 words or a private key</span></div><div class="settings-secondary-action ui-button ui-button-secondary ui-button-compact" id="settings-show-import" data-event-click="show_import_form"><span>Import</span></div></div>
+                        <div class="import-identity-form" data-if="show_import_identity"><div class="settings-feature-copy">Enter a 12-word recovery phrase or 64-character private key.</div><input type="text" class="restore-input ui-input ui-input-multiline" data-value="import_phrase" /><div class="error-text" data-if="import_error != ''">{{ import_error }}</div><div class="settings-danger-action ui-button ui-button-danger" id="settings-replace-identity" data-event-click="do_import_identity"><span>Replace Identity</span></div><div class="settings-secondary-action ui-button ui-button-secondary" id="settings-cancel-import" data-event-click="cancel_import"><span>Cancel</span></div></div>
                     </div>
                 </div>
             </div>
@@ -470,16 +480,16 @@
 
         <!-- Share target picker -->
         <div class="share-picker-overlay" data-if="route == 'share-picker'">
-            <div class="share-picker-header">
-                <div>
+            <div class="share-picker-header ui-header">
+                <div class="ui-header-copy">
                     <div class="share-picker-kicker" data-if="share_picker_mode == 0">Screen share</div>
                     <div class="share-picker-kicker" data-if="share_picker_mode == 1">Application audio</div>
-                    <h2 data-if="share_picker_mode == 0">Choose what to share</h2>
-                    <h2 data-if="share_picker_mode == 1">Choose what to play</h2>
-                    <div class="share-picker-subtitle" data-if="share_picker_mode == 0">Only the selected screen or application will be visible to the room.</div>
-                    <div class="share-picker-subtitle" data-if="share_picker_mode == 1">Audio from the selected application is sent as a separate high-quality channel stream.</div>
+                    <h2 class="ui-header-title" data-if="share_picker_mode == 0">Choose what to share</h2>
+                    <h2 class="ui-header-title" data-if="share_picker_mode == 1">Choose what to play</h2>
+                    <div class="share-picker-subtitle ui-header-description" data-if="share_picker_mode == 0">Only the selected screen or application will be visible to the room.</div>
+                    <div class="share-picker-subtitle ui-header-description" data-if="share_picker_mode == 1">Audio from the selected application is sent as a separate high-quality channel stream.</div>
                 </div>
-                <div class="share-close" data-event-click="cancel_share">Close</div>
+                <div class="share-close ui-button ui-button-secondary ui-button-compact" data-event-click="cancel_share"><span class="ui-button-label">Close</span></div>
             </div>
 
             <div class="share-picker-scroll" data-if="use_native_picker == false">
@@ -535,12 +545,12 @@
             </div>
 
             <div class="share-picker-section native-share" data-if="use_native_picker">
-                <div class="btn" data-event-click="start_native_share">Open system picker</div>
+                <div class="btn ui-button ui-button-block" data-event-click="start_native_share"><span class="ui-button-label">Open system picker</span></div>
             </div>
             <div class="share-picker-footer">
                 <div class="share-picker-footer-actions">
-                    <div class="btn btn-secondary" data-event-click="cancel_share">Cancel</div>
-                    <div class="btn share-start-button" data-class-disabled="selected_share_target < 0"
+                    <div class="btn btn-secondary ui-button ui-button-secondary" data-event-click="cancel_share"><span class="ui-button-label">Cancel</span></div>
+                    <div class="btn share-start-button ui-button" data-class-disabled="selected_share_target < 0"
                          data-event-click="start_selected_share">
                         <span data-if="share_picker_mode == 0">Start sharing</span>
                         <span id="share-audio-start-label" data-if="share_picker_mode == 1">Share audio</span>
@@ -551,14 +561,14 @@
 
         <!-- Channel content (voice) -->
         <div class="channel-content" data-if="route == 'room' || route == 'streams'">
-            <div class="channel-header room-channel-header" data-if="route == 'room' && current_channel > 0">
+            <div class="channel-header room-channel-header ui-header" data-if="route == 'room' && current_channel > 0">
                 <div class="channel-heading">
                     <span class="channel-kicker">Voice room</span>
-                    <span class="channel-title">{{ current_channel_name }}</span>
+                    <span class="channel-title ui-header-title">{{ current_channel_name }}</span>
                 </div>
                 <span class="channel-hint">Drop in, talk, or share something with the room.</span>
             </div>
-            <div class="channel-header" data-if="route == 'room' && current_channel == 0">
+            <div class="channel-header ui-header" data-if="route == 'room' && current_channel == 0">
                 <span class="channel-hint">Select a channel</span>
             </div>
             <!-- Voice stage. The existing channel collection remains the single
@@ -634,7 +644,7 @@
                  ("screen-share-<id>") the platform layer pushes frames to. -->
             <div class="screen-share-area" data-if="route == 'streams' && watching_count > 0"
                  data-class-fullscreen="stream_fullscreen">
-                <div class="screen-share-header">
+                <div class="screen-share-header ui-header">
                     <div class="stream-mobile-back" data-event-click="stop_watching"><span class="stream-mobile-back-arrow"></span><span>Room</span></div>
                     <div class="stream-room-context">
                         <span class="stream-room-live">LIVE</span>
@@ -652,7 +662,7 @@
                     <div class="stream-playback-tools">
                         <div class="stream-volume-control" title="Stream volume">
                             <svg class="stream-volume-icon" src="icon-volume.svg" width="16" height="16" />
-                            <input type="range" class="settings-wide-slider stream-volume-slider" id="stream-volume-slider" min="0" max="2" step="0.01"
+                            <input type="range" class="settings-wide-slider stream-volume-slider ui-range" id="stream-volume-slider" min="0" max="2" step="0.01"
                                    data-value="stream_volume"
                                    data-event-change="stream_volume_changed" />
                         </div>
@@ -679,22 +689,22 @@
                 </div>
                 <div class="stream-call-dock">
                     <div class="dock-controls">
-                        <div class="dock-button" data-class-danger="is_muted" data-event-click="toggle_mute" title="Toggle microphone">
+                        <div class="dock-button ui-icon-button" data-class-danger="is_muted" data-event-click="toggle_mute" title="Toggle microphone">
                             <svg src="icon-unmute.svg" width="18" height="18" data-if="is_muted == false" />
                             <svg src="icon-mute.svg" width="18" height="18" data-if="is_muted" />
                         </div>
-                        <div class="dock-button" data-class-danger="is_deafened" data-event-click="toggle_deafen" title="Toggle audio">
+                        <div class="dock-button ui-icon-button" data-class-danger="is_deafened" data-event-click="toggle_deafen" title="Toggle audio">
                             <svg src="icon-undeafen.svg" width="18" height="18" data-if="is_deafened == false" />
                             <svg src="icon-deafen.svg" width="18" height="18" data-if="is_deafened" />
                         </div>
-                        <div class="dock-button dock-share" data-class-active="is_sharing" data-event-click="toggle_share" title="Share a screen">
+                        <div class="dock-button dock-share ui-icon-button" data-class-active="is_sharing" data-event-click="toggle_share" title="Share a screen">
                             <svg src="icon-share.svg" width="18" height="18" data-if="is_sharing == false" />
                             <svg src="icon-sharing.svg" width="18" height="18" data-if="is_sharing" />
                         </div>
-                        <div class="dock-button dock-audio-share" data-class-active="is_audio_sharing" data-event-click="toggle_audio_share" title="Share application audio">
+                        <div class="dock-button dock-audio-share ui-icon-button" data-class-active="is_audio_sharing" data-event-click="toggle_audio_share" title="Share application audio">
                             <svg src="icon-music.svg" width="18" height="18" />
                         </div>
-                        <div class="dock-button dock-end-streams" data-event-click="stop_watching" title="Leave all video streams">
+                        <div class="dock-button dock-end-streams ui-icon-button" data-event-click="stop_watching" title="Leave all video streams">
                             <svg src="icon-stream-off.svg" width="18" height="18" />
                         </div>
                     </div>
@@ -709,16 +719,16 @@
         <div class="chat-content" data-model="chat" data-if="active_channel > 0">
 
             <!-- Header -->
-            <div class="chat-header">
+            <div class="chat-header ui-header">
                 <div class="chat-header-left">
                     <svg class="chat-header-icon" src="icon-chat.svg" width="18" height="18" />
-                    <span class="chat-title">{{ active_channel_name }}</span>
+                    <span class="chat-title ui-header-title">{{ active_channel_name }}</span>
                 </div>
-                <div class="chat-header-actions">
-                    <div class="chat-header-btn" data-event-click="toggle_pinned">
+                <div class="chat-header-actions ui-header-actions">
+                    <div class="chat-header-btn ui-icon-button" data-event-click="toggle_pinned">
                         <svg src="icon-pin.svg" width="16" height="16" />
                     </div>
-                    <div class="chat-header-btn" data-event-click="toggle_search">
+                    <div class="chat-header-btn ui-icon-button" data-event-click="toggle_search">
                         <svg src="icon-search.svg" width="16" height="16" />
                     </div>
                 </div>
@@ -726,7 +736,7 @@
 
             <!-- Search bar -->
             <div class="chat-search-bar" data-if="show_search">
-                <input type="text" class="chat-search-input"
+                <input type="text" class="chat-search-input ui-input"
                        data-value="search_query"
                        data-event-keydown="search_keydown"
                        placeholder="Search messages..." />
@@ -760,7 +770,8 @@
             <!-- Search results (shown when search is active) -->
             <div class="chat-messages" data-if="show_search">
                 <div data-for="sr : search_results" class="msg-row">
-                    <div class="msg-avatar" data-attr-data-color="sr.color_index">
+                    <div class="msg-avatar-wrap">
+                        <gradient_circle class="msg-avatar" data-attr-seed="sr.sender_name" />
                         <span class="msg-initials">{{ sr.initials }}</span>
                     </div>
                     <div class="msg-body">
@@ -817,7 +828,7 @@
                             <svg class="att-icon" src="icon-file.svg" width="16" height="16" />
                             <span class="att-name">{{ att.file_name }}</span>
                             <span class="att-size">{{ att.size_str }}</span>
-                            <div class="att-download-btn" data-if="att.uploaded"
+                            <div class="att-download-btn ui-icon-button" data-if="att.uploaded"
                                  data-event-click="download_file(att.id)">
                                 <svg class="att-download-icon" src="icon-download.svg" width="14" height="14" />
                             </div>
@@ -843,15 +854,15 @@
                 </div>
                 <div class="compose-row">
                     <div class="compose-input-wrap">
-                        <input type="text" class="compose-input"
+                        <input type="text" class="compose-input ui-input"
                                data-value="compose_text"
                                data-event-keydown="compose_keydown"
                                placeholder="Write something..." />
-                        <div class="compose-attach-btn" data-event-click="attach_file">
+                        <div class="compose-attach-btn ui-icon-button" data-event-click="attach_file">
                             <svg class="compose-attach-icon" src="icon-attach.svg" width="18" height="18" />
                         </div>
                     </div>
-                    <div class="send-btn" data-event-click="send_message">
+                    <div class="send-btn ui-icon-button" data-event-click="send_message">
                         <svg class="send-icon" src="icon-send.svg" width="18" height="18" />
                     </div>
                 </div>
@@ -866,7 +877,7 @@
     <!-- User context menu (non-blocking, RmlUi overlay) -->
     <div class="user-menu-backdrop" data-model="lobby" data-if="show_user_menu">
         <div class="user-menu-popup">
-            <div class="user-menu-header">
+            <div class="user-menu-header ui-popup-header">
                 <div class="user-menu-identity">
                     <gradient_circle class="user-menu-avatar" data-attr-seed="menu_user_name" />
                     <span class="user-menu-presence"></span>
@@ -893,14 +904,14 @@
                 <div class="user-menu-section-title">Listening preferences</div>
                 <div class="user-menu-slider-row">
                     <span class="user-menu-sublabel">Personal volume</span>
-                    <input type="range" class="user-menu-slider" min="0" max="2" step="0.01"
+                    <input type="range" class="user-menu-slider ui-range" min="0" max="2" step="0.01"
                            data-value="menu_user_volume"
                            data-event-change="user_volume_changed" />
                     <span class="user-menu-value">{{ menu_user_volume }}×</span>
                 </div>
                 <div class="user-menu-slider-row">
                     <span class="user-menu-sublabel">Music volume</span>
-                    <input type="range" class="user-menu-slider" min="0" max="2" step="0.01"
+                    <input type="range" class="user-menu-slider ui-range" min="0" max="2" step="0.01"
                            data-value="menu_user_music_volume"
                            data-event-change="user_music_volume_changed" />
                     <span class="user-menu-value">{{ menu_user_music_volume }}×</span>
@@ -914,7 +925,7 @@
                 </div>
                 <div class="user-menu-slider-row" data-if="menu_user_compress">
                     <span class="user-menu-sublabel">Target level</span>
-                    <input type="range" class="user-menu-slider" min="0.1" max="1" step="0.01"
+                    <input type="range" class="user-menu-slider ui-range" min="0.1" max="1" step="0.01"
                            data-value="menu_user_compress_target"
                            data-event-change="user_compress_target_changed" />
                 </div>
@@ -938,65 +949,65 @@
 
     <!-- TOFU certificate warning modal -->
     <div class="modal-backdrop" data-model="serverlist" data-if="show_tofu_warning">
-        <div class="modal-box">
+        <div class="modal-box ui-dialog">
             <h1 class="warning-title">Certificate Changed</h1>
             <div class="subtitle">The server's certificate has changed since your last connection. This could mean the server was reconfigured, or it could indicate a security issue.</div>
 
             <div class="label">New fingerprint:</div>
             <div class="tofu-fingerprint">{{ tofu_fingerprint }}</div>
 
-            <div class="btn btn-danger" data-event-click="tofu_accept">Trust New Certificate</div>
-            <div class="btn btn-secondary" data-event-click="tofu_reject">Cancel</div>
+            <div class="btn btn-danger ui-button ui-button-danger" data-event-click="tofu_accept"><span class="ui-button-label">Trust New Certificate</span></div>
+            <div class="btn btn-secondary ui-button ui-button-secondary" data-event-click="tofu_reject"><span class="ui-button-label">Cancel</span></div>
         </div>
     </div>
 
     <!-- Global launcher profile name. Per-server nicknames are edited from the
          saved server context menu and remain independent from this value. -->
     <div class="modal-backdrop" data-model="serverlist" data-if="show_global_name_editor">
-        <div class="modal-box name-editor-dialog">
+        <div class="modal-box name-editor-dialog ui-dialog">
             <h1>Change Display Name</h1>
             <div class="subtitle">This name is used as the default nickname for new parties.</div>
             <div class="label">Global name</div>
-            <input type="text" data-value="global_name_input" />
+            <input type="text" class="ui-input" data-value="global_name_input" />
             <div class="error-text" data-if="global_name_error != ''">{{ global_name_error }}</div>
-            <div class="btn" data-event-click="save_global_name">Save</div>
-            <div class="btn btn-secondary" data-event-click="cancel_global_name">Cancel</div>
+            <div class="btn ui-button" data-event-click="save_global_name"><span class="ui-button-label">Save</span></div>
+            <div class="btn btn-secondary ui-button ui-button-secondary" data-event-click="cancel_global_name"><span class="ui-button-label">Cancel</span></div>
         </div>
     </div>
 
     <!-- Per-server nickname, opened from the saved party context menu. -->
     <div class="modal-backdrop" data-model="serverlist" data-if="show_server_nickname_editor">
-        <div class="modal-box name-editor-dialog">
+        <div class="modal-box name-editor-dialog ui-dialog">
             <h1>Change Server Nickname</h1>
             <div class="subtitle">Nickname used when connecting to {{ server_nickname_server_name }}.</div>
             <div class="label">Nickname</div>
-            <input type="text" data-value="server_nickname_input"
+            <input type="text" class="ui-input" data-value="server_nickname_input"
                    data-attr-placeholder="global_name" />
             <div class="error-text" data-if="server_nickname_error != ''">{{ server_nickname_error }}</div>
-            <div class="btn" data-event-click="save_server_nickname">Save</div>
-            <div class="btn btn-secondary" data-event-click="cancel_server_nickname">Cancel</div>
+            <div class="btn ui-button" data-event-click="save_server_nickname"><span class="ui-button-label">Save</span></div>
+            <div class="btn btn-secondary ui-button ui-button-secondary" data-event-click="cancel_server_nickname"><span class="ui-button-label">Cancel</span></div>
         </div>
     </div>
 
     <!-- Login modal for password-protected or not-yet-queried servers. -->
     <div class="modal-backdrop" data-model="serverlist" data-if="show_login">
-        <div class="modal-box">
+        <div class="modal-box ui-dialog">
             <h1>Connect</h1>
             <div class="subtitle">{{ login_status }}</div>
 
             <div data-if="login_show_username">
                 <div class="label">Nickname</div>
-                <input type="text" data-value="login_username"
+                <input type="text" class="ui-input" data-value="login_username"
                        data-attr-placeholder="global_name" />
             </div>
 
             <div class="label">Server Password</div>
-            <input type="password" class="password" data-value="login_password" />
+            <input type="password" class="password ui-input" data-value="login_password" />
 
             <div class="error-text" data-if="login_error != ''">{{ login_error }}</div>
 
-            <div class="btn" data-event-click="do_connect">Connect</div>
-            <div class="btn btn-secondary" data-event-click="cancel_login">Cancel</div>
+            <div class="btn ui-button" data-event-click="do_connect"><span class="ui-button-label">Connect</span></div>
+            <div class="btn btn-secondary ui-button ui-button-secondary" data-event-click="cancel_login"><span class="ui-button-label">Cancel</span></div>
         </div>
     </div>
 
@@ -1056,9 +1067,9 @@
                     <div class="onboarding-step-label">Restore identity</div>
                     <h1>Enter your recovery phrase</h1>
                     <p class="onboarding-lead">Use the 12 words in their original order.</p>
-                    <input type="text" class="restore-input recovery-input" data-value="restore_phrase" />
+                    <input type="text" class="restore-input recovery-input ui-input ui-input-multiline" data-value="restore_phrase" />
                     <div class="error-text" data-if="login_error != ''">{{ login_error }}</div>
-                    <div class="btn onboarding-primary" data-event-click="restore_identity">Restore identity</div>
+                    <div class="btn onboarding-primary ui-button" data-event-click="restore_identity"><span class="ui-button-label">Restore identity</span></div>
                 </div>
 
                 <div class="onboarding-form" data-if="show_key_import">
@@ -1066,9 +1077,9 @@
                     <div class="onboarding-step-label">Import identity</div>
                     <h1>Enter your private key</h1>
                     <p class="onboarding-lead">Paste the 64-character hexadecimal key.</p>
-                    <input type="text" class="restore-input recovery-input" data-value="import_key_hex" />
+                    <input type="text" class="restore-input recovery-input ui-input ui-input-multiline" data-value="import_key_hex" />
                     <div class="error-text" data-if="login_error != ''">{{ login_error }}</div>
-                    <div class="btn onboarding-primary" data-event-click="import_key">Import identity</div>
+                    <div class="btn onboarding-primary ui-button" data-event-click="import_key"><span class="ui-button-label">Import identity</span></div>
                 </div>
 
                 <div class="onboarding-recovery" data-if="onboarding_step == 1 && show_restore == false && show_key_import == false">
@@ -1080,11 +1091,11 @@
                         <div class="seed-card-label"><span>Recovery phrase</span><span>12 words</span></div>
                         <span class="seed-phrase-text">{{ seed_phrase }}</span>
                         <div class="seed-card-actions">
-                            <div class="btn btn-secondary btn-small" data-event-click="copy_seed">Copy phrase</div>
+                            <div class="btn btn-secondary btn-small ui-button ui-button-secondary ui-button-compact" data-event-click="copy_seed"><span class="ui-button-label">Copy phrase</span></div>
                         </div>
                     </div>
                     <div class="recovery-warning"><span>!</span><p>Anyone with these words can use your identity. Parties support cannot recover them.</p></div>
-                    <div class="btn onboarding-primary" data-event-click="save_identity">I saved my recovery phrase</div>
+                    <div class="btn onboarding-primary ui-button" data-event-click="save_identity"><span class="ui-button-label">I saved my recovery phrase</span></div>
                 </div>
             </div>
         </div>
@@ -1092,7 +1103,7 @@
 
     <!-- Add server modal -->
     <div class="modal-backdrop" data-model="serverlist" data-if="show_add_form">
-        <div class="modal-box party-connect-dialog">
+        <div class="modal-box party-connect-dialog ui-dialog">
             <div class="party-connect-header">
                 <div><div class="modal-kicker">New connection</div><h1>Create or join a party</h1></div>
                 <div class="close-icon" data-event-click="cancel_edit"><div class="close-icon-a"></div><div class="close-icon-b"></div></div>
@@ -1100,62 +1111,58 @@
             <div class="party-connect-body">
                 <div class="party-connect-form">
                     <div class="label">Server address</div>
-                    <input type="text" data-value="edit_host" placeholder="voice.example.com" />
+                    <input type="text" class="ui-input" data-value="edit_host" placeholder="voice.example.com" />
                     <div class="label">Port</div>
-                    <input type="text" data-value="edit_port" />
-                </div>
-                <div class="party-connect-preview">
-                    <span class="preview-label">Connection preview</span>
-                    <div class="preview-party-logo"><span>P</span></div>
-                    <h2>Direct party</h2>
-                    <p>{{ edit_host }}</p>
-                    <div class="preview-meta"><span class="status-dot online"></span>Ready to connect</div>
+                    <input type="text" class="ui-input" data-value="edit_port" />
+                    <div class="label">Server nickname</div>
+                    <input type="text" class="ui-input" data-value="edit_nickname"
+                           data-attr-placeholder="global_name" />
                 </div>
             </div>
             <div class="error-text" data-if="edit_error != ''">{{ edit_error }}</div>
             <div class="party-connect-footer">
-                <div class="btn btn-secondary" data-event-click="cancel_edit">Cancel</div>
-                <div class="btn" data-event-click="save_server">Save and continue</div>
+                <div class="btn btn-secondary ui-button ui-button-secondary" data-event-click="cancel_edit"><span class="ui-button-label">Cancel</span></div>
+                <div class="btn ui-button" data-event-click="save_server"><span class="ui-button-label">Save and continue</span></div>
             </div>
         </div>
     </div>
 
     <!-- Create channel modal -->
     <div class="modal-backdrop" data-model="lobby" data-if="show_create_channel">
-        <div class="modal-box">
+        <div class="modal-box ui-dialog">
             <h1>Create Channel</h1>
 
             <div class="label">Channel Name</div>
-            <input type="text" data-value="new_channel_name" />
+            <input type="text" class="ui-input" data-value="new_channel_name" />
 
-            <div class="btn" data-event-click="create_channel">Create</div>
-            <div class="btn btn-secondary" data-event-click="cancel_create_channel">Cancel</div>
+            <div class="btn ui-button" data-event-click="create_channel"><span class="ui-button-label">Create</span></div>
+            <div class="btn btn-secondary ui-button ui-button-secondary" data-event-click="cancel_create_channel"><span class="ui-button-label">Cancel</span></div>
         </div>
     </div>
 
     <!-- Create text channel modal -->
     <div class="modal-backdrop" data-model="chat" data-if="show_create_text_channel">
-        <div class="modal-box">
+        <div class="modal-box ui-dialog">
             <h1>Create Text Channel</h1>
 
             <div class="label">Channel Name</div>
-            <input type="text" data-value="new_text_channel_name" />
+            <input type="text" class="ui-input" data-value="new_text_channel_name" />
 
-            <div class="btn" data-event-click="create_text_channel">Create</div>
-            <div class="btn btn-secondary" data-event-click="cancel_create_text_channel">Cancel</div>
+            <div class="btn ui-button" data-event-click="create_text_channel"><span class="ui-button-label">Create</span></div>
+            <div class="btn btn-secondary ui-button ui-button-secondary" data-event-click="cancel_create_text_channel"><span class="ui-button-label">Cancel</span></div>
         </div>
     </div>
 
     <!-- Rename channel modal -->
     <div class="modal-backdrop" data-model="lobby" data-if="show_rename_channel">
-        <div class="modal-box">
+        <div class="modal-box ui-dialog">
             <h1>Rename Channel</h1>
 
             <div class="label">New Name</div>
-            <input type="text" data-value="new_rename_channel_name" />
+            <input type="text" class="ui-input" data-value="new_rename_channel_name" />
 
-            <div class="btn" data-event-click="rename_channel">Rename</div>
-            <div class="btn btn-secondary" data-event-click="cancel_rename_channel">Cancel</div>
+            <div class="btn ui-button" data-event-click="rename_channel"><span class="ui-button-label">Rename</span></div>
+            <div class="btn btn-secondary ui-button ui-button-secondary" data-event-click="cancel_rename_channel"><span class="ui-button-label">Cancel</span></div>
         </div>
     </div>
 

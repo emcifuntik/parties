@@ -49,10 +49,11 @@ public:
     rml::Prop<Rml::String> server_nickname_input;
     rml::Prop<Rml::String> server_nickname_error;
 
-    // Add server form
+    // Add server form. An empty nickname resolves to the global profile name.
     rml::Prop<bool>        show_add_form{false};
     rml::Prop<Rml::String> edit_host;
     rml::Prop<Rml::String> edit_port;
+    rml::Prop<Rml::String> edit_nickname;
     rml::Prop<Rml::String> edit_error;
 
     // Login overlay

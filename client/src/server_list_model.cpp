@@ -35,6 +35,7 @@ void ServerListModel::build(rml::Builder& b) {
      .bind("show_add_form",    show_add_form)
      .bind("edit_host",        edit_host)
      .bind("edit_port",        edit_port)
+     .bind("edit_nickname",    edit_nickname)
      .bind("edit_error",       edit_error)
      .bind("show_login",       show_login)
      .bind("login_show_username", login_show_username)
@@ -74,6 +75,7 @@ void ServerListModel::build(rml::Builder& b) {
     b.on("add_server", [this] {
         edit_host = "";
         edit_port = "7800";
+        edit_nickname = "";
         edit_error = "";
         show_add_form = true;
     });
@@ -108,6 +110,7 @@ void ServerListModel::build(rml::Builder& b) {
 
     b.on("cancel_edit", [this] {
         show_add_form = false;
+        edit_error = "";
     });
 
     b.on("do_connect", [this] {

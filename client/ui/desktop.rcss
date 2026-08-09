@@ -1,0 +1,157 @@
+/* Desktop platform
+   Windows/macOS density, placement and responsive integration for shared components. */
+
+/* One 48dp baseline for every connected desktop route. */
+.platform-desktop .server-header.ui-header,
+.platform-desktop .channel-header.ui-header,
+.platform-desktop .chat-header.ui-header,
+.platform-desktop .settings-header.ui-header,
+.platform-desktop .screen-share-header.ui-header {
+    height: var(--header-height);
+    min-height: var(--header-height);
+    max-height: var(--header-height);
+    margin: 0dp;
+    padding-top: 0dp;
+    padding-bottom: 0dp;
+    border-radius: 0dp;
+}
+.platform-desktop .server-header.ui-header {
+    gap: var(--space-2);
+    padding-left: 14dp;
+    padding-right: 10dp;
+    background-color: #0D1118;
+}
+.platform-desktop .server-header.ui-header .server-header-icon-wrap,
+.platform-desktop .server-header.ui-header gradient_circle.server-header-gradient {
+    width: 26dp;
+    height: 26dp;
+}
+.platform-desktop .server-header.ui-header .server-header-initials {
+    font-size: 9dp;
+    line-height: 26dp;
+}
+.platform-desktop .server-header.ui-header .server-title,
+.platform-desktop .channel-header.ui-header .channel-title,
+.platform-desktop .chat-header.ui-header .chat-title,
+.platform-desktop .settings-header.ui-header h2 {
+    margin: 0dp;
+    color: var(--color-text);
+    font-size: var(--type-title);
+    font-weight: bold;
+    line-height: 18dp;
+}
+.platform-desktop .channel-header.ui-header .channel-heading {
+    flex: none;
+    flex-direction: row;
+    align-items: center;
+}
+.platform-desktop .channel-header.ui-header .channel-kicker { display: none; }
+.platform-desktop .channel-header.ui-header .channel-hint {
+    margin-left: var(--space-3);
+    font-size: var(--type-caption);
+}
+.platform-desktop .chat-header.ui-header { padding-left: var(--space-4); padding-right: var(--space-3); }
+.platform-desktop .settings-header.ui-header { padding-left: var(--space-5); padding-right: var(--space-3); }
+.platform-desktop .screen-share-area { padding-top: 0dp; }
+.platform-desktop .screen-share-header.ui-header {
+    width: auto;
+    flex-wrap: nowrap;
+    background-color: var(--color-canvas);
+    border-left: 0dp;
+    border-right: 0dp;
+    border-top: 0dp;
+}
+.platform-desktop .share-picker-header.ui-header {
+    height: var(--header-height);
+    min-height: var(--header-height);
+    max-height: var(--header-height);
+    margin: 0dp;
+    padding: 0dp var(--space-4);
+}
+.platform-desktop .share-picker-header.ui-header .share-picker-kicker { display: none; }
+.platform-desktop .share-picker-header.ui-header h2 { margin: 0dp; }
+.platform-desktop .share-picker-header.ui-header .share-picker-subtitle { margin: 0dp; }
+.platform-desktop .share-picker-header.ui-header .share-close.ui-button { min-width: 70dp; }
+
+.platform-desktop .home-add-button.ui-button { min-width: 140dp; }
+.platform-desktop .party-card-action.ui-button { min-width: 62dp; }
+.platform-desktop .party-card-action.secondary.ui-button { min-width: 104dp; }
+.platform-desktop .share-picker-footer .btn.ui-button { min-width: 88dp; }
+.platform-desktop .share-picker-footer .share-start-button.ui-button { min-width: 132dp; }
+
+.platform-desktop .voice-btn.ui-icon-button {
+    width: auto;
+    height: var(--control-height);
+    min-width: 0dp;
+    min-height: var(--control-height);
+    flex: 1;
+}
+.platform-desktop .dock-button.ui-icon-button {
+    width: 42dp;
+    height: 36dp;
+    min-width: 42dp;
+    min-height: 36dp;
+}
+.platform-desktop .stream-call-dock {
+    width: 250dp;
+    margin-left: -125dp;
+}
+.platform-desktop .send-btn.ui-icon-button {
+    width: 40dp;
+    height: 40dp;
+    min-width: 40dp;
+    min-height: 40dp;
+    border-radius: 20dp;
+    background-color: var(--color-accent);
+}
+.platform-desktop .compose-attach-btn.ui-icon-button,
+.platform-desktop .att-download-btn.ui-icon-button {
+    width: 32dp;
+    height: 32dp;
+    min-width: 32dp;
+    min-height: 32dp;
+    border-radius: 16dp;
+}
+
+.platform-desktop .chat-search-input.ui-input { height: 34dp; min-height: 34dp; }
+.platform-desktop input.compose-input.ui-input {
+    width: auto;
+    height: 38dp;
+    min-height: 38dp;
+    flex: 1;
+    padding-left: 14dp;
+    padding-right: 8dp;
+    background-color: transparent;
+    border: 0dp;
+}
+
+.platform-desktop .user-menu-header.ui-popup-header,
+.platform-desktop .context-window-header.ui-popup-header {
+    height: 56dp;
+    min-height: 56dp;
+    max-height: 56dp;
+    padding-top: var(--space-2);
+    padding-bottom: var(--space-2);
+    box-sizing: border-box;
+}
+.platform-desktop .user-menu-header.ui-popup-header .user-menu-avatar {
+    width: 38dp;
+    height: 38dp;
+}
+.platform-desktop .user-menu-header.ui-popup-header .user-menu-presence {
+    left: 27dp;
+    width: 8dp;
+    height: 8dp;
+}
+.platform-desktop .user-menu-header.ui-popup-header .user-menu-name { font-size: var(--type-title); }
+.platform-desktop .context-window-header.ui-popup-header .context-window-avatar {
+    width: 36dp;
+    height: 36dp;
+}
+
+/* Responsive desktop */
+@media (max-width: 1100dp) {
+    .platform-desktop .sidebar, .platform-desktop .settings-nav { width: 250dp; }
+    .platform-desktop .voice-stage-card { width: 180dp; }
+    .platform-desktop .channel-header .channel-hint { display: none; }
+}

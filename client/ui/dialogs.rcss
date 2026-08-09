@@ -1,0 +1,44 @@
+/* Modal backdrops and cross-screen dialogs. */
+
+/* ── Modal overlays ──────────────────────────────── */
+
+.modal-backdrop {
+    display: flex;
+    position: absolute;
+    left: 0dp;
+    top: 32dp;
+    right: 0dp;
+    bottom: 0dp;
+    background-color: #0B0D14d0;
+    align-items: center;
+    justify-content: center;
+}
+
+.platform-macos .modal-backdrop,
+.platform-ios .modal-backdrop {
+    top: 0dp;
+}
+
+.modal-box {
+    display: flex;
+    flex-direction: column;
+    width: 380dp;
+    padding: 36dp 40dp;
+    background-color: #181B25;
+    border: 1dp #2A3050;
+    border-radius: 14dp;
+}
+
+/* Connect dialog ----------------------------------------------------------- */
+.party-connect-dialog { width: 520dp; padding: 0dp; overflow: hidden; background-color: var(--color-surface); border-color: #FFFFFF1A; border-radius: 18dp; }
+.party-connect-header { display: flex; align-items: center; justify-content: space-between; padding: 22dp 24dp 16dp 24dp; }
+.party-connect-header h1 { margin: 4dp 0dp 0dp 0dp; font-size: 20dp; }
+.modal-kicker { color: var(--color-accent); font-size: 8dp; font-weight: bold; letter-spacing: 1dp; text-transform: uppercase; }
+.party-connect-body { display: block; padding: 22dp 24dp; }
+.party-connect-form { width: 100%; }
+.party-connect-form .label { margin-top: 0dp; margin-bottom: 6dp; }
+.party-connect-form input { width: 100%; margin-bottom: 14dp; padding: 11dp 12dp; box-sizing: border-box; background-color: #0D1118; color: var(--color-text); border: 1dp var(--color-border-strong); border-radius: 9dp; }
+.party-connect-dialog > .error-text { margin: 0dp 24dp 12dp 24dp; }
+.party-connect-footer { display: flex; justify-content: flex-end; gap: 9dp; padding: 14dp 24dp; background-color: #0D1118; border-top: 1dp var(--color-border); }
+.party-connect-footer .btn { width: auto; margin: 0dp; padding: 10dp 15dp; }
+.name-editor-dialog { width: 390dp; }

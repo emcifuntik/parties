@@ -1,12 +1,16 @@
 <rml>
 <head>
     <title>Parties context window</title>
-    <link type="text/rcss" href="style.rcss" />
-    <link type="text/rcss" href="redesign.rcss" />
+    <link type="text/rcss" href="theme.rcss" />
+    <link type="text/rcss" href="typography.rcss" />
+    <link type="text/rcss" href="primitives.rcss" />
+    <link type="text/rcss" href="components.rcss" />
+    <link type="text/rcss" href="room.rcss" />
+    <link type="text/rcss" href="desktop.rcss" />
 </head>
 <body class="context-window-root" data-model="context_window">
     <div id="context-window-shell" class="context-window-shell" data-class-user="user_mode">
-        <div class="context-window-header">
+        <div class="context-window-header ui-popup-header">
             <div class="context-window-avatar">
                 <span data-if="room_icon == false">{{ icon_text }}</span>
                 <svg data-if="room_icon" src="icon-room.svg" width="18" height="18" />
@@ -15,7 +19,7 @@
                 <span class="context-window-title">{{ title }}</span>
                 <span class="context-window-subtitle">{{ subtitle }}</span>
             </div>
-            <div class="context-window-close" data-event-click="close_context_window">
+            <div class="context-window-close ui-icon-button" data-event-click="close_context_window">
                 <svg src="icon-close.svg" width="14" height="14" />
             </div>
         </div>
@@ -28,13 +32,13 @@
             <span class="context-window-section-title">Listening preferences</span>
             <div class="context-window-volume-row">
                 <span>Personal volume</span>
-                <input type="range" class="context-window-slider" min="0" max="2" step="0.01"
+                <input type="range" class="context-window-slider ui-range" min="0" max="2" step="0.01"
                        data-value="volume" data-event-change="volume_changed" />
                 <span class="context-window-value"><span>{{ volume_text }}</span></span>
             </div>
             <div class="context-window-volume-row" id="context-window-music-volume">
                 <span>Music volume</span>
-                <input type="range" class="context-window-slider" min="0" max="2" step="0.01"
+                <input type="range" class="context-window-slider ui-range" min="0" max="2" step="0.01"
                        data-value="music_volume" data-event-change="music_volume_changed" />
                 <span class="context-window-value"><span>{{ music_volume_text }}</span></span>
             </div>
@@ -44,7 +48,7 @@
             </div>
             <div class="context-window-target" data-if="compression">
                 <span>Target level</span>
-                <input type="range" class="context-window-slider" min="0.1" max="1" step="0.01"
+                <input type="range" class="context-window-slider ui-range" min="0.1" max="1" step="0.01"
                        data-value="compression_target" data-event-change="compression_target_changed" />
             </div>
         </div>

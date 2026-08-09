@@ -22,8 +22,9 @@ New-Item -ItemType Directory -Force -Path $output | Out-Null
 
 $lobbyScenarios = @(
     "onboarding", "recovery", "launcher", "party-modal", "room",
-    "stream-single", "streams", "member", "settings", "settings-screen-share",
-    "settings-hotkeys", "settings-account", "share", "audio-share", "chat"
+    "stream-single", "stream-fps-overflow", "streams", "member", "settings",
+    "settings-select-open", "settings-screen-share", "settings-hotkeys",
+    "settings-account", "share", "audio-share", "chat", "chat-segment-churn"
 )
 if ($Profile -eq "iphone-17-pro") {
     # Sending a screen or application is unavailable on iOS, so those two

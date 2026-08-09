@@ -19,16 +19,56 @@ static constexpr unsigned char embed_context_window_rml[] = {
     #embed "../ui/context_window.rml"
 };
 
-static constexpr unsigned char embed_style_rcss[] = {
-    #embed "../ui/style.rcss"
+static constexpr unsigned char embed_theme_rcss[] = {
+    #embed "../ui/theme.rcss"
 };
 
-static constexpr unsigned char embed_redesign_rcss[] = {
-    #embed "../ui/redesign.rcss"
+static constexpr unsigned char embed_primitives_rcss[] = {
+    #embed "../ui/primitives.rcss"
 };
 
-static constexpr unsigned char embed_ios_rcss[] = {
-    #embed "../ui/ios.rcss"
+static constexpr unsigned char embed_shell_rcss[] = {
+    #embed "../ui/shell.rcss"
+};
+
+static constexpr unsigned char embed_launcher_rcss[] = {
+    #embed "../ui/launcher.rcss"
+};
+
+static constexpr unsigned char embed_room_rcss[] = {
+    #embed "../ui/room.rcss"
+};
+
+static constexpr unsigned char embed_chat_rcss[] = {
+    #embed "../ui/chat.rcss"
+};
+
+static constexpr unsigned char embed_settings_rcss[] = {
+    #embed "../ui/settings.rcss"
+};
+
+static constexpr unsigned char embed_streaming_rcss[] = {
+    #embed "../ui/streaming.rcss"
+};
+
+static constexpr unsigned char embed_dialogs_rcss[] = {
+    #embed "../ui/dialogs.rcss"
+};
+
+static constexpr unsigned char embed_components_rcss[] = {
+    #embed "../ui/components.rcss"
+};
+
+static constexpr unsigned char embed_typography_rcss[] = {
+    #embed "../ui/typography.rcss"
+};
+
+static constexpr unsigned char embed_desktop_rcss[] = {
+    #embed "../ui/desktop.rcss"
+};
+
+static constexpr unsigned char embed_mobile_rcss[] = {
+    #embed "../ui/mobile.rcss"
 };
 
 static constexpr unsigned char embed_logo_svg[] = {
@@ -195,9 +235,19 @@ struct OpenFile {
 EmbeddedFileInterface::EmbeddedFileInterface() {
     entries_["ui/lobby.rml"] = { embed_lobby_rml, sizeof(embed_lobby_rml) };
     entries_["ui/context_window.rml"] = { embed_context_window_rml, sizeof(embed_context_window_rml) };
-    entries_["ui/style.rcss"] = { embed_style_rcss, sizeof(embed_style_rcss) };
-    entries_["ui/redesign.rcss"] = { embed_redesign_rcss, sizeof(embed_redesign_rcss) };
-    entries_["ui/ios.rcss"] = { embed_ios_rcss, sizeof(embed_ios_rcss) };
+    entries_["ui/theme.rcss"] = { embed_theme_rcss, sizeof(embed_theme_rcss) };
+    entries_["ui/primitives.rcss"] = { embed_primitives_rcss, sizeof(embed_primitives_rcss) };
+    entries_["ui/shell.rcss"] = { embed_shell_rcss, sizeof(embed_shell_rcss) };
+    entries_["ui/launcher.rcss"] = { embed_launcher_rcss, sizeof(embed_launcher_rcss) };
+    entries_["ui/room.rcss"] = { embed_room_rcss, sizeof(embed_room_rcss) };
+    entries_["ui/chat.rcss"] = { embed_chat_rcss, sizeof(embed_chat_rcss) };
+    entries_["ui/settings.rcss"] = { embed_settings_rcss, sizeof(embed_settings_rcss) };
+    entries_["ui/streaming.rcss"] = { embed_streaming_rcss, sizeof(embed_streaming_rcss) };
+    entries_["ui/dialogs.rcss"] = { embed_dialogs_rcss, sizeof(embed_dialogs_rcss) };
+    entries_["ui/components.rcss"] = { embed_components_rcss, sizeof(embed_components_rcss) };
+    entries_["ui/typography.rcss"] = { embed_typography_rcss, sizeof(embed_typography_rcss) };
+    entries_["ui/desktop.rcss"] = { embed_desktop_rcss, sizeof(embed_desktop_rcss) };
+    entries_["ui/mobile.rcss"] = { embed_mobile_rcss, sizeof(embed_mobile_rcss) };
     entries_["ui/logo.svg"] = { embed_logo_svg, sizeof(embed_logo_svg) };
     entries_["ui/icon-unmute.svg"] = { embed_icon_unmute, sizeof(embed_icon_unmute) };
     entries_["ui/icon-mute.svg"] = { embed_icon_mute, sizeof(embed_icon_mute) };

@@ -229,6 +229,9 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     servers.show_key_import = scenario == "onboarding-key-import";
     if (servers.show_onboarding.get()) servers.has_identity = false;
     servers.show_add_form = scenario == "party-modal";
+    servers.edit_host = "voice.example.com";
+    servers.edit_port = "7800";
+    servers.edit_nickname = "";
     servers.show_login = scenario == "login";
     servers.login_status = "Secure connection ready";
     servers.login_show_username = scenario == "login";

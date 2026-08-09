@@ -1,17 +1,23 @@
 # Parties UI architecture
 
-## Direction
+## Stylesheet architecture
 
-The UI is migrated incrementally from the original monolithic RML/RCSS surface.
-`style.rcss` is the compatibility layer; `redesign.rcss` is the v2 design-system
-and screen layer loaded after it. A feature moves completely to v2 before its
-old rules are removed. This keeps every intermediate commit runnable.
+RCSS is split by responsibility. `theme.rcss` owns the single token namespace,
+`typography.rcss` owns the semantic type scale, `primitives.rcss` owns native
+RmlUI form pseudo-elements, and `components.rcss` owns reusable `ui-*`
+components. `shell.rcss` and the feature files (`launcher`, `room`, `chat`,
+`settings`, `streaming`, `dialogs`) own composition only. `desktop.rcss` and
+`mobile.rcss` are the final platform-specific density and interaction layers.
 
-`redesign.rcss` owns the v2 design tokens through RmlUI's native CSS-compatible
-custom properties and `var()` support. Tokens cascade and inherit through the
-element tree, so a screen or component can override a token locally. Undefined
-names, cycles, and malformed expressions are reported through RmlUI's logging
-system; fallbacks use `var(--name, value)`.
+Documents load the cascade in a fixed direction: theme, typography, native
+primitives, reusable components, shell and feature composition, then the final
+desktop or mobile platform layer. A lower-level module must never depend on a
+selector declared by a higher-level module.
+
+Tokens use RmlUI's native CSS-compatible custom properties and `var()` support.
+They cascade and inherit through the element tree, so a screen or component can
+override a token locally. Undefined names, cycles, and malformed expressions
+are reported through RmlUI's logging system; fallbacks use `var(--name, value)`.
 
 ## Windows renderer
 
@@ -120,22 +126,23 @@ can mix karaoke/music and speech with separate levels. Leaving the channel,
 disconnecting, shutting down, or pressing the active music control stops the
 capture before the audio engine is torn down.
 
-## Target source layout
+## RCSS source layout
 
 ```text
 client/ui/
-  app.rml
-  styles/
-    foundation.rcss
-    primitives.rcss
-    shell.rcss
-    screens/
-  screens/
-    launcher.rml
-    room.rml
-    chat.rml
-    settings.rml
-  components/
+  theme.rcss
+  primitives.rcss
+  components.rcss
+  typography.rcss
+  shell.rcss
+  launcher.rcss
+  room.rcss
+  chat.rcss
+  settings.rcss
+  streaming.rcss
+  dialogs.rcss
+  desktop.rcss
+  mobile.rcss
 client/include/client/ui/
   ui_session_model.h
   navigation.h
@@ -148,26 +155,24 @@ so repeated behavior should be implemented as custom elements or small C++ view
 models. Repeated styling stays in semantic primitive classes. Screen documents
 should remain declarative and contain no duplicated service logic.
 
-## Migration sequence
+## Module ownership rule
 
-1. Establish v2 foundation and migrate launcher, shell, and voice stage.
-2. Introduce typed preferences and move settings state out of `LobbyModel`.
-3. Add `UiSessionModel` with route and modal enums; remove mutually conflicting
-   `show_*` flags.
-4. Split settings, chat, share picker, and onboarding into screen documents.
-5. Replace duplicated buttons, toggles, fields, menus, and dialogs with shared
-   primitives/custom elements.
-6. Delete migrated legacy RCSS and add screenshot regression fixtures at desktop,
-   narrow desktop, macOS, and iOS sizes.
+1. Color, radius, spacing, or density token: `theme.rcss`.
+2. Font scale or semantic text class: `typography.rcss`.
+3. Reusable visual control: `components.rcss`.
+4. Native RmlUI input pseudo-element: `primitives.rcss`.
+5. Screen composition: the matching feature file.
+6. Windows/macOS-only override: `desktop.rcss`.
+7. Touch, safe-area, orientation, or iOS-only override: `mobile.rcss`.
 
 ## Definition of done for a migrated screen
 
-- Uses v2 primitives and spacing/color conventions.
+- Uses semantic primitives and the shared spacing/color conventions.
 - Has one view model with explicit state ownership.
 - Does not call services directly from RML.
 - Handles empty, loading, error, populated, and narrow layouts.
 - Is exercised by model tests and a screenshot fixture.
-- Has no remaining selector in `style.rcss`.
+- Has no duplicated component rule in its feature stylesheet.
 
 ## Visual verification
 
