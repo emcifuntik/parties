@@ -858,6 +858,7 @@ private:
 
 RenderInterface_DX12::RenderInterface_DX12(void* p_window_handle, const Backend::RmlRendererSettings& settings) :
 	m_is_use_vsync{settings.vsync}, m_is_use_tearing{}, m_is_scissor_was_set{}, m_is_stencil_enabled{}, m_is_stencil_equal{}, m_is_use_msaa{true},
+	m_is_viewport_valid{},
 	m_msaa_sample_count{settings.msaa_sample_count}, m_user_framebuffer_index{}, m_width{}, m_height{}, m_current_clip_operation{-1},
 	m_active_program_id{}, m_size_descriptor_heap_render_target_view{}, m_size_descriptor_heap_shaders{}, m_current_back_buffer_index{},
 	m_stencil_ref_value{}, m_p_device{}, m_p_command_queue{}, m_p_copy_queue{}, m_p_swapchain{}, m_p_command_graphics_list{},
@@ -1452,25 +1453,23 @@ void RenderInterface_DX12::Clear()
 	RMLUI_DX_MARKER_END(m_p_command_graphics_list);
 }
 
-void RenderInterface_DX12::SetViewport(int viewport_width, int viewport_height)
+bool RenderInterface_DX12::SetViewport(int viewport_width, int viewport_height)
 {
 	RMLUI_ZoneScopedN("DirectX 12 - SetViewport");
 	if (viewport_width <= 0 || viewport_height <= 0)
-		return;
+		return false;
 
-	if (m_width != viewport_width || m_height != viewport_height)
+	if (m_width != viewport_width || m_height != viewport_height || !m_is_viewport_valid)
 	{
+		const int previous_width = m_width;
+		const int previous_height = m_height;
+		m_is_viewport_valid = false;
 		Flush();
 
 		if (m_p_depthstencil_resource)
 		{
 			Destroy_Resource_DepthStencil();
 		}
-
-		m_width = viewport_width;
-		m_height = viewport_height;
-
-		m_projection = Rml::Matrix4f::ProjectOrtho(0, static_cast<float>(viewport_width), static_cast<float>(viewport_height), 0, -10000, 10000);
 
 		if (m_p_swapchain)
 		{
@@ -1481,18 +1480,50 @@ void RenderInterface_DX12::SetViewport(int viewport_width, int viewport_height)
 				m_backbuffers_fence_values[i] = m_backbuffers_fence_values[m_current_back_buffer_index];
 			}
 
-			DXGI_SWAP_CHAIN_DESC desc;
-			RMLUI_DX_VERIFY_MSG(m_p_swapchain->GetDesc(&desc), "failed to GetDesc");
-			RMLUI_DX_VERIFY_MSG(m_p_swapchain->ResizeBuffers(static_cast<UINT>(RMLUI_RENDER_BACKEND_FIELD_SWAPCHAIN_BACKBUFFER_COUNT),
-									static_cast<UINT>(m_width), static_cast<UINT>(m_height), desc.BufferDesc.Format, desc.Flags),
-				"failed to ResizeBuffers");
+			DXGI_SWAP_CHAIN_DESC desc{};
+			HRESULT resize_status = m_p_swapchain->GetDesc(&desc);
+			if (SUCCEEDED(resize_status))
+			{
+				resize_status = m_p_swapchain->ResizeBuffers(
+					static_cast<UINT>(RMLUI_RENDER_BACKEND_FIELD_SWAPCHAIN_BACKBUFFER_COUNT),
+					static_cast<UINT>(viewport_width), static_cast<UINT>(viewport_height),
+					desc.BufferDesc.Format, desc.Flags);
+			}
+
+			if (FAILED(resize_status))
+			{
+				const HRESULT removed_reason = m_p_device ? m_p_device->GetDeviceRemovedReason() : E_POINTER;
+				Rml::Log::Message(Rml::Log::Type::LT_ERROR,
+					"[DirectX 12] Viewport resize to %dx%d failed (HRESULT=0x%08lx, device_removed_reason=0x%08lx)",
+					viewport_width, viewport_height, static_cast<unsigned long>(resize_status),
+					static_cast<unsigned long>(removed_reason));
+
+				// ResizeBuffers preserves the old buffers on ordinary failures. Restore
+				// their views so destruction and a later resize retry remain safe.
+				m_width = previous_width;
+				m_height = previous_height;
+				if (removed_reason == S_OK)
+				{
+					m_current_back_buffer_index = m_p_swapchain->GetCurrentBackBufferIndex();
+					Create_Resources_DependentOnSize();
+					if (m_width > 0 && m_height > 0)
+						m_is_viewport_valid = Create_Resource_DepthStencil();
+				}
+				return false;
+			}
 
 			m_current_back_buffer_index = m_p_swapchain->GetCurrentBackBufferIndex();
 
+			m_width = viewport_width;
+			m_height = viewport_height;
+			m_projection = Rml::Matrix4f::ProjectOrtho(0, static_cast<float>(viewport_width),
+				static_cast<float>(viewport_height), 0, -10000, 10000);
 			Create_Resources_DependentOnSize();
-			Create_Resource_DepthStencil();
+			m_is_viewport_valid = Create_Resource_DepthStencil();
 		}
 	}
+
+	return m_is_viewport_valid;
 }
 
 void RenderInterface_DX12::RenderGeometry(Rml::CompiledGeometryHandle geometry, Rml::Vector2f translation, Rml::TextureHandle texture)
@@ -5148,7 +5179,7 @@ void RenderInterface_DX12::Destroy_Resources_DependentOnSize() noexcept
 	Destroy_Resource_RenderTagetViews();
 }
 
-void RenderInterface_DX12::Create_Resource_DepthStencil()
+bool RenderInterface_DX12::Create_Resource_DepthStencil()
 {
 	RMLUI_ZoneScopedN("DirectX 12 - Create_Resource_DepthStencil");
 	RMLUI_ASSERTMSG(m_p_descriptor_heap_depthstencil, "you must initialize this descriptor heap before calling this method!");
@@ -5158,6 +5189,7 @@ void RenderInterface_DX12::Create_Resource_DepthStencil()
 
 	D3D12MA::ALLOCATION_DESC desc_alloc = {};
 	desc_alloc.HeapType = D3D12_HEAP_TYPE_DEFAULT;
+	desc_alloc.Flags = D3D12MA::ALLOCATION_FLAG_COMMITTED;
 
 	D3D12_RESOURCE_DESC desc_texture = {};
 	desc_texture.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -5177,17 +5209,27 @@ void RenderInterface_DX12::Create_Resource_DepthStencil()
 	depth_optimized_clear_value.DepthStencil.Depth = RMLUI_RENDER_BACKEND_FIELD_CLEAR_VALUE_DEPTHSTENCIL_DEPTH_VALUE;
 	depth_optimized_clear_value.DepthStencil.Stencil = RMLUI_RENDER_BACKEND_FIELD_CLEAR_VALUE_DEPTHSTENCIL_STENCIL_VALUE;
 
-	ID3D12Resource* p_temp{};
+	D3D12MA::Allocation* allocation{};
+	ID3D12Resource* resource{};
 	auto status = m_p_allocator->CreateResource(&desc_alloc, &desc_texture, D3D12_RESOURCE_STATES::D3D12_RESOURCE_STATE_DEPTH_WRITE,
-		&depth_optimized_clear_value, &m_p_depthstencil_resource, IID_PPV_ARGS(&p_temp));
+		&depth_optimized_clear_value, &allocation, IID_PPV_ARGS(&resource));
 
-	RMLUI_DX_VERIFY_MSG(status, "failed to create resource as depth stencil texture!");
-
-	RMLUI_ASSERTMSG(m_p_depthstencil_resource, "must be created!");
-	RMLUI_ASSERTMSG(p_temp, "must be created!");
+	if (FAILED(status) || !allocation || !resource)
+	{
+		const HRESULT removed_reason = m_p_device ? m_p_device->GetDeviceRemovedReason() : E_POINTER;
+		Rml::Log::Message(Rml::Log::Type::LT_ERROR,
+			"[DirectX 12] Failed to create %dx%d depth-stencil resource (HRESULT=0x%08lx, device_removed_reason=0x%08lx, allocation=%d, resource=%d)",
+			m_width, m_height, static_cast<unsigned long>(status), static_cast<unsigned long>(removed_reason),
+			allocation ? 1 : 0, resource ? 1 : 0);
+		if (resource)
+			resource->Release();
+		if (allocation)
+			allocation->Release();
+		return false;
+	}
 
 #ifdef RMLUI_DX_DEBUG
-	m_p_depthstencil_resource->SetName(L"DepthStencil texture (resource)");
+	allocation->SetName(L"DepthStencil texture (resource)");
 #endif
 
 	D3D12_DEPTH_STENCIL_VIEW_DESC desc_view = {};
@@ -5195,23 +5237,21 @@ void RenderInterface_DX12::Create_Resource_DepthStencil()
 	desc_view.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
 	desc_view.Flags = D3D12_DSV_FLAG_NONE;
 
-	m_p_device->CreateDepthStencilView(m_p_depthstencil_resource->GetResource(), &desc_view,
+	m_p_device->CreateDepthStencilView(resource, &desc_view,
 		m_p_descriptor_heap_depthstencil->GetCPUDescriptorHandleForHeapStart());
+
+	// D3D12MA owns the resource's creation reference through Allocation. Drop
+	// the additional interface reference returned through ppvResource now.
+	resource->Release();
+	m_p_depthstencil_resource = allocation;
+	return true;
 }
 
 void RenderInterface_DX12::Destroy_Resource_DepthStencil()
 {
 	RMLUI_ZoneScopedN("DirectX 12 - Destroy_Resource_DepthStencil");
-	RMLUI_ASSERTMSG(m_p_depthstencil_resource, "you must create resource for calling this method!");
-	RMLUI_ASSERTMSG(m_p_depthstencil_resource->GetResource(), "must be valid!");
-
 	if (m_p_depthstencil_resource)
 	{
-		if (m_p_depthstencil_resource->GetResource())
-		{
-			m_p_depthstencil_resource->GetResource()->Release();
-		}
-
 		RMLUI_ATTR_ASSERT_VARIABLE auto count = m_p_depthstencil_resource->Release();
 		RMLUI_ASSERTMSG(count == 0, "leak!");
 

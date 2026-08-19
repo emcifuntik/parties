@@ -458,7 +458,8 @@ public:
 	explicit operator bool() const;
 
 	// The viewport should be updated whenever the window size changes.
-	void SetViewport(int viewport_width, int viewport_height);
+	bool SetViewport(int viewport_width, int viewport_height);
+	bool IsViewportValid() const { return m_is_viewport_valid; }
 
 	// Sets up OpenGL states for taking rendering commands from RmlUi.
 	void BeginFrame();
@@ -601,7 +602,7 @@ private:
 	void Create_Resource_Pipeline_Blur();
 	void Create_Resource_Pipeline_DropShadow();
 
-	void Create_Resource_DepthStencil();
+	bool Create_Resource_DepthStencil();
 	void Destroy_Resource_DepthStencil();
 
 	void Destroy_Resource_Pipelines();
@@ -657,6 +658,7 @@ private:
 	bool m_is_stencil_enabled;
 	bool m_is_stencil_equal;
 	bool m_is_use_msaa;
+	bool m_is_viewport_valid;
 	bool m_is_execute_when_end_frame_issued;
 	bool m_is_command_list_user;
 	unsigned char m_msaa_sample_count;

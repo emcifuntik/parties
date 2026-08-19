@@ -29,6 +29,7 @@ public:
 	void EndFrame() override;
 	void CaptureNextFrame(std::string output_path);
 	bool LastCaptureSucceeded() const { return last_capture_succeeded_; }
+	bool IsViewportValid() const { return upstream_.IsViewportValid(); }
 
 	void* GetD3D12Device() const override { return upstream_.Get_Device(); }
 

@@ -206,12 +206,11 @@ void UiManager::render_end() {
 void UiManager::on_resize(int width, int height) {
 	ZoneScopedN("UiManager::on_resize");
     if (width <= 0 || height <= 0) return;
-    bool was_minimized = minimized_.exchange(false, std::memory_order_acq_rel);
+    minimized_.store(false, std::memory_order_release);
     if (render_interface_) {
-        // After restore from minimize, force a viewport reset even if
-        // dimensions match. ResizeBuffers re-registers the swap chain
-        // with the DWM compositor after a minimize/restore cycle.
-        render_interface_->SetViewport(width, height, was_minimized);
+        // The renderer validates the complete size-dependent resource set and
+        // skips redundant ResizeBuffers calls when the dimensions are unchanged.
+        render_interface_->SetViewport(width, height);
     }
     if (context_)
         context_->SetDimensions(Rml::Vector2i(width, height));

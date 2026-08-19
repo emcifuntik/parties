@@ -134,19 +134,19 @@ PartiesRenderInterface_DX12::operator bool() const { return static_cast<bool>(up
 
 void PartiesRenderInterface_DX12::SetViewport(int width, int height, bool force) {
 	if (width <= 0 || height <= 0) return;
-	// The upstream backend already owns all resize synchronization. A forced
-	// restore with identical dimensions is routed through a harmless one-pixel
-	// intermediate size because its SetViewport correctly short-circuits equal
-	// dimensions.
-	if (force && width == viewport_width_ && height == viewport_height_ && width > 1)
-		upstream_.SetViewport(width - 1, height);
-	upstream_.SetViewport(width, height);
-	viewport_width_ = width;
-	viewport_height_ = height;
+	// Restoring an unchanged window does not require a synthetic one-pixel
+	// ResizeBuffers cycle. DWM surface refresh is handled by the window layer;
+	// resizing twice here can exhaust or invalidate transient driver resources.
+	(void)force;
+	if (upstream_.SetViewport(width, height)) {
+		viewport_width_ = width;
+		viewport_height_ = height;
+	}
 }
 
 void PartiesRenderInterface_DX12::BeginFrame() {
 	frame_active_ = false;
+	if (!upstream_.IsViewportValid()) return;
 	upstream_.BeginFrame();
 	frame_active_ = true;
 }

@@ -40,6 +40,20 @@ int main() {
 	auto second = std::make_unique<PartiesRenderInterface_DX12>(second_window, settings);
 	if (!*first || !*second) return 3;
 
+	// Repeated minimize/restore notifications can report unchanged dimensions.
+	// They must not be implemented as two synthetic ResizeBuffers calls, and a
+	// real resize must always leave a complete renderable depth-stencil state.
+	first->SetViewport(320, 200);
+	if (!first->IsViewportValid()) return 8;
+	for (int pass = 0; pass < 256; ++pass) {
+		first->SetViewport(320, 200, true);
+		if (!first->IsViewportValid()) return 8;
+	}
+	first->SetViewport(321, 201);
+	if (!first->IsViewportValid()) return 8;
+	first->SetViewport(320, 200);
+	if (!first->IsViewportValid()) return 8;
+
 	// Parties' in-tree backend must be able to bind a packed NV12 resource as
 	// two plane SRVs without allocating an intermediate RGBA texture.
 	auto* device = static_cast<ID3D12Device*>(first->GetD3D12Device());
