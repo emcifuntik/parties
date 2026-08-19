@@ -201,6 +201,7 @@ void AppCore::shutdown()
     updater_.reset();
 #endif
     stop_query_thread();
+    apply_sleep_inhibit(false);
     intentional_disconnect_ = true;
     cancel_reconnect();
     net_.disconnect();
@@ -256,6 +257,7 @@ void AppCore::tick()
     process_server_messages();
     update_speaking_state();
     flush_pending_prefs();
+    apply_sleep_inhibit(authenticated_ && current_channel_ != 0);
 
 #ifdef _WIN32
     if (updater_ && updater_->poll()) {
@@ -337,6 +339,27 @@ void AppCore::tick()
         if (std::abs(lvl - model_.voice_level) > 0.01f) {
             model_.voice_level = lvl;
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Idle sleep inhibit — keep the monitor awake for the duration of a call
+// ─────────────────────────────────────────────────────────────────────────────
+
+void AppCore::apply_sleep_inhibit(bool wanted)
+{
+    const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+
+    switch (sleep_inhibitor_.update(wanted, now_ms)) {
+    case SleepInhibitAction::Acquire:
+        if (bridge_.set_keep_awake) bridge_.set_keep_awake(true);
+        break;
+    case SleepInhibitAction::Release:
+        if (bridge_.set_keep_awake) bridge_.set_keep_awake(false);
+        break;
+    case SleepInhibitAction::None:
+        break;
     }
 }
 

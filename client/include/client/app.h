@@ -8,6 +8,7 @@
 #include <client/rml_elements.h>
 #include <client/stream_audio_capture.h>
 #include <client/context_window_manager.h>
+#include <client/win32_power_request.h>
 #include <client/video_decode_gate.h>
 #include <parties/types.h>
 #include <parties/video_common.h>
@@ -117,6 +118,7 @@ private:
 
     HWND hwnd_ = nullptr;
     SoundPlayer sound_player_;
+    Win32PowerRequest call_power_request_;
     UiManager ui_;
     ID3D12Device* decode_d3d12_device_ = nullptr; // owned by ui_ renderer
     ContextWindowManager context_windows_;
