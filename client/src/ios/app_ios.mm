@@ -577,6 +577,10 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     // are torn down by the binding when they leave model_.watched.
     bridge.clear_video_element = []() {};
 
+    bridge.set_keep_awake = [](bool keep_awake) {
+        [UIApplication sharedApplication].idleTimerDisabled = keep_awake ? YES : NO;
+    };
+
     // iOS manages its single hardware decoder directly in
     // watchSharer:/stopWatching:. The multi-stream bridge callbacks remain
     // unset so AppCore uses its single-select watching path.

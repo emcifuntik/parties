@@ -276,6 +276,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     bool                  _previewMode;
     std::string           _previewScenario;
     std::unique_ptr<MacOSContextMenuController> _contextMenus;
+    id                    _sleepActivity;
 
     // Embedded file interface (must outlive RmlUi)
     EmbeddedFileInterface _fileInterface;
@@ -575,6 +576,24 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     // a stream's cell is destroyed by the binding when it drops out of
     // model_.watched, so there is no single element to clear here.
     bridge.clear_video_element = []() {};
+
+    // A call produces no input events, so macOS dims and powers down the display
+    // while the user is still talking. An NSProcessInfo activity suppresses the
+    // idle-display and idle-system timers for as long as the token is held, and
+    // needs no extra framework. Re-assertions are a no-op while one is held.
+    bridge.set_keep_awake = [bself](bool keep_awake) {
+        if (keep_awake) {
+            if (bself->_sleepActivity) return;
+            bself->_sleepActivity = [[[NSProcessInfo processInfo]
+                beginActivityWithOptions:(NSActivityUserInitiated |
+                                          NSActivityIdleDisplaySleepDisabled)
+                                  reason:@"Voice call in progress"] retain];
+        } else if (bself->_sleepActivity) {
+            [[NSProcessInfo processInfo] endActivity:bself->_sleepActivity];
+            [bself->_sleepActivity release];
+            bself->_sleepActivity = nil;
+        }
+    };
 
     if (_previewMode) {
         // Deterministic visual harness: production AppKit shell, Metal backend,

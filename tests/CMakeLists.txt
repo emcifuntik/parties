@@ -98,6 +98,9 @@ target_include_directories(parties_server_query_wake_test PRIVATE ../client/incl
 add_executable(parties_video_decode_gate_test video_decode_gate_test.cpp)
 target_include_directories(parties_video_decode_gate_test PRIVATE ../client/include)
 
+add_executable(parties_idle_sleep_inhibitor_test idle_sleep_inhibitor_test.cpp)
+target_include_directories(parties_idle_sleep_inhibitor_test PRIVATE ../client/include)
+
 add_executable(parties_video_rate_control_test video_rate_control_test.cpp)
 target_include_directories(parties_video_rate_control_test PRIVATE ../encdec/include)
 
@@ -160,6 +163,9 @@ if(WIN32 AND BUILD_CLIENT)
     target_include_directories(parties_context_window_lifecycle_test PRIVATE ../client/include)
     target_link_libraries(parties_context_window_lifecycle_test PRIVATE user32)
 
+    add_executable(parties_win32_power_request_test win32_power_request_test.cpp)
+    target_include_directories(parties_win32_power_request_test PRIVATE ../client/include)
+
     add_executable(parties_window_thumbnail_test
         window_thumbnail_test.cpp
         ../client/src/windows/screen_capture.cpp
@@ -184,12 +190,15 @@ if(BUILD_CLIENT)
 endif()
 add_test(NAME parties_server_query_wake COMMAND parties_server_query_wake_test)
 add_test(NAME parties_video_decode_gate COMMAND parties_video_decode_gate_test)
+add_test(NAME parties_idle_sleep_inhibitor COMMAND parties_idle_sleep_inhibitor_test)
 add_test(NAME parties_video_rate_control COMMAND parties_video_rate_control_test)
 add_test(NAME parties_application_audio_downmix COMMAND parties_application_audio_test)
 if(BUILD_CLIENT)
     add_test(NAME parties_echo_cancellation COMMAND parties_echo_cancellation_test)
 endif()
 if(WIN32 AND BUILD_CLIENT)
+    add_test(NAME parties_win32_power_request COMMAND parties_win32_power_request_test)
+    set_tests_properties(parties_win32_power_request PROPERTIES SKIP_RETURN_CODE 77)
     add_test(NAME parties_amf_decode_state COMMAND parties_amf_decode_state_test)
     add_test(NAME parties_amf_decoder_hardware COMMAND parties_amf_decoder_hardware_test)
     set_tests_properties(parties_amf_decoder_hardware PROPERTIES SKIP_RETURN_CODE 77)

@@ -6,6 +6,7 @@
 #include <client/settings.h>
 #include <client/lobby_model.h>
 #include <client/chat_model.h>
+#include <client/idle_sleep_inhibitor.h>
 #include <client/server_list_model.h>
 #include <client/server_query_wake.h>
 #include <client/sound_player.h>
@@ -62,6 +63,7 @@ struct PlatformBridge {
     // hardware decoder) watching is single-select.
     std::function<void(UserId)>                                start_video_stream;
     std::function<void(UserId)>                                stop_video_stream;
+    std::function<void(bool)>                                  set_keep_awake;
 };
 
 class AppCore {
@@ -264,6 +266,9 @@ private:
 
     void update_speaking_state();
     void generate_identity();
+
+    IdleSleepInhibitor sleep_inhibitor_;
+    void apply_sleep_inhibit(bool wanted);
 
     // ── Server-list query polling (connectionless, game-browser style) ──
     // A background thread queries each saved server's UDP port while the lobby

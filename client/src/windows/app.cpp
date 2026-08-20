@@ -358,6 +358,10 @@ bool App::init(HWND hwnd) {
     bridge.start_video_stream = [this](UserId id) { start_video_stream(id); };
     bridge.stop_video_stream  = [this](UserId id) { stop_video_stream(id); };
 
+    bridge.set_keep_awake = [this](bool keep_awake) {
+        call_power_request_.set(keep_awake);
+    };
+
     // Initialize UI
     if (!ui_.init(hwnd)) return false;
     decode_d3d12_device_ = static_cast<ID3D12Device*>(ui_.renderer()->GetD3D12Device());
