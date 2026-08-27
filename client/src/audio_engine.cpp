@@ -4,6 +4,7 @@
 #include <client/voice_mixer.h>
 
 #include <parties/log.h>
+#include <parties/thread_scheduling.h>
 
 #include <cstring>
 #include <algorithm>
@@ -12,13 +13,19 @@
 namespace parties::client {
 
 static void capture_notification(const ma_device_notification* pNotification) {
-    if (pNotification->type == ma_device_notification_type_started)
+    if (pNotification->type == ma_device_notification_type_started) {
         TracySetThreadName("AudioCapture");
+        if (!parties::set_current_thread_highest_priority())
+            LOG_WARN("Failed to set the audio capture thread to highest priority");
+    }
 }
 
 static void playback_notification(const ma_device_notification* pNotification) {
-    if (pNotification->type == ma_device_notification_type_started)
+    if (pNotification->type == ma_device_notification_type_started) {
         TracySetThreadName("AudioPlayback");
+        if (!parties::set_current_thread_highest_priority())
+            LOG_WARN("Failed to set the audio playback thread to highest priority");
+    }
 }
 
 AudioEngine::AudioEngine()

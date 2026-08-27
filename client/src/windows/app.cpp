@@ -16,6 +16,7 @@
 #include <parties/permissions.h>
 #include <parties/profiler.h>
 #include <parties/log.h>
+#include <parties/thread_scheduling.h>
 
 #include <RmlUi/Core/Factory.h>
 #include <RmlUi/Core/Context.h>
@@ -671,6 +672,8 @@ void App::poll_hotkeys() {
 
 void App::render_loop() {
     TracySetThreadName("Render");
+    if (!parties::set_current_thread_highest_priority())
+        LOG_WARN("Failed to set the render thread to highest priority");
     while (render_running_.load(std::memory_order_acquire)) {
         // Apply deferred resize / DPI on the render thread (it owns the GPU swap
         // chain and the RmlUi context dimensions).
@@ -1625,6 +1628,8 @@ void App::enqueue_decode_work(UserId sharer_id, std::vector<uint8_t>&& encoded,
 void App::encode_loop() {
     ZoneScopedN("App::encode_loop");
     TracySetThreadName("VideoEncode");
+    if (!parties::set_current_thread_highest_priority())
+        LOG_WARN("Failed to set the video encode thread to highest priority");
 
     while (encode_running_.load(std::memory_order_relaxed)) {
         int slot = -1;
@@ -1828,6 +1833,8 @@ void App::on_video_decoded(VideoStream* s, const encdec::DecodedFrame& frame) {
 
 void App::decode_loop(VideoStream* s) {
     TracySetThreadName("VideoDecoder");
+    if (!parties::set_current_thread_highest_priority())
+        LOG_WARN("Failed to set a video decode thread to highest priority");
 
     auto resync_warm_decoder_at_keyframe = [this, s](const char* reason) {
         {

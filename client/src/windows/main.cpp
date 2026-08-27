@@ -8,6 +8,7 @@
 #include <parties/log.h>
 #include <parties/crash_reporter.h>
 #include <parties/alloc_tracker.h>
+#include <parties/thread_scheduling.h>
 
 #include "RmlUi_Platform_Win32.h"
 #include "system_diagnostics.h"
@@ -270,10 +271,17 @@ int main(int argc, char* argv[]) {
     // Must be first: if launched as crashpad handler subprocess, run handler and exit.
     parties::crash_reporter_is_crashpad_handler(argc, argv);
 
+    parties::TimerResolutionGuard timer_resolution(1);
+    const bool main_priority_set = parties::set_current_thread_highest_priority();
+
     TracySetThreadName("Main");
     // Initialise the persistent file logger before Sentry so the current log
     // can be attached to crash reports from production builds.
     parties::log_init(parties::LogTarget::Client);
+    if (!timer_resolution.active())
+        LOG_WARN("Failed to request 1 ms Windows timer resolution");
+    if (!main_priority_set)
+        LOG_WARN("Failed to set the main thread to highest priority");
 #ifdef SENTRY_DSN_VALUE
     parties::crash_reporter_init(SENTRY_DSN_VALUE, argv[0]);
 #else

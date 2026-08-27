@@ -7,6 +7,7 @@
 
 #include <parties/log.h>
 #include <parties/profiler.h>
+#include <parties/thread_scheduling.h>
 #include <parties/video_common.h>
 
 using Microsoft::WRL::ComPtr;
@@ -318,6 +319,8 @@ bool MftEncoder::create_color_converter(uint32_t in_w, uint32_t in_h,
 
 void MftEncoder::encoder_loop() {
     TracySetThreadName("MftEncoder");
+    if (!parties::set_current_thread_highest_priority())
+        LOG_WARN("Failed to set the MFT encoder thread to highest priority");
     while (encoder_running_) {
         ZoneScopedN("MftEncoder::encoder_loop");
         ComPtr<IMFMediaEvent> event;

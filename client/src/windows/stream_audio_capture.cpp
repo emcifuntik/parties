@@ -2,6 +2,7 @@
 #include <client/application_audio.h>
 #include <parties/profiler.h>
 #include <parties/log.h>
+#include <parties/thread_scheduling.h>
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -253,6 +254,8 @@ void StreamAudioCapture::stop() {
 
 void StreamAudioCapture::capture_thread_func() {
 	TracySetThreadName("StreamAudioCapture");
+    if (!parties::set_current_thread_highest_priority())
+        LOG_WARN("Failed to set the stream audio capture thread to highest priority");
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 
     const int mix_channels = wasapi_->mix_format->nChannels;

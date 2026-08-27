@@ -12,6 +12,7 @@ add_library(parties_common STATIC
     src/permissions.cpp
     src/log.cpp
     src/crash_reporter.cpp
+    src/thread_scheduling.cpp
 )
 set_target_properties(parties_common PROPERTIES XCODE_ATTRIBUTE_SKIP_INSTALL "YES")
 
