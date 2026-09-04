@@ -40,7 +40,7 @@ bool OpenH264Encoder::init(ID3D11Device* device, uint32_t width, uint32_t height
     params.iUsageType = SCREEN_CONTENT_REAL_TIME;
     params.iPicWidth = static_cast<int>(width);
     params.iPicHeight = static_cast<int>(height);
-    const auto rate_control = make_stream_vbr_rate_control(bitrate);
+    const auto rate_control = make_stream_vbr_rate_control(bitrate, fps);
     params.iTargetBitrate = static_cast<int>(rate_control.average_bitrate);
     params.iMaxBitrate = static_cast<int>(rate_control.peak_bitrate);
     params.iRCMode = RC_BITRATE_MODE;
@@ -214,7 +214,7 @@ void OpenH264Encoder::force_keyframe() {
 void OpenH264Encoder::set_bitrate(uint32_t bitrate) {
     if (!encoder_) return;
 
-    const auto rate_control = make_stream_vbr_rate_control(bitrate);
+    const auto rate_control = make_stream_vbr_rate_control(bitrate, fps_);
     SBitrateInfo info = {};
     info.iLayer = SPATIAL_LAYER_ALL;
     info.iBitrate = static_cast<int>(rate_control.average_bitrate);

@@ -193,12 +193,14 @@ bool MftEncoder::configure_encoder(uint32_t width, uint32_t height,
     if (FAILED(hr))
         LOG_ERROR("Failed to set D3D manager: {:#010x}", hr);
 
+    const auto rate_control = make_stream_vbr_rate_control(bitrate, fps);
+
     // Output type (must be set BEFORE input type)
     ComPtr<IMFMediaType> output_type;
     MFCreateMediaType(&output_type);
     output_type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
     output_type->SetGUID(MF_MT_SUBTYPE, subtype);
-    output_type->SetUINT32(MF_MT_AVG_BITRATE, bitrate);
+    output_type->SetUINT32(MF_MT_AVG_BITRATE, rate_control.average_bitrate);
     MFSetAttributeSize(output_type.Get(), MF_MT_FRAME_SIZE, width, height);
     MFSetAttributeRatio(output_type.Get(), MF_MT_FRAME_RATE, fps, 1);
     output_type->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
@@ -241,7 +243,6 @@ bool MftEncoder::configure_encoder(uint32_t width, uint32_t height,
 
         VariantInit(&var);
         var.vt = VT_UI4;
-        const auto rate_control = make_stream_vbr_rate_control(bitrate);
         var.ulVal = rate_control.average_bitrate;
         codec_api->SetValue(&CODECAPI_AVEncCommonMeanBitRate, &var);
 
@@ -249,6 +250,13 @@ bool MftEncoder::configure_encoder(uint32_t width, uint32_t height,
         var.vt = VT_UI4;
         var.ulVal = rate_control.peak_bitrate;
         codec_api->SetValue(&CODECAPI_AVEncCommonMaxBitRate, &var);
+
+        // VBV/HRD reservoir in bits: a few frame intervals, so a keyframe
+        // cannot become a multi-second burst on the link.
+        VariantInit(&var);
+        var.vt = VT_UI4;
+        var.ulVal = rate_control.vbv_buffer_size;
+        codec_api->SetValue(&CODECAPI_AVEncCommonBufferSize, &var);
 
         VariantInit(&var);
         var.vt = VT_UI4;
@@ -504,7 +512,7 @@ void MftEncoder::set_bitrate(uint32_t bitrate) {
 
     ComPtr<ICodecAPI> codec_api;
     if (SUCCEEDED(encoder_.As(&codec_api))) {
-        const auto rate_control = make_stream_vbr_rate_control(bitrate);
+        const auto rate_control = make_stream_vbr_rate_control(bitrate, fps_);
         VARIANT var;
         VariantInit(&var);
         var.vt = VT_UI4;
@@ -515,6 +523,11 @@ void MftEncoder::set_bitrate(uint32_t bitrate) {
         var.vt = VT_UI4;
         var.ulVal = rate_control.peak_bitrate;
         codec_api->SetValue(&CODECAPI_AVEncCommonMaxBitRate, &var);
+
+        VariantInit(&var);
+        var.vt = VT_UI4;
+        var.ulVal = rate_control.vbv_buffer_size;
+        codec_api->SetValue(&CODECAPI_AVEncCommonBufferSize, &var);
     }
 }
 

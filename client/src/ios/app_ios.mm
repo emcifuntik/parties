@@ -573,6 +573,13 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
 
     bridge.request_keyframe = nullptr;
 
+    // Single hardware decoder: the watched stream is still waiting for a
+    // keyframe while awaiting_keyframe_ holds. AppCore::tick() re-sends a PLI
+    // every VIDEO_PLI_RETRY_MS while this returns true.
+    bridge.stream_awaiting_keyframe = [bself](UserId id) {
+        return bself->_core.viewing_sharer_ == id && bself->_core.awaiting_keyframe_;
+    };
+
     // Viewer is a data-for grid of per-sharer cells ("screen-share-<id>"); cells
     // are torn down by the binding when they leave model_.watched.
     bridge.clear_video_element = []() {};

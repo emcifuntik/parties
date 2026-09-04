@@ -698,7 +698,10 @@ bool NvdecDecoder::decode(const uint8_t* data, size_t len, int64_t timestamp) {
     }
 
     CUVIDSOURCEDATAPACKET pkt{};
-    pkt.flags = CUVID_PKT_TIMESTAMP;
+    // Each decode() call carries exactly one access unit, so ENDOFPICTURE lets
+    // the parser emit the picture right away instead of waiting for the next
+    // packet to prove the picture is complete (one frame interval of latency).
+    pkt.flags = CUVID_PKT_TIMESTAMP | CUVID_PKT_ENDOFPICTURE;
     pkt.payload_size = static_cast<unsigned long>(len);
     pkt.payload = data;
     pkt.timestamp = timestamp;

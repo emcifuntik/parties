@@ -30,7 +30,6 @@
 #include <roapi.h>
 
 #include <algorithm>
-#include <array>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -351,6 +350,30 @@ bool App::init(HWND hwnd) {
         }
     };
 
+    // Main thread (AppCore::tick PLI retry). Same lock order as
+    // enqueue_decode_work: streams_mutex_ then the stream's queue_mutex.
+    // Deliberately false in two cases even though the gate may be waiting:
+    //  - the self-preview stream: a PLI would travel to the server and back
+    //    only to force our own encoder's keyframe for every viewer. The encoder
+    //    emits keyframes on its own interval and other viewers' PLIs already
+    //    force them, so the preview resynchronizes by itself;
+    //  - while the stale-flush suppression is active (stale_flushes_in_a_row
+    //    >= 3, i.e. the decoder is too slow for the stream): the decode thread
+    //    stopped requesting keyframes on purpose and waits for the sharer's
+    //    periodic one, so the retry must not re-issue PLIs behind its back.
+    //    The suppression ends when a keyframe is decoded normally again
+    //    (VideoDecodeStaleFlushTracker), after which retries resume.
+    bridge.stream_awaiting_keyframe = [this](UserId id) -> bool {
+        std::lock_guard<std::mutex> slock(streams_mutex_);
+        auto it = video_streams_.find(id);
+        if (it == video_streams_.end()) return false;
+        VideoStream* s = it->second.get();
+        if (s->self_preview) return false;
+        std::lock_guard<std::mutex> qlock(s->queue_mutex);
+        if (s->stale_flushes.suppressed()) return false;
+        return s->decode_gate.awaiting_keyframe();
+    };
+
     // Grid cells are created/destroyed by the data-for binding over model_.watched,
     // and each stream's decoder is torn down by stop_video_stream, so there is no
     // single element to clear here — make it a safe no-op on Windows.
@@ -415,12 +438,12 @@ bool App::init(HWND hwnd) {
 
     core_.model_.on_share_bitrate_changed = [this](float mbps) {
         core_.settings_.set_pref("video.share_bitrate", std::to_string(mbps));
-        if (encoder_) {
-            uint32_t bps = static_cast<uint32_t>(mbps * 1'000'000.0f);
-            bps = (std::max)(bps, VIDEO_MIN_BITRATE);
-            bps = (std::min)(bps, VIDEO_MAX_BITRATE);
-            encoder_->set_bitrate(bps);
-        }
+        // The slider only raises/lowers the sender's ceiling. The encoder is
+        // reconfigured from the encode thread via take_video_bitrate_update().
+        uint32_t bps = static_cast<uint32_t>(mbps * 1'000'000.0f);
+        bps = (std::max)(bps, VIDEO_MIN_BITRATE);
+        bps = (std::min)(bps, VIDEO_MAX_BITRATE);
+        core_.set_video_target_bitrate(bps);
     };
 
     // Load identity and the cross-platform global display name. The computer
@@ -1304,53 +1327,48 @@ void App::finish_screen_share_start(uint32_t target_process_id) {
     core_.settings_.set_pref("video.share_codec",   std::to_string(core_.model_.share_codec.get()));
     core_.settings_.set_pref("video.share_scale",   std::to_string(core_.model_.share_scale.get()));
 
-    core_.video_frame_number_ = 0;
+    // Share start: reset the frame counter and seed the congestion controller
+    // with the user's target bitrate (same clamp the encode thread applies).
+    {
+        uint32_t bitrate_bps = static_cast<uint32_t>(core_.model_.share_bitrate * 1'000'000.0f);
+        bitrate_bps = (std::max)(bitrate_bps, VIDEO_MIN_BITRATE);
+        bitrate_bps = (std::min)(bitrate_bps, VIDEO_MAX_BITRATE);
+        core_.reset_video_sender(bitrate_bps);
+    }
 
     LARGE_INTEGER freq, now;
     QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&now);
     qpc_frequency_      = freq.QuadPart;
     capture_start_qpc_  = now.QuadPart;
-    last_capture_qpc_   = 0;
+    next_capture_qpc_   = now.QuadPart;
     capture_interval_qpc_ = freq.QuadPart / encode_fps_;
 
     core_.stream_frame_count_.store(0, std::memory_order_relaxed);
 
+    // Encode thread: the encoder hands over each finished access unit here.
     auto on_encoded_cb = [this](const uint8_t* data, size_t len, bool keyframe) {
-        if (!sharing_screen_ || !core_.authenticated_ || !encoder_) return;
+        if (!sharing_screen_ || !encoder_) return;
         core_.stream_frame_count_.fetch_add(1, std::memory_order_relaxed);
 
-        uint32_t fn = core_.video_frame_number_++;
-        uint32_t ts = fn;
-        uint8_t  flags = keyframe ? VIDEO_FLAG_KEYFRAME : 0;
+        const uint16_t w = static_cast<uint16_t>(encoder_->width());
+        const uint16_t h = static_cast<uint16_t>(encoder_->height());
+        const VideoCodecId codec = encoder_->codec();
 
+        // AppCore builds the header, stamps frame_seq, picks the transport and
+        // accounts the bytes in the send controller. Safe when disconnected
+        // (returns sent=false) — the self-preview below never depends on it.
+        const auto r = core_.send_video_frame(data, len, keyframe, w, h, codec);
         if (keyframe)
-            LOG_INFO("keyframe fn={} size={}", fn, len);
-        uint16_t w = static_cast<uint16_t>(encoder_->width());
-        uint16_t h = static_cast<uint16_t>(encoder_->height());
-        uint8_t  codec = static_cast<uint8_t>(encoder_->codec());
-
-        constexpr size_t header_len = 1 + 4 + 4 + 1 + 2 + 2 + 1;
-        std::array<uint8_t, header_len> pkt{};
-        size_t off = 0;
-        pkt[off++] = protocol::VIDEO_FRAME_PACKET_TYPE;
-        std::memcpy(pkt.data() + off, &fn, 4);    off += 4;
-        std::memcpy(pkt.data() + off, &ts, 4);    off += 4;
-        pkt[off++] = flags;
-        std::memcpy(pkt.data() + off, &w, 2);     off += 2;
-        std::memcpy(pkt.data() + off, &h, 2);     off += 2;
-        pkt[off++] = codec;
-        core_.net_.send_video_parts(pkt.data(), pkt.size(), data, len);
+            LOG_INFO("keyframe fn={} size={} sent={}", r.frame_seq, len, r.sent ? 1 : 0);
 
         // Local self-preview feed: if we're watching our own share, decode our
         // encoder output locally into that stream's grid cell.
-        if (encoder_ && core_.is_watching(core_.user_id_)) {
+        if (core_.is_watching(core_.user_id_)) {
             std::vector<uint8_t> copy(data, data + len);
-            enqueue_decode_work(core_.user_id_, std::move(copy), static_cast<int64_t>(fn),
-                                encoder_->codec(),
-                                static_cast<uint16_t>(encoder_->width()),
-                                static_cast<uint16_t>(encoder_->height()),
-                                keyframe);
+            enqueue_decode_work(core_.user_id_, std::move(copy),
+                                static_cast<int64_t>(r.frame_seq),
+                                codec, w, h, keyframe);
         }
     };
     encode_on_encoded_ = on_encoded_cb;
@@ -1373,11 +1391,24 @@ void App::finish_screen_share_start(uint32_t target_process_id) {
         texture->GetDesc(&desc);
         if (desc.Width < 64 || desc.Height < 64) return;
 
+        // Frame-rate limiter (phase accumulator). The deadline advances by one
+        // interval per admitted frame, so jitter in capture delivery doesn't
+        // bleed the effective rate below the target. If capture stalled long
+        // enough to leave the deadline more than one interval in the past,
+        // re-anchor it instead of bursting to catch up.
         LARGE_INTEGER now;
         QueryPerformanceCounter(&now);
-        int64_t elapsed = now.QuadPart - last_capture_qpc_;
-        if (elapsed < capture_interval_qpc_) return;
-        last_capture_qpc_ = now.QuadPart;
+        if (now.QuadPart < next_capture_qpc_) return;
+        next_capture_qpc_ += capture_interval_qpc_;
+        if (next_capture_qpc_ < now.QuadPart - capture_interval_qpc_)
+            next_capture_qpc_ = now.QuadPart + capture_interval_qpc_;
+
+        // Congestion admission (atomics only): skip this frame when the bytes
+        // still queued/in flight toward the server would add more than the
+        // controller's queueing budget on top of the RTT. Skipping before any
+        // GPU work costs nothing; frame_seq is stamped after encode, so the
+        // reference chain stays intact and no keyframe is needed.
+        if (!core_.video_admit_frame()) return;
 
         uint32_t cap_w = (desc.Width  + 1) & ~1u;
         uint32_t cap_h = (desc.Height + 1) & ~1u;
@@ -1550,7 +1581,9 @@ void App::stop_screen_share() {
 
     if (encoder_) { encoder_->shutdown(); encoder_.reset(); }
     if (capture_) { capture_->shutdown(); capture_.reset(); }
-    core_.video_frame_number_ = 0;
+    // video_frame_number_ is deliberately NOT reset here: it is owned by
+    // AppCore::send_video_frame and reset only in reset_video_sender (next
+    // share start) and on_disconnect_cleanup.
 
     core_.model_.is_sharing = false;
 
@@ -1582,6 +1615,19 @@ void App::on_video_frame_received(uint32_t sender_id, const uint8_t* data, size_
                         codec, width, height, is_keyframe);
 }
 
+// Monotonic microseconds shared by the decode backlog age rule and the
+// stale-flush recovery clock (DecodeWork::arrival_us uses the same origin).
+static int64_t steady_now_us() {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// The stale-flush run must be able to end after one clean sharer keyframe
+// interval: the recovery window may not exceed it.
+static_assert(kVideoDecodeStaleFlushRecoveryUs <=
+                  static_cast<int64_t>(VIDEO_KEYFRAME_INTERVAL_MS) * 1000,
+              "kVideoDecodeStaleFlushRecoveryUs must fit in VIDEO_KEYFRAME_INTERVAL_MS");
+
 // Push one encoded frame into a watched stream's decode queue. Holds
 // streams_mutex_ across the whole find+push so the stream can't be destroyed
 // concurrently by stop_video_stream. A stream waits for its first keyframe
@@ -1590,6 +1636,7 @@ void App::enqueue_decode_work(UserId sharer_id, std::vector<uint8_t>&& encoded,
                               int64_t timestamp, VideoCodecId codec,
                               uint16_t width, uint16_t height, bool is_keyframe) {
     bool request_keyframe = false;
+    bool self_preview = false;
     {
         std::lock_guard<std::mutex> slock(streams_mutex_);
         auto it = video_streams_.find(sharer_id);
@@ -1598,11 +1645,16 @@ void App::enqueue_decode_work(UserId sharer_id, std::vector<uint8_t>&& encoded,
         if (!s->running.load(std::memory_order_relaxed)) return;
 
         std::lock_guard<std::mutex> qlock(s->queue_mutex);
+        // A keyframe the gate was waiting for is the recovery point after a
+        // flush / discontinuity / stream start; only an in-sequence keyframe
+        // can prove the decoder keeps up (VideoDecodeStaleFlushTracker).
+        const bool recovery_keyframe = is_keyframe && s->decode_gate.awaiting_keyframe();
         const auto decision = s->decode_gate.on_frame(
             static_cast<uint32_t>(timestamp), is_keyframe);
         if (decision == VideoDecodeDecision::Discontinuity) {
             while (!s->queue.empty()) s->queue.pop();
             request_keyframe = true;
+            self_preview = s->self_preview;
         } else if (decision == VideoDecodeDecision::Accept) {
             DecodeWork work;
             work.data = std::move(encoded);
@@ -1611,13 +1663,21 @@ void App::enqueue_decode_work(UserId sharer_id, std::vector<uint8_t>&& encoded,
             work.width = width;
             work.height = height;
             work.keyframe = is_keyframe;
+            work.arrival_us = steady_now_us();
+            work.recovery_keyframe = recovery_keyframe;
             s->queue.push(std::move(work));
             s->queue_cv.notify_one();
         }
     }
     if (request_keyframe) {
-        LOG_WARN("Video frame discontinuity from user {}; requesting a keyframe", sharer_id);
-        core_.send_pli(sharer_id);
+        if (self_preview) {
+            // Never PLI our own share: the encoder's next keyframe (its own
+            // interval, or another viewer's PLI) resynchronizes the preview.
+            LOG_WARN("Self-preview video frame discontinuity; waiting for the encoder's next keyframe");
+        } else {
+            LOG_WARN("Video frame discontinuity from user {}; requesting a keyframe", sharer_id);
+            core_.send_pli(sharer_id);
+        }
     }
 }
 
@@ -1654,7 +1714,12 @@ void App::encode_loop() {
                                                                 : VideoCodecId::AV1;
             encoder_.reset(); encode_registered_ = false;
             auto enc = std::make_unique<VideoEncoder>();
-            uint32_t bitrate_bps = static_cast<uint32_t>(core_.model_.share_bitrate * 1'000'000.0f);
+            // Prefer the controller's adapted bitrate so a congestion-driven
+            // decrease survives an encoder re-create (resolution change); fall
+            // back to the user's slider value before the controller is seeded.
+            uint32_t bitrate_bps = core_.video_sender_.bitrate_bps();
+            if (bitrate_bps == 0)
+                bitrate_bps = static_cast<uint32_t>(core_.model_.share_bitrate * 1'000'000.0f);
             bitrate_bps = (std::max)(bitrate_bps, VIDEO_MIN_BITRATE);
             bitrate_bps = (std::min)(bitrate_bps, VIDEO_MAX_BITRATE);
             if (!enc->init(capture_->device(), w, h, 0, 0, encode_fps_, bitrate_bps, codec)) {
@@ -1665,7 +1730,8 @@ void App::encode_loop() {
             }
             enc->on_encoded = encode_on_encoded_;
             encoder_ = std::move(enc);
-            core_.video_frame_number_ = 0;
+            // video_frame_number_ is NOT reset here: viewers' reorder buffers
+            // would see a backward jump. AppCore owns the counter.
 
             if (sharing_screen_) {
                 BinaryWriter upd;
@@ -1687,6 +1753,18 @@ void App::encode_loop() {
                 encode_registered_ = ok;
             }
         }
+
+        // Encoder reconfiguration reaches the encoder only from this thread:
+        // the adapted/slider bitrate published by the send controller, and a
+        // forced keyframe after a send failure (viewers lost a reference).
+        if (auto b = core_.take_video_bitrate_update()) {
+            uint32_t bitrate_bps = (std::max)(*b, VIDEO_MIN_BITRATE);
+            bitrate_bps = (std::min)(bitrate_bps, VIDEO_MAX_BITRATE);
+            LOG_INFO("Encoder bitrate -> {} kbps", bitrate_bps / 1000);
+            encoder_->set_bitrate(bitrate_bps);
+        }
+        if (core_.take_video_keyframe_request())
+            encoder_->force_keyframe();
 
         {
             ZoneScopedN("encode::frame");
@@ -1715,6 +1793,9 @@ void App::start_video_stream(UserId sharer_id) {
     auto s = std::make_unique<VideoStream>();
     s->sharer_id = sharer_id;
     s->element_id = "screen-share-" + std::to_string(sharer_id);
+    // Main thread, while authenticated: user_id_ is stable for the stream's
+    // whole life, so decide once here instead of reading it off-thread later.
+    s->self_preview = (sharer_id == core_.user_id_);
     s->running.store(true, std::memory_order_relaxed);
     VideoStream* ptr = s.get();
     s->thread = std::thread([this, ptr] { decode_loop(ptr); });
@@ -1772,6 +1853,14 @@ void App::stop_stream_thread(VideoStream* s) {
 
 void App::on_video_decoded(VideoStream* s, const encdec::DecodedFrame& frame) {
     ZoneScopedN("on_decoded::copy_planes");
+    // The decoder is warm from its first delivered frame on, whether or not
+    // that frame reaches the screen: the backlog rules may now treat a
+    // growing queue as the decoder falling behind rather than warming up.
+    s->decoded_since_init = true;
+    // Batch catch-up: this frame was decoded only to keep the reference chain
+    // (a newer one follows in the same batch), so skip the plane copy / native
+    // publish. render_frame would discard it anyway.
+    if (s->suppress_output) return;
     uint32_t w = frame.width, h = frame.height;
 
     if (frame.native_d3d12_resource && frame.native_owner) {
@@ -1831,16 +1920,61 @@ void App::on_video_decoded(VideoStream* s, const encdec::DecodedFrame& frame) {
     }
 }
 
+// Non-destructive keyframe scan of a (small) decode batch. std::queue has no
+// iteration, so rotate every element once and restore the original order.
+template <typename Work>
+static bool queue_contains_keyframe(std::queue<Work>& frames) {
+    bool found = false;
+    const size_t count = frames.size();
+    for (size_t i = 0; i < count; ++i) {
+        Work work = std::move(frames.front());
+        frames.pop();
+        if (work.keyframe) found = true;
+        frames.push(std::move(work));
+    }
+    return found;
+}
+
 void App::decode_loop(VideoStream* s) {
     TracySetThreadName("VideoDecoder");
     if (!parties::set_current_thread_highest_priority())
         LOG_WARN("Failed to set a video decode thread to highest priority");
 
+    // Whole-batch flush that keeps the warm decoder (hard limit or age rule).
+    // Every flush clears the queue and re-arms the gate, but only the first
+    // kVideoDecodeStaleFlushPliLimit consecutive ones request a keyframe: a
+    // decoder that is persistently slower than the stream would otherwise
+    // force the sharer to emit a keyframe per flush (~1 Hz), spiking its
+    // bitrate and — through the server backlog gate — dropping frames for
+    // viewers that keep up. On the third flush this logs once and the stream
+    // waits for the sharer's periodic keyframe until a keyframe is decoded
+    // normally again (VideoDecodeStaleFlushTracker resets the counter). The
+    // self-preview never requests: our encoder emits keyframes on its own
+    // interval and other viewers' PLIs already force them.
     auto resync_warm_decoder_at_keyframe = [this, s](const char* reason) {
+        bool request_keyframe = false;
+        uint32_t flushes = 0;
         {
             std::lock_guard<std::mutex> lock(s->queue_mutex);
             s->decode_gate.require_keyframe();
             while (!s->queue.empty()) s->queue.pop();
+            request_keyframe = s->stale_flushes.on_stale_flush();
+            flushes = s->stale_flushes.stale_flushes_in_a_row;
+        }
+        if (flushes == kVideoDecodeStaleFlushPliLimit + 1) {
+            if (s->self_preview)
+                LOG_WARN("Self-preview decoder too slow (user {}); waiting for the encoder's periodic keyframe",
+                         s->sharer_id);
+            else
+                LOG_WARN("Decoder too slow for user {}; waiting for the sharer's periodic keyframe",
+                         s->sharer_id);
+            return;
+        }
+        if (!request_keyframe) return;   // suppression active, already logged once
+        if (s->self_preview) {
+            LOG_WARN("Resynchronizing self-preview video decoder after {}; keeping warm decoder, "
+                     "waiting for the encoder's next keyframe", reason);
+            return;
         }
         LOG_WARN("Resynchronizing video decoder for user {} after {}; keeping warm decoder",
                  s->sharer_id, reason);
@@ -1857,6 +1991,16 @@ void App::decode_loop(VideoStream* s) {
         if (s->decoder) {
             s->decoder->shutdown();
             s->decoder.reset();
+        }
+        // The next batch re-creates the decoder; until it delivers a frame the
+        // backlog rules treat it as cold again.
+        s->decoded_since_init = false;
+        if (s->self_preview) {
+            // Same rule as the flush paths: a self-PLI would only force our own
+            // encoder's keyframe for every viewer; its own interval suffices.
+            LOG_WARN("Resetting self-preview video decoder after {}; waiting for the encoder's next keyframe",
+                     reason);
+            return;
         }
         LOG_WARN("Resetting video decoder for user {} after {}; waiting for keyframe",
                  s->sharer_id, reason);
@@ -1875,10 +2019,17 @@ void App::decode_loop(VideoStream* s) {
             batch.swap(s->queue);
         }
 
+        // Whether the retained batch still holds a keyframe (known from the
+        // trim when it runs; otherwise scanned below for the age rule).
+        bool batch_has_keyframe = false;
+        bool batch_keyframe_known = false;
+
         if (batch.size() > kVideoDecodeBacklogWarningFrames) {
             const size_t original_size = batch.size();
             const auto trim = trim_to_latest_keyframe(
                 batch, [](const DecodeWork& work) { return work.keyframe; });
+            batch_has_keyframe = trim.found_keyframe;
+            batch_keyframe_known = true;
             if (trim.dropped > 0) {
                 LOG_WARN("Decode queue backed up ({} frames); dropped {} frames before "
                          "the newest keyframe and retained {}",
@@ -1893,11 +2044,49 @@ void App::decode_loop(VideoStream* s) {
             // NVDEC warm-up. With no keyframe in the retained chain there is no
             // safe prefix to drop, so request a new random-access point. Keep the
             // decoder and its expensive CUDA/D3D12 surface pool alive.
+            // decoder_ready is "has delivered a frame since its last (re)init",
+            // not "exists": a decoder still working on its first keyframe is
+            // warming up, and its backlog is the normal warm-up.
             if (should_resync_decode_backlog(
-                    batch.size(), trim.found_keyframe, s->decoder != nullptr)) {
+                    batch.size(), trim.found_keyframe, s->decoded_since_init)) {
                 while (!batch.empty()) batch.pop();
                 resync_warm_decoder_at_keyframe("sustained decode queue overflow");
                 continue;
+            }
+        }
+
+        // Age rule: independent of queue length, a warm decoder whose oldest
+        // retained frame has already waited kVideoDecodeBacklogMaxAgeUs is
+        // showing a stale picture. With no keyframe queued to jump to, drop the
+        // backlog and ask for a new random-access point (send_pli rate-limits,
+        // resync_warm_decoder_at_keyframe stops asking after two consecutive
+        // flushes). A decoder that has not delivered a frame since its last
+        // (re)init is cold, not behind, and is exempt.
+        if (!batch.empty() && s->decoded_since_init) {
+            const int64_t now_us = steady_now_us();
+            const int64_t oldest_us = batch.front().arrival_us;
+            if (now_us - oldest_us >= kVideoDecodeBacklogMaxAgeUs) {
+                if (!batch_keyframe_known) {
+                    batch_has_keyframe = queue_contains_keyframe(batch);
+                    batch_keyframe_known = true;
+                }
+                if (should_resync_stale_decode_backlog(oldest_us, now_us,
+                                                       batch_has_keyframe,
+                                                       s->decoded_since_init)) {
+                    // Decode thread is the tracker's only writer, so this
+                    // read needs no lock. Once suppressed, the flush is the
+                    // expected steady state of a too-slow decoder: keep the
+                    // per-flush line out of the warn log.
+                    if (s->stale_flushes.suppressed())
+                        LOG_DEBUG("Decode backlog for user {} is stale ({} frames, oldest {} ms old)",
+                                  s->sharer_id, batch.size(), (now_us - oldest_us) / 1000);
+                    else
+                        LOG_WARN("Decode backlog for user {} is stale ({} frames, oldest {} ms old)",
+                                 s->sharer_id, batch.size(), (now_us - oldest_us) / 1000);
+                    while (!batch.empty()) batch.pop();
+                    resync_warm_decoder_at_keyframe("stale decode backlog");
+                    continue;
+                }
             }
         }
 
@@ -1914,6 +2103,7 @@ void App::decode_loop(VideoStream* s) {
                 s->decoder->height() != work.height) {
                 if (s->decoder) s->decoder->shutdown();
                 s->decoder = std::make_unique<VideoDecoder>();
+                s->decoded_since_init = false;   // cold until on_video_decoded
                 if (s->hardware_decode_disabled)
                     s->decoder->disable_hardware();
                 if (!s->decoder->init(work.codec, work.width, work.height,
@@ -1927,7 +2117,13 @@ void App::decode_loop(VideoStream* s) {
                 LOG_INFO("Decoder reinitialized: {}",  s->decoder->backend_name());
                 s->decoder->on_decoded = [this, s](const DecodedFrame& f) { on_video_decoded(s, f); };
             }
-            if (!s->decoder->decode(work.data.data(), work.data.size(), work.timestamp)) {
+            // Only the last frame of the batch can reach the screen; decode the
+            // earlier ones for the reference chain but skip their plane copies.
+            s->suppress_output = batch.size() > 1;
+            const bool decoded = s->decoder->decode(work.data.data(), work.data.size(),
+                                                    work.timestamp);
+            s->suppress_output = false;
+            if (!decoded) {
                 if (!s->running.load(std::memory_order_relaxed)) {
                     while (!batch.empty()) batch.pop();
                     break;
@@ -1936,6 +2132,14 @@ void App::decode_loop(VideoStream* s) {
                 while (!batch.empty()) batch.pop();
                 recover_at_keyframe("bitstream decode failure", lost_context);
                 break;
+            }
+            if (work.keyframe) {
+                // A keyframe decoded normally may end a run of stale flushes
+                // (the tracker ignores recovery keyframes and requires the
+                // decoder to have kept up since it resumed). Written under
+                // queue_mutex because the main thread reads the tracker.
+                std::lock_guard<std::mutex> lock(s->queue_mutex);
+                s->stale_flushes.on_keyframe_decoded(steady_now_us(), work.recovery_keyframe);
             }
             batch.pop();
         }

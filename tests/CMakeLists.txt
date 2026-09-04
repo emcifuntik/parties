@@ -104,6 +104,22 @@ target_include_directories(parties_idle_sleep_inhibitor_test PRIVATE ../client/i
 add_executable(parties_video_rate_control_test video_rate_control_test.cpp)
 target_include_directories(parties_video_rate_control_test PRIVATE ../encdec/include)
 
+# ── Screen-share transport policy (offline, deterministic) ───────────────────
+add_executable(parties_video_send_controller_test
+    video_send_controller_test.cpp
+    ../common/src/video_send_controller.cpp
+)
+target_include_directories(parties_video_send_controller_test PRIVATE ../common/include)
+
+add_executable(parties_video_frame_reorder_test
+    video_frame_reorder_test.cpp
+    ../common/src/video_frame_reorder.cpp
+)
+target_include_directories(parties_video_frame_reorder_test PRIVATE ../common/include)
+
+add_executable(parties_video_backlog_test video_backlog_test.cpp)
+target_include_directories(parties_video_backlog_test PRIVATE ../common/include)
+
 add_executable(parties_application_audio_test
     application_audio_test.cpp
     ../client/src/application_audio.cpp
@@ -192,6 +208,12 @@ add_test(NAME parties_server_query_wake COMMAND parties_server_query_wake_test)
 add_test(NAME parties_video_decode_gate COMMAND parties_video_decode_gate_test)
 add_test(NAME parties_idle_sleep_inhibitor COMMAND parties_idle_sleep_inhibitor_test)
 add_test(NAME parties_video_rate_control COMMAND parties_video_rate_control_test)
+add_test(NAME parties_video_send_controller COMMAND parties_video_send_controller_test)
+add_test(NAME parties_video_frame_reorder COMMAND parties_video_frame_reorder_test)
+add_test(NAME parties_video_backlog COMMAND parties_video_backlog_test)
+# Server + two headless clients over real MsQuic on a loopback port.
+add_test(NAME parties_integration COMMAND parties_integration_test)
+set_tests_properties(parties_integration PROPERTIES TIMEOUT 120)
 add_test(NAME parties_application_audio_downmix COMMAND parties_application_audio_test)
 if(BUILD_CLIENT)
     add_test(NAME parties_echo_cancellation COMMAND parties_echo_cancellation_test)

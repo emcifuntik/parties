@@ -10,16 +10,30 @@ Requirements:
 Usage:
     python generate.py              # auto-downloads FluidR3_GM soundfont
     python generate.py my_font.sf2  # use a specific soundfont
+    python generate.py --synth      # built-in additive synth (no FluidSynth/mido/numpy)
+    python generate.py --synth parties-stream-started parties-viewer-joined
+
+When FluidSynth or mido are unavailable the script falls back to the built-in
+synth automatically, so every sound stays reproducible from this file alone.
 """
 
-import mido
-import subprocess
-import wave
-import numpy as np
+import math
 import os
+import struct
+import subprocess
 import sys
 import tempfile
 import urllib.request
+import wave
+
+try:
+    import mido
+except ImportError:  # optional: only needed for the FluidSynth path
+    mido = None
+try:
+    import numpy as np
+except ImportError:  # optional: only needed for the FluidSynth path
+    np = None
 
 SAMPLE_RATE = 48000
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -29,6 +43,7 @@ SF2_URL = "https://keymusician01.s3.amazonaws.com/FluidR3_GM.zip"
 # ── MIDI note numbers ──────────────────────────────────────────────
 C4, Eb4, E4, F4, G4, A4, Bb4 = 60, 63, 64, 65, 67, 69, 70
 C5, D5, E5, F5, G5, A5 = 72, 74, 76, 77, 79, 81
+C6 = 84
 
 # ── GM program numbers ─────────────────────────────────────────────
 CELESTA      = 8
@@ -275,49 +290,155 @@ SOUNDS = {
             (220, G4, 40, 250),
         ],
     },
+
+    # ── Stream Started: Rising "look here" fanfare (Celesta) ─────
+    # C5 -> G5 -> C6  — someone in the channel started a screen share
+    'parties-stream-started': {
+        'program': CELESTA,
+        'notes': [
+            (0,   C5, 70, 110),
+            (85,  G5, 80, 120),
+            (170, C6, 90, 220),
+        ],
+    },
+
+    # ── Viewer Joined: Soft double blip (Celesta) ────────────────
+    # E5 -> G5  — someone started watching your stream
+    'parties-viewer-joined': {
+        'program': CELESTA,
+        'notes': [
+            (0,   E5, 45, 90),
+            (110, G5, 55, 130),
+        ],
+    },
 }
 
 
-def main():
-    soundfont = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_SF2
-    download_soundfont(soundfont)
 
-    if not os.path.exists(soundfont):
-        print(f"Error: SoundFont not found: {soundfont}")
-        sys.exit(1)
+# ═══════════════════════════════════════════════════════════════════
+# Built-in additive synth (fallback when FluidSynth/mido are missing)
+# ═══════════════════════════════════════════════════════════════════
 
-    # Verify FluidSynth is available
+# Per-program timbre: (harmonic amplitudes, decay time constant in seconds)
+SYNTH_TIMBRES = {
+    CELESTA:      ([1.0, 0.05, 0.30, 0.08, 0.12], 0.22),
+    GLOCKENSPIEL: ([1.0, 0.02, 0.40, 0.02, 0.20], 0.30),
+    VIBRAPHONE:   ([1.0, 0.25, 0.10, 0.05, 0.02], 0.55),
+    MARIMBA:      ([1.0, 0.05, 0.02, 0.35, 0.02], 0.12),
+}
+
+
+def midi_to_hz(note):
+    return 440.0 * 2.0 ** ((note - 69) / 12.0)
+
+
+def render_with_synth(notes, program):
+    """Render note events with a small additive synth. Returns float samples."""
+    harmonics, tau = SYNTH_TIMBRES.get(program, SYNTH_TIMBRES[CELESTA])
+    end_ms = max(start + dur for start, _, _, dur in notes)
+    ring_ms = int(tau * 4000)          # let the tail ring past note-off
+    total = int(SAMPLE_RATE * (end_ms + ring_ms) / 1000.0)
+    out = [0.0] * total
+
+    for start_ms, note, vel, dur_ms in notes:
+        f0 = midi_to_hz(note)
+        amp = (vel / 127.0) ** 1.5
+        start = int(SAMPLE_RATE * start_ms / 1000.0)
+        hold = int(SAMPLE_RATE * dur_ms / 1000.0)
+        length = min(total - start, hold + int(SAMPLE_RATE * tau * 4))
+        attack = int(SAMPLE_RATE * 0.003)
+        for i in range(length):
+            t = i / SAMPLE_RATE
+            env = math.exp(-t / tau)
+            if i < attack:
+                env *= i / attack
+            if i > hold:                    # faster release after note-off
+                env *= math.exp(-(i - hold) / (SAMPLE_RATE * 0.06))
+            sample = 0.0
+            for h, ha in enumerate(harmonics, start=1):
+                if ha <= 0.0:
+                    continue
+                # Upper partials decay faster, like a struck bar.
+                sample += ha * math.exp(-t * (h - 1) * 3.0) * math.sin(2.0 * math.pi * f0 * h * t)
+            out[start + i] += amp * env * sample
+    return out
+
+
+def write_normalized_wav(samples, wav_path, target_amp=0.1):
+    """Trim trailing silence, normalize to target peak, write 16-bit mono."""
+    threshold = 0.001
+    last = len(samples) - 1
+    while last > 0 and abs(samples[last]) < threshold:
+        last -= 1
+    tail = int(SAMPLE_RATE * 0.05)
+    samples = samples[:min(last + tail, len(samples))]
+
+    peak = max((abs(x) for x in samples), default=0.0)
+    scale = (target_amp / peak) if peak > 0 else 1.0
+    frames = bytearray()
+    for x in samples:
+        v = int(max(-32768, min(32767, round(x * scale * 32767))))
+        frames += struct.pack('<h', v)
+    with wave.open(wav_path, 'w') as f:
+        f.setnchannels(1)
+        f.setsampwidth(2)
+        f.setframerate(SAMPLE_RATE)
+        f.writeframes(bytes(frames))
+
+
+def fluidsynth_available():
+    if mido is None or np is None:
+        return False
     try:
         subprocess.run(['fluidsynth', '--version'], capture_output=True, check=True)
-    except FileNotFoundError:
-        print("Error: FluidSynth not found in PATH.")
-        print("  Windows: choco install fluidsynth")
-        print("  Linux:   apt install fluidsynth")
-        print("  macOS:   brew install fluid-synth")
-        sys.exit(1)
+        return True
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return False
 
-    print(f"Using soundfont: {soundfont}")
+
+def main():
+    args = list(sys.argv[1:])
+    use_synth = '--synth' in args
+    args = [a for a in args if a != '--synth']
+    soundfont = DEFAULT_SF2
+    if args and args[0].lower().endswith('.sf2'):
+        soundfont = args.pop(0)
+    only = set(args)   # optional list of sound names to (re)generate
+
+    if not use_synth and not fluidsynth_available():
+        print("FluidSynth/mido/numpy not available - using the built-in synth.")
+        use_synth = True
+
+    if not use_synth:
+        download_soundfont(soundfont)
+        if not os.path.exists(soundfont):
+            print(f"Error: SoundFont not found: {soundfont}")
+            sys.exit(1)
+        print(f"Using soundfont: {soundfont}")
+    else:
+        print("Using built-in additive synth")
     print()
 
     for name, cfg in SOUNDS.items():
+        if only and name not in only:
+            continue
         wav_path = os.path.join(SCRIPT_DIR, f"{name}.wav")
         print(f"  {name}...", end=" ", flush=True)
 
-        # Create MIDI
-        midi_path = create_midi_file(cfg['notes'], cfg['program'])
+        if use_synth:
+            write_normalized_wav(render_with_synth(cfg['notes'], cfg['program']), wav_path)
+        else:
+            midi_path = create_midi_file(cfg['notes'], cfg['program'])
+            try:
+                render_with_fluidsynth(midi_path, wav_path, soundfont)
+                postprocess(wav_path)
+            finally:
+                os.unlink(midi_path)
 
-        try:
-            # Render to WAV
-            render_with_fluidsynth(midi_path, wav_path, soundfont)
-            # Post-process
-            postprocess(wav_path)
-            # Report size
-            size = os.path.getsize(wav_path)
-            with wave.open(wav_path, 'r') as f:
-                dur_ms = int(f.getnframes() / f.getframerate() * 1000)
-            print(f"OK ({dur_ms}ms, {size//1024}KB)")
-        finally:
-            os.unlink(midi_path)
+        size = os.path.getsize(wav_path)
+        with wave.open(wav_path, 'r') as f:
+            dur_ms = int(f.getnframes() / f.getframerate() * 1000)
+        print(f"OK ({dur_ms}ms, {size//1024}KB)")
 
     print()
     print("Done! WAV files written to:", SCRIPT_DIR)

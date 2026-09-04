@@ -29,6 +29,11 @@ public:
 
     void shutdown();
 
+    // Change the average bitrate (and the matching hard data-rate window) of a
+    // running session. Driven by the sharer's congestion controller
+    // (AppCore::take_video_bitrate_update) from the capture callback.
+    void set_bitrate(uint32_t bitrate_bps);
+
     // Encode one frame.  pixel_buffer must be BGRA or NV12.
     // is_keyframe = true forces an IDR (e.g. after a PLI request).
     void encode(CVPixelBufferRef pixel_buffer, bool force_keyframe = false);
@@ -51,6 +56,10 @@ private:
                                   CMSampleBufferRef    sample);
 
     void handle_encoded_sample(CMSampleBufferRef sample);
+
+    // Applies AverageBitRate + DataRateLimits for `bitrate_bps` to session_.
+    // Caller holds mutex_.
+    void apply_rate_limits(uint32_t bitrate_bps);
 
     VTCompressionSessionRef session_ = nullptr;
     MacVideoCodec           codec_   = MacVideoCodec::H264;

@@ -572,6 +572,13 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         bself->_needsKeyframe = true;
     };
 
+    // Single hardware decoder: the watched stream is still waiting for a
+    // keyframe while awaiting_keyframe_ holds. AppCore::tick() re-sends a PLI
+    // every VIDEO_PLI_RETRY_MS while this returns true.
+    bridge.stream_awaiting_keyframe = [bself](UserId id) {
+        return bself->_core.viewing_sharer_ == id && bself->_core.awaiting_keyframe_;
+    };
+
     // The viewer is now a data-for grid of per-sharer cells ("screen-share-<id>");
     // a stream's cell is destroyed by the binding when it drops out of
     // model_.watched, so there is no single element to clear here.
@@ -937,6 +944,9 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
                 bself->_encoder.reset(); return;
             }
             bself->_encoderReady = true;
+            // Share start: reset the frame counter and seed the send
+            // controller (admission + AIMD) with the user's target bitrate.
+            bself->_core.reset_video_sender(bitrate);
 
             // Use the codec the encoder actually initialized with, not the
             // requested one: AV1 falls back to H265 on Apple Silicon (no AV1
@@ -949,32 +959,32 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
             bself->_encoder->on_encoded = [bself, wire_codec](const uint8_t* data, size_t len, bool is_kf) {
                 if (!bself->_core.authenticated_) return;
 
-                uint32_t fn = bself->_core.video_frame_number_++;
-                uint32_t ts = 0;
-                uint8_t  flags = is_kf ? VIDEO_FLAG_KEYFRAME : 0;
                 uint16_t fw = (uint16_t)bself->_encodeWidth;
                 uint16_t fh = (uint16_t)bself->_encodeHeight;
-                uint8_t  codec = static_cast<uint8_t>(wire_codec);
 
-                std::vector<uint8_t> pkt(1 + 4 + 4 + 1 + 2 + 2 + 1 + len);
-                size_t off = 0;
-                pkt[off++] = VIDEO_FRAME_PACKET_TYPE;
-                std::memcpy(pkt.data() + off, &fn, 4);    off += 4;
-                std::memcpy(pkt.data() + off, &ts, 4);    off += 4;
-                pkt[off++] = flags;
-                std::memcpy(pkt.data() + off, &fw, 2);    off += 2;
-                std::memcpy(pkt.data() + off, &fh, 2);    off += 2;
-                pkt[off++] = codec;
-                std::memcpy(pkt.data() + off, data, len);
-                bself->_core.net_.send_video(pkt.data(), pkt.size(), true);
+                // AppCore builds the wire header, stamps frame_seq, picks the
+                // transport (per-frame stream or stream 1) and accounts the
+                // bytes in the send controller.
+                auto r = bself->_core.send_video_frame(data, len, is_kf, fw, fh, wire_codec);
                 bself->_core.stream_frame_count_.fetch_add(1, std::memory_order_relaxed);
 
-                // Self-preview: feed encoded frame back to local decoder
+                // Self-preview: feed the encoded frame back to the local decoder
+                // using a private [header(14)][encoded] buffer (never a wire buffer).
                 if (bself->_core.viewing_sharer_ == bself->_core.user_id_ && bself->_decoder) {
-                    // onVideoFrameData expects [fn(4)][ts(4)][flags(1)][w(2)][h(2)][codec(1)][data(N)]
+                    VideoFrameHeader hdr;
+                    hdr.frame_seq = r.frame_seq;
+                    hdr.timestamp = r.frame_seq;
+                    hdr.flags     = is_kf ? VIDEO_FLAG_KEYFRAME : 0;
+                    hdr.width     = fw;
+                    hdr.height    = fh;
+                    hdr.codec     = static_cast<uint8_t>(wire_codec);
+
+                    std::vector<uint8_t> preview(VIDEO_FRAME_HEADER_SIZE + len);
+                    hdr.write(preview.data());
+                    std::memcpy(preview.data() + VIDEO_FRAME_HEADER_SIZE, data, len);
                     [bself onVideoFrameData:bself->_core.user_id_
-                                       data:pkt.data() + 1
-                                        len:pkt.size() - 1];
+                                       data:preview.data()
+                                        len:preview.size()];
                 }
             };
 
@@ -991,8 +1001,22 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
             });
         }
 
+        // Encode-thread housekeeping: apply the congestion controller's adapted
+        // bitrate (consumed once per change) and honor a keyframe request
+        // (send failure / PLI that passed the cooldown) via the force flag.
+        if (auto adapted = bself->_core.take_video_bitrate_update())
+            bself->_encoder->set_bitrate(*adapted);
         bool forceKF = bself->_needsKeyframe;
         bself->_needsKeyframe = false;
+        if (bself->_core.take_video_keyframe_request()) forceKF = true;
+
+        // Backpressure admission: skip this capture frame when the queued and
+        // in-flight bytes already imply too much queueing delay. A skipped
+        // frame costs nothing, but a pending keyframe request must survive it.
+        if (!bself->_core.video_admit_frame()) {
+            if (forceKF) bself->_needsKeyframe = true;
+            return;
+        }
 
         // Frame is already at encode resolution (scaled on the GPU by
         // ScreenCaptureKit). Encode it directly — no per-frame Core Image pass.
@@ -1055,7 +1079,8 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     _needsKeyframe = false;
     _streamAudioReady = false;
     _audioPos = 0;
-    _core.video_frame_number_ = 0;
+    // video_frame_number_ is owned by AppCore::send_video_frame and is reset
+    // only in reset_video_sender (share start) / on_disconnect_cleanup.
 
     _core.model_.is_sharing = false;
 
@@ -1151,12 +1176,8 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
 - (void)sendPLI:(UserId)targetId
 {
-    uint32_t id32 = static_cast<uint32_t>(targetId);
-    std::vector<uint8_t> pkt(6);
-    pkt[0] = VIDEO_CONTROL_TYPE;
-    pkt[1] = VIDEO_CTL_PLI;
-    std::memcpy(pkt.data() + 2, &id32, 4);
-    _core.net_.send_video(pkt.data(), pkt.size(), true);
+    // Thin wrapper over the single PLI funnel (per-target cooldown lives there).
+    _core.send_pli(targetId);
 }
 
 // ── Shutdown ──────────────────────────────────────────────────────────────────

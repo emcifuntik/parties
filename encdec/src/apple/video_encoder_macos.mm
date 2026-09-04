@@ -4,6 +4,7 @@
 // in the same output buffer so the server and receiver can parse them.
 
 #include <encdec/apple/video_encoder_macos.h>
+#include <parties/video_common.h>
 
 #import <Foundation/Foundation.h>
 
@@ -177,32 +178,8 @@ bool VideoEncoderMac::init(MacVideoCodec codec, uint32_t width, uint32_t height,
         return false;
     }
 
-    // Bitrate — average target
-    int32_t bps = (int32_t)bitrate_bps;
-    CFNumberRef bps_num = CFNumberCreate(nullptr, kCFNumberSInt32Type, &bps);
-    VTSessionSetProperty(session_,
-                         kVTCompressionPropertyKey_AverageBitRate,
-                         bps_num);
-    CFRelease(bps_num);
-
-    // Hard data rate limit: allow 2x the target over a 1-second window.
-    // Without this, AverageBitRate is just a soft hint that VT freely exceeds.
-    // The window is real-time only because we now feed real host-clock PTS
-    // (see encode()); with the old 1000-tick "1ms per frame" PTS this window
-    // spanned ~1000 frames and never bound. 2x (vs 1.5x) lets keyframes and
-    // scene changes spend enough bits to avoid the blocky "low-bitrate" look.
-    int32_t byte_limit = (int32_t)(bitrate_bps * 2.0 / 8);
-    int32_t time_limit = 1; // seconds
-    CFNumberRef limit_bytes = CFNumberCreate(nullptr, kCFNumberSInt32Type, &byte_limit);
-    CFNumberRef limit_time  = CFNumberCreate(nullptr, kCFNumberSInt32Type, &time_limit);
-    CFTypeRef limits[] = { limit_bytes, limit_time };
-    CFArrayRef limit_array = CFArrayCreate(nullptr, limits, 2, &kCFTypeArrayCallBacks);
-    VTSessionSetProperty(session_,
-                         kVTCompressionPropertyKey_DataRateLimits,
-                         limit_array);
-    CFRelease(limit_array);
-    CFRelease(limit_bytes);
-    CFRelease(limit_time);
+    // Bitrate — average target + hard data-rate window (shared with set_bitrate)
+    apply_rate_limits(bitrate_bps);
 
     // Frame rate
     int32_t fps_val = (int32_t)fps;
@@ -212,8 +189,10 @@ bool VideoEncoderMac::init(MacVideoCodec codec, uint32_t width, uint32_t height,
                          fps_num);
     CFRelease(fps_num);
 
-    // Keyframe every 3 seconds — limits P-frame quality degradation
-    int32_t kf_interval = (int32_t)(fps * 3);
+    // Periodic keyframes at the shared VIDEO_KEYFRAME_INTERVAL_MS cadence, the
+    // same GOP length the Windows encoders use, so late joiners never wait
+    // longer than that for a sync point.
+    int32_t kf_interval = (int32_t)(fps_ * (parties::VIDEO_KEYFRAME_INTERVAL_MS / 1000));
     CFNumberRef kf_num = CFNumberCreate(nullptr, kCFNumberSInt32Type, &kf_interval);
     VTSessionSetProperty(session_,
                          kVTCompressionPropertyKey_MaxKeyFrameInterval,
@@ -224,6 +203,15 @@ bool VideoEncoderMac::init(MacVideoCodec codec, uint32_t width, uint32_t height,
     VTSessionSetProperty(session_,
                          kVTCompressionPropertyKey_RealTime,
                          kCFBooleanTrue);
+
+    // Do not let the encoder hold frames back for lookahead: every submitted
+    // frame is emitted as soon as it is encoded (one-in, one-out).
+    int32_t max_frame_delay = 0;
+    CFNumberRef delay_num = CFNumberCreate(nullptr, kCFNumberSInt32Type, &max_frame_delay);
+    VTSessionSetProperty(session_,
+                         kVTCompressionPropertyKey_MaxFrameDelayCount,
+                         delay_num);
+    CFRelease(delay_num);
 
     // Profile / level (H264: High, H265: Main)
     if (codec == MacVideoCodec::H264) {
@@ -265,6 +253,45 @@ bool VideoEncoderMac::init(MacVideoCodec codec, uint32_t width, uint32_t height,
     fprintf(stderr, "[VideoEncoderMac] Initialized %s %ux%u @ %u bps %u fps\n",
             codec_name, width, height, bitrate_bps, fps);
     return true;
+}
+
+void VideoEncoderMac::apply_rate_limits(uint32_t bitrate_bps)
+{
+    if (!session_ || bitrate_bps == 0) return;
+
+    // Average target
+    int32_t bps = (int32_t)bitrate_bps;
+    CFNumberRef bps_num = CFNumberCreate(nullptr, kCFNumberSInt32Type, &bps);
+    VTSessionSetProperty(session_,
+                         kVTCompressionPropertyKey_AverageBitRate,
+                         bps_num);
+    CFRelease(bps_num);
+
+    // Hard data rate limit: 1.5x the target (the stream peak) over a 0.5 s
+    // window. Without this, AverageBitRate is just a soft hint that VT freely
+    // exceeds. The window is real-time only because we feed real host-clock
+    // PTS (see encode()). A short window at peak keeps a keyframe from turning
+    // into a multi-second burst on a link close to the average, which every
+    // viewer experiences as a stall followed by catch-up. The window length
+    // must be a double-typed CFNumber (seconds); an integer 0 would disable it.
+    const double  window_seconds = 0.5;
+    const SInt32  byte_limit     = (SInt32)(bitrate_bps * 1.5 / 8 * window_seconds);
+    CFNumberRef limit_bytes = CFNumberCreate(nullptr, kCFNumberSInt32Type, &byte_limit);
+    CFNumberRef limit_time  = CFNumberCreate(nullptr, kCFNumberDoubleType, &window_seconds);
+    CFTypeRef limits[] = { limit_bytes, limit_time };
+    CFArrayRef limit_array = CFArrayCreate(nullptr, limits, 2, &kCFTypeArrayCallBacks);
+    VTSessionSetProperty(session_,
+                         kVTCompressionPropertyKey_DataRateLimits,
+                         limit_array);
+    CFRelease(limit_array);
+    CFRelease(limit_bytes);
+    CFRelease(limit_time);
+}
+
+void VideoEncoderMac::set_bitrate(uint32_t bitrate_bps)
+{
+    std::lock_guard lock(mutex_);
+    apply_rate_limits(bitrate_bps);
 }
 
 void VideoEncoderMac::shutdown()

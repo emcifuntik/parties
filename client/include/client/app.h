@@ -10,6 +10,7 @@
 #include <client/context_window_manager.h>
 #include <client/win32_power_request.h>
 #include <client/video_decode_gate.h>
+#include <client/video_decode_backlog.h>
 #include <parties/types.h>
 #include <parties/video_common.h>
 
@@ -185,10 +186,13 @@ private:
     bool stream_revealed_ = false;  // first decoded frame shown to UI
     std::atomic<bool> capture_lost_{false};
 
-    // Capture frame rate limiting (QPC-based)
+    // Capture frame rate limiting (QPC-based phase accumulator: the next
+    // deadline advances by one interval per admitted frame so the effective
+    // rate stays at the target even when capture timestamps jitter around it).
+    // Touched only on the capture thread after share start.
     int64_t qpc_frequency_       = 0;
     int64_t capture_start_qpc_   = 0;
-    int64_t last_capture_qpc_    = 0;
+    int64_t next_capture_qpc_    = 0;
     int64_t capture_interval_qpc_ = 0;
 
     // GPU downscale resources (bilinear blit via pixel shader)
@@ -235,6 +239,11 @@ private:
         uint16_t     width;
         uint16_t     height;
         bool         keyframe = false;
+        int64_t      arrival_us = 0;   // steady_clock time the frame was queued
+        // Keyframe accepted while the decode gate was waiting for one (the
+        // recovery point after a flush, a discontinuity or the stream start),
+        // as opposed to a keyframe that arrived in sequence.
+        bool         recovery_keyframe = false;
     };
 
     // One watched sharer's decode pipeline: its own hardware decoder + thread +
@@ -251,7 +260,31 @@ private:
         std::stop_source decode_stop;
         // Serialized with queue by queue_mutex.
         VideoDecodeGate decode_gate;
+        // Anti-flap state of the backlog flush rules (stale_flushes_in_a_row
+        // and the recovery clock). Serialized with queue by queue_mutex:
+        // written only by the decode thread (which may therefore read it
+        // without the lock); the main thread reads it under queue_mutex in
+        // bridge.stream_awaiting_keyframe.
+        VideoDecodeStaleFlushTracker stale_flushes;
+        // Set at creation (main thread) from AppCore::user_id_: this is the
+        // local self-preview of our own share. It never sends a PLI — the
+        // encoder emits keyframes on its own interval and other viewers' PLIs
+        // already force them — and AppCore::retry_pending_plis never retries it.
+        bool self_preview = false;
+        // Decode-thread only. True once the decoder created by the last
+        // (re)init has delivered a frame (on_video_decoded); cleared on every
+        // (re)init. The backlog rules take it as decoder_ready, so a decoder
+        // still chewing on its first keyframe (4K NVDEC warm-up) is cold, not
+        // behind, and its backlog is never flushed.
+        bool decoded_since_init = false;
         bool hardware_decode_disabled = false;
+        // Decode-thread only. While set, on_video_decoded skips the plane copy /
+        // native publish: when a batch holds several frames only the last one
+        // can ever reach the screen (render_frame keeps just the newest planes),
+        // so the earlier ones are decoded purely to keep the reference chain.
+        // Every backend invokes on_decoded synchronously from decode(), on the
+        // decode thread, so a plain bool is sufficient.
+        bool suppress_output = false;
 
         std::mutex queue_mutex;
         std::condition_variable queue_cv;

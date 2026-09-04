@@ -1,6 +1,16 @@
 # Parties Networking Protocol
 
-> Version 1.0 -- March 2026
+> Version 1.2 -- September 2026
+
+The wire version is a `u16` (major in the high byte, minor in the low byte) sent in
+AUTH_IDENTITY and, since 1.2, echoed back in AUTH_RESPONSE. The server rejects only
+on a **major** mismatch; every minor bump is additive.
+
+| Version | Date | Changes |
+|---------|------|---------|
+| 1.0 | March 2026 | Baseline: single QUIC connection, control stream 0, reliable video stream 1, voice datagrams |
+| 1.1 | June 2026 | Secondary voice stream VOICE2 (`0x05`), same wire shape as voice |
+| 1.2 | September 2026 | Per-frame unidirectional video streams (`0x12`), SCREEN_SHARE_VIEWER (0x010D), trailing `protocol_version` in AUTH_RESPONSE, trailing `replay` flag in SCREEN_SHARE_STARTED, QUIC pacing enabled |
 
 ## 1. Overview
 
@@ -9,9 +19,9 @@ Parties is a self-hosted VOIP application with screen sharing. All communication
 | Layer | Transport | Purpose |
 |-------|-----------|---------|
 | Control plane | QUIC bidirectional stream 0 | Auth, channels, admin, screen share signaling |
-| Video plane | QUIC bidirectional stream 1 | Screen share frames (reliable, ordered) |
-| Voice plane | QUIC datagrams | Opus audio (unreliable, unordered) |
-| Video control | QUIC datagrams | PLI keyframe requests |
+| Video plane (1.2+) | QUIC unidirectional streams, one per frame | Screen share frames, sharer -> server and server -> viewer; a lost packet delays only its own frame |
+| Video plane (legacy) + video control | QUIC bidirectional stream 1 | Screen share frames for pre-1.2 peers (reliable, ordered); viewer -> server PLI keyframe requests |
+| Voice plane + sharer-bound control | QUIC datagrams | Opus audio (unreliable, unordered, `DGRAM_PRIORITY`); server -> sharer PLI (priority datagram, never queued behind video) |
 
 - **ALPN**: `parties` (7 bytes)
 - **TLS**: 1.3 via wolfSSL (QUIC-aware)
@@ -37,7 +47,9 @@ graph LR
     end
 
     A -- "Stream 0: Control messages" --> QS
-    A -- "Stream 1: Video frames" --> QS
+    A -- "Stream 1: Legacy video frames + PLI" --> QS
+    VE -- "Unidirectional stream per frame (1.2+)" --> QS
+    QS -- "Unidirectional stream per frame per viewer (1.2+)" --> VD
     AE -- "Datagrams: Voice packets" --> QS
     QS -- "SFU Forward" --> S
     S --> DB
@@ -47,10 +59,15 @@ graph LR
 graph TB
     subgraph "QUIC (UDP:7800)"
         S0["Stream 0 (bidirectional)<br/>Control plane"]
-        S1["Stream 1 (bidirectional)<br/>Video frames"]
+        S1["Stream 1 (bidirectional)<br/>Legacy video frames (pre-1.2 peers) + PLI"]
+        UF["Unidirectional streams, one per video frame (1.2+)<br/>sharer -> server: [0x12][hdr14][encoded]<br/>server -> viewer: [0x12][sender][hdr14][encoded]"]
         DG["Datagrams (unreliable)<br/>Voice + Video control"]
     end
 ```
+
+Per-frame streams are only used toward a peer that reported protocol 1.2 or newer;
+the server re-originates whole frames on whichever path each viewer supports, so
+1.1 and 1.2 clients can share the same channel.
 
 ## 3. Connection Lifecycle
 
@@ -69,7 +86,7 @@ sequenceDiagram
 
     C->>S: AUTH_IDENTITY [pubkey, display_name, timestamp, signature]
     Note over S: Auto-create user if unknown pubkey
-    S->>C: AUTH_RESPONSE [user_id, session_token, role, server_name]
+    S->>C: AUTH_RESPONSE [user_id, session_token, role, server_name, protocol_version]
     S->>C: CHANNEL_LIST [channels...]
 
     C->>S: CHANNEL_JOIN [channel_id]
@@ -134,6 +151,12 @@ Server auto-creates user on first auth with an unknown public key. No separate r
 | session_token | bytes | 32 | Random session token |
 | role | u8 | 1 | User role (see [Roles](#9-permissions--roles)) |
 | server_name | string | 2+N | Server display name |
+| protocol_version | u16 | 2 (optional, 1.2+) | Protocol version the server speaks, same packing as in AUTH_IDENTITY |
+
+`protocol_version` is a trailing field: 1.2+ servers always append it, older
+servers do not, and clients tolerate its absence (an absent field means the
+server is assumed to speak 1.1 and only the legacy video stream 1 is used toward
+it). Readers must ignore any unknown trailing bytes.
 
 #### SERVER_ERROR (0x01FF) -- S->C
 
@@ -242,8 +265,9 @@ so a session holds a *set* of subscriptions. Two wire forms:
   (`target 0, action 0` = clear all). Used by the multi-stream grid (desktop).
 
 Subscribing to a sharer triggers an auto-PLI to that sharer (keyframe for the new
-viewer). Subscriptions are cleared on channel leave, disconnect, and when the
-sharer stops.
+viewer) and, when the sharer speaks 1.2+, a SCREEN_SHARE_VIEWER notification to
+the sharer (`watching = 1` on subscribe, `0` on unsubscribe). Subscriptions are
+cleared on channel leave, disconnect, and when the sharer stops.
 
 #### SCREEN_SHARE_STARTED (0x010A) -- S->C
 
@@ -253,8 +277,25 @@ sharer stops.
 | codec | u8 | 1 | Video codec ID |
 | width | u16 | 2 | Capture width |
 | height | u16 | 2 | Capture height |
+| replay | u8 | 1 (optional, 1.2+) | `1` = late-join replay of an already active share, `0`/absent = live start |
 
-Broadcast to all users in the channel.
+Broadcast to all users in the channel when a share starts (`replay = 0`), and sent
+to a joining user once per active sharer (`replay = 1`). The trailing byte lets
+the client play a "stream started" notification only for genuine starts by
+someone else; older servers omit it and clients treat absence as `0`.
+
+#### SCREEN_SHARE_VIEWER (0x010D) -- S->C
+
+| Field | Type | Size | Description |
+|-------|------|------|-------------|
+| viewer_id | u32 | 4 | The viewer that changed its subscription |
+| watching | u8 | 1 | `1` = subscribed to your stream, `0` = unsubscribed |
+
+Sent **only to the sharer** whose stream is affected, and only when that sharer
+reported protocol 1.2+. Never sent for the sharer's own self-preview subscription
+(`viewer_id == sharer_id`). Fired on SCREEN_SHARE_VIEW and on the implicit
+unsubscribes (channel leave, disconnect). The client uses it for a "viewer
+joined" sound and for a viewer count on the sharer's side.
 
 #### SCREEN_SHARE_STOPPED (0x010B) -- S->C
 
@@ -361,32 +402,154 @@ a client that never sends `0x05` is indistinguishable from one that can't.
 
 ## 7. Video Data Plane
 
-Screen share video frames are sent on **QUIC Stream 1** (reliable, ordered) for guaranteed delivery of keyframes and codec state.
+Since 1.2 every encoded screen-share frame travels on its **own unidirectional
+QUIC stream**, so a lost packet delays only that frame instead of every frame
+behind it. **QUIC Stream 1** (bidirectional, reliable, ordered) is retained for
+peers that did not report 1.2+ and for viewer -> server PLI control packets (the
+server relays a PLI to the sharer as a priority datagram, see
+[Video control (PLI)](#video-control-pli)).
 
-### Frame format on Stream 1
+Both paths carry the same 14-byte frame header.
+
+### Frame header (14 bytes, shared by both paths)
+
+```
++-------+-------+-------+-------+-------+-------+
+|  fn   |  ts   | flags | width |height | codec |
+| 4B LE | 4B LE |  1 B  | 2B LE | 2B LE |  1 B  |
++-------+-------+-------+-------+-------+-------+
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| frame_seq | u32 | Sequential frame counter; stamped by the sharer after encode, reset only at share start and on disconnect. Comparisons are wrap-safe |
+| timestamp | u32 | Presentation timestamp (currently mirrors `frame_seq`; nothing consumes it) |
+| flags | u8 | Bitfield: bit 0 = keyframe |
+| width | u16 | Frame width in pixels |
+| height | u16 | Frame height in pixels |
+| codec | u8 | Video codec ID |
+
+Defined as `VideoFrameHeader` in `video_common.h`. `VIDEO_FRAME_MAX_BYTES` (4 MB)
+caps the largest on-wire record any stream parser accepts (type byte, `sender_id`,
+header and encoded data together). Because the server prepends up to 5 bytes
+(type + `sender_id`) when it re-originates a frame, the largest `[header][encoded]`
+a sharer may send is `VIDEO_FRAME_MAX_PAYLOAD_BYTES` = `VIDEO_FRAME_MAX_BYTES` - 5;
+every ingress enforces that value, so a compliant frame can never be rejected
+downstream. An oversized frame is rejected and, on a per-frame stream, the stream
+is aborted.
+
+### Per-frame unidirectional streams (1.2+)
+
+One stream per frame, written with a single `StreamSend` carrying FIN. The first
+byte is the stream type `0x12` (`STREAM_TYPE_VIDEO_FRAME`).
+
+**Sharer -> server:**
+
+```
++------+---------------------+------------+
+| 0x12 | frame header (14 B) |  encoded   |
+| 1 B  |                     |  variable  |
++------+---------------------+------------+
+```
+
+**Server -> viewer** (one stream per frame *per viewer*, `sender_id` inserted after the type byte):
+
+```
++------+-----------+---------------------+------------+
+| 0x12 | sender_id | frame header (14 B) |  encoded   |
+| 1 B  |   4 B LE  |                     |  variable  |
++------+-----------+---------------------+------------+
+```
+
+A receiver aborts and discards any unidirectional stream whose first byte is not
+`0x12` or whose total length exceeds `VIDEO_FRAME_MAX_BYTES`. Because per-frame
+streams complete independently, the viewer runs a small reorder buffer keyed by
+`frame_seq` (holds newer complete frames for up to 150 ms / 8 frames while an
+older one is missing and delivers keyframes immediately) before the frames reach
+the ordinary in-order decode path.
+
+How the reorder buffer resumes after a gap decides whether a PLI is sent:
+
+| Gap resumed at | Reported as loss | PLI |
+|----------------|------------------|-----|
+| A keyframe | No | No -- this is exactly how the server resumes a throttled viewer; the decoder simply re-anchors on the keyframe |
+| A delta frame (150 ms hold timeout, an aborted stream, or a buffer overflow) | Yes, once | Yes, through the client's PLI funnel |
+
+The server forwards to each viewer on the path that viewer supports: a 1.2+
+viewer gets a per-frame stream, a pre-1.2 viewer gets the frame on stream 1. A
+pre-1.2 sharer that still sends on stream 1 is served the same way -- the server
+re-originates whole frames on either path.
+
+**Ingress protections (server side).** Per-frame streams are accepted only from
+authenticated sessions that are currently registered as sharers
+(`SCREEN_SHARE_START` accepted and not yet stopped, left, or disconnected;
+`Session::video_ingress_allowed`); a unidirectional stream from any other session
+is aborted as soon as it is started. At most 16 MB may be buffered across one
+session's unfinished per-frame streams (`Session::VIDEO_INGRESS_MAX_BUFFERED_BYTES`);
+a stream that would exceed that is aborted. The largest `[header][encoded]` a
+sharer may send is `VIDEO_FRAME_MAX_PAYLOAD_BYTES` (`VIDEO_FRAME_MAX_BYTES` - 5,
+i.e. 4 MB minus the 5-byte forwarding prefix).
+
+### Legacy frame format on Stream 1 (pre-1.2 peers)
 
 Each frame is length-prefixed on the stream:
 
 ```
-+------------------+------+-------+-------+-------+-------+-------+-------+------------+
-| frame_len (u32)  | 0x02 |  fn   |  ts   | flags | width |height | codec | encoded    |
-|      4 B LE      | 1 B  | 4B LE | 4B LE |  1 B  | 2B LE | 2B LE|  1 B  | variable   |
-+------------------+------+-------+-------+-------+-------+-------+-------+------------+
++------------------+------+---------------------+------------+
+| frame_len (u32)  | 0x02 | frame header (14 B) |  encoded   |
+|      4 B LE      | 1 B  |                     |  variable  |
++------------------+------+---------------------+------------+
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
 | frame_len | u32 | Length of everything after this field |
 | packet_type | u8 | Always `0x02` (VIDEO_FRAME_PACKET_TYPE) |
-| frame_number | u32 | Sequential frame counter |
-| timestamp | u32 | Presentation timestamp (= frame_number) |
-| flags | u8 | Bitfield: bit 0 = keyframe |
-| width | u16 | Frame width in pixels |
-| height | u16 | Frame height in pixels |
-| codec | u8 | Video codec ID |
+| frame header | 14 B | As above |
 | encoded_data | bytes | Codec-compressed video data |
 
-**Server forwards** with sender_id inserted after the packet type byte.
+**Server forwards** with `sender_id` (u32 LE) inserted after the packet type byte:
+`[frame_len][0x02][sender_id][frame header][encoded]`.
+
+### Per-viewer backlog rule (server)
+
+The server keeps, per viewer connection, the number of video bytes **outstanding**
+toward that viewer: bytes handed to `StreamSend` minus bytes reported in
+`SEND_COMPLETE`. Send buffering is disabled, so `SEND_COMPLETE` fires when the
+data has been acknowledged and the counter measures queued + in-flight bytes.
+
+| Rule | Value |
+|------|-------|
+| Threshold | `clamp(viewer_rate x (MinRtt + 250 ms) + keyframe_headroom, 64 KB, 2 MB)` (`video_backlog_threshold_bytes`). `viewer_rate` is the **sum** of the measured send rates of every sharer the viewer is subscribed to (they all share the one outstanding-bytes counter); `MinRtt` is the viewer connection's minimum RTT, sampled from `QUIC_PARAM_CONN_STATISTICS_V2` about once per second and clamped to 1 s (the smoothed RTT already contains the queueing the gate is trying to detect); `keyframe_headroom` is the largest keyframe recently seen from those sharers, so one admitted keyframe cannot by itself trip the gate for the deltas behind it |
+| Drop granularity | Whole frames only; a frame is dropped for a viewer when that viewer is over threshold at forward time |
+| Resume | After any drop the viewer receives nothing until the next keyframe (`ViewerVideoGate.awaiting_keyframe`) |
+| Keyframe request | The server asks the sharer for a keyframe when a gated viewer is waiting, coalesced per sharer to one request per 200 ms |
+
+Dropping is per (viewer, sharer) and never affects other viewers of the same
+sharer. Dropping a keyframe is deliberate when the viewer is over threshold:
+queueing it would only add delay.
+
+The RTT term is required because the counter also holds bytes that are merely in
+flight: with send buffering disabled a send completes only when it is
+acknowledged, never before one RTT, so without it a long-RTT viewer would be
+throttled even on a lossless link.
+
+### Sharer admission and bitrate adaptation
+
+The sharer keeps the same outstanding-bytes counter toward the server
+(`VideoSendController`) and applies two coupled controls:
+
+| Control | Rule |
+|---------|------|
+| Admission | A capture frame is encoded only when the outstanding bytes imply no more than ~120 ms of queueing beyond the RTT at the current bitrate; otherwise the capture frame is skipped (no keyframe needed because `frame_seq` is stamped after encode) |
+| Decrease (x0.8) | A 500 ms window is congested when its peak queueing delay is >= 80 ms, actual (spurious-corrected) packet loss exceeds 3 %, or any admission, encoder, or send drop occurred in it; after two consecutive congested windows the bitrate is multiplied by 0.8 (not below the 800 kbps floor). A clean window resets the count |
+| Increase (x1.08) | After 2 s (four consecutive 500 ms windows) without congestion, loss, or drops, up to the user's target bitrate |
+| Floor | 800 kbps (`VIDEO_ADAPT_MIN_BITRATE`); below this the sender drops frames instead of lowering quality further |
+| Reconfigure rate | Encoder bitrate changes at most every 500 ms and only when they differ by >= 10 %; the final step onto the user's target (or onto the floor) is always published to the encoder even when it is smaller than the 10 % delta gate |
+
+RTT and loss come from `QUIC_PARAM_CONN_STATISTICS_V2` once per UI tick. A send
+call that fails synchronously counts the frame as lost and forces the next
+encoded frame to be a keyframe.
 
 ### Video codec IDs
 
@@ -400,15 +563,28 @@ Each frame is length-prefixed on the stream:
 
 | Parameter | Value |
 |-----------|-------|
-| Maximum bitrate | 5 Mbps |
+| Maximum bitrate | 20 Mbps |
 | Default bitrate | 2 Mbps |
-| Minimum bitrate | 200 kbps |
+| Minimum bitrate (UI floor) | 200 kbps |
+| Adaptation floor | 800 kbps |
 | Max keyframe interval | 5 seconds |
-| PLI cooldown | 500 ms minimum between sends |
+| PLI cooldown | 500 ms minimum between sends per target |
 
-### Video control datagrams
+### Video control (PLI)
 
-Video control messages are sent as QUIC datagrams:
+Video control packets share the `0x03` type byte. The two hops of a PLI use
+different transports:
+
+- **Viewer -> server**: on **stream 1**, length-prefixed like a frame
+  (`[u32 len][0x03][0x01][target_user_id]`), so the request itself is never lost.
+- **Server -> sharer**: forwarded viewer PLIs, the subscribe auto-PLI and the
+  backlog-recovery PLI are all sent as a **priority QUIC datagram**
+  (`DGRAM_PRIORITY`) with the same 6-byte body, so a keyframe request is never
+  queued behind video. Delivery is best effort: a lost PLI is covered by the
+  viewer's 500 ms PLI retry while a keyframe is pending and by the sharer's 5 s
+  maximum keyframe interval.
+
+Both forms are accepted on receive. The body is:
 
 ```
 +------+---------+-------------------+
@@ -420,8 +596,18 @@ Video control messages are sent as QUIC datagrams:
 | Subtype | ID | Payload | Description |
 |---------|----|---------|-------------|
 | PLI | 0x01 | target_user_id (u32) | Request keyframe from sharer |
-| SHARE_START | 0x02 | -- | (reserved) |
-| SHARE_STOP | 0x03 | -- | (reserved) |
+| SHARE_START | 0x02 | -- | (reserved, unused) |
+| SHARE_STOP | 0x03 | -- | (reserved, unused) |
+| NACK | 0x04 | -- | (reserved for a possible datagram video path; not implemented, do not reuse) |
+| RECEIVER_REPORT | 0x05 | -- | (reserved, same as above) |
+
+PLI rate limits:
+
+| Where | Rule |
+|-------|------|
+| Client (sender of PLI) | One funnel with a 500 ms cooldown per target; while a watched stream is still waiting for a keyframe the PLI is retried every 500 ms. Escalation cap: after two consecutive stale-backlog flushes without a keyframe the viewer stops sending PLIs for that stream (logs "decoder too slow") and waits for the sharer's periodic keyframe. The self-preview stream never sends PLIs |
+| Client (receiver of PLI, sharer) | Incoming PLIs force a keyframe through a 500 ms cooldown |
+| Server | Per-session token bucket of 4 PLIs/s with a burst of 4, checked before any work; PLIs from a viewer that is currently over its backlog threshold are not forwarded (the viewer would drop the keyframe anyway); forwarded PLIs are coalesced per sharer |
 
 ## 8. Screen Sharing Protocol
 
@@ -432,29 +618,42 @@ sequenceDiagram
     participant Viewer as Viewer
 
     Sharer->>Server: SCREEN_SHARE_START [codec, width, height]
-    Server->>Viewer: SCREEN_SHARE_STARTED [sharer_id, codec, w, h]
-    Server->>Sharer: SCREEN_SHARE_STARTED [sharer_id, codec, w, h]
+    Server->>Viewer: SCREEN_SHARE_STARTED [sharer_id, codec, w, h, replay=0]
+    Server->>Sharer: SCREEN_SHARE_STARTED [sharer_id, codec, w, h, replay=0]
 
-    Viewer->>Server: SCREEN_SHARE_VIEW [sharer_id]
+    Viewer->>Server: SCREEN_SHARE_VIEW [sharer_id, action=1]
     Note over Server: Auto-PLI: request keyframe for new viewer
-    Server->>Sharer: PLI datagram [0x03, 0x01, viewer_id]
+    Server->>Sharer: PLI (priority datagram) [0x03, 0x01, viewer_id]
+    Server->>Sharer: SCREEN_SHARE_VIEWER [viewer_id, watching=1]
     Sharer->>Sharer: Encode next frame as keyframe
 
-    loop Video streaming
-        Sharer->>Server: Video frame on Stream 1
-        Server->>Viewer: Forward frame (+ sender_id)
+    loop Video streaming (1.2+)
+        Sharer->>Server: Unidirectional stream per frame [0x12, hdr, encoded] + FIN
+        Note over Server: Per-viewer backlog gate: drop whole frame if over threshold
+        Server->>Viewer: Unidirectional stream per frame [0x12, sender_id, hdr, encoded] + FIN
+        Note over Viewer: Reorder by frame_seq, then decode
     end
 
-    Viewer->>Server: SCREEN_SHARE_VIEW [0] (unsubscribe)
+    opt Viewer fell behind (server dropped frames for it)
+        Note over Server: Viewer gated until next keyframe
+        Server->>Sharer: PLI (priority datagram, coalesced, one per 200 ms per sharer)
+    end
+
+    Viewer->>Server: SCREEN_SHARE_VIEW [sharer_id, action=0] (unsubscribe)
+    Server->>Sharer: SCREEN_SHARE_VIEWER [viewer_id, watching=0]
     Sharer->>Server: SCREEN_SHARE_STOP
     Server->>Viewer: SCREEN_SHARE_STOPPED [sharer_id]
 ```
 
 Key properties:
-- **Multiple sharers per channel**: Each viewer picks which sharer to watch
+- **Multiple sharers per channel**: Each viewer picks which sharer(s) to watch
 - **Subscription-based delivery**: Video only flows to viewers who explicitly subscribe
 - **Auto-PLI on subscribe**: Server sends immediate PLI so new viewers get a keyframe
-- **Late-join notifications**: When joining a channel, server sends SCREEN_SHARE_STARTED for each active sharer
+- **PLI relay**: Viewer PLIs reach the server on stream 1; every server -> sharer PLI is a priority datagram, never queued behind video
+- **Viewer notifications**: The sharer receives SCREEN_SHARE_VIEWER for every subscribe/unsubscribe by another user
+- **Per-frame streams**: One unidirectional QUIC stream per frame on each hop (1.2+), so packet loss never stalls later frames
+- **Per-viewer backpressure**: A slow viewer only loses its own frames; the sharer and other viewers are unaffected
+- **Late-join notifications**: When joining a channel, server sends SCREEN_SHARE_STARTED with `replay = 1` for each active sharer
 
 ## 9. Permissions & Roles
 
@@ -568,8 +767,16 @@ sequenceDiagram
 | ALPN | `"parties"` | `quic_common.h` |
 | Idle timeout | 60,000 ms | QUIC settings |
 | Keepalive interval | 15,000 ms | Client QUIC settings |
-| Max bidirectional streams | 2 | QUIC settings |
+| Peer bidirectional streams (`PeerBidiStreamCount`) | 10 on the server (control stream 0 + legacy video stream 1 + up to 8 concurrent file upload/download streams); the client leaves its own count at 0 and aborts any server-opened bidirectional stream | QUIC settings |
+| Peer unidirectional streams (`PeerUnidiStreamCount`) | 128 | QUIC settings, both ends |
+| Unidirectional stream receive window (`StreamRecvWindowUnidiDefault`) | 4 MB | QUIC settings, both ends (default 64 KB would window-limit keyframes) |
+| Pacing (`PacingEnabled`) | on | QUIC settings, both ends |
+| Send buffering (`SendBufferingEnabled`) | off | QUIC settings; `SEND_COMPLETE` fires on acknowledgement |
 | Max control message | 1,048,576 bytes | `net_client.cpp` |
+| Max on-wire video record (`VIDEO_FRAME_MAX_BYTES`) | 4 MB | `video_common.h` |
+| Max sharer frame payload (`VIDEO_FRAME_MAX_PAYLOAD_BYTES`) | 4 MB - 5 B (`[header][encoded]`, leaves room for the forwarding prefix) | `video_common.h` |
+| Per-session per-frame ingress buffer (`VIDEO_INGRESS_MAX_BUFFERED_BYTES`) | 16 MB across unfinished per-frame streams | `session.h` |
+| Per-viewer backlog threshold clamp | 64 KB .. 2 MB | `video_backlog.h` |
 
 ### Types
 
@@ -585,8 +792,9 @@ sequenceDiagram
 | Type | Value | Transport |
 |------|-------|-----------|
 | Voice | `0x01` | Datagram |
-| Video frame | `0x02` | Stream 1 |
-| Video control | `0x03` | Datagram |
+| Video frame (legacy, pre-1.2 peers) | `0x02` | Stream 1 |
+| Video frame (per-frame stream, 1.2+) | `0x12` stream type | One unidirectional stream per frame |
+| Video control (PLI) | `0x03` | Client -> server: stream 1; server -> sharer: priority datagram; both forms accepted on receive |
 | Stream (screen-share) audio | `0x04` | Datagram |
 | Secondary voice (VOICE2) | `0x05` | Datagram |
 
@@ -595,5 +803,7 @@ sequenceDiagram
 The server operates as a **Selective Forwarding Unit** (SFU):
 
 - Voice packets (`0x01`) and secondary voice (`0x05`) are forwarded to all authenticated users in the same channel (excluding sender and deafened users)
-- Video frames are forwarded to every viewer subscribed to that sharer (a viewer may subscribe to multiple sharers at once)
+- Video frames are forwarded to every viewer subscribed to that sharer (a viewer may subscribe to multiple sharers at once), on the path that viewer supports (per-frame stream for 1.2+, stream 1 otherwise)
+- Video forwarding is gated per viewer: when the bytes outstanding toward a viewer exceed `clamp(viewer_rate x (MinRtt + 250 ms) + keyframe_headroom, 64 KB, 2 MB)` (`viewer_rate` = sum of the rates of every sharer that viewer watches, `MinRtt` sampled about once per second) the frame is dropped for that viewer as a whole (never partially), the viewer is held until the next keyframe, and the server asks the sharer for one (coalesced to one request per sharer per 200 ms). Other viewers of the same sharer are unaffected
+- Per-frame ingress is guarded: streams are accepted only from sessions registered as sharers, at most 16 MB may be buffered per session across unfinished per-frame streams, and a sharer's `[header][encoded]` may not exceed `VIDEO_FRAME_MAX_PAYLOAD_BYTES`
 - The server **never decodes** audio or video -- it only prepends the sender's user ID and routes packets

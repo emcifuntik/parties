@@ -90,10 +90,11 @@ bool NvencEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
         return false;
     }
 
-    const auto rate_control = make_stream_vbr_rate_control(bitrate);
-    LOG_INFO("Selected codec: {} ({}x{} @ {} fps), VBR average: {} bps, peak: {} bps",
+    const auto rate_control = make_stream_vbr_rate_control(bitrate, fps);
+    LOG_INFO("Selected codec: {} ({}x{} @ {} fps), VBR average: {} bps, peak: {} bps, VBV: {} bits",
              codec_name(codec_), width, height, fps,
-             rate_control.average_bitrate, rate_control.peak_bitrate);
+             rate_control.average_bitrate, rate_control.peak_bitrate,
+             rate_control.vbv_buffer_size);
 
     GUID encode_guid = (codec_ == VideoCodecId::AV1)  ? NV_ENC_CODEC_AV1_GUID
                      : (codec_ == VideoCodecId::H265) ? NV_ENC_CODEC_HEVC_GUID
@@ -127,13 +128,20 @@ bool NvencEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
     encode_config_.gopLength = fps * (VIDEO_KEYFRAME_INTERVAL_MS / 1000);
     encode_config_.frameIntervalP = 1;
 
-    // Output sequence headers with every keyframe so decoders can join mid-stream
-    if (codec_ == VideoCodecId::AV1)
+    // Output sequence headers with every keyframe so decoders can join mid-stream.
+    // idrPeriod is set explicitly (instead of relying on the "equal to gopLength
+    // when unset" default) so every GOP boundary is a true IDR/key frame that a
+    // late-joining viewer can start from.
+    if (codec_ == VideoCodecId::AV1) {
         encode_config_.encodeCodecConfig.av1Config.repeatSeqHdr = 1;
-    else if (codec_ == VideoCodecId::H265)
+        encode_config_.encodeCodecConfig.av1Config.idrPeriod = encode_config_.gopLength;
+    } else if (codec_ == VideoCodecId::H265) {
         encode_config_.encodeCodecConfig.hevcConfig.repeatSPSPPS = 1;
-    else
+        encode_config_.encodeCodecConfig.hevcConfig.idrPeriod = encode_config_.gopLength;
+    } else {
         encode_config_.encodeCodecConfig.h264Config.repeatSPSPPS = 1;
+        encode_config_.encodeCodecConfig.h264Config.idrPeriod = encode_config_.gopLength;
+    }
 
     std::memset(&init_params_, 0, sizeof(init_params_));
     init_params_.version = NV_ENC_INITIALIZE_PARAMS_VER;
@@ -374,7 +382,20 @@ void NvencEncoder::force_keyframe() {
 void NvencEncoder::set_bitrate(uint32_t bitrate) {
     if (!initialized_) return;
 
-    const auto rate_control = make_stream_vbr_rate_control(bitrate);
+    // A reconfigure is not free (the driver re-plans rate control); ignore
+    // changes below 10 % of the current average so AIMD jitter around a
+    // stable target does not thrash the encoder.
+    const auto rate_control = make_stream_vbr_rate_control(bitrate, fps_);
+    const uint32_t current_average = encode_config_.rcParams.averageBitRate;
+    const uint64_t delta = rate_control.average_bitrate > current_average
+        ? rate_control.average_bitrate - current_average
+        : current_average - rate_control.average_bitrate;
+    if (current_average != 0 && delta * 10u < static_cast<uint64_t>(current_average)) {
+        LOG_DEBUG("NVENC set_bitrate: {} bps within 10% of current {} bps, skipping reconfigure",
+                  rate_control.average_bitrate, current_average);
+        return;
+    }
+
     encode_config_.rcParams.averageBitRate = rate_control.average_bitrate;
     encode_config_.rcParams.maxBitRate = rate_control.peak_bitrate;
     encode_config_.rcParams.vbvBufferSize = rate_control.vbv_buffer_size;
@@ -388,7 +409,11 @@ void NvencEncoder::set_bitrate(uint32_t bitrate) {
     NVENCSTATUS status = funcs_.nvEncReconfigureEncoder(encoder_, &reconfig);
     if (status != NV_ENC_SUCCESS) {
         LOG_ERROR("ReconfigureEncoder failed: {}", (int)status);
+        return;
     }
+    LOG_DEBUG("NVENC reconfigured: average {} bps, peak {} bps, VBV {} bits",
+              rate_control.average_bitrate, rate_control.peak_bitrate,
+              rate_control.vbv_buffer_size);
 }
 
 EncoderInfo NvencEncoder::info() const {

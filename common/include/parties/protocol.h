@@ -12,12 +12,26 @@ constexpr uint16_t DEFAULT_PORT = 7800;
 // in AUTH_IDENTITY. The server rejects only on a MAJOR mismatch, so a minor
 // bump doesn't lock out older clients.
 constexpr uint8_t  PROTOCOL_VERSION_MAJOR = 1;
-constexpr uint8_t  PROTOCOL_VERSION_MINOR = 1;   // +VOICE2 (secondary voice stream), additive
+// 1.1: +VOICE2 (secondary voice stream), additive.
+// 1.2: +per-frame unidirectional video streams (STREAM_TYPE_VIDEO_FRAME),
+//      SCREEN_SHARE_VIEWER, trailing protocol version in AUTH_RESPONSE,
+//      trailing replay flag in SCREEN_SHARE_STARTED. All additive.
+constexpr uint8_t  PROTOCOL_VERSION_MINOR = 2;
 constexpr uint16_t PROTOCOL_VERSION =
     (static_cast<uint16_t>(PROTOCOL_VERSION_MAJOR) << 8) | PROTOCOL_VERSION_MINOR;
 
 constexpr uint8_t protocol_major(uint16_t version) { return static_cast<uint8_t>(version >> 8); }
 constexpr uint8_t protocol_minor(uint16_t version) { return static_cast<uint8_t>(version & 0xFF); }
+
+// Version a peer must report before we send it video on per-frame streams.
+// A peer that never reported a version (pre-1.2 server or client) is assumed
+// to be 1.1 and keeps receiving whole frames on the legacy reliable video
+// stream (stream 1).
+constexpr uint16_t PROTOCOL_VERSION_ASSUMED_LEGACY = (1u << 8) | 1u;
+constexpr uint16_t PROTOCOL_VERSION_FRAME_STREAMS  = (1u << 8) | 2u;
+constexpr bool protocol_supports_frame_streams(uint16_t version) {
+    return protocol_major(version) == 1 && version >= PROTOCOL_VERSION_FRAME_STREAMS;
+}
 
 // SERVER_ERROR payload: [code(u16)][message(string)]. The code lets the client
 // react programmatically (retry vs. update vs. give up) instead of parsing the
@@ -59,9 +73,13 @@ enum class ControlMessageType : uint16_t {
     KEEPALIVE_PONG        = 0x0107,
     // 0x0109 was CHANNEL_KEY — removed (was dead crypto; media is protected by
     // QUIC TLS hop-by-hop, the SFU is trusted). Do not reuse without a bump.
-    SCREEN_SHARE_STARTED  = 0x010A,
+    SCREEN_SHARE_STARTED  = 0x010A,   // [sharer_id(4)][codec(1)][width(2)][height(2)][replay(1), optional since 1.2:
+                                      //  1 = late-join replay of an already active share, 0/absent = live start]
     SCREEN_SHARE_STOPPED  = 0x010B,
     SCREEN_SHARE_DENIED   = 0x010C,
+    SCREEN_SHARE_VIEWER   = 0x010D,   // To the sharer only (1.2+): [viewer_id(4)][watching(1)] — a viewer
+                                      // subscribed (1) to / unsubscribed (0) from your stream. Never sent
+                                      // for the sharer's own self-preview subscription.
     SERVER_ERROR          = 0x01FF,
 
     // Admin operations (client -> server)
@@ -116,13 +134,30 @@ constexpr uint8_t VOICE2_PACKET_TYPE       = 0x05;  // Secondary per-user voice 
                                                     // its own volume. Peers that don't know it ignore
                                                     // the type, so it is fully back-compatible.
 
-// File transfer stream type bytes (first byte on streams 2+)
+// File transfer stream type bytes (first byte on client-opened bidirectional streams 2+)
 constexpr uint8_t STREAM_TYPE_FILE_UPLOAD   = 0x10;
 constexpr uint8_t STREAM_TYPE_FILE_DOWNLOAD = 0x11;
 
-// Video control subtypes
+// Per-frame video stream (1.2+). Every encoded screen-share frame travels on
+// its own UNIDIRECTIONAL QUIC stream so a lost packet only delays that frame:
+//   sharer -> server : [0x12][frame header(14)][encoded]           (one StreamSend + FIN)
+//   server -> viewer : [0x12][sender_id(4)][frame header(14)][encoded]
+// The 14-byte frame header is the same layout as on the legacy video stream 1
+// (see parties/video_common.h, VideoFrameHeader). Frames larger than
+// VIDEO_FRAME_MAX_BYTES are rejected and the stream aborted.
+constexpr uint8_t STREAM_TYPE_VIDEO_FRAME   = 0x12;
+
+// Video control subtypes (VIDEO_CONTROL_TYPE datagrams / stream-1 packets)
 constexpr uint8_t VIDEO_CTL_PLI         = 0x01;
-constexpr uint8_t VIDEO_CTL_SHARE_START = 0x02;
-constexpr uint8_t VIDEO_CTL_SHARE_STOP  = 0x03;
+constexpr uint8_t VIDEO_CTL_SHARE_START = 0x02;   // reserved, unused
+constexpr uint8_t VIDEO_CTL_SHARE_STOP  = 0x03;   // reserved, unused
+// 0x04 (NACK) and 0x05 (RECEIVER_REPORT) are reserved for a possible
+// datagram-based video path; not implemented. Do not reuse.
+
+// Control-message wire notes for optional trailing fields (1.2+). Readers must
+// tolerate their absence (older peer) and ignore unknown trailing bytes.
+//   AUTH_RESPONSE: [user_id(4)][session_token(32)][role(1)][server_name(string)][protocol_version(2)]
+//   The trailing u16 tells the client which protocol the server speaks; absent
+//   means PROTOCOL_VERSION_ASSUMED_LEGACY.
 
 } // namespace parties::protocol

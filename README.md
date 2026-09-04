@@ -70,7 +70,8 @@ checks.
 Single QUIC connection on UDP port 7800:
 
 - **Control stream** (stream 0) — bidirectional, length-prefixed messages
-- **Video stream** (stream 1) — reliable screen share frames
+- **Per-frame video streams** (protocol 1.2) — one unidirectional QUIC stream per encoded frame; stream 1 kept for older peers and PLI
+- **Video stream** (stream 1) — reliable screen share frames for pre-1.2 peers, plus PLI keyframe requests
 - **Voice datagrams** — unreliable, unordered Opus packets
 
 See [docs/protocol.md](docs/protocol.md) for the full protocol specification.

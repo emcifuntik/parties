@@ -2,7 +2,9 @@
 
 #include <dav1d/dav1d.h>
 
+#include <algorithm>
 #include <cstring>
+#include <thread>
 #include <parties/log.h>
 #include <parties/profiler.h>
 
@@ -21,9 +23,18 @@ bool Dav1dDecoder::init(VideoCodecId codec, uint32_t /*width*/, uint32_t /*heigh
 
     codec_ = codec;
 
+    // Use about half of the machine's hardware threads for the decoder, bounded
+    // to [4, 16]. hardware_concurrency() may report 0; treat that as 4.
+    // max_frame_delay = 1 keeps the decoder from buffering frames for
+    // throughput: every submitted frame is output as soon as it is decoded.
+    const unsigned hw_threads = std::thread::hardware_concurrency();
+    const int n_threads = hw_threads == 0
+        ? 4
+        : std::clamp(static_cast<int>(hw_threads / 2u), 4, 16);
+
     Dav1dSettings settings;
     dav1d_default_settings(&settings);
-    settings.n_threads = 4;
+    settings.n_threads = n_threads;
     settings.max_frame_delay = 1;
 
     int ret = dav1d_open(&ctx_, &settings);
@@ -32,6 +43,8 @@ bool Dav1dDecoder::init(VideoCodecId codec, uint32_t /*width*/, uint32_t /*heigh
         return false;
     }
 
+    LOG_INFO("dav1d decoder initialized with {} threads (hardware concurrency {}), max_frame_delay 1",
+             n_threads, hw_threads);
     return true;
 }
 

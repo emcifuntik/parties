@@ -20,6 +20,18 @@
 
 namespace parties::server {
 
+// Monotonic microseconds for the policy helpers (RateEstimator, TokenBucket,
+// Coalescer treat 0 as "never", which steady_clock never yields).
+static int64_t now_us() {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// A sharer's recorded largest keyframe (backlog headroom) is replaced by the
+// newest keyframe once it is older than this, so a one-off huge keyframe does
+// not inflate every viewer's budget forever.
+constexpr int64_t KEYFRAME_HEADROOM_TTL_US = 10'000'000;
+
 Server::Server() = default;
 Server::~Server() { stop(); }
 
@@ -104,6 +116,7 @@ void Server::run() {
         process_data_packets();
         process_file_transfers();
         process_disconnects();
+        sample_viewer_rtts();   // self-throttled to about once per second
 
         // Periodic retention enforcement (every 60 seconds)
         auto now = std::chrono::steady_clock::now();
@@ -188,8 +201,10 @@ void Server::process_data_packets() {
                     targets.push_back(s->id);
                 }
             }
+            // Voice goes out as priority datagrams so it is never queued
+            // behind video toward the same peer.
             if (!targets.empty())
-                quic_.send_to_many(targets, fwd.data(), fwd.size());
+                quic_.send_to_many(targets, fwd.data(), fwd.size(), true);
         }
         else if (pkt.packet_type == protocol::VIDEO_FRAME_PACKET_TYPE) {
             forward_video_frame(pkt.session_id, pkt.data.data(), pkt.data.size());
@@ -522,18 +537,31 @@ void Server::handle_message(const IncomingMessage& msg) {
         session->username = user->display_name;
         session->role = user->role;
         session->public_key = pubkey;
+        // Decides the video delivery path (per-frame streams for >= 1.2) and
+        // which notifications this client understands.
+        session->protocol_version = client_version;
+
+        // user_id -> session index (the duplicate, if any, was erased by
+        // process_disconnect above).
+        {
+            std::lock_guard<std::mutex> lock(user_index_mutex_);
+            user_sessions_[session->user_id] = msg.session_id;
+        }
+        authed_sessions_[msg.session_id] = session;
 
         db_.update_last_login(user->id);
 
         // Generate session token
         parties::random_bytes(session->session_token.data(), session->session_token.size());
 
-        // Send AUTH_RESPONSE: [user_id][session_token(32)][role][server_name]
+        // Send AUTH_RESPONSE: [user_id][session_token(32)][role][server_name][protocol_version(2)]
+        // The trailing version (1.2+) tells the client which video path to use.
         BinaryWriter writer;
         writer.write_u32(session->user_id);
         writer.write_bytes(session->session_token.data(), session->session_token.size());
         writer.write_u8(static_cast<uint8_t>(session->role));
         writer.write_string(config_.server_name);
+        writer.write_u16(protocol::PROTOCOL_VERSION);
 
         quic_.send_to(msg.session_id, protocol::ControlMessageType::AUTH_RESPONSE,
                      writer.data().data(), writer.data().size());
@@ -624,6 +652,7 @@ void Server::handle_message(const IncomingMessage& msg) {
         ChannelId old_channel = session->channel_id;
         if (old_channel != 0 && old_channel != channel_id) {
             stop_screen_share(old_channel, session->user_id);
+            clear_viewer_subscriptions(session, true);
             session->channel_id = 0;
             BinaryWriter leave_writer;
             leave_writer.write_u32(session->user_id);
@@ -664,27 +693,29 @@ void Server::handle_message(const IncomingMessage& msg) {
                          list_writer.data().data(), list_writer.data().size());
         }
 
-        // Notify new joiner about all active screen sharers in this channel
+        // Notify new joiner about all active screen sharers in this channel.
+        // The trailing replay flag (1) tells 1.2+ clients not to play the
+        // "stream started" sound for shares that were already running.
         {
-            std::lock_guard<std::mutex> lock(sharers_mutex_);
-            auto ss_it = channel_screen_sharers_.find(channel_id);
-            if (ss_it != channel_screen_sharers_.end()) {
-                auto all2 = quic_.get_sessions();
-                for (UserId sharer_id : ss_it->second) {
-                    for (auto& s : all2) {
-                        if (s->user_id == sharer_id && s->authenticated) {
-                            BinaryWriter ss_writer;
-                            ss_writer.write_u32(s->user_id);
-                            ss_writer.write_u8(s->share_codec);
-                            ss_writer.write_u16(s->share_width);
-                            ss_writer.write_u16(s->share_height);
-                            quic_.send_to(msg.session_id,
-                                         protocol::ControlMessageType::SCREEN_SHARE_STARTED,
-                                         ss_writer.data().data(), ss_writer.data().size());
-                            break;
-                        }
-                    }
-                }
+            std::vector<UserId> sharers;
+            {
+                std::lock_guard<std::mutex> lock(sharers_mutex_);
+                auto ss_it = channel_screen_sharers_.find(channel_id);
+                if (ss_it != channel_screen_sharers_.end())
+                    sharers.assign(ss_it->second.begin(), ss_it->second.end());
+            }
+            for (UserId sharer_id : sharers) {
+                auto s = session_for_user(sharer_id);
+                if (!s || !s->authenticated) continue;
+                BinaryWriter ss_writer;
+                ss_writer.write_u32(s->user_id);
+                ss_writer.write_u8(s->share_codec);
+                ss_writer.write_u16(s->share_width);
+                ss_writer.write_u16(s->share_height);
+                ss_writer.write_u8(1);   // replay
+                quic_.send_to(msg.session_id,
+                             protocol::ControlMessageType::SCREEN_SHARE_STARTED,
+                             ss_writer.data().data(), ss_writer.data().size());
             }
         }
 
@@ -741,10 +772,7 @@ void Server::handle_message(const IncomingMessage& msg) {
 
         ChannelId old_channel = session->channel_id;
         stop_screen_share(old_channel, session->user_id);
-        {
-            std::lock_guard<std::mutex> lock(subscriptions_mutex_);
-            session->subscribed_sharers.clear();
-        }
+        clear_viewer_subscriptions(session, true);
         session->channel_id = 0;
 
         BinaryWriter writer;
@@ -811,8 +839,18 @@ void Server::handle_message(const IncomingMessage& msg) {
         ChannelId channel_id = reader.read_u32();
         if (reader.error()) break;
 
-        // Kick everyone from the channel first
+        // Kick everyone from the channel first. Tear down screen-share state
+        // before the channel ids are zeroed: stop_screen_share needs the
+        // channel to find the sharer and to notify the remaining members, and
+        // a sharer that keeps video_ingress_allowed after leaving would still
+        // have its per-frame streams buffered on the server.
         auto all = quic_.get_sessions();
+        for (auto& s : all) {
+            if (s->authenticated && s->channel_id == channel_id) {
+                stop_screen_share(channel_id, s->user_id);
+                clear_viewer_subscriptions(s, false);
+            }
+        }
         for (auto& s : all) {
             if (s->authenticated && s->channel_id == channel_id) {
                 s->channel_id = 0;
@@ -1009,13 +1047,18 @@ void Server::handle_message(const IncomingMessage& msg) {
         session->share_codec = codec_id;
         session->share_width = width;
         session->share_height = height;
+        // From now on this session's per-frame video streams are accepted
+        // (release pairs with the acquire in QuicServer's PEER_STREAM_STARTED).
+        session->video_ingress_allowed.store(true, std::memory_order_release);
 
-        // Notify all in channel (including sender for confirmation)
+        // Notify all in channel (including sender for confirmation). Trailing
+        // replay = 0: a live start (clients play the "stream started" sound).
         BinaryWriter writer;
         writer.write_u32(session->user_id);
         writer.write_u8(codec_id);
         writer.write_u16(width);
         writer.write_u16(height);
+        writer.write_u8(0);   // replay
 
         auto all = quic_.get_sessions();
         for (auto& s : all) {
@@ -1080,9 +1123,18 @@ void Server::handle_message(const IncomingMessage& msg) {
         const bool subscribe = additive ? (reader.read_u8() != 0) : (target_id != 0);
 
         if (!subscribe) {
-            std::lock_guard<std::mutex> lock(subscriptions_mutex_);
-            if (target_id == 0) session->subscribed_sharers.clear();   // clear all
-            else                session->subscribed_sharers.erase(target_id);
+            if (target_id == 0) {
+                clear_viewer_subscriptions(session, true);   // clear all
+                break;
+            }
+            bool was_subscribed = false;
+            {
+                std::lock_guard<std::mutex> lock(subscriptions_mutex_);
+                was_subscribed = session->subscribed_sharers.erase(target_id) != 0;
+                session->video_gates.erase(target_id);
+            }
+            if (was_subscribed)
+                notify_viewer_change(target_id, session->user_id, false);
             break;
         }
         if (target_id == 0) break;
@@ -1097,27 +1149,40 @@ void Server::handle_message(const IncomingMessage& msg) {
         }
         if (!is_sharer) break;
 
+        std::vector<UserId> dropped;   // sharers replaced by a legacy single-select
+        bool newly_subscribed = false;
         {
             std::lock_guard<std::mutex> lock(subscriptions_mutex_);
-            // Legacy single-select replaces the whole set; additive keeps the rest.
-            if (!additive) session->subscribed_sharers.clear();
-            session->subscribed_sharers.insert(target_id);
-        }
-
-        // Auto-PLI: tell the sharer to send a keyframe so the new viewer
-        // can decode from the Sequence Header
-        auto all = quic_.get_sessions();
-        for (auto& s : all) {
-            if (s->user_id == target_id && s->authenticated) {
-                std::vector<uint8_t> pli;
-                pli.push_back(protocol::VIDEO_CONTROL_TYPE);
-                pli.push_back(protocol::VIDEO_CTL_PLI);
-                uint32_t requester_id = session->user_id;
-                pli.insert(pli.end(), reinterpret_cast<uint8_t*>(&requester_id),
-                           reinterpret_cast<uint8_t*>(&requester_id) + 4);
-                quic_.send_datagram(s->id, pli.data(), pli.size());
-                break;
+            // Legacy single-select replaces the whole set; additive keeps the
+            // rest. Only the OTHER sharers are dropped: a repeated select of
+            // the same target keeps its gate and, being no new subscription,
+            // triggers neither the auto-PLI nor a viewer notification — so a
+            // client re-sending its selection cannot spam the sharer.
+            if (!additive) {
+                for (auto it = session->subscribed_sharers.begin();
+                     it != session->subscribed_sharers.end(); ) {
+                    if (*it == target_id) { ++it; continue; }
+                    dropped.push_back(*it);
+                    session->video_gates.erase(*it);
+                    it = session->subscribed_sharers.erase(it);
+                }
             }
+            newly_subscribed = session->subscribed_sharers.insert(target_id).second;
+            if (newly_subscribed) {
+                // A fresh viewer cannot use anything before the next keyframe:
+                // gate delivery until it arrives (forward_video_frame keeps
+                // asking the sharer, coalesced, until it does).
+                session->video_gates[target_id].awaiting_keyframe = true;
+            }
+        }
+        for (UserId old : dropped)
+            notify_viewer_change(old, session->user_id, false);
+
+        if (newly_subscribed) {
+            // Auto-PLI: tell the sharer to send a keyframe so the new viewer
+            // can decode from the Sequence Header (coalesced per sharer).
+            request_keyframe_from_sharer(target_id, session->user_id);
+            notify_viewer_change(target_id, session->user_id, true);
         }
         break;
     }
@@ -1524,11 +1589,34 @@ void Server::process_disconnects() {
 
 void Server::process_disconnect(uint32_t session_id, UserId user_id, ChannelId channel_id) {
 	ZoneScopedN("Server::process_disconnect");
+    // Per-session bookkeeping first (independent of channel membership).
+    {
+        std::lock_guard<std::mutex> lock(user_index_mutex_);
+        auto it = user_sessions_.find(user_id);
+        if (it != user_sessions_.end() && it->second == session_id)
+            user_sessions_.erase(it);
+    }
+    video_control_buckets_.erase(session_id);
+
+    std::shared_ptr<Session> session;
+    if (auto it = authed_sessions_.find(session_id); it != authed_sessions_.end()) {
+        session = it->second;
+        authed_sessions_.erase(it);
+        // The user index no longer points at this session, so the
+        // stop_screen_share below cannot clear this for us.
+        session->video_ingress_allowed.store(false, std::memory_order_release);
+    }
+
     if (channel_id == 0)
         return;
 
     // Clean up screen share if this user was sharing.
     stop_screen_share(channel_id, user_id);
+
+    // Drop what this viewer was watching; tell those sharers (best effort —
+    // the sharer may itself be gone).
+    if (session)
+        clear_viewer_subscriptions(session, true);
 
     BinaryWriter writer;
     writer.write_u32(user_id);
@@ -1558,41 +1646,171 @@ void Server::forward_video_frame(uint32_t session_id, const uint8_t* data, size_
             return;
     }
 
-    // Reconstruct forwarded packet: [type(1)][sender_id(4)][data]
-    size_t fwd_len = 1 + 4 + len;
-    auto* fwd = new uint8_t[fwd_len];
-    fwd[0] = protocol::VIDEO_FRAME_PACKET_TYPE;
-    uint32_t uid = session->user_id;
-    std::memcpy(fwd + 1, &uid, 4);
-    std::memcpy(fwd + 5, data, len);
+    VideoFrameHeader hdr;
+    if (!VideoFrameHeader::parse(data, len, hdr)) {
+        LOG_DEBUG("Session {}: video frame too short ({} bytes)", session_id, len);
+        return;
+    }
+    const bool      keyframe = hdr.keyframe();
+    const UserId    sharer   = session->user_id;
+    const ChannelId channel  = session->channel_id;
+    const int64_t   now      = now_us();
 
-    // Forward to viewers subscribed to this sharer. Snapshot the subscribed
-    // session ids under subscriptions_mutex_ (this runs on the receive thread,
-    // concurrent with main-loop subscription mutations), then send outside the
-    // lock so a stalled send can't block subscribe/unsubscribe.
-    std::vector<uint32_t> targets;
+    // Per-viewer backlog budget inputs. A viewer of several sharers has ONE
+    // outstanding-bytes counter, so its threshold is the SUM of the rates of
+    // every sharer it watches x (its MinRtt + 250 ms) plus headroom for the
+    // largest keyframe this sharer produced recently (one admitted keyframe
+    // must not by itself trip the gate for the deltas behind it). Until a
+    // full window has been observed, assume this frame size at 30 fps for
+    // this sharer and 0 for sharers without an estimate yet.
+    std::unordered_map<UserId, double> sharer_rates;
+    int64_t keyframe_headroom = 0;
+    double  sharer_rate = 0.0;
+    {
+        std::lock_guard<std::mutex> lock(video_state_mutex_);
+        auto& st = sharer_video_state_[sharer];
+        st.rate.add(now, len);
+        st.last_frame_seq = hdr.frame_seq;
+        st.have_frame = true;
+        if (keyframe) {
+            const int64_t size  = static_cast<int64_t>(len);
+            const bool    stale = st.max_keyframe_at_us == 0 ||
+                                  now - st.max_keyframe_at_us > KEYFRAME_HEADROOM_TTL_US;
+            if (stale || size > st.max_keyframe_bytes) {
+                st.max_keyframe_bytes = size;
+                st.max_keyframe_at_us = now;
+            }
+        }
+        keyframe_headroom = st.max_keyframe_bytes;
+        if (keyframe)
+            keyframe_headroom = std::max<int64_t>(keyframe_headroom, static_cast<int64_t>(len));
+
+        sharer_rates.reserve(sharer_video_state_.size());
+        for (auto& [uid, s] : sharer_video_state_) {
+            const double fallback = (uid == sharer) ? static_cast<double>(len) * 30.0 : 0.0;
+            sharer_rates[uid] = s.rate.bytes_per_second(fallback);
+        }
+        sharer_rate = sharer_rates[sharer];
+    }
+
+    // Build the forwarded frame ONCE: [sender_id(4)][header(14)][encoded].
+    // send_video_frame_to prepends the per-path type/length bytes and shares
+    // this buffer across every viewer's send context (no copy per viewer).
+    auto frame = std::make_shared<std::vector<uint8_t>>();
+    frame->resize(4 + len);
+    uint32_t uid = sharer;
+    std::memcpy(frame->data(), &uid, 4);
+    std::memcpy(frame->data() + 4, data, len);
+    std::shared_ptr<const std::vector<uint8_t>> shared_frame = std::move(frame);
+
+    // Snapshot the admitted viewers under subscriptions_mutex_ (this runs on
+    // the receive thread, concurrent with main-loop subscription mutations),
+    // applying the per-viewer backlog gate, then send outside the lock so a
+    // stalled send can't block subscribe/unsubscribe.
+    std::vector<std::shared_ptr<Session>> targets;
+    bool     want_keyframe = false;
+    uint32_t dropped = 0;
     {
         auto all_sessions = quic_.get_sessions();
         std::lock_guard<std::mutex> lock(subscriptions_mutex_);
         for (auto& s : all_sessions) {
-            if (s->id != session_id &&
-                s->authenticated &&
-                s->channel_id == session->channel_id &&
-                s->subscribed_sharers.count(session->user_id)) {
-                targets.push_back(s->id);
+            if (s->id == session_id ||
+                !s->authenticated ||
+                s->channel_id != channel ||
+                !s->subscribed_sharers.count(sharer))
+                continue;
+
+            // Budget of THIS viewer: all its sharers' rates, its own MinRtt.
+            const int64_t threshold = viewer_backlog_threshold(*s, sharer_rates, keyframe_headroom);
+            auto& gate = s->video_gates[sharer];
+            bool needs_key = false;
+            if (gate.admit(s->video_outstanding_bytes.load(std::memory_order_relaxed),
+                           threshold, keyframe, &needs_key)) {
+                targets.push_back(s);
+            } else {
+                ++dropped;
             }
+            if (needs_key) want_keyframe = true;
         }
     }
-    for (uint32_t sid : targets)
-        quic_.send_video_to(sid, fwd, fwd_len);
-    delete[] fwd;
+
+    for (auto& s : targets) {
+        if (!quic_.send_video_frame_to(s, shared_frame)) {
+            // Nothing was queued for this viewer: it missed a frame, so it can
+            // only resume at the next keyframe.
+            std::lock_guard<std::mutex> lock(subscriptions_mutex_);
+            s->video_gates[sharer].awaiting_keyframe = true;
+            want_keyframe = true;
+            ++dropped;
+        }
+    }
+
+    if (dropped) {
+        std::lock_guard<std::mutex> lock(video_state_mutex_);
+        auto& st = sharer_video_state_[sharer];
+        st.drops_since_log += dropped;
+        if (st.drop_log.allow(now)) {
+            LOG_DEBUG("Sharer {}: dropped {} viewer-frame(s) over backlog threshold in the last interval (sharer rate {:.0f} B/s, keyframe headroom {} B)",
+                      sharer, st.drops_since_log, sharer_rate, keyframe_headroom);
+            st.drops_since_log = 0;
+        }
+    }
+
+    if (want_keyframe)
+        request_keyframe_from_sharer(sharer, 0);
+}
+
+int64_t Server::viewer_backlog_threshold(const Session& viewer,
+                                         const std::unordered_map<UserId, double>& sharer_rates,
+                                         int64_t keyframe_headroom) const {
+    // Every sharer this viewer watches feeds the same outstanding-bytes
+    // counter (a sharer without an estimate contributes 0).
+    double viewer_rate = 0.0;
+    for (UserId sharer : viewer.subscribed_sharers) {
+        auto it = sharer_rates.find(sharer);
+        if (it != sharer_rates.end()) viewer_rate += it->second;
+    }
+    return video_backlog_threshold_bytes(viewer_rate,
+                                         viewer.min_rtt_us.load(std::memory_order_relaxed),
+                                         keyframe_headroom);
+}
+
+void Server::sample_viewer_rtts() {
+	ZoneScopedN("Server::sample_viewer_rtts");
+    const auto now = std::chrono::steady_clock::now();
+    if (now - rtt_sample_last_ < std::chrono::seconds(1)) return;
+    rtt_sample_last_ = now;
+
+    for (auto& s : quic_.get_sessions()) {
+        if (!s->authenticated) continue;
+        uint32_t rtt = 0;
+        if (!quic_.query_min_rtt(s, rtt)) continue;
+        // MinRtt is UINT32_MAX until the connection's first RTT sample and
+        // can read 0 on loopback: keep it inside the range the threshold
+        // formula expects.
+        rtt = std::clamp<uint32_t>(rtt, 1'000, VIDEO_BACKLOG_MAX_RTT_US);
+        s->min_rtt_us.store(rtt, std::memory_order_relaxed);
+    }
 }
 
 void Server::handle_video_control(const DataPacket& pkt) {
 	ZoneScopedN("Server::handle_video_control");
+    // Only an authenticated, in-channel session gets a token bucket: anything
+    // else is dropped before any per-session state exists for it, so an
+    // unauthenticated peer cannot grow video_control_buckets_ (entries are
+    // only erased by process_disconnect, which never sees such sessions).
     auto session = quic_.get_session(pkt.session_id);
     if (!session || !session->authenticated || session->channel_id == 0)
         return;
+
+    // Rate limit before any further work: 4 control messages/s per session, burst 4.
+    {
+        auto it = video_control_buckets_.find(pkt.session_id);
+        if (it == video_control_buckets_.end())
+            it = video_control_buckets_.emplace(pkt.session_id, TokenBucket(4.0, 4.0)).first;
+        if (!it->second.try_take(now_us()))
+            return;
+    }
 
     if (pkt.data.size() < 2) return;
     uint8_t subtype = pkt.data[0];
@@ -1603,7 +1821,8 @@ void Server::handle_video_control(const DataPacket& pkt) {
         uint32_t target_id;
         std::memcpy(&target_id, pkt.data.data() + 1, 4);
 
-        // Verify target is an active sharer in this channel
+        // Verify target is an active sharer in the requester's channel (the
+        // sharer table is keyed by channel, so this also proves same-channel).
         {
             std::lock_guard<std::mutex> lock(sharers_mutex_);
             auto it = channel_screen_sharers_.find(session->channel_id);
@@ -1612,21 +1831,98 @@ void Server::handle_video_control(const DataPacket& pkt) {
                 return;
         }
 
-        // Forward PLI to the target sharer's session
-        auto all = quic_.get_sessions();
-        for (auto& s : all) {
-            if (s->user_id == target_id && s->authenticated) {
-                std::vector<uint8_t> fwd;
-                fwd.push_back(protocol::VIDEO_CONTROL_TYPE);
-                fwd.push_back(protocol::VIDEO_CTL_PLI);
-                uint32_t requester_id = session->user_id;
-                fwd.insert(fwd.end(), reinterpret_cast<uint8_t*>(&requester_id),
-                           reinterpret_cast<uint8_t*>(&requester_id) + 4);
-                quic_.send_datagram(s->id, fwd.data(), fwd.size());
-                break;
+        // A viewer we are currently throttling (over its backlog threshold and
+        // already waiting for a keyframe) gets nothing from a new keyframe
+        // right now — it would be dropped too. forward_video_frame asks for
+        // one as soon as the viewer is back under budget. The threshold is
+        // computed exactly as forward_video_frame does it: every sharer's
+        // rate (no estimate yet = 0) and the target's keyframe headroom.
+        std::unordered_map<UserId, double> sharer_rates;
+        int64_t keyframe_headroom = 0;
+        {
+            std::lock_guard<std::mutex> lock(video_state_mutex_);
+            sharer_rates.reserve(sharer_video_state_.size());
+            for (auto& [uid, st] : sharer_video_state_)
+                sharer_rates[uid] = st.rate.bytes_per_second(0.0);
+            auto st = sharer_video_state_.find(target_id);
+            if (st != sharer_video_state_.end())
+                keyframe_headroom = st->second.max_keyframe_bytes;
+        }
+        {
+            std::lock_guard<std::mutex> lock(subscriptions_mutex_);
+            auto g = session->video_gates.find(target_id);
+            if (g != session->video_gates.end() && g->second.awaiting_keyframe) {
+                const int64_t threshold =
+                    viewer_backlog_threshold(*session, sharer_rates, keyframe_headroom);
+                if (session->video_outstanding_bytes.load(std::memory_order_relaxed) > threshold)
+                    return;
             }
         }
+
+        request_keyframe_from_sharer(target_id, session->user_id);
     }
+}
+
+void Server::request_keyframe_from_sharer(UserId sharer_user_id, UserId requester) {
+	ZoneScopedN("Server::request_keyframe_from_sharer");
+    // Coalesce: one PLI per sharer per 200 ms, whoever asks.
+    {
+        std::lock_guard<std::mutex> lock(video_state_mutex_);
+        if (!sharer_video_state_[sharer_user_id].pli.allow(now_us()))
+            return;
+    }
+
+    auto sharer = session_for_user(sharer_user_id);
+    if (!sharer || !sharer->authenticated) return;
+
+    // [VIDEO_CONTROL_TYPE][VIDEO_CTL_PLI][requester u32] as a priority datagram
+    // so it isn't queued behind video.
+    uint8_t pli[6];
+    pli[0] = protocol::VIDEO_CONTROL_TYPE;
+    pli[1] = protocol::VIDEO_CTL_PLI;
+    uint32_t requester_id = requester;
+    std::memcpy(pli + 2, &requester_id, 4);
+    quic_.send_datagram(sharer->id, pli, sizeof(pli), true);
+}
+
+void Server::notify_viewer_change(UserId sharer_user_id, UserId viewer_user_id, bool watching) {
+    if (sharer_user_id == viewer_user_id) return;   // self-preview subscription
+
+    auto sharer = session_for_user(sharer_user_id);
+    if (!sharer || !sharer->authenticated) return;
+    // Pre-1.2 clients would log SCREEN_SHARE_VIEWER as an unhandled message.
+    if (!sharer->supports_frame_streams()) return;
+
+    BinaryWriter writer;
+    writer.write_u32(viewer_user_id);
+    writer.write_u8(watching ? 1 : 0);
+    quic_.send_to(sharer->id, protocol::ControlMessageType::SCREEN_SHARE_VIEWER,
+                  writer.data().data(), writer.data().size());
+}
+
+std::shared_ptr<Session> Server::session_for_user(UserId user_id) {
+    uint32_t session_id = 0;
+    {
+        std::lock_guard<std::mutex> lock(user_index_mutex_);
+        auto it = user_sessions_.find(user_id);
+        if (it == user_sessions_.end()) return nullptr;
+        session_id = it->second;
+    }
+    // Takes sessions_mutex_: never call this while holding it or a quic_mutex.
+    return quic_.get_session(session_id);
+}
+
+void Server::clear_viewer_subscriptions(const std::shared_ptr<Session>& session, bool notify) {
+    std::vector<UserId> sharers;
+    {
+        std::lock_guard<std::mutex> lock(subscriptions_mutex_);
+        sharers.assign(session->subscribed_sharers.begin(), session->subscribed_sharers.end());
+        session->subscribed_sharers.clear();
+        session->video_gates.clear();
+    }
+    if (!notify) return;
+    for (UserId sharer : sharers)
+        notify_viewer_change(sharer, session->user_id, false);
 }
 
 void Server::forward_stream_audio(const DataPacket& pkt) {
@@ -1682,12 +1978,25 @@ void Server::stop_screen_share(ChannelId channel_id, UserId user_id) {
             channel_screen_sharers_.erase(it);
     }
 
-    // Clear subscriptions pointing to this sharer
+    // No longer a sharer: new per-frame video streams from this session are
+    // refused at PEER_STREAM_STARTED. (On the disconnect path the user index
+    // no longer resolves — process_disconnect clears the flag itself there.)
+    if (auto sharer = session_for_user(user_id))
+        sharer->video_ingress_allowed.store(false, std::memory_order_release);
+
+    // Clear subscriptions (and backlog gates) pointing to this sharer
     auto all = quic_.get_sessions();
     {
         std::lock_guard<std::mutex> lock(subscriptions_mutex_);
-        for (auto& s : all)
+        for (auto& s : all) {
             s->subscribed_sharers.erase(user_id);
+            s->video_gates.erase(user_id);
+        }
+    }
+    // Forwarding state (rate estimate, PLI coalescer) restarts on the next share
+    {
+        std::lock_guard<std::mutex> lock(video_state_mutex_);
+        sharer_video_state_.erase(user_id);
     }
 
     // Notify all in channel

@@ -22,6 +22,8 @@ public:
         UserLeft,
         ServerConnected,
         ServerDisconnected,
+        StreamStarted,      // someone in your channel started a screen share
+        ViewerJoined,       // someone started watching your screen share
         Count_
     };
 

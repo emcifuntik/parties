@@ -13,12 +13,15 @@
 #include <client/stream_audio_player.h>
 #include <parties/types.h>
 #include <parties/video_common.h>
+#include <parties/video_frame_reorder.h>
+#include <parties/video_send_controller.h>
 
 #include <atomic>
 #include <chrono>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -55,7 +58,14 @@ struct PlatformBridge {
     std::function<void()>                                      on_authenticated;
     std::function<void()>                                      stop_screen_share;
     std::function<void()>                                      stop_audio_share;
+    // Force the next encoded frame to be a keyframe. AppCore applies the
+    // VIDEO_KEYFRAME_REQUEST_COOLDOWN_MS gate before calling this; may be
+    // invoked on the MsQuic worker thread or the main thread.
     std::function<void()>                                      request_keyframe;
+    // True while the decode pipeline for this watched sharer is still waiting
+    // for a keyframe (Windows: VideoDecodeGate; Apple: awaiting_keyframe_).
+    // AppCore::tick() re-sends a PLI every VIDEO_PLI_RETRY_MS while this holds.
+    std::function<bool(UserId)>                                stream_awaiting_keyframe;
     std::function<void()>                                      clear_video_element;
     // Per-sharer video decode (set only on platforms with a multi-stream decode
     // pipeline — i.e. Windows). When start_video_stream is set, the core treats
@@ -114,8 +124,42 @@ public:
     // thread (watch/stop) — must be atomic.
     std::atomic<UserId> viewing_sharer_{0};
     std::atomic<bool>   awaiting_keyframe_{false};
-    uint32_t    video_frame_number_    = 0;
+    // Sharer frame counter. Owned by AppCore::send_video_frame (stamped and
+    // advanced there, on the encode thread); reset only at share start
+    // (reset_video_sender) and on disconnect — never mid-share, or viewers'
+    // reorder buffers would see a backward jump.
+    std::atomic<uint32_t> video_frame_number_{0};
     std::atomic<uint32_t> stream_frame_count_{0};
+    // Protocol version the server reported in AUTH_RESPONSE (1.2+); older
+    // servers report nothing and are assumed PROTOCOL_VERSION_ASSUMED_LEGACY.
+    uint16_t    server_protocol_version_ = protocol::PROTOCOL_VERSION_ASSUMED_LEGACY;
+
+    // ── Screen-share sender (shared by Windows/macOS platform code) ─────────
+    // Congestion control: admission on the capture thread + AIMD bitrate.
+    VideoSendController video_sender_;
+
+    // Share start: clear counters, seed the controller with the user's target.
+    void reset_video_sender(uint32_t target_bitrate_bps);
+    // UI slider (main thread). The adapted bitrate never exceeds this.
+    void set_video_target_bitrate(uint32_t target_bitrate_bps);
+    // Capture-thread gate: true = encode this frame. Atomics only.
+    bool video_admit_frame();
+    // Encode thread: bitrate the encoder should switch to (once per change).
+    std::optional<uint32_t> take_video_bitrate_update();
+    // Encode thread: true once when a keyframe must be forced (send failure or
+    // an incoming PLI that passed the cooldown).
+    bool take_video_keyframe_request();
+
+    struct VideoSendResult {
+        uint32_t frame_seq = 0;   // sequence stamped into the header (always assigned)
+        bool     sent = false;    // false = frame not queued (not connected / send failed)
+    };
+    // Encode-thread entry point used by the platform encoders. Builds the
+    // 14-byte VideoFrameHeader, stamps frame_seq, picks the transport (per-frame
+    // stream when the server supports it, else stream 1) and accounts the bytes
+    // in video_sender_. Safe to call when not sharing (returns sent=false).
+    VideoSendResult send_video_frame(const uint8_t* encoded, size_t len, bool keyframe,
+                                     uint16_t width, uint16_t height, VideoCodecId codec);
     std::string tofu_pending_fingerprint_;
     bool        tofu_pending_ = false;
     // Set on the MsQuic worker thread when the connection drops; the actual
@@ -154,6 +198,9 @@ public:
     // single hardware decoder) rather than going through add_watch/remove_watch.
     void set_single_watched(UserId id);
     void send_voice_state();
+    // Single PLI funnel: every keyframe request toward a sharer (decode-gate
+    // discontinuity, reorder-buffer loss, tick() retry) goes through here and
+    // is rate-limited per target to VIDEO_PLI_COOLDOWN_MS. Thread-safe.
     void send_pli(UserId target);
     void clear_all_sharers();
     void refresh_server_list();
@@ -192,6 +239,31 @@ private:
 
     struct SharerInfo { UserId user_id = 0; std::string name; };
     std::unordered_map<UserId, SharerInfo> active_sharers_;
+
+    // ── Screen-share receive (per-frame streams) ────────────────────────────
+    // One reorder buffer per watched sharer. Fed on the MsQuic worker thread
+    // (net_.on_video_stream_frame / on_video_stream_aborted) and polled from
+    // tick(); guarded by reorder_mutex_. Delivered frames go to
+    // on_video_frame_received with the same [header][encoded] layout the
+    // stream-1 path produces. Erased in remove_watch / stop_watching /
+    // clear_all_sharers / on_disconnect_cleanup.
+    std::mutex reorder_mutex_;
+    std::unordered_map<UserId, VideoFrameReorderBuffer> reorder_buffers_;
+    void route_video_stream_frame(uint32_t sender_id, std::vector<uint8_t>&& frame);
+    void route_video_stream_aborted(uint32_t sender_id, uint32_t frame_seq, bool have_seq);
+    void poll_video_reorder_buffers();
+    void erase_reorder_buffer(UserId sharer_id);
+
+    // PLI cooldown per target (send_pli) and keyframe-request cooldown for
+    // incoming PLIs (bridge_.request_keyframe). Both touched from the MsQuic
+    // thread and the main thread; guarded by pli_mutex_.
+    std::mutex pli_mutex_;
+    std::unordered_map<UserId, std::chrono::steady_clock::time_point> pli_last_sent_;
+    std::chrono::steady_clock::time_point keyframe_request_last_{};
+    void retry_pending_plis();          // tick(): re-send while a stream awaits a keyframe
+    void feed_video_sender_stats();     // tick(): QUIC stats -> video_sender_
+
+    void on_screen_share_viewer(const uint8_t* data, size_t len);   // SCREEN_SHARE_VIEWER (sound)
 
     // The set of sharers currently being watched (shown in the viewer grid).
     // Authoritative watch state; mirrored into model_.watched for the UI.

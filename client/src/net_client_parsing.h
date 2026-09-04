@@ -1,6 +1,7 @@
 #pragma once
 
-// Internal header — included only by net_client_msquic.cpp / net_client_apple.mm.
+// Internal header — included only by net_client_msquic.cpp (the single
+// transport implementation compiled on every platform).
 //
 // Pure wire-protocol parsing: accumulates bytes into a buffer and extracts
 // complete framed messages.  No transport library dependencies.
