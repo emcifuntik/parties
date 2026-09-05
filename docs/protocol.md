@@ -463,10 +463,10 @@ byte is the stream type `0x12` (`STREAM_TYPE_VIDEO_FRAME`).
 
 A receiver aborts and discards any unidirectional stream whose first byte is not
 `0x12` or whose total length exceeds `VIDEO_FRAME_MAX_BYTES`. Because per-frame
-streams complete independently, the viewer runs a small reorder buffer keyed by
+streams complete independently, both the server and viewer run a small reorder buffer keyed by
 `frame_seq` (holds newer complete frames for up to 150 ms / 8 frames while an
 older one is missing and delivers keyframes immediately) before the frames reach
-the ordinary in-order decode path.
+the ordinary in-order decode path. The server also restores this order before forwarding to legacy viewers. Startup deltas are held until the first keyframe; old frames never reset an established baseline. A share lifecycle reset is explicit.
 
 How the reorder buffer resumes after a gap decides whether a PLI is sent:
 
@@ -547,7 +547,7 @@ The sharer keeps the same outstanding-bytes counter toward the server
 | Floor | 800 kbps (`VIDEO_ADAPT_MIN_BITRATE`); below this the sender drops frames instead of lowering quality further |
 | Reconfigure rate | Encoder bitrate changes at most every 500 ms and only when they differ by >= 10 %; the final step onto the user's target (or onto the floor) is always published to the encoder even when it is smaller than the 10 % delta gate |
 
-RTT and loss come from `QUIC_PARAM_CONN_STATISTICS_V2` once per UI tick. A send
+Minimum RTT and loss come from `QUIC_PARAM_CONN_STATISTICS_V2` once per UI tick. The minimum RTT excludes queueing delay from the sender's flight allowance. A send
 call that fails synchronously counts the frame as lost and forces the next
 encoded frame to be a keyframe.
 

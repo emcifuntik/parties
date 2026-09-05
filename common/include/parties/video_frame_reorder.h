@@ -1,11 +1,12 @@
 #pragma once
 
-// Viewer-side reorder buffer for frames arriving on per-frame QUIC streams.
+// Reorder buffer for frames arriving on per-frame QUIC streams.
 //
 // Per-frame streams complete independently, so frame N+1 can finish before a
 // frame N that lost a packet. The decode pipeline (VideoDecodeGate on Windows,
 // awaiting_keyframe_ on Apple) requires frames strictly in frame_seq order, so
 // this buffer:
+//   * retains bounded startup deltas until the first keyframe establishes order;
 //   * delivers a frame immediately when it is the next expected one, then
 //     drains any consecutive held frames;
 //   * holds newer complete frames while an older one is missing, bounded by
@@ -15,9 +16,7 @@
 //     sees a discontinuity and the caller requests a keyframe);
 //   * delivers a held keyframe immediately: nothing before a keyframe matters;
 //   * ignores frames older than the last delivered one and duplicates;
-//   * resets its baseline on a backward jump larger than jump_reset_threshold
-//     that is not a u32 wrap (sharer restarted its counter), delivering the
-//     frame instead of dropping it forever.
+//   * resets its baseline only when the owner explicitly resets the share.
 // All frame_seq comparisons are wrap-safe (video_seq_newer / video_seq_distance).
 //
 // Not thread-safe: the owner serializes on_frame / on_frame_aborted / poll.
@@ -39,7 +38,6 @@ struct VideoFrameReorderConfig {
     uint32_t max_hold_ms          = 150;                 // wait this long for a missing frame
     size_t   max_held_frames      = 8;                   // then give up on the gap
     size_t   max_bytes            = 8u * 1024u * 1024u;  // total bytes held
-    uint32_t jump_reset_threshold = 256;                 // backward jump larger than this = counter reset
 };
 
 class VideoFrameReorderBuffer {
@@ -69,8 +67,7 @@ public:
     // Call periodically (every UI tick is fine).
     void poll(int64_t now_us, const DeliverFn& deliver, const LostFn& lost);
 
-    // Forget everything (watch stopped / disconnected). The next frame is
-    // delivered unconditionally.
+    // Forget everything (watch stopped / disconnected). Wait for a keyframe.
     void reset();
 
     size_t held_frames() const { return held_.size(); }

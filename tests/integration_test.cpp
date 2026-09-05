@@ -823,10 +823,14 @@ int main() {
     // [0x02][sender u32][hdr14][encoded]; PLI datagrams (0x03) are ignored here.
     std::mutex c_video_mutex;
     std::vector<uint8_t> c_received_video;
+    std::vector<uint32_t> c_received_sequences;
     std::atomic<bool> c_video_received{false};
     client_c.on_data_received = [&](const uint8_t* data, size_t len) {
         if (len == 0 || data[0] != VIDEO_FRAME_PACKET_TYPE) return;
         std::lock_guard<std::mutex> lock(c_video_mutex);
+        VideoFrameHeader header;
+        if (len >= 5 && VideoFrameHeader::parse(data + 5, len - 5, header))
+            c_received_sequences.push_back(header.frame_seq);
         if (c_video_received) return;
         c_received_video.assign(data, data + len);
         c_video_received = true;
@@ -990,6 +994,54 @@ int main() {
             sender_id, c_received_video.size());
     }
 
+    // A later frame may finish first on independent ingress streams. Legacy
+    // viewers must still receive the original encode order on stream 1.
+    {
+        auto send_frame = [&](uint32_t sequence, bool keyframe) {
+            VideoFrameHeader hdr;
+            hdr.frame_seq = sequence;
+            hdr.timestamp = sequence;
+            hdr.flags = keyframe ? VIDEO_FLAG_KEYFRAME : 0;
+            hdr.width = 1920;
+            hdr.height = 1080;
+            hdr.codec = static_cast<uint8_t>(VideoCodecId::AV1);
+            uint8_t bytes[VIDEO_FRAME_HEADER_SIZE];
+            hdr.write(bytes);
+            return client_a.send_video_frame_stream(bytes, sizeof(bytes),
+                legacy_frame_payload.data(), legacy_frame_payload.size());
+        };
+        auto wait_sequences = [&](size_t count) {
+            auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(TIMEOUT_MS);
+            while (std::chrono::steady_clock::now() < deadline) {
+                {
+                    std::lock_guard<std::mutex> lock(c_video_mutex);
+                    if (c_received_sequences.size() >= count) return true;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            return false;
+        };
+        TEST_ASSERT(send_frame(22, false), "send completed successor before missing predecessor");
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        TEST_ASSERT(send_frame(21, false), "send missing predecessor");
+        TEST_ASSERT(wait_sequences(3), "legacy viewer recovered the reordered pair" );
+        TEST_ASSERT(send_frame(500, true), "send new random-access point");
+        TEST_ASSERT(wait_sequences(4), "legacy viewer reached the new keyframe" );
+        TEST_ASSERT(send_frame(20, true), "send very late old keyframe");
+        TEST_ASSERT(send_frame(501, false), "send current keyframe successor");
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(TIMEOUT_MS);
+        while (std::chrono::steady_clock::now() < deadline) {
+            {
+                std::lock_guard<std::mutex> lock(c_video_mutex);
+                if (c_received_sequences.size() >= 5) break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        std::lock_guard<std::mutex> lock(c_video_mutex);
+        TEST_ASSERT((c_received_sequences == std::vector<uint32_t>{20, 21, 22, 500, 501}),
+                    "legacy viewer receives reordered frames and ignores stale keyframes");
+        LOG("[18/21] Legacy ingress reordering and stale-frame rejection verified\n");
+    }
     // ── Client C shares; a pre-1.2 sharer gets no viewer notifications ──
     LOG("[19/21] Client C starts sharing; B subscribes to C...\n");
     {

@@ -194,38 +194,68 @@ bool test_keyframe_over_gap() {
     return true;
 }
 
-bool test_backward_jump_reset() {
-    VideoFrameReorderConfig cfg;
-    cfg.jump_reset_threshold = 256;
-    VideoFrameReorderBuffer b(cfg);
+bool test_late_frames_never_restart() {
+    VideoFrameReorderBuffer b;
     Sink s;
     feed(b, s, 5000, true, T0);
-    feed(b, s, 5002, false, T0 + 10 * MS);   // held
-    // A backward jump within the threshold is just an old frame.
-    feed(b, s, 5000 - 200, true, T0 + 15 * MS);
-    if (!same(s.delivered, {5000}) || b.held_frames() != 1 || b.last_delivered() != 5000)
-        return fail("restart: small backward jump was treated as a reset");
-    // Sharer restarted its counter: distance -5000 < -256 and 0 < 5000.
+    feed(b, s, 5002, false, T0 + 10 * MS);
     feed(b, s, 0, true, T0 + 20 * MS);
-    if (!same(s.delivered, {5000, 0})) return fail("restart: frame after counter reset not delivered");
-    if (b.held_frames() != 0 || b.held_bytes() != 0) return fail("restart: stale held frames survived");
-    if (!s.lost.empty()) return fail("restart: reported a loss");
-    feed(b, s, 1, false, T0 + 30 * MS);
-    if (!same(s.delivered, {5000, 0, 1}) || b.last_delivered() != 1) return fail("restart: continuation");
-    // A restart does not need to be a keyframe to be recognised (the decode
-    // gate handles the reference chain): 300 -> 0 is a restart too.
-    VideoFrameReorderBuffer b2(cfg);
-    Sink s2;
-    feed(b2, s2, 300, true, T0);
-    // ...while 300 -> 100 (distance -200) is merely stale.
-    feed(b2, s2, 100, false, T0 + 5 * MS);
-    if (!same(s2.delivered, {300}) || b2.last_delivered() != 300) return fail("restart: stale frame reset the baseline");
-    feed(b2, s2, 0, false, T0 + 10 * MS);
-    if (!same(s2.delivered, {300, 0}) || b2.last_delivered() != 0) return fail("restart: delta-frame restart");
-    if (!s2.lost.empty()) return fail("restart: delta-frame restart reported a loss");
+    feed(b, s, 1, false, T0 + 21 * MS);
+    feed(b, s, 4700, false, T0 + 22 * MS);
+    if (!same(s.delivered, {5000}) || b.last_delivered() != 5000 || b.held_frames() != 1)
+        return fail("late: old streams reset the active decode baseline");
+    feed(b, s, 5001, false, T0 + 30 * MS);
+    if (!same(s.delivered, {5000, 5001, 5002}) || !s.lost.empty())
+        return fail("late: delayed frames disrupted the current chain");
+    b.reset();
+    feed(b, s, 0, true, T0 + 40 * MS);
+    if (!same(s.delivered, {5000, 5001, 5002, 0}))
+        return fail("late: explicit share restart did not reset the baseline");
     return true;
 }
 
+bool test_startup_reordering() {
+    VideoFrameReorderBuffer b;
+    Sink s;
+    feed(b, s, 12, false, T0);
+    feed(b, s, 11, false, T0 + 5 * MS);
+    feed(b, s, 12, false, T0 + 6 * MS);
+    if (b.has_baseline() || !s.delivered.empty() || b.held_frames() != 2)
+        return fail("startup: a delta committed the baseline or duplicate was retained");
+    feed(b, s, 10, true, T0 + 20 * MS);
+    if (!same(s.delivered, {10, 11, 12}) || !s.lost.empty() || b.held_bytes() != 0)
+        return fail("startup: delayed first keyframe and successors not delivered in order");
+
+    // The first observed frame can be after the u32 wrap.
+    b.reset();
+    s = Sink{};
+    feed(b, s, 0, false, T0);
+    feed(b, s, 1, false, T0 + MS);
+    feed(b, s, UINT32_MAX, true, T0 + 2 * MS);
+    if (!same(s.delivered, {UINT32_MAX, 0, 1}) || !s.lost.empty())
+        return fail("startup: wrap-safe order");
+    return true;
+}
+
+bool test_startup_bounds() {
+    VideoFrameReorderConfig cfg;
+    cfg.max_held_frames = 2;
+    cfg.max_bytes = 250;
+    VideoFrameReorderBuffer b(cfg);
+    Sink s;
+    for (uint32_t seq = 1; seq <= 20; ++seq)
+        feed(b, s, seq, false, T0 + seq * MS);
+    if (b.has_baseline() || b.held_frames() > 2 || b.held_bytes() > 250 || !s.delivered.empty())
+        return fail("startup: unbounded delta accumulation");
+    b.poll(T0 + 200 * MS, s.deliver_fn(), s.lost_fn());
+    if (b.held_bytes() || b.held_frames() || !s.lost.empty())
+        return fail("startup: timed-out deltas retained or reported as a decode gap");
+    feed(b, s, 30, false, T0 + 210 * MS, 1000);
+    if (b.held_bytes()) return fail("startup: oversize delta retained");
+    feed(b, s, 31, true, T0 + 220 * MS);
+    if (!same(s.delivered, {31})) return fail("startup: keyframe could not recover after overflow");
+    return true;
+}
 bool test_u32_wrap() {
     VideoFrameReorderBuffer b;
     Sink s;
@@ -320,7 +350,7 @@ bool test_reset() {
     feed(b, s, 12, false, T0 + 1 * MS);
     b.reset();
     if (b.has_baseline() || b.held_frames() != 0 || b.held_bytes() != 0) return fail("reset: state");
-    feed(b, s, 3, false, T0 + 2 * MS);   // delivered unconditionally
+    feed(b, s, 3, true, T0 + 2 * MS);   // new share keyframe
     if (!same(s.delivered, {10, 3}) || !s.lost.empty()) return fail("reset: first frame after reset");
     // The old held frame is now a "newer with gap" frame; it is held, not delivered.
     feed(b, s, 12, false, T0 + 3 * MS);
@@ -336,7 +366,9 @@ int main() {
     if (!test_hold_then_timeout()) return 1;
     if (!test_abort_resolves_gap()) return 1;
     if (!test_keyframe_over_gap()) return 1;
-    if (!test_backward_jump_reset()) return 1;
+    if (!test_late_frames_never_restart()) return 1;
+    if (!test_startup_reordering()) return 1;
+    if (!test_startup_bounds()) return 1;
     if (!test_u32_wrap()) return 1;
     if (!test_duplicates_and_old()) return 1;
     if (!test_max_held_frames_overflow()) return 1;

@@ -74,12 +74,12 @@ bool Server::start(const Config& cfg) {
         return false;
     }
 
-    // Forward video frames directly from QUIC receive thread,
-    // bypassing the polling loop to eliminate up to 1ms latency per frame.
+    // Queue completed frames with a per-session byte cap. The server loop
+    // restores encode order before applying gates and forwarding to viewers.
     quic_.on_video_frame = [this](uint32_t session_id, uint8_t packet_type,
                                   const uint8_t* data, size_t len) {
         if (packet_type == protocol::VIDEO_FRAME_PACKET_TYPE) {
-            forward_video_frame(session_id, data, len);
+            enqueue_video_frame(session_id, data, len);
         } else {
             // Non-video packets (control, stream audio) still go through the queue
             DataPacket pkt;
@@ -114,9 +114,9 @@ void Server::run() {
         ZoneScopedN("Server::run");
         process_control_messages();
         process_data_packets();
+        process_video_frames();
         process_file_transfers();
         process_disconnects();
-        sample_viewer_rtts();   // self-throttled to about once per second
 
         // Periodic retention enforcement (every 60 seconds)
         auto now = std::chrono::steady_clock::now();
@@ -207,7 +207,7 @@ void Server::process_data_packets() {
                 quic_.send_to_many(targets, fwd.data(), fwd.size(), true);
         }
         else if (pkt.packet_type == protocol::VIDEO_FRAME_PACKET_TYPE) {
-            forward_video_frame(pkt.session_id, pkt.data.data(), pkt.data.size());
+            enqueue_video_frame(pkt.session_id, pkt.data.data(), pkt.data.size());
         }
         else if (pkt.packet_type == protocol::STREAM_AUDIO_PACKET_TYPE) {
             forward_stream_audio(pkt);
@@ -1631,6 +1631,55 @@ void Server::process_disconnect(uint32_t session_id, UserId user_id, ChannelId c
     }
 }
 
+void Server::enqueue_video_frame(uint32_t session_id, const uint8_t* data, size_t len) {
+    if (len < VIDEO_FRAME_HEADER_SIZE || len > VIDEO_FRAME_MAX_PAYLOAD_BYTES) return;
+    auto session = quic_.get_session(session_id);
+    if (!session) return;
+    const auto generation = session->video_generation.load(std::memory_order_acquire);
+    if (!session->video_ingress_allowed.load(std::memory_order_acquire)) return;
+    const auto bytes = static_cast<int64_t>(len);
+    const auto pending = session->video_pending_bytes.fetch_add(bytes, std::memory_order_relaxed) + bytes;
+    if (pending > Session::VIDEO_INGRESS_MAX_BUFFERED_BYTES) {
+        session->video_pending_bytes.fetch_sub(bytes, std::memory_order_relaxed);
+        return;
+    }
+    video_incoming_.push({session, generation, std::vector<uint8_t>(data, data + len)});
+}
+
+void Server::process_video_frames() {
+    auto pending = video_incoming_.drain();
+    for (auto& frame : pending) {
+        const auto& session = frame.session;
+        session->video_pending_bytes.fetch_sub(static_cast<int64_t>(frame.data.size()),
+                                               std::memory_order_relaxed);
+        if (!session->alive || !session->video_ingress_allowed.load(std::memory_order_acquire) ||
+            frame.generation != session->video_generation.load(std::memory_order_acquire)) continue;
+        VideoFrameHeader hdr;
+        if (!VideoFrameHeader::parse(frame.data.data(), frame.data.size(), hdr)) continue;
+        auto& ingress = video_ingress_[session->id];
+        ingress.session = session;
+        ingress.reorder.on_frame(hdr, std::move(frame.data), now_us(),
+            [this, id = session->id](const VideoFrameHeader&, std::vector<uint8_t>&& data) {
+                forward_video_frame(id, data.data(), data.size());
+            },
+            [this, user = session->user_id](uint32_t) { request_keyframe_from_sharer(user, 0); });
+    }
+    const int64_t now = now_us();
+    for (auto it = video_ingress_.begin(); it != video_ingress_.end();) {
+        const auto& session = it->second.session;
+        if (!session->alive || !session->video_ingress_allowed.load(std::memory_order_acquire)) {
+            it = video_ingress_.erase(it);
+            continue;
+        }
+        it->second.reorder.poll(now,
+            [this, id = session->id](const VideoFrameHeader&, std::vector<uint8_t>&& data) {
+                forward_video_frame(id, data.data(), data.size());
+            },
+            [this, user = session->user_id](uint32_t) { request_keyframe_from_sharer(user, 0); });
+        ++it;
+    }
+}
+
 void Server::forward_video_frame(uint32_t session_id, const uint8_t* data, size_t len) {
 	ZoneScopedN("Server::forward_video_frame");
     auto session = quic_.get_session(session_id);
@@ -1773,24 +1822,6 @@ int64_t Server::viewer_backlog_threshold(const Session& viewer,
     return video_backlog_threshold_bytes(viewer_rate,
                                          viewer.min_rtt_us.load(std::memory_order_relaxed),
                                          keyframe_headroom);
-}
-
-void Server::sample_viewer_rtts() {
-	ZoneScopedN("Server::sample_viewer_rtts");
-    const auto now = std::chrono::steady_clock::now();
-    if (now - rtt_sample_last_ < std::chrono::seconds(1)) return;
-    rtt_sample_last_ = now;
-
-    for (auto& s : quic_.get_sessions()) {
-        if (!s->authenticated) continue;
-        uint32_t rtt = 0;
-        if (!quic_.query_min_rtt(s, rtt)) continue;
-        // MinRtt is UINT32_MAX until the connection's first RTT sample and
-        // can read 0 on loopback: keep it inside the range the threshold
-        // formula expects.
-        rtt = std::clamp<uint32_t>(rtt, 1'000, VIDEO_BACKLOG_MAX_RTT_US);
-        s->min_rtt_us.store(rtt, std::memory_order_relaxed);
-    }
 }
 
 void Server::handle_video_control(const DataPacket& pkt) {
@@ -1969,6 +2000,10 @@ void Server::forward_stream_audio(const DataPacket& pkt) {
 }
 
 void Server::stop_screen_share(ChannelId channel_id, UserId user_id) {
+    for (auto it = video_ingress_.begin(); it != video_ingress_.end();) {
+        if (it->second.session->user_id == user_id) it = video_ingress_.erase(it);
+        else ++it;
+    }
     {
         std::lock_guard<std::mutex> lock(sharers_mutex_);
         auto it = channel_screen_sharers_.find(channel_id);
@@ -1981,8 +2016,10 @@ void Server::stop_screen_share(ChannelId channel_id, UserId user_id) {
     // No longer a sharer: new per-frame video streams from this session are
     // refused at PEER_STREAM_STARTED. (On the disconnect path the user index
     // no longer resolves — process_disconnect clears the flag itself there.)
-    if (auto sharer = session_for_user(user_id))
+    if (auto sharer = session_for_user(user_id)) {
         sharer->video_ingress_allowed.store(false, std::memory_order_release);
+        sharer->video_generation.fetch_add(1, std::memory_order_release);
+    }
 
     // Clear subscriptions (and backlog gates) pointing to this sharer
     auto all = quic_.get_sessions();

@@ -1288,7 +1288,7 @@ void AppCore::rebuild_watched_model()
 // accounting (see NetClient::send_video).
 void AppCore::send_pli(UserId target)
 {
-    if (target == 0) return;
+    if (target == 0 || target == user_id_) return;
     {
         std::lock_guard<std::mutex> lock(pli_mutex_);
         const auto now = std::chrono::steady_clock::now();
@@ -1468,7 +1468,7 @@ void AppCore::feed_video_sender_stats()
     if (!model_.is_sharing.get() && video_sender_.outstanding_bytes() <= 0) return;
     const NetClient::ConnectionStats st = net_.connection_stats();
     if (!st.valid) return;
-    video_sender_.on_connection_stats(steady_now_us(), st.rtt_us,
+    video_sender_.on_connection_stats(steady_now_us(), st.min_rtt_us ? st.min_rtt_us : st.rtt_us,
                                       st.suspected_lost_packets,
                                       st.spurious_lost_packets,
                                       st.sent_packets);

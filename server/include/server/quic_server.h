@@ -88,10 +88,6 @@ public:
     // Get all sessions (snapshot)
     std::vector<std::shared_ptr<Session>> get_sessions();
 
-    // Reads QUIC_STATISTICS_V2::MinRtt (microseconds) of the session's
-    // connection under session->quic_mutex; false when the connection is gone
-    // or GetParam fails. Main loop (Server::sample_viewer_rtts).
-    bool query_min_rtt(const std::shared_ptr<Session>& session, uint32_t& min_rtt_us);
 
     // Set the info reported to connectionless server queries (game-server-browser
     // style, served by the MsQuic unconnected-query patch). Call before start();

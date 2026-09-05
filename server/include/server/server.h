@@ -6,6 +6,7 @@
 #include <parties/types.h>
 #include <parties/video_common.h>
 #include <parties/video_backlog.h>
+#include <parties/video_frame_reorder.h>
 
 #include <array>
 #include <atomic>
@@ -35,6 +36,8 @@ public:
 private:
     void process_control_messages();
     void process_data_packets();
+    void enqueue_video_frame(uint32_t session_id, const uint8_t* data, size_t len);
+    void process_video_frames();
     void process_file_transfers();
     void process_disconnects();
     void handle_message(const IncomingMessage& msg);
@@ -48,7 +51,7 @@ private:
     void send_text_channel_list(uint32_t session_id);
 
     // Screen sharing
-    // Runs on the MsQuic receive thread (fast path). `data` = [14-byte
+    // Runs on the server loop after ingress reordering. `data` = [14-byte
     // VideoFrameHeader][encoded] from either input path. Applies the per-viewer
     // backlog gate (ViewerVideoGate + video_backlog_threshold_bytes of the
     // sharer's measured rate), forwards whole frames on each viewer's path via
@@ -82,20 +85,30 @@ private:
     QuicServer quic_;
     std::atomic<bool> running_{false};
 
+    struct PendingVideoFrame {
+        std::shared_ptr<Session> session;
+        uint64_t generation;
+        std::vector<uint8_t> data;
+    };
+    ThreadQueue<PendingVideoFrame> video_incoming_;
+    struct VideoIngress {
+        std::shared_ptr<Session> session;
+        VideoFrameReorderBuffer reorder;
+    };
+    // Server-loop only. Reorder before gating or forwarding to either protocol
+    // version, since legacy viewers have no reorder buffer of their own.
+    std::unordered_map<uint32_t, VideoIngress> video_ingress_;
+
     // Screen share state: channel_id -> set of sharer user_ids
     std::mutex sharers_mutex_;
     std::unordered_map<ChannelId, std::set<UserId>> channel_screen_sharers_;
 
-    // Guards every access to Session::subscribed_sharers and
-    // Session::video_gates. forward_video_frame reads/mutates them on the
-    // MsQuic receive thread while SCREEN_SHARE_VIEW / channel leave /
-    // stop_screen_share mutate them on the main loop — an unordered container
-    // touched concurrently is UB without this.
+    // Guards subscriptions and per-viewer gates during server-loop forwarding
+    // and subscription changes.
     std::mutex subscriptions_mutex_;
 
     // Per-sharer forwarding state (keyed by sharer user_id). Guarded by
-    // video_state_mutex_; touched on the MsQuic thread (forward) and the main
-    // loop (PLI, stop). Erased in stop_screen_share.
+    // video_state_mutex_; forwarding, PLI and stop run on the server loop. Erased in stop_screen_share.
     struct SharerVideoState {
         RateEstimator rate{1.0};            // bytes/s forwarded (drives the backlog threshold)
         Coalescer     pli{200'000};         // one forwarded/originated PLI per 200 ms
@@ -121,11 +134,6 @@ private:
                                      const std::unordered_map<UserId, double>& sharer_rates,
                                      int64_t keyframe_headroom) const;
 
-    // Samples QUIC_PARAM_CONN_STATISTICS_V2::MinRtt for every authenticated
-    // session into Session::min_rtt_us. Main loop, about once per second
-    // (rtt_sample_last_ throttles it).
-    void sample_viewer_rtts();
-    std::chrono::steady_clock::time_point rtt_sample_last_{};
 
     // Per-session control-message rate limit (video control datagrams).
     // Main loop only.

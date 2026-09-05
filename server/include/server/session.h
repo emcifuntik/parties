@@ -51,10 +51,10 @@ struct Session {
     // Per-sharer forwarding gate (awaiting-keyframe after a drop). Guarded by
     // Server::subscriptions_mutex_ like subscribed_sharers.
     std::unordered_map<UserId, ViewerVideoGate> video_gates;
-    // MinRtt of this connection (QUIC_STATISTICS_V2::MinRtt), sampled on the
-    // main loop about once per second and read on the MsQuic thread by the
-    // backlog gate. Default until the first sample.
+    // MinRtt sampled in the connection's QUIC callbacks about once per second.
+    // The server loop reads this cache without blocking the QUIC worker.
     std::atomic<uint32_t> min_rtt_us{VIDEO_BACKLOG_DEFAULT_RTT_US};
+    int64_t rtt_sample_last_us = 0;  // connection's MsQuic worker only
 
     // ── Video ingress (as a sharer) ──
     // True only while the main loop has this session registered as an active
@@ -63,10 +63,14 @@ struct Session {
     // at PEER_STREAM_STARTED, so unauthenticated or idle peers cannot buffer
     // video on the server.
     std::atomic<bool> video_ingress_allowed{false};
+    std::atomic<uint64_t> video_generation{0};  // invalidates queued frames on share stop
     // Bytes currently buffered across this session's unfinished per-frame
     // ingress streams. Capped at VIDEO_INGRESS_MAX_BUFFERED_BYTES; a stream
     // that would exceed it is aborted.
     std::atomic<int64_t> video_in_buffered_bytes{0};
+    // Completed frames waiting for the server loop; bounded separately from
+    // unfinished QUIC streams so a busy loop cannot accumulate unlimited video.
+    std::atomic<int64_t> video_pending_bytes{0};
     static constexpr int64_t VIDEO_INGRESS_MAX_BUFFERED_BYTES = 4 * 4 * 1024 * 1024;  // 16 MB
 
     // Voice state

@@ -6,11 +6,27 @@
 
 #include <parties/log.h>
 #include <parties/video_common.h>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstring>
 
 namespace parties::server {
+// GetParam blocks when called off the connection's worker. Sample only from
+// that connection's stream callbacks, where MsQuic executes it inline, and
+// never while holding quic_mutex (the worker itself needs that mutex).
+static void sample_min_rtt(const QUIC_API_TABLE* api, Session& session, HQUIC stream) {
+    const auto now = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (now - session.rtt_sample_last_us < 1'000'000) return;
+    session.rtt_sample_last_us = now;
+    QUIC_STATISTICS_V2 stats{};
+    uint32_t size = sizeof(stats);
+    if (QUIC_SUCCEEDED(api->GetParam(stream, QUIC_PARAM_CONN_STATISTICS_V2, &size, &stats))) {
+        session.min_rtt_us.store(std::clamp<uint32_t>(stats.MinRtt, 1'000, VIDEO_BACKLOG_MAX_RTT_US),
+                                 std::memory_order_relaxed);
+    }
+}
 
 // ── Locking contract ─────────────────────────────────────────────────────────
 // sessions_mutex_      guards the session map only.
@@ -380,23 +396,6 @@ std::vector<std::shared_ptr<Session>> QuicServer::get_sessions() {
     for (auto& [id, session] : sessions_)
         result.push_back(session);
     return result;
-}
-
-bool QuicServer::query_min_rtt(const std::shared_ptr<Session>& session, uint32_t& min_rtt_us) {
-    if (!session) return false;
-
-    // quic_mutex keeps the connection handle from being closed underneath
-    // GetParam (SHUTDOWN_COMPLETE nulls it under the same lock).
-    std::lock_guard<std::mutex> qlock(session->quic_mutex);
-    if (!session->alive || !session->quic_connection) return false;
-
-    QUIC_STATISTICS_V2 stats{};
-    uint32_t size = sizeof(stats);
-    if (QUIC_FAILED(api_->GetParam(session->quic_connection, QUIC_PARAM_CONN_STATISTICS_V2,
-                                   &size, &stats)))
-        return false;
-    min_rtt_us = stats.MinRtt;
-    return true;
 }
 
 // ── Data plane ──
@@ -881,6 +880,7 @@ QUIC_STATUS QuicServer::on_stream_event(HQUIC stream, uint32_t session_id,
         // Route to control or video stream processor
         bool is_video = false;
         if (auto session = get_session(session_id)) {
+            sample_min_rtt(api_, *session, stream);
             std::lock_guard<std::mutex> qlock(session->quic_mutex);
             is_video = (stream == session->quic_video_stream);
         }
@@ -905,6 +905,7 @@ QUIC_STATUS QuicServer::on_stream_event(HQUIC stream, uint32_t session_id,
         // buffering is disabled).
         auto* ctx = static_cast<SendCtx*>(event->SEND_COMPLETE.ClientContext);
         if (ctx) {
+            if (ctx->session) sample_min_rtt(api_, *ctx->session, stream);
             send_ctx_uncharge(ctx);
             delete ctx;
         }
@@ -1172,6 +1173,7 @@ QUIC_STATUS QUIC_API QuicServer::video_in_stream_callback(
     switch (event->Type) {
     case QUIC_STREAM_EVENT_RECEIVE: {
         if (ctx->dead) break;   // already aborted; data is consumed and ignored
+        sample_min_rtt(api, *ctx->session, stream);
 
         // Charge the bytes to the session's ingress budget BEFORE buffering
         // them: a peer that opens streams and never finishes them can hold at
@@ -1289,6 +1291,7 @@ QUIC_STATUS QUIC_API QuicServer::video_out_stream_callback(
 
     case QUIC_STREAM_EVENT_SEND_COMPLETE:
         // Acknowledged (or canceled): the bytes are no longer queued/in flight.
+        sample_min_rtt(api, *ctx->session, stream);
         ctx->uncharge();
         break;
 

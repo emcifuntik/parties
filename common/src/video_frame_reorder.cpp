@@ -3,11 +3,11 @@
 #include <algorithm>
 #include <utility>
 
-// Viewer-side reorder buffer. See the header for the behaviour summary.
+// Video ingress and viewer reorder buffer. See the header for the behaviour summary.
 //
 // Keying scheme
 // -------------
-// Held frames are always strictly newer (wrap-safe) than last_delivered_, so
+// After the first keyframe, held frames are strictly newer than last_delivered_, so
 // they all lie inside the half-range (last_delivered_, last_delivered_ + 2^31)
 // and their wrap-safe order equals the order of
 //     key = video_seq_distance(frame_seq, last_delivered_)      (1 .. 2^31-1)
@@ -19,8 +19,8 @@
 // are matched by their actual frame_seq, never by the (possibly stale) key.
 //
 // Invariants kept between calls:
-//   * held_ is empty whenever !have_last_;
-//   * every held frame is newer than last_delivered_ and keyed against it;
+//   * before the first keyframe, held_ contains bounded startup delta frames;
+//   * once have_last_, every held frame is newer than last_delivered_;
 //   * held_bytes_ == sum of held frame sizes;
 //   * gap_since_us_ == earliest arrival time among held frames, 0 when none
 //     (a gap is open exactly when held_ is non-empty).
@@ -83,12 +83,36 @@ void VideoFrameReorderBuffer::on_frame(const VideoFrameHeader& hdr, std::vector<
                                        int64_t now_us, const DeliverFn& deliver, const LostFn& lost) {
     const uint32_t seq = hdr.frame_seq;
 
-    // First frame ever: it defines the baseline, whatever it is. The decode
-    // gate downstream still insists on a keyframe before decoding.
+    // A small delta can finish before its much larger initial keyframe.
+    // Keep those successors without committing a decode baseline: otherwise
+    // the delayed keyframe would be discarded as stale.
     if (!have_last_) {
+        if (!hdr.keyframe()) {
+            if (held_.empty()) last_delivered_ = seq;
+            const int64_t key = key_for(seq);
+            if (held_.contains(key)) return;
+            held_bytes_ += frame.size();
+            held_.emplace(key, Held{hdr, std::move(frame), now_us});
+            while (held_.size() > cfg_.max_held_frames || held_bytes_ > cfg_.max_bytes) {
+                held_bytes_ -= held_.begin()->second.frame.size();
+                held_.erase(held_.begin());
+            }
+            gap_since_us_ = earliest_arrival(held_);
+            return;
+        }
+        for (auto it = held_.begin(); it != held_.end();) {
+            if (!video_seq_newer(it->second.hdr.frame_seq, seq)) {
+                held_bytes_ -= it->second.frame.size();
+                it = held_.erase(it);
+            } else {
+                ++it;
+            }
+        }
         have_last_ = true;
         last_delivered_ = seq;
+        rekey_held(held_, seq);
         deliver_one(Held{hdr, std::move(frame), now_us}, deliver);
+        drain(deliver);
         return;
     }
 
@@ -101,20 +125,9 @@ void VideoFrameReorderBuffer::on_frame(const VideoFrameHeader& hdr, std::vector<
     }
 
     if (!video_seq_newer(seq, last_delivered_)) {
-        // Duplicate or older than what was already delivered. The one exception
-        // is a large backward jump in absolute terms (seq < last_delivered_ as
-        // plain integers): the sharer restarted its counter. Frames from before
-        // a genuine u32 wrap have a LARGER absolute value than last_delivered_
-        // and are simply stale, so they are dropped.
-        const int64_t distance = static_cast<int64_t>(video_seq_distance(seq, last_delivered_));
-        const bool restart = seq < last_delivered_ &&
-                             distance < -static_cast<int64_t>(cfg_.jump_reset_threshold);
-        if (restart) {
-            reset();
-            have_last_ = true;
-            last_delivered_ = seq;
-            deliver_one(Held{hdr, std::move(frame), now_us}, deliver);
-        }
+        // Independent reliable streams may arrive arbitrarily late. A large
+        // backward jump is not evidence of a restart; only the owner's share
+        // lifecycle may reset the baseline.
         return;
     }
 
@@ -174,6 +187,18 @@ void VideoFrameReorderBuffer::on_frame_aborted(uint32_t frame_seq, int64_t /*now
 
 void VideoFrameReorderBuffer::poll(int64_t now_us, const DeliverFn& deliver, const LostFn& lost) {
     const int64_t max_hold_us = static_cast<int64_t>(cfg_.max_hold_ms) * 1000;
+    if (!have_last_) {
+        for (auto it = held_.begin(); it != held_.end();) {
+            if (now_us - it->second.arrived_us >= max_hold_us) {
+                held_bytes_ -= it->second.frame.size();
+                it = held_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        gap_since_us_ = earliest_arrival(held_);
+        return;
+    }
     // A second gap left behind by skip_gap() may already have expired too.
     while (!held_.empty() && now_us - gap_since_us_ >= max_hold_us)
         skip_gap(now_us, deliver, lost);

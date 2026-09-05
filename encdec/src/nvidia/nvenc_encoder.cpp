@@ -382,19 +382,11 @@ void NvencEncoder::force_keyframe() {
 void NvencEncoder::set_bitrate(uint32_t bitrate) {
     if (!initialized_) return;
 
-    // A reconfigure is not free (the driver re-plans rate control); ignore
-    // changes below 10 % of the current average so AIMD jitter around a
-    // stable target does not thrash the encoder.
+    // The send controller already coalesces automatic updates. Honor even a
+    // small final step to its floor/ceiling, and explicit user changes.
     const auto rate_control = make_stream_vbr_rate_control(bitrate, fps_);
-    const uint32_t current_average = encode_config_.rcParams.averageBitRate;
-    const uint64_t delta = rate_control.average_bitrate > current_average
-        ? rate_control.average_bitrate - current_average
-        : current_average - rate_control.average_bitrate;
-    if (current_average != 0 && delta * 10u < static_cast<uint64_t>(current_average)) {
-        LOG_DEBUG("NVENC set_bitrate: {} bps within 10% of current {} bps, skipping reconfigure",
-                  rate_control.average_bitrate, current_average);
-        return;
-    }
+    if (bitrate == encode_config_.rcParams.averageBitRate) return;
+    const auto previous_rate_control = encode_config_.rcParams;
 
     encode_config_.rcParams.averageBitRate = rate_control.average_bitrate;
     encode_config_.rcParams.maxBitRate = rate_control.peak_bitrate;
@@ -408,6 +400,7 @@ void NvencEncoder::set_bitrate(uint32_t bitrate) {
 
     NVENCSTATUS status = funcs_.nvEncReconfigureEncoder(encoder_, &reconfig);
     if (status != NV_ENC_SUCCESS) {
+        encode_config_.rcParams = previous_rate_control;
         LOG_ERROR("ReconfigureEncoder failed: {}", (int)status);
         return;
     }

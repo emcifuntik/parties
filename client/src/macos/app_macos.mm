@@ -915,6 +915,9 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     _encoder      = std::make_unique<VideoEncoderMac>();
     _encoderReady = false;
 
+    // The controller's configuration/window state is owned by the main thread.
+    _core.reset_video_sender(static_cast<uint32_t>(_core.model_.share_bitrate * 1000000.0f));
+
     PartiesViewController* bself = self;
     _capturer->on_frame = [bself](CVPixelBufferRef buf, uint32_t w, uint32_t h) {
         if (!bself->_encoder) return;
@@ -944,9 +947,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
                 bself->_encoder.reset(); return;
             }
             bself->_encoderReady = true;
-            // Share start: reset the frame counter and seed the send
-            // controller (admission + AIMD) with the user's target bitrate.
-            bself->_core.reset_video_sender(bitrate);
 
             // Use the codec the encoder actually initialized with, not the
             // requested one: AV1 falls back to H265 on Apple Silicon (no AV1
