@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <cstdio>
 #include <vector>
 
@@ -86,10 +87,150 @@ std::vector<Packet> with_sequence_base(const std::vector<Packet>& packets,
     return result;
 }
 
+// A full receive queue must return to decoding real packets, even while the
+// producer keeps sending. Otherwise every eviction becomes another lost slot.
+int test_overflow_recovery() {
+    const auto packets = encode_music(160);
+    TEST_ASSERT(packets.size() == 160, "overflow test encoded every frame");
+    bool recovered = true;
+    for (uint16_t sequence_base : {uint16_t{0}, uint16_t{65512}}) {
+        for (int burst : {7, 10}) {
+            VoiceMixer mixer(/*apply_makeup=*/false);
+            std::vector<float> output(kFrame);
+            size_t next = 0;
+            auto push_next = [&] {
+                const auto& packet = packets[next++];
+                mixer.push_packet(kUser, static_cast<uint16_t>(sequence_base + packet.seq),
+                                  packet.bytes.data(), packet.bytes.size());
+            };
+            for (int tick = 0; tick < 20; ++tick) {
+                push_next();
+                mixer.mix_output(output.data(), kFrame);
+            }
+            // Simulate accumulated sender/receiver clock drift or a playback stall.
+            for (int i = 0; i < burst; ++i) push_next();
+            const auto before = mixer.decode_stats();
+            for (int tick = 0; tick < 100; ++tick) {
+                push_next();
+                mixer.mix_output(output.data(), kFrame);
+            }
+            const auto after = mixer.decode_stats();
+            const auto normal = after.normal - before.normal;
+            std::printf("[overflow base=%u burst=%d] normal=%llu fec=%llu plc=%llu\n",
+                        sequence_base, burst, static_cast<unsigned long long>(normal),
+                        static_cast<unsigned long long>(after.fec - before.fec),
+                        static_cast<unsigned long long>(after.plc - before.plc));
+            recovered &= normal >= 99;
+        }
+    }
+    TEST_ASSERT(recovered, "a full queue recovers without reconnecting or stopping the sender");
+    return 0;
+}
+
+// Replay encoded music with a slightly faster/slower producer clock. Cached
+// payloads let --soak cover 46 minutes and multiple sequence wraps per clock
+// direction without waiting for wall time or involving audio hardware.
+int test_clock_drift(bool soak) {
+    const auto packets = encode_music(32);
+    TEST_ASSERT(packets.size() == 32, "clock drift test encoded every frame");
+    const int ticks = soak ? 140000 : 12000;
+    const int drift_interval = soak ? 5000 : 500;
+    for (bool faster : {true, false}) {
+        VoiceMixer mixer(/*apply_makeup=*/false);
+        std::vector<float> output(kFrame);
+        uint32_t sent = 0;
+        auto push_next = [&] {
+            const auto& packet = packets[sent % packets.size()];
+            mixer.push_packet(kUser, static_cast<uint16_t>(65500u + sent),
+                              packet.bytes.data(), packet.bytes.size());
+            ++sent;
+        };
+        uint64_t normal_before_tail = 0;
+        for (int tick = 0; tick < ticks; ++tick) {
+            const bool drift = tick > 0 && tick % drift_interval == 0;
+            if (faster || !drift) push_next();
+            if (faster && drift) push_next();
+            mixer.mix_output(output.data(), kFrame);
+            for (float sample : output)
+                TEST_ASSERT(std::isfinite(sample), "continuous playback remains finite");
+            if (tick == ticks - 1001) normal_before_tail = mixer.decode_stats().normal;
+        }
+        const auto stats = mixer.decode_stats();
+        std::printf("[clock %s ticks=%d] normal=%llu fec=%llu plc=%llu resync=%llu tail-normal=%llu\n",
+                    faster ? "faster" : "slower", ticks,
+                    static_cast<unsigned long long>(stats.normal),
+                    static_cast<unsigned long long>(stats.fec),
+                    static_cast<unsigned long long>(stats.plc),
+                    static_cast<unsigned long long>(stats.resync),
+                    static_cast<unsigned long long>(stats.normal - normal_before_tail));
+        TEST_ASSERT(stats.normal > static_cast<uint64_t>(ticks * 0.98),
+                    "clock drift does not trap sustained playback in concealment");
+        TEST_ASSERT(stats.normal - normal_before_tail > 980,
+                    "the final 20 seconds still decode normally without a reconnect");
+        if (faster) {
+            TEST_ASSERT(stats.resync > 0, "faster producer exercises queue catch-up");
+            TEST_ASSERT(stats.fec == 0 && stats.plc == 0,
+                        "intentional queue evictions do not become synthetic packet loss");
+        }
+    }
+    return 0;
+}
+
+// Device callbacks need not divide 960 samples. A second user joins halfway
+// through the first user's PCM frame, so their read positions also differ.
+std::vector<float> render_partitioned(const std::vector<Packet>& packets,
+                                      const std::vector<int>& callback_sizes) {
+    VoiceMixer mixer(/*apply_makeup=*/false);
+    auto add_user = [&](UserId uid) {
+        for (const auto& packet : packets)
+            mixer.push_packet(uid, packet.seq, packet.bytes.data(), packet.bytes.size());
+    };
+    add_user(kUser);
+    std::vector<float> output(6 * kFrame);
+    size_t offset = 0;
+    size_t callback = 0;
+    while (offset < output.size()) {
+        if (offset == 480) add_user(kUser + 1);
+        size_t count = std::min(static_cast<size_t>(callback_sizes[callback++ % callback_sizes.size()]),
+                                output.size() - offset);
+        if (offset < 480) count = std::min(count, 480 - offset);
+        mixer.mix_output(output.data() + offset, static_cast<int>(count));
+        offset += count;
+    }
+    return output;
+}
+
+int test_partial_playback_frames() {
+    const auto packets = encode_music(8);
+    TEST_ASSERT(packets.size() == 8, "partial playback test encoded every frame");
+    const auto reference = render_partitioned(packets, {1});
+    bool matched = true;
+    for (const std::vector<int>& callbacks : {
+            std::vector<int>{480}, {128}, {512}, {1024}, {4096}, {127, 256, 480, 1024, 37}}) {
+        const auto output = render_partitioned(packets, callbacks);
+        float max_error = 0.0f;
+        for (size_t i = 0; i < output.size(); ++i) {
+            TEST_ASSERT(std::isfinite(output[i]), "partial playback produces finite samples");
+            max_error = std::max(max_error, std::fabs(output[i] - reference[i]));
+        }
+        std::printf("[callback=%d variants=%zu] max PCM error=%.6f\n",
+                    callbacks.front(), callbacks.size(), max_error);
+        matched &= max_error < 1e-6f;
+    }
+    TEST_ASSERT(matched, "playback PCM is independent of callback size and user join timing");
+    return 0;
+}
+
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    const bool soak = argc == 2 && std::strcmp(argv[1], "--soak") == 0;
     std::printf("[aux_stream_test] start\n");
+
+    const int overflow_result = test_overflow_recovery();
+    const int partial_result = test_partial_playback_frames();
+    TEST_ASSERT(overflow_result == 0 && partial_result == 0, "receiver regression tests");
+    TEST_ASSERT(test_clock_drift(soak) == 0, "continuous receiver clock drift");
 
     auto pkts = encode_music(200);   // 4 s
     TEST_ASSERT(pkts.size() >= 190, "encoded most music frames");

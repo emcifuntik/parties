@@ -103,6 +103,7 @@ private:
     bool opaque_output_active_ = false;
     bool opaque_output_capable_ = false;
     bool collect_packet_diagnostics_ = false;
+    bool callback_failed_ = false;
     std::stop_token stop_token_;
     uint64_t next_packet_id_ = 0;
     PacketDiagnostics packet_diagnostics_{};

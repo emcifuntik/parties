@@ -70,7 +70,7 @@ public:
     // Cumulative decode-path counters across all streams (observability + tests).
     // normal = in-order decode; fec = a lost frame recovered from the next
     // packet's in-band FEC; plc = a frame concealed (no data/no successor);
-    // resync = playout clock snapped forward over an unrecoverable gap.
+    // resync = playout clock caught up after an overrun or unrecoverable gap.
     struct DecodeStats {
         uint64_t normal = 0;
         uint64_t fec = 0;

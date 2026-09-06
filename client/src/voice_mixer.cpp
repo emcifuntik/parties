@@ -64,15 +64,22 @@ void VoiceMixer::push_packet(UserId user_id, uint16_t seq, const uint8_t* opus_d
             insert_idx = i - 1;
         }
 
-        // Drop oldest if buffer is full
-        if (stream.packet_queue.size() >= MAX_JITTER_PACKETS) {
-            stream.packet_queue.pop_front();
-            if (insert_idx > 0) --insert_idx;
-        }
-
         stream.packet_queue.insert(stream.packet_queue.begin() + insert_idx,
                                    {seq, {opus_data, opus_data + opus_len}});
-        stream.consecutive_empty = 0;
+
+        // Keep the newest bounded window. An eviction is intentional catch-up,
+        // not network loss: concealing the evicted slot would leave the queue
+        // full, so every subsequent arrival would evict the next owed packet
+        // and trap a continuous stream in FEC/PLC until reconnecting.
+        if (stream.packet_queue.size() > MAX_JITTER_PACKETS) {
+            stream.packet_queue.pop_front();
+            const uint16_t front = stream.packet_queue.front().seq;
+            if (stream.primed && seq_diff(stream.next_seq, front) > 0) {
+                stream.next_seq = front;
+                stream.consecutive_empty = 0;
+                ++stats_.resync;
+            }
+        }
     }
 
     // Notify after releasing mutex so the handler can call set_user_volume etc.
@@ -82,8 +89,9 @@ void VoiceMixer::push_packet(UserId user_id, uint16_t seq, const uint8_t* opus_d
 
 // Sequence-continuity-aware playout with Opus in-band FEC recovery.
 //
-// Invariant: every emitted 20ms slot makes EXACTLY ONE decoder call and advances
-// next_seq by EXACTLY ONE. The only same-packet double-decode is the documented
+// Each emitted 20ms slot makes one decoder call and advances next_seq once,
+// except when catching up after a queue overrun or an unrecoverable gap.
+// The only same-packet double-decode is the documented
 // pair — FEC(successor) to fill a lost slot, then a normal decode of that same
 // successor on the next slot — two consecutive decoder calls with nothing between
 // (required for Opus concealment state continuity).
@@ -161,9 +169,9 @@ bool VoiceMixer::decode_frame(UserStream& stream, float* pcm_out, int frame_size
     //    front — reconstruct it from the successor's in-band FEC (LBRR). Do NOT pop
     //    the successor; it is decoded normally on the next slot (step 5), which is
     //    the required consecutive FEC(succ)→normal(succ) pair for Opus state
-    //    continuity. (The successor can't be evicted between the two calls:
-    //    MAX_JITTER_PACKETS drops the OLDEST and the successor is the newest in a
-    //    burst.) Opus internally PLCs if the packet carried no LBRR — always terminal.
+    //    continuity. If a queue overrun evicts the successor before its normal
+    //    decode, push_packet advances to the retained window instead. Opus
+    //    internally PLCs if the packet carried no LBRR.
     if (gap == 1) {
         auto& succ = stream.packet_queue.front();   // seq == next_seq + 1
         int d = stream.decoder.decode(succ.data.data(), static_cast<int>(succ.data.size()),
@@ -209,13 +217,12 @@ void VoiceMixer::mix_output(float* output, int frame_count) {
 
     if (streams_.empty()) return;
 
-    // Process frame_count samples which may span multiple OPUS_FRAME_SIZE blocks
-    int written = 0;
-    while (written < frame_count) {
-        int chunk = std::min(frame_count - written, audio::OPUS_FRAME_SIZE);
-
-        // Mix all active user streams
-        for (auto& [uid, stream] : streams_) {
+    // Each user has an independent PCM cursor. Device callback sizes and join
+    // times need not align to an Opus frame, so consume only its remaining PCM
+    // before decoding the next frame.
+    for (auto& [uid, stream] : streams_) {
+        int written = 0;
+        while (written < frame_count) {
             // Check if we need to decode a new frame for this user
             if (stream.pcm_pos >= static_cast<size_t>(audio::OPUS_FRAME_SIZE)) {
                 // Need a new decoded frame
@@ -236,6 +243,9 @@ void VoiceMixer::mix_output(float* output, int frame_count) {
                 stream.pcm_pos = 0;
             }
 
+            const int chunk = std::min(frame_count - written,
+                audio::OPUS_FRAME_SIZE - static_cast<int>(stream.pcm_pos));
+
             // Per-user compression: adjust gain to normalize this user's level
             if (stream.compress && stream.level > 0.001f) {
                 float target = stream.compress_target * stream.compress_target * stream.compress_target;
@@ -254,8 +264,8 @@ void VoiceMixer::mix_output(float* output, int frame_count) {
                 output[written + i] += stream.pcm_buf[stream.pcm_pos + i] * vol;
             }
             stream.pcm_pos += chunk;
+            written += chunk;
         }
-        written += chunk;
     }
 
     // Apply makeup gain (primary voice only — received voice is low at unity)

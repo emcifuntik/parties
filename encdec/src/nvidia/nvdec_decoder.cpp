@@ -1,15 +1,12 @@
 #include "nvdec_decoder.h"
 #include "nv12_to_rgba_ptx.h"
 #include "nvdec_sequence_policy.h"
-#include "nvdec_surface_wait.h"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <cstring>
 #include <memory>
-#include <mutex>
 #include <vector>
 #include <parties/log.h>
 #include <parties/profiler.h>
@@ -97,6 +94,7 @@ struct NvdecCudaInteropState : std::enable_shared_from_this<NvdecCudaInteropStat
         CUmipmappedArray chroma_mipmapped_array = nullptr;
         CUarray chroma_array = nullptr;
         CUsurfObject surface = 0;
+        // Protects only the exported textures, never the private decode array.
         std::atomic<bool> in_use{false};
     };
 
@@ -121,8 +119,6 @@ struct NvdecCudaInteropState : std::enable_shared_from_this<NvdecCudaInteropStat
     ComPtr<ID3D12Fence> ready_fence;
     CUexternalSemaphore ready_semaphore = nullptr;
     std::vector<std::unique_ptr<Slot>> slots;
-    std::mutex slot_mutex;
-    std::condition_variable_any slot_released;
     uint32_t width = 0;
     uint32_t height = 0;
     uint64_t next_fence_value = 0;
@@ -450,32 +446,8 @@ struct NvdecCudaInteropState : std::enable_shared_from_this<NvdecCudaInteropStat
         return nullptr;
     }
 
-    Slot* acquire_slot(size_t index) {
-        if (index >= slots.size() || !slots[index]) return nullptr;
-        bool expected = false;
-        return slots[index]->in_use.compare_exchange_strong(
-                   expected, true, std::memory_order_acq_rel)
-            ? slots[index].get() : nullptr;
-    }
-
-    detail::SurfaceWaitResult wait_until_available(
-            size_t index, std::stop_token stop_token) {
-        if (index >= slots.size() || !slots[index])
-            return detail::SurfaceWaitResult::InvalidSlot;
-        auto available = [&] {
-            return !slots[index]->in_use.load(std::memory_order_acquire);
-        };
-        return detail::wait_for_surface_release(
-            slot_released, slot_mutex, stop_token, std::chrono::seconds(2), available);
-    }
-
     void release_slot(Slot* slot) {
-        if (!slot) return;
-        {
-            std::lock_guard lock(slot_mutex);
-            slot->in_use.store(false, std::memory_order_release);
-        }
-        slot_released.notify_all();
+        if (slot) slot->in_use.store(false, std::memory_order_release);
     }
 
     std::vector<CUarray> arrays() const {
@@ -685,6 +657,7 @@ bool NvdecDecoder::decode(const uint8_t* data, size_t len, int64_t timestamp) {
     packet_diagnostics_.payload_size = len;
     packet_diagnostics_.timestamp = timestamp;
     collect_packet_diagnostics_ = true;
+    callback_failed_ = false;
 
     const auto context_push_start = DiagnosticClock::now();
     CUresult res = cuda_.cuCtxPushCurrent(cu_ctx_);
@@ -727,6 +700,13 @@ bool NvdecDecoder::decode(const uint8_t* data, size_t len, int64_t timestamp) {
         return false;
     }
 
+    // CUVID can return CUDA_SUCCESS even when a decode/display callback failed.
+    // Preserve that failure so the client resets the broken reference chain.
+    if (callback_failed_) {
+        LOG_ERROR("NVDEC parser callback failed; decoder requires a fresh keyframe");
+        initialized_ = false;
+        return false;
+    }
     return true;
 }
 
@@ -798,15 +778,27 @@ DecoderInfo NvdecDecoder::info() const {
 }
 
 int NvdecDecoder::handle_sequence(void* user, CUVIDEOFORMAT* fmt) {
-    return static_cast<NvdecDecoder*>(user)->on_sequence(fmt);
+    auto* decoder = static_cast<NvdecDecoder*>(user);
+    if (decoder->callback_failed_) return 0;
+    const int result = decoder->on_sequence(fmt);
+    decoder->callback_failed_ |= result <= 0;
+    return result;
 }
 
 int NvdecDecoder::handle_decode(void* user, CUVIDPICPARAMS* pic) {
-    return static_cast<NvdecDecoder*>(user)->on_decode(pic);
+    auto* decoder = static_cast<NvdecDecoder*>(user);
+    if (decoder->callback_failed_) return 0;
+    const int result = decoder->on_decode(pic);
+    decoder->callback_failed_ |= result <= 0;
+    return result;
 }
 
 int NvdecDecoder::handle_display(void* user, CUVIDPARSERDISPINFO* info) {
-    return static_cast<NvdecDecoder*>(user)->on_display(info);
+    auto* decoder = static_cast<NvdecDecoder*>(user);
+    if (decoder->callback_failed_) return 0;
+    const int result = decoder->on_display(info);
+    decoder->callback_failed_ |= result <= 0;
+    return result;
 }
 
 int NvdecDecoder::on_sequence(CUVIDEOFORMAT* fmt) {
@@ -1045,26 +1037,11 @@ int NvdecDecoder::on_decode(CUVIDPICPARAMS* pic) {
         collect_packet_diagnostics_, &packet_diagnostics_.decode_callback_us);
     if (!decoder_) return 0;
 
-    if (opaque_output_active_ && interop_) {
-        const auto wait_start = DiagnosticClock::now();
-        const auto wait_result = interop_->wait_until_available(
-            static_cast<size_t>(pic->CurrPicIdx), stop_token_);
-        if (collect_packet_diagnostics_)
-            packet_diagnostics_.surface_wait_us += elapsed_us(wait_start);
-        if (wait_result == detail::SurfaceWaitResult::Cancelled)
-            return 0;
-        if (wait_result == detail::SurfaceWaitResult::InvalidSlot) {
-            LOG_ERROR("NVDEC opaque surface index {} is outside the registered pool",
-                      pic->CurrPicIdx);
-            return 0;
-        }
-        if (wait_result == detail::SurfaceWaitResult::TimedOut) {
-            LOG_ERROR("NVDEC opaque surface {} remained owned by the renderer for over 2 seconds",
-                      pic->CurrPicIdx);
-            return 0;
-        }
-    }
+    if (stop_token_.stop_requested()) return 0;
 
+    // Decode/reference arrays are private CUDA resources. The renderer owns
+    // separate exported plane copies, so it must never block reference decode.
+    // All decode and copy operations share interop_->stream and stay ordered.
     const auto submit_start = DiagnosticClock::now();
     CUresult res = opaque_output_active_
         ? cuvid_.cuvidDecodePictureAsync(decoder_, pic, interop_->stream)
@@ -1103,13 +1080,19 @@ int NvdecDecoder::on_display(CUVIDPARSERDISPINFO* disp_info) {
             return 0;
         }
 
-        auto* slot = interop_->acquire_slot(
-            static_cast<size_t>(disp_info->picture_index));
-        if (!slot) {
-            LOG_ERROR("NVDEC opaque surface {} was presented while still in use",
+        const auto source_index = static_cast<size_t>(disp_info->picture_index);
+        if (source_index >= interop_->slots.size() || !interop_->slots[source_index]) {
+            LOG_ERROR("NVDEC opaque display surface {} is outside the registered pool",
                       disp_info->picture_index);
             return 0;
         }
+        auto* source = interop_->slots[source_index].get();
+        // Export to any free presentation slot, independently of the decoder's
+        // reference-surface index. A hidden/stalled renderer may retain every
+        // exported texture: skip presentation in that case, but keep decoding
+        // so releasing a lease resumes live output without another keyframe.
+        auto* slot = interop_->acquire_slot();
+        if (!slot) return 1;
 
         // SDK 13.1 opaque output is a private block-linear CUDA layout, not a
         // portable DXGI multi-plane layout. Copy the two decoded planes with the
@@ -1117,7 +1100,7 @@ int NvdecDecoder::on_display(CUVIDPARSERDISPINFO* disp_info) {
         // these as NV12 directly; there is still no RGB conversion or host copy.
         CUDA_MEMCPY2D luma_copy{};
         luma_copy.srcMemoryType = CU_MEMORYTYPE_ARRAY;
-        luma_copy.srcArray = slot->decoded_luma_array;
+        luma_copy.srcArray = source->decoded_luma_array;
         luma_copy.dstMemoryType = CU_MEMORYTYPE_ARRAY;
         luma_copy.dstArray = slot->luma_array;
         luma_copy.WidthInBytes = interop_->width;
@@ -1128,7 +1111,7 @@ int NvdecDecoder::on_display(CUVIDPARSERDISPINFO* disp_info) {
 
         CUDA_MEMCPY2D chroma_copy{};
         chroma_copy.srcMemoryType = CU_MEMORYTYPE_ARRAY;
-        chroma_copy.srcArray = slot->decoded_chroma_array;
+        chroma_copy.srcArray = source->decoded_chroma_array;
         chroma_copy.dstMemoryType = CU_MEMORYTYPE_ARRAY;
         chroma_copy.dstArray = slot->chroma_array;
         chroma_copy.WidthInBytes = interop_->width;

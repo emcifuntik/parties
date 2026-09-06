@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <chrono>
+#include <cstring>
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
@@ -21,7 +23,7 @@ using parties::encdec::nvidia::NvencEncoder;
 namespace {
 constexpr uint32_t width = 1920;
 constexpr uint32_t height = 1080;
-constexpr VideoCodecId test_codec = VideoCodecId::AV1;
+
 // The default crosses a recurring keyframe boundary. CTest also invokes this
 // executable with one frame to validate the initial surface independently.
 constexpr uint32_t default_frame_count = 31;
@@ -40,9 +42,73 @@ bool wait_for_fence(ID3D12Fence* fence, uint64_t value) {
     CloseHandle(event);
     return completed;
 }
+// Read a small exported plane region while retaining its lease. Decoding into
+// private reference arrays must not change any texture still owned by the UI.
+std::vector<uint8_t> snapshot_plane(ID3D12Device* device, ID3D12Resource* resource,
+                                    ID3D12Fence* ready, uint64_t ready_value) {
+    if (!resource) return {};
+    if (!wait_for_fence(ready, ready_value)) return {};
+    auto desc = resource->GetDesc();
+    desc.Width = (std::min)(desc.Width, UINT64{32});
+    desc.Height = (std::min)(desc.Height, UINT{32});
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+    UINT rows = 0;
+    UINT64 row_bytes = 0, total_bytes = 0;
+    device->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, &rows, &row_bytes, &total_bytes);
+    D3D12_RESOURCE_DESC buffer{};
+    buffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    buffer.Width = total_bytes;
+    buffer.Height = buffer.DepthOrArraySize = buffer.MipLevels = 1;
+    buffer.SampleDesc.Count = 1;
+    buffer.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    D3D12_HEAP_PROPERTIES heap{};
+    heap.Type = D3D12_HEAP_TYPE_READBACK;
+    ComPtr<ID3D12Resource> readback;
+    ComPtr<ID3D12CommandQueue> queue;
+    ComPtr<ID3D12CommandAllocator> allocator;
+    ComPtr<ID3D12GraphicsCommandList> list;
+    ComPtr<ID3D12Fence> complete;
+    D3D12_COMMAND_QUEUE_DESC queue_desc{};
+    if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &buffer,
+            D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&readback))) ||
+        FAILED(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue))) ||
+        FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator))) ||
+        FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(),
+                                         nullptr, IID_PPV_ARGS(&list))) ||
+        FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&complete)))) return {};
+    D3D12_TEXTURE_COPY_LOCATION source{};
+    source.pResource = resource;
+    source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    D3D12_TEXTURE_COPY_LOCATION destination{};
+    destination.pResource = readback.Get();
+    destination.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    destination.PlacedFootprint = footprint;
+    const D3D12_BOX region{0, 0, 0, static_cast<UINT>(desc.Width), desc.Height, 1};
+    list->CopyTextureRegion(&destination, 0, 0, 0, &source, &region);
+    if (FAILED(list->Close())) return {};
+    ID3D12CommandList* lists[] = {list.Get()};
+    queue->ExecuteCommandLists(1, lists);
+    if (FAILED(queue->Signal(complete.Get(), 1)) || !wait_for_fence(complete.Get(), 1)) return {};
+    void* mapped = nullptr;
+    D3D12_RANGE range{0, static_cast<SIZE_T>(total_bytes)};
+    if (FAILED(readback->Map(0, &range, &mapped))) return {};
+    std::vector<uint8_t> result(static_cast<size_t>(rows * row_bytes));
+    for (UINT row = 0; row < rows; ++row)
+        std::memcpy(result.data() + row * row_bytes,
+                    static_cast<const uint8_t*>(mapped) + row * footprint.Footprint.RowPitch,
+                    static_cast<size_t>(row_bytes));
+    const D3D12_RANGE written{0, 0};
+    readback->Unmap(0, &written);
+    return result;
+}
 } // namespace
 
 int main(int argc, char** argv) {
+    const bool retain_surfaces = argc > 2 && std::strcmp(argv[2], "retain") == 0;
+    const VideoCodecId test_codec = argc > 3 && std::strcmp(argv[3], "hevc") == 0
+        ? VideoCodecId::H265
+        : (!retain_surfaces || (argc > 3 && std::strcmp(argv[3], "av1") == 0))
+            ? VideoCodecId::AV1 : VideoCodecId::H264;
     const uint32_t frame_count = argc > 1
         ? (std::max)(1u, static_cast<uint32_t>(std::strtoul(argv[1], nullptr, 10)))
         : default_frame_count;
@@ -123,6 +189,16 @@ int main(int argc, char** argv) {
     std::shared_ptr<void> decoded_owner;
     uint32_t decoded_frames = 0;
     bool decoded_rgba = false;
+    // Model a minimized renderer retaining its textures while decode continues.
+    std::vector<std::shared_ptr<void>> retained_owners;
+    bool retaining = retain_surfaces;
+    uint32_t frames_at_release = 0;
+    parties::encdec::DecodedFrame retained_frame;
+    std::vector<uint8_t> retained_luma, retained_chroma;
+    auto snapshot = [&](void* resource) {
+        return snapshot_plane(d3d12_device.Get(), static_cast<ID3D12Resource*>(resource),
+            static_cast<ID3D12Fence*>(retained_frame.native_d3d12_fence), retained_frame.native_fence_value);
+    };
     NvdecDecoder decoder;
     if (!decoder.init(test_codec, width, height, d3d12_device.Get())) {
         std::cout << "NVDEC unavailable; skipping\n";
@@ -147,19 +223,48 @@ int main(int argc, char** argv) {
             cuda_ready_fence = fence;
             cuda_ready_value = frame.native_fence_value;
             decoded_owner = frame.native_owner;
+            if (retaining) {
+                if (retained_owners.empty()) retained_frame = frame;
+                retained_owners.push_back(frame.native_owner);
+            }
             decoded_rgba = rgba;
             ++decoded_frames;
     };
     for (size_t index = 0; index < encoded.size(); ++index) {
+        if (retain_surfaces && index == encoded.size() / 2) {
+            if (retained_luma.empty() ||
+                retained_luma != snapshot(retained_frame.native_d3d12_resource) ||
+                retained_chroma != snapshot(retained_frame.native_d3d12_chroma_resource)) {
+                std::cerr << "Decode overwrote a presentation texture still owned by the UI\n";
+                return 1;
+            }
+            retained_frame = {};
+            retained_owners.clear();
+            retaining = false;
+            frames_at_release = decoded_frames;
+        }
+        const auto decode_start = std::chrono::steady_clock::now();
         if (!decoder.decode(encoded[index].bytes.data(), encoded[index].bytes.size(),
                             static_cast<int64_t>(index) * 333'333)) {
             std::cerr << "NVDEC rejected encoded packet " << index << '/' << encoded.size() << '\n';
             return 1;
         }
+        if (retain_surfaces && index == 0) {
+            retained_luma = snapshot(retained_frame.native_d3d12_resource);
+            retained_chroma = snapshot(retained_frame.native_d3d12_chroma_resource);
+        }
+        if (retain_surfaces && index > 0 &&
+            std::chrono::steady_clock::now() - decode_start > std::chrono::seconds(1)) {
+            std::cerr << "Retained presentation surfaces blocked decoding at packet " << index << '\n';
+            return 1;
+        }
     }
     decoder.flush();
 
-    if (!decoded_texture || decoded_frames < frame_count ||
+    const bool enough_frames = retain_surfaces
+        ? decoded_frames - frames_at_release >= encoded.size() - encoded.size() / 2
+        : decoded_frames >= frame_count;
+    if (!decoded_texture || !enough_frames ||
         !wait_for_fence(cuda_ready_fence.Get(), cuda_ready_value)) {
         std::cerr << "NVDEC interop produced no synchronized native frames\n";
         return 1;
@@ -308,6 +413,17 @@ int main(int argc, char** argv) {
         std::cerr << "NVDEC opaque NV12 chroma output is incomplete: U/V mean="
                   << u_mean << '/' << v_mean << ", zero ratio=" << uv_zero_ratio << '\n';
         return 1;
+    }
+    if (retain_surfaces) {
+        std::stop_source stop;
+        stop.request_stop();
+        decoder.set_stop_token(stop.get_token());
+        const auto frames_before_cancel = decoded_frames;
+        if (decoder.decode(encoded.front().bytes.data(), encoded.front().bytes.size(), 0) ||
+            decoded_frames != frames_before_cancel) {
+            std::cerr << "NVDEC concealed a failed/cancelled callback behind parser success\n";
+            return 1;
+        }
     }
     std::cout << "NVDEC CUDA/D3D12 interop decoded " << decoded_frames
               << " " << (decoded_rgba ? "fallback RGBA" : "opaque NV12")
