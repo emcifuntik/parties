@@ -173,6 +173,7 @@ private:
         CaptureTarget target;
         uint32_t fps = 0;
         uint32_t target_process_id = 0;
+        ChannelId channel_id = 0;
         bool launched = false; // Message-thread only.
         bool succeeded = false;
         std::atomic<bool> complete{false};
@@ -182,9 +183,8 @@ private:
     std::unique_ptr<VideoEncoder> encoder_;
     std::unique_ptr<VideoDecoder> decoder_;
     parties::rml::ElementRegistry element_registry_;
-    bool sharing_screen_ = false;
+    std::atomic<bool> sharing_screen_{false};
     bool stream_revealed_ = false;  // first decoded frame shown to UI
-    std::atomic<bool> capture_lost_{false};
 
     // Capture frame rate limiting (QPC-based phase accumulator: the next
     // deadline advances by one interval per admitted frame so the effective

@@ -346,7 +346,7 @@ public:
 		bool Alloc_As_Committed(size_t base_memory, size_t total_memory, D3D12_RESOURCE_DESC& desc, TextureHandleType* p_impl,
 			const Rml::byte* p_data);
 		// we don't upload to GPU because it is render target and needed to be written
-		void Alloc_As_Committed(size_t base_memory, size_t total_memory, D3D12_RESOURCE_DESC& desc, D3D12_RESOURCE_STATES initial_state,
+		bool Alloc_As_Committed(size_t base_memory, size_t total_memory, D3D12_RESOURCE_DESC& desc, D3D12_RESOURCE_STATES initial_state,
 			TextureHandleType* p_texture, Gfx::FramebufferData* p_impl);
 		bool Alloc_As_Placed(size_t base_memory, size_t total_memory, D3D12_RESOURCE_DESC& desc, TextureHandleType* p_impl, const Rml::byte* p_data);
 
@@ -462,7 +462,7 @@ public:
 	bool IsViewportValid() const { return m_is_viewport_valid; }
 
 	// Sets up OpenGL states for taking rendering commands from RmlUi.
-	void BeginFrame();
+	bool BeginFrame();
 	// Draws the result to the backbuffer and restores OpenGL state.
 	void EndFrame();
 

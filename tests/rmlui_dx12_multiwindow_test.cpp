@@ -2,11 +2,15 @@
 
 #include <Windows.h>
 #include <d3d12.h>
+#include <d3d12sdklayers.h>
 #include <wrl/client.h>
+#include <RmlUi/Core/Mesh.h>
+#include <RmlUi/Core/MeshUtilities.h>
 
 #include <memory>
 #include <array>
 #include <vector>
+#include <cstdio>
 
 namespace {
 constexpr wchar_t kWindowClass[] = L"PartiesRmlUiDx12MultiwindowTest";
@@ -14,9 +18,32 @@ constexpr wchar_t kWindowClass[] = L"PartiesRmlUiDx12MultiwindowTest";
 LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
 	return DefWindowProcW(window, message, wparam, lparam);
 }
+
+struct GpuDiagnostics {
+	Microsoft::WRL::ComPtr<ID3D12InfoQueue> queue;
+	bool check() {
+		bool passed = true;
+		if (!queue) return true;
+		for (UINT64 index = 0; index < queue->GetNumStoredMessages(); ++index) {
+			SIZE_T size = 0;
+			queue->GetMessage(index, nullptr, &size);
+			std::vector<unsigned char> bytes(size);
+			auto* message = reinterpret_cast<D3D12_MESSAGE*>(bytes.data());
+			if (SUCCEEDED(queue->GetMessage(index, message, &size)) &&
+				message->Severity <= D3D12_MESSAGE_SEVERITY_ERROR) {
+				std::fprintf(stderr, "D3D12: %s\n", message->pDescription);
+				passed = false;
+			}
+		}
+		queue->ClearStoredMessages();
+		return passed;
+	}
+};
 } // namespace
 
-int main() {
+int main(int argc, char**) {
+	Microsoft::WRL::ComPtr<ID3D12Debug> debug;
+	if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) debug->EnableDebugLayer();
 	HINSTANCE instance = GetModuleHandleW(nullptr);
 	WNDCLASSEXW window_class{};
 	window_class.cbSize = sizeof(window_class);
@@ -35,7 +62,7 @@ int main() {
 
 	Backend::RmlRendererSettings settings{};
 	settings.vsync = false;
-	settings.msaa_sample_count = 1;
+	settings.msaa_sample_count = argc > 2 ? 2 : 1;
 	auto first = std::make_unique<PartiesRenderInterface_DX12>(first_window, settings);
 	auto second = std::make_unique<PartiesRenderInterface_DX12>(second_window, settings);
 	if (!*first || !*second) return 3;
@@ -57,6 +84,8 @@ int main() {
 	// Parties' in-tree backend must be able to bind a packed NV12 resource as
 	// two plane SRVs without allocating an intermediate RGBA texture.
 	auto* device = static_cast<ID3D12Device*>(first->GetD3D12Device());
+	GpuDiagnostics diagnostics;
+	device->QueryInterface(IID_PPV_ARGS(&diagnostics.queue));
 	D3D12_HEAP_PROPERTIES heap{};
 	heap.Type = D3D12_HEAP_TYPE_DEFAULT;
 	heap.CreationNodeMask = 1;
@@ -79,6 +108,94 @@ int main() {
 		D3D12_RESOURCE_STATE_COMMON, false, 64, 64);
 	if (!texture) return 5;
 	first->ReleaseNV12Texture(texture);
+
+	if (argc > 1) {
+		// Exhaust the shared SRV heap after the resized layer was created but
+		// before EndFrame creates its postprocess framebuffer.
+		first->BeginFrame();
+		first->Clear();
+		std::vector<uintptr_t> held;
+		while (auto handle = first->GenerateNativeNV12Texture(
+			nv12.Get(), nullptr, owner, nullptr, 0,
+			D3D12_RESOURCE_STATE_COMMON, false, 64, 64)) {
+			held.push_back(handle);
+			if (held.size() > 10000) return 9;
+		}
+		std::printf("Held %zu NV12 descriptors before EndFrame\n", held.size());
+		std::fflush(stdout);
+		const size_t full_capacity = held.size();
+		const std::array<Rml::byte, 4> pixel = {255, 255, 255, 255};
+		if (first->GenerateDynamicTexture({pixel.data(), pixel.size()}, {1, 1})) return 11;
+		first->EndFrame();
+		if (FAILED(device->GetDeviceRemovedReason())) return 10;
+		if (!diagnostics.check()) return 12;
+
+		// Leave a small working set for two streams and their retired frames,
+		// keeping the rest of the texture descriptor pool occupied during resize.
+		for (int index = 0; index < 16; ++index) {
+			if (held.empty()) return 13;
+			first->ReleaseNV12Texture(held.back());
+			held.pop_back();
+		}
+		std::array<Microsoft::WRL::ComPtr<ID3D12Resource>, 8> video_frames;
+		for (auto& frame : video_frames) {
+			if (FAILED(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE,
+				&nv12_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&frame)))) return 14;
+		}
+		std::array<uintptr_t, 2> streams{};
+		Rml::Mesh quad;
+		Rml::MeshUtilities::GenerateQuad(quad, {0, 0}, {64, 64}, {255, 255, 255, 255});
+		const auto geometry = first->CompileGeometry(quad.vertices, quad.indices);
+		if (!geometry) return 15;
+		for (int pass = 0; pass < 256; ++pass) {
+			first->SetViewport(320 + pass % 127, 200 + pass % 71);
+			first->BeginFrame();
+			if (!first->IsFrameActive()) return 16;
+			first->Clear();
+			for (size_t stream = 0; stream < streams.size(); ++stream) {
+				auto* resource = video_frames[stream * 4 + pass % 4].Get();
+				if (!streams[stream]) {
+					streams[stream] = first->GenerateNativeNV12Texture(resource, nullptr, owner,
+						nullptr, 0, D3D12_RESOURCE_STATE_COMMON, false, 64, 64);
+					if (!streams[stream]) return 17;
+				} else if (!first->UpdateNativeNV12Texture(streams[stream], resource, nullptr, owner,
+					nullptr, 0, D3D12_RESOURCE_STATE_COMMON, false, 64, 64)) return 18;
+				first->RenderGeometry(geometry, {10.0f + 80.0f * stream, 10.0f}, streams[stream]);
+			}
+			first->EndFrame();
+			if (FAILED(device->GetDeviceRemovedReason()) || !diagnostics.check()) return 19;
+		}
+		for (auto stream : streams) first->ReleaseNV12Texture(stream);
+		first->ReleaseGeometry(geometry);
+		for (auto handle : held) first->ReleaseNV12Texture(handle);
+		held.clear();
+
+		// Exhaust RTVs too. Failed layers must remain balanced and the frame
+		// must still complete, allowing the next resized frame to recover.
+		first->SetViewport(333, 222);
+		first->BeginFrame();
+		if (!first->IsFrameActive()) return 20;
+		first->Clear();
+		for (int layer = 0; layer < 16; ++layer) first->PushLayer();
+		for (int layer = 0; layer < 16; ++layer) first->PopLayer();
+		first->EndFrame();
+		for (int pass = 0; pass < 4; ++pass) {
+			first->SetViewport(320, 200);
+			first->BeginFrame();
+			if (!first->IsFrameActive()) return 21;
+			first->Clear();
+			first->EndFrame();
+		}
+		if (FAILED(device->GetDeviceRemovedReason()) || !diagnostics.check()) return 22;
+		while (auto handle = first->GenerateNativeNV12Texture(nv12.Get(), nullptr, owner,
+			nullptr, 0, D3D12_RESOURCE_STATE_COMMON, false, 64, 64)) {
+			held.push_back(handle);
+			if (held.size() > full_capacity) return 23;
+		}
+		if (held.size() != full_capacity) return 24;
+		for (auto handle : held) first->ReleaseNV12Texture(handle);
+		std::printf("256 resizes with two streams passed; descriptor capacity recovered\n");
+	}
 
 	// Exercise the RGBA upload path used by application previews. In particular,
 	// very narrow thumbnails have less than 64 KiB of pixel data but are not
@@ -108,6 +225,7 @@ int main() {
 	if (!*first) return 7;
 	first.reset();
 	second.reset();
+	if (!diagnostics.check()) return 25;
 
 	DestroyWindow(second_window);
 	DestroyWindow(first_window);

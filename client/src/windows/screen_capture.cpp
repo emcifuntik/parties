@@ -21,6 +21,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <memory>
+#include <thread>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -372,6 +373,13 @@ ScreenCapture::ThumbnailSession::~ThumbnailSession() = default;
 // ─── Pimpl holding WinRT capture state ───────────────────────────────────────
 
 struct ScreenCapture::Impl {
+    // Revoked WinRT events can already be queued. Keep their guard alive after
+    // ScreenCapture is destroyed and wait for any running callback in stop().
+    struct Callbacks {
+        std::mutex mutex;
+        ScreenCapture* owner = nullptr;
+    };
+    std::shared_ptr<Callbacks> callbacks = std::make_shared<Callbacks>();
     IDirect3DDevice winrt_device{nullptr};
     GraphicsCaptureItem item{nullptr};
     Direct3D11CaptureFramePool frame_pool{nullptr};
@@ -476,6 +484,35 @@ void ScreenCapture::shutdown() {
     }
     context_.Reset();
     device_.Reset();
+}
+
+std::future<void> ScreenCapture::shutdown_async(std::shared_ptr<ScreenCapture> capture) {
+    // StopCapture can wait for messages on the caller's UI thread after the
+    // source HWND is destroyed. Keep that thread free to dispatch them, and
+    // keep all capture resources owned until the synchronous RPC finishes.
+    capture->stop_frame_delivery();
+    std::promise<void> completed;
+    auto result = completed.get_future();
+    std::thread([capture = std::move(capture), completed = std::move(completed)]() mutable {
+        const HRESULT apartment = RoInitialize(RO_INIT_MULTITHREADED);
+        // A destroyed source window can belong to a process that is still in
+        // teardown. Issuing StopCapture during that teardown can wedge its RPC.
+        // Give an exiting process time to finish; a surviving application with
+        // other windows must not hold up cleanup indefinitely.
+        if (capture->target_.type == CaptureTarget::Type::Window &&
+            capture->target_process_id_ && capture->target_lost()) {
+            HANDLE source_process = OpenProcess(SYNCHRONIZE, FALSE, capture->target_process_id_);
+            if (source_process) {
+                WaitForSingleObject(source_process, 1000);
+                CloseHandle(source_process);
+            }
+        }
+        capture->shutdown();
+        capture.reset();
+        if (SUCCEEDED(apartment)) RoUninitialize();
+        completed.set_value();
+    }).detach();
+    return result;
 }
 
 std::vector<CaptureTarget> ScreenCapture::enumerate_windows() {
@@ -663,6 +700,17 @@ CaptureThumbnail ScreenCapture::ThumbnailSession::capture(const CaptureTarget& t
 bool ScreenCapture::start(const CaptureTarget& target, uint32_t target_fps) {
 	ZoneScopedN("ScreenCapture::start");
     if (capturing_ || !impl_) return false;
+    stop();
+    target_ = target;
+    target_closed_.store(false, std::memory_order_release);
+    if (target.type == CaptureTarget::Type::Window) {
+        DWORD process_id = 0;
+        GetWindowThreadProcessId(static_cast<HWND>(target.handle), &process_id);
+        target_process_id_ = process_id;
+    }
+    if (target_lost()) return false;
+    impl_->callbacks = std::make_shared<Impl::Callbacks>();
+    impl_->callbacks->owner = this;
 
     std::lock_guard setup_lock(g_wgc_session_setup_mutex);
     frame_count_ = 0;
@@ -680,12 +728,16 @@ bool ScreenCapture::start(const CaptureTarget& target, uint32_t target_fps) {
         height_ = static_cast<uint32_t>(size.Height);
         const auto max_frame_time = std::chrono::milliseconds(1000 / target_fps);
 
-        // Subscribe to item closed (window closed / monitor disconnected)
+        // Set this before subscribing: a close during startup must not be
+        // overwritten by a successful return from StartCapture below.
+        capturing_.store(true, std::memory_order_release);
         impl_->closed_token = impl_->item.Closed(
-            [this](GraphicsCaptureItem const&, winrt::Windows::Foundation::IInspectable const&) {
+            [state = impl_->callbacks](GraphicsCaptureItem const&, winrt::Windows::Foundation::IInspectable const&) {
+                std::lock_guard lock(state->mutex);
+                if (!state->owner) return;
                 LOG_WARN("Capture item closed");
-                capturing_ = false;
-                if (on_closed) on_closed();
+                state->owner->target_closed_.store(true, std::memory_order_release);
+                state->owner->capturing_.store(false, std::memory_order_release);
             });
 
         // 3 buffers: compositor holds 1, callback holds 1, 1 spare.
@@ -697,8 +749,10 @@ bool ScreenCapture::start(const CaptureTarget& target, uint32_t target_fps) {
 
         // Subscribe to frame arrived events
         impl_->frame_arrived_token = impl_->frame_pool.FrameArrived(
-            [this, max_frame_time](Direct3D11CaptureFramePool const& sender,
+            [this, state = impl_->callbacks, max_frame_time](Direct3D11CaptureFramePool const& sender,
                    winrt::Windows::Foundation::IInspectable const&) {
+                std::lock_guard lock(state->mutex);
+                if (!state->owner || !capturing_.load(std::memory_order_acquire)) return;
                 ZoneScopedN("ScreenCapture::FrameArrived");
                 thread_local bool named = (TracySetThreadName("ScreenCapture"), true);
                 (void)named;
@@ -747,8 +801,8 @@ bool ScreenCapture::start(const CaptureTarget& target, uint32_t target_fps) {
                     return;
                 }
 
-                if (on_frame)
-                    on_frame(texture.Get(), w, h);
+                if (on_frame_)
+                    on_frame_(texture.Get(), w, h);
 
                 // Close AFTER on_frame so the WGC pool texture stays valid
                 // during CopyResource (prevents D3D11 hazard shadow copies).
@@ -783,37 +837,70 @@ bool ScreenCapture::start(const CaptureTarget& target, uint32_t target_fps) {
         }
 
         impl_->session.StartCapture();
-        capturing_ = true;
+        if (target_lost()) {
+            stop();
+            return false;
+        }
         return true;
 
     } catch (const winrt::hresult_error& e) {
         LOG_ERROR("Failed to start capture: {:#010x}",
                      static_cast<unsigned>(e.code()));
+        stop();
         return false;
     }
 }
 
-void ScreenCapture::stop() {
-	ZoneScopedN("ScreenCapture::stop");
-    if (!capturing_ || !impl_) return;
-
-    try {
-        if (impl_->session) {
-            impl_->session.Close();
-            impl_->session = nullptr;
-        }
-        if (impl_->frame_pool) {
-            impl_->frame_pool.Close();
-            impl_->frame_pool = nullptr;
-        }
-        impl_->item = nullptr;
-    } catch (...) {
-        // Ignore errors during cleanup
+bool ScreenCapture::target_lost() const {
+    if (target_closed_.load(std::memory_order_acquire)) return true;
+    if (!target_.handle) return false;
+    if (target_.type == CaptureTarget::Type::Window) {
+        DWORD process_id = 0;
+        const DWORD thread_id = GetWindowThreadProcessId(static_cast<HWND>(target_.handle), &process_id);
+        return thread_id == 0 || process_id != target_process_id_;
     }
+    MONITORINFO info{};
+    info.cbSize = sizeof(info);
+    return !GetMonitorInfoW(static_cast<HMONITOR>(target_.handle), &info);
+}
 
-    capturing_ = false;
+void ScreenCapture::set_frame_callback(std::function<void(ID3D11Texture2D*, uint32_t, uint32_t)> callback) {
+    if (!impl_) return;
+    std::lock_guard lock(impl_->callbacks->mutex);
+    on_frame_ = std::move(callback);
+}
+
+void ScreenCapture::stop() {
+    ZoneScopedN("ScreenCapture::stop");
+    if (!impl_) return;
+    // Closed clears capturing_ too, but its session and event subscriptions
+    // still need cleanup. Drain callbacks before releasing encoder resources.
+    stop_frame_delivery();
+    {
+        std::lock_guard lock(impl_->callbacks->mutex);
+        impl_->callbacks->owner = nullptr;
+    }
+    // Each cleanup is independent: one failed RPC must not skip the others.
+    try { if (impl_->frame_pool) impl_->frame_pool.FrameArrived(impl_->frame_arrived_token); } catch (...) {}
+    try { if (impl_->session) impl_->session.Close(); } catch (...) {}
+    try { if (impl_->frame_pool) impl_->frame_pool.Close(); } catch (...) {}
+    try { if (impl_->item) impl_->item.Closed(impl_->closed_token); } catch (...) {}
+    impl_->session = nullptr;
+    impl_->frame_pool = nullptr;
+    impl_->item = nullptr;
+    impl_->frame_arrived_token = {};
+    impl_->closed_token = {};
+    target_ = {};
+    target_process_id_ = 0;
     width_ = 0;
     height_ = 0;
+}
+
+void ScreenCapture::stop_frame_delivery() {
+    capturing_.store(false, std::memory_order_release);
+    if (!impl_) return;
+    std::lock_guard lock(impl_->callbacks->mutex);
+    on_frame_ = nullptr;
 }
 
 } // namespace parties::client

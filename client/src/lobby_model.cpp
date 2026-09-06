@@ -6,6 +6,55 @@
 
 namespace parties::client {
 
+bool LobbyModel::add_channel_sharer(int user_id) {
+    if (current_channel.get() == 0) return false;
+    for (auto& channel : channels.silent()) {
+        if (channel.id != current_channel.get()) continue;
+        for (auto& user : channel.users) {
+            if (user.id != user_id) continue;
+            auto& list = sharers.silent();
+            auto found = std::find_if(list.begin(), list.end(),
+                [user_id](const ActiveSharer& sharer) { return sharer.id == user_id; });
+            if (found == list.end()) {
+                ActiveSharer sharer;
+                sharer.id = user_id;
+                sharer.name = user.name;
+                list.push_back(std::move(sharer));
+            } else {
+                found->name = user.name;
+            }
+            user.streaming = true;
+            someone_sharing = true;
+            channels.notify();
+            sharers.notify();
+            return true;
+        }
+    }
+    return false;
+}
+
+void LobbyModel::remove_channel_sharer(int user_id) {
+    auto& list = sharers.silent();
+    list.erase(std::remove_if(list.begin(), list.end(),
+        [user_id](const ActiveSharer& sharer) { return sharer.id == user_id; }), list.end());
+    someone_sharing = !list.empty();
+    for (auto& channel : channels.silent())
+        for (auto& user : channel.users)
+            if (user.id == user_id) user.streaming = false;
+    channels.notify();
+    sharers.notify();
+}
+
+void LobbyModel::clear_channel_sharers() {
+    sharers.silent().clear();
+    someone_sharing = false;
+    for (auto& channel : channels.silent())
+        for (auto& user : channel.users)
+            user.streaming = false;
+    channels.notify();
+    sharers.notify();
+}
+
 void LobbyModel::build(rml::Builder& b) {
     // Register struct + array types.
     // Order matters: array types must be registered BEFORE structs that contain them as members.
@@ -378,6 +427,7 @@ void LobbyModel::build(rml::Builder& b) {
     b.on_args<int>("watch_user_stream", [this](int id) {
         bool streaming = false;
         for (const auto& channel : channels.get()) {
+            if (channel.id != current_channel.get()) continue;
             for (const auto& user : channel.users) {
                 if (user.id == id) {
                     streaming = user.streaming;

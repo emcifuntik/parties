@@ -87,6 +87,13 @@ if(BUILD_CLIENT)
         ../common/include)
     target_link_libraries(parties_audio_device_selection_model_test PRIVATE RmlUi::RmlUi)
 
+    add_executable(parties_channel_stream_model_test
+        channel_stream_model_test.cpp
+        ../client/src/lobby_model.cpp)
+    target_include_directories(parties_channel_stream_model_test PRIVATE ../client/include ../common/include)
+    target_link_libraries(parties_channel_stream_model_test PRIVATE RmlUi::RmlUi)
+    add_test(NAME parties_channel_stream_model COMMAND parties_channel_stream_model_test)
+
     add_executable(parties_context_render_manager_lifecycle_test
         context_render_manager_lifecycle_test.cpp)
     target_link_libraries(parties_context_render_manager_lifecycle_test PRIVATE RmlUi::RmlUi)
@@ -190,6 +197,15 @@ if(WIN32 AND BUILD_CLIENT)
     target_link_libraries(parties_window_thumbnail_test PRIVATE
         parties_common d3d11 dxgi windowsapp dwmapi gdi32 user32)
 
+    add_executable(parties_screen_capture_lifecycle_test
+        screen_capture_lifecycle_test.cpp
+        ../client/src/windows/screen_capture.cpp)
+    target_include_directories(parties_screen_capture_lifecycle_test PRIVATE ../client/include)
+    target_link_libraries(parties_screen_capture_lifecycle_test PRIVATE
+        parties_common d3d11 dxgi windowsapp dwmapi gdi32 user32)
+    add_test(NAME parties_screen_capture_lifecycle COMMAND parties_screen_capture_lifecycle_test)
+    set_tests_properties(parties_screen_capture_lifecycle PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 30)
+
     add_executable(parties_rmlui_dx12_multiwindow_test
         rmlui_dx12_multiwindow_test.cpp)
     target_link_libraries(parties_rmlui_dx12_multiwindow_test PRIVATE
@@ -242,4 +258,7 @@ if(WIN32 AND BUILD_CLIENT)
     add_test(NAME parties_window_thumbnail COMMAND parties_window_thumbnail_test)
     add_test(NAME parties_rmlui_dx12_multiwindow COMMAND parties_rmlui_dx12_multiwindow_test)
     set_tests_properties(parties_rmlui_dx12_multiwindow PROPERTIES TIMEOUT 30)
+    add_test(NAME parties_rmlui_dx12_resize COMMAND parties_rmlui_dx12_multiwindow_test --resize)
+    add_test(NAME parties_rmlui_dx12_resize_msaa COMMAND parties_rmlui_dx12_multiwindow_test --resize --msaa)
+    set_tests_properties(parties_rmlui_dx12_resize parties_rmlui_dx12_resize_msaa PROPERTIES TIMEOUT 60)
 endif()

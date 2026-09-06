@@ -64,6 +64,11 @@ struct WatchedStream {
 
 class LobbyModel : public rml::Model {
 public:
+    // Stream notifications and watch actions are scoped to the joined channel.
+    bool add_channel_sharer(int user_id);
+    void remove_channel_sharer(int user_id);
+    void clear_channel_sharers();
+
     // --- Bound state (Property<T> auto-dirties; arrays via silent()/notify()) ---
     rml::Prop<bool>        is_connected{false};
     rml::Prop<int>         ping_ms{0};

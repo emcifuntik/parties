@@ -138,7 +138,17 @@ void PartiesRenderInterface_DX12::SetViewport(int width, int height, bool force)
 	// ResizeBuffers cycle. DWM surface refresh is handled by the window layer;
 	// resizing twice here can exhaust or invalidate transient driver resources.
 	(void)force;
+	const bool resize_pending = viewport_width_ != width || viewport_height_ != height ||
+		!upstream_.IsViewportValid();
 	if (upstream_.SetViewport(width, height)) {
+		// A real resize flushes the GPU before replacing the swapchain buffers.
+		// ResizeBuffers also resets the frame index, so repeated resizing can
+		// otherwise keep retired video descriptors in a bucket that EndFrame
+		// never revisits. Every bucket is safe to release after that flush.
+		if (resize_pending) {
+			for (uint32_t frame = 0; frame < retired_textures_.size(); ++frame)
+				CollectRetiredTextures(frame);
+		}
 		viewport_width_ = width;
 		viewport_height_ = height;
 	}
@@ -147,8 +157,7 @@ void PartiesRenderInterface_DX12::SetViewport(int width, int height, bool force)
 void PartiesRenderInterface_DX12::BeginFrame() {
 	frame_active_ = false;
 	if (!upstream_.IsViewportValid()) return;
-	upstream_.BeginFrame();
-	frame_active_ = true;
+	frame_active_ = upstream_.BeginFrame();
 }
 
 void PartiesRenderInterface_DX12::Clear() { upstream_.Clear(); }

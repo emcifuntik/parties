@@ -1344,8 +1344,7 @@ void AppCore::clear_all_sharers()
     viewing_sharer_ = 0;
     awaiting_keyframe_ = false;
     active_sharers_.clear();
-    model_.sharers.silent().clear();
-    model_.sharers.notify();
+    model_.clear_channel_sharers();
     model_.watched.silent().clear();
     model_.watched.notify();
     model_.watching_count = 0;
@@ -1784,6 +1783,9 @@ void AppCore::on_channel_user_list(const uint8_t* data, size_t len)
         u.role     = urole;
         u.muted    = (muted != 0);
         u.deafened = (deaf  != 0);
+        u.streaming = channel_id == current_channel_ && std::any_of(
+            model_.sharers.get().begin(), model_.sharers.get().end(),
+            [uid](const ActiveSharer& sharer) { return sharer.id == static_cast<int>(uid); });
         { uint32_t h = 0; for (char c : uname) h = h * 31 + static_cast<uint8_t>(c); u.color_index = static_cast<int>(h % 12); }
         users.push_back(u);
     }
@@ -1799,6 +1801,20 @@ void AppCore::on_channel_user_list(const uint8_t* data, size_t len)
 
     if (awaiting_channel_join_ && pending_channel_id_ == channel_id) {
         awaiting_channel_join_ = false;
+
+        // The server already removed our old subscriptions before this join
+        // acknowledgement. Drop the old channel's decoders and UI entries before
+        // processing the new channel's SCREEN_SHARE_STARTED replay messages.
+        if (current_channel_ != channel_id) {
+            if (model_.is_sharing && bridge_.stop_screen_share)
+                bridge_.stop_screen_share();
+            if (model_.is_audio_sharing && bridge_.stop_audio_share)
+                bridge_.stop_audio_share();
+            model_.is_sharing = false;
+            model_.is_audio_sharing = false;
+            model_.audio_share_target_name = "";
+            clear_all_sharers();
+        }
 
         // Remove self from old channel
         if (current_channel_ != 0 && current_channel_ != channel_id) {
@@ -1876,6 +1892,12 @@ void AppCore::on_user_left(const uint8_t* data, size_t len)
     uint32_t channel_id = reader.read_u32();
     if (reader.error()) return;
 
+    if (channel_id == current_channel_) {
+        model_.remove_channel_sharer(static_cast<int>(uid));
+        if (is_watching(uid)) remove_watch(uid);
+        else rebuild_watched_model();
+    }
+
     mixer_.remove_user(uid);
     aux_mixer_.remove_user(uid);
 
@@ -1951,34 +1973,11 @@ void AppCore::on_screen_share_started(const uint8_t* data, size_t len)
     const uint8_t  replay = reader.has_remaining(1) ? reader.read_u8()  : 0;
     (void)codec; (void)width; (void)height;
 
+    // Ignore delayed/irrelevant notifications from a channel we have left.
+    if (!model_.add_channel_sharer(static_cast<int>(sharer_id))) return;
     if (sharer_id != user_id_ && replay == 0 && bridge_.play_sound)
         bridge_.play_sound(SoundPlayer::Effect::StreamStarted);
-
-    auto& channels = model_.channels.silent();
-    std::string sharer_name = "Unknown";
-    for (auto& ch : channels)
-        if (ch.id == static_cast<int>(current_channel_))
-            for (auto& u : ch.users)
-                if (u.id == static_cast<int>(sharer_id)) { sharer_name = u.name.c_str(); break; }
-
-    ActiveSharer s;
-    s.id   = static_cast<int>(sharer_id);
-    s.name = Rml::String(sharer_name);
-
-    auto& sharers = model_.sharers.silent();
-    auto it = std::remove_if(sharers.begin(), sharers.end(),
-        [sharer_id](const ActiveSharer& a) { return a.id == static_cast<int>(sharer_id); });
-    sharers.erase(it, sharers.end());
-    sharers.push_back(s);
-    model_.someone_sharing = !sharers.empty();
-
-    // Mark user as streaming in channel user list
-    for (auto& ch : channels)
-        for (auto& u : ch.users)
-            if (u.id == static_cast<int>(sharer_id)) u.streaming = true;
-
-    model_.channels.notify();
-    rebuild_watched_model();   // notifies sharers + refreshes watching flags
+    rebuild_watched_model();
 }
 
 void AppCore::on_screen_share_stopped(const uint8_t* data, size_t len)
@@ -1987,19 +1986,7 @@ void AppCore::on_screen_share_stopped(const uint8_t* data, size_t len)
     uint32_t sharer_id;
     std::memcpy(&sharer_id, data, 4);
 
-    auto& sharers = model_.sharers.silent();
-    auto it = std::remove_if(sharers.begin(), sharers.end(),
-        [sharer_id](const ActiveSharer& a) { return a.id == static_cast<int>(sharer_id); });
-    sharers.erase(it, sharers.end());
-    model_.someone_sharing = !sharers.empty();
-
-    // Clear streaming flag on user
-    auto& channels = model_.channels.silent();
-    for (auto& ch : channels)
-        for (auto& u : ch.users)
-            if (u.id == static_cast<int>(sharer_id)) u.streaming = false;
-
-    model_.channels.notify();
+    model_.remove_channel_sharer(static_cast<int>(sharer_id));
 
     // If we were watching this sharer, tear that stream down; otherwise just
     // refresh the model so the (now-gone) sharer drops out of the grid/chips.

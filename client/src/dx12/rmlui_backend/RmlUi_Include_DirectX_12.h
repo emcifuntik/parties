@@ -242,7 +242,7 @@ static_assert(RMLUI_RENDER_BACKEND_FIELD_VIDEOMEMORY_FOR_TEXTURE_ALLOCATION > 0)
 // notice: this field is shared for all srv and cbv and uav it doesn't mean that it specifically allocates for srv 128, cbv 128 and uav 128,
 // no! it allocates only on descriptor for all of such types and total amount is 128 not 3 * 128 = 384 !!!
 #ifndef RMLUI_RENDER_BACKEND_FIELD_DESCRIPTORAMOUNT_FOR_SRV_CBV_UAV
-	#define RMLUI_RENDER_BACKEND_FIELD_DESCRIPTORAMOUNT_FOR_SRV_CBV_UAV 128
+	#define RMLUI_RENDER_BACKEND_FIELD_DESCRIPTORAMOUNT_FOR_SRV_CBV_UAV 4096
 #endif
 
 #ifndef RMLUI_RENDER_BACKEND_FIELD_MAXNUMPROGRAMS

@@ -549,7 +549,7 @@ void App::shutdown() {
     // Stop producing frames first, but keep the capture D3D11 device alive
     // until the consumer thread and every encoder registration are gone.
     // NVENC/AMF keep references to resources created by this device.
-    if (capture_) capture_->stop();
+    if (capture_) capture_->stop_frame_delivery();
     if (encode_thread_.joinable()) {
         encode_running_.store(false, std::memory_order_release);
         encode_cv_.notify_one();
@@ -560,7 +560,7 @@ void App::shutdown() {
     for (auto& rtv : encode_rtvs_) rtv.Reset();
     encode_registered_ = false;
     if (encoder_) { encoder_->shutdown(); encoder_.reset(); }
-    if (capture_) { capture_->shutdown(); capture_.reset(); }
+    if (capture_) ScreenCapture::shutdown_async(std::move(capture_));
     capture_targets_.clear();
     stop_all_video_streams();
     core_.shutdown();
@@ -947,18 +947,15 @@ void App::render_frame() {
 void App::tick_message_thread() {
     ZoneScopedN("App::tick_message_thread");
 
-    // Captured window closed (local screen share). Read the flag before locking;
-    // stop_screen_share joins the encode thread, which never takes ui_mutex_.
-    bool capture_lost = capture_lost_.exchange(false, std::memory_order_relaxed);
-
     std::lock_guard<std::recursive_mutex> lock(ui_mutex_);
 
-    if (capture_lost) {
+    poll_screen_share_start();
+    // WGC can miss/delay Closed, particularly after asynchronous startup.
+    // Native source liveness also catches application exit without a new frame.
+    if (sharing_screen_ && capture_ && capture_->target_lost()) {
         LOG_WARN("Capture target lost, stopping screen share");
         stop_screen_share();
     }
-
-    poll_screen_share_start();
 
     // Tick shared logic (network messages, speaking state, model updates, etc.)
     core_.tick();
@@ -1227,7 +1224,7 @@ void App::start_screen_share(int target_index) {
 
     if (target_index < 0 || target_index >= static_cast<int>(capture_targets_.size())) {
         capture_targets_.clear();
-        if (capture_) { capture_->shutdown(); capture_.reset(); }
+        if (capture_) ScreenCapture::shutdown_async(std::move(capture_));
         return;
     }
     if (!capture_) return;
@@ -1250,6 +1247,7 @@ void App::start_screen_share(int target_index) {
     job->target = target;
     job->fps = encode_fps_;
     job->target_process_id = target_process_id;
+    job->channel_id = core_.current_channel_;
     screen_share_start_job_ = std::move(job);
     capture_targets_.clear();
 
@@ -1296,19 +1294,18 @@ void App::poll_screen_share_start() {
 
     screen_share_start_job_.reset();
     if (capture_ != job->capture || !core_.authenticated_ ||
-        core_.current_channel_ == 0) {
+        core_.current_channel_ == 0 || core_.current_channel_ != job->channel_id) {
         LOG_WARN("Discarding completed screen capture startup after application state changed");
         if (job->succeeded)
-            job->capture->shutdown();
+            ScreenCapture::shutdown_async(job->capture);
         if (capture_ == job->capture)
             capture_.reset();
         return;
     }
 
-    if (!job->succeeded) {
+    if (!job->succeeded || capture_->target_lost()) {
         LOG_ERROR("Failed to start capture for '{}'", job->target.name);
-        capture_->shutdown();
-        capture_.reset();
+        ScreenCapture::shutdown_async(std::move(capture_));
         return;
     }
 
@@ -1319,8 +1316,6 @@ void App::finish_screen_share_start(uint32_t target_process_id) {
     ZoneScopedN("App::finish_screen_share_start");
     if (!capture_)
         return;
-
-    capture_->on_closed = [this]() { capture_lost_.store(true, std::memory_order_relaxed); };
 
     core_.settings_.set_pref("video.share_bitrate", std::to_string(core_.model_.share_bitrate.get()));
     core_.settings_.set_pref("video.share_fps",     std::to_string(core_.model_.share_fps.get()));
@@ -1384,7 +1379,7 @@ void App::finish_screen_share_start(uint32_t target_process_id) {
     encode_running_.store(true, std::memory_order_release);
     encode_thread_ = std::thread([this] { encode_loop(); });
 
-    capture_->on_frame = [this](ID3D11Texture2D* texture, uint32_t w, uint32_t h) {
+    capture_->set_frame_callback([this](ID3D11Texture2D* texture, uint32_t w, uint32_t h) {
         ZoneScopedN("capture::on_frame");
         if (!sharing_screen_) return;
         D3D11_TEXTURE2D_DESC desc{};
@@ -1525,7 +1520,7 @@ void App::finish_screen_share_start(uint32_t target_process_id) {
             }
         }
         encode_cv_.notify_one();
-    };
+    });
 
     stream_audio_capture_ = std::make_unique<StreamAudioCapture>();
     if (stream_audio_capture_->init(target_process_id)) {
@@ -1563,7 +1558,7 @@ void App::stop_screen_share() {
     if (stream_audio_capture_) { stream_audio_capture_->stop(); stream_audio_capture_.reset(); }
     // Stop callbacks before joining, while preserving the device and textures
     // used by the encode thread until that thread has fully exited.
-    if (capture_) capture_->stop();
+    if (capture_) capture_->stop_frame_delivery();
 
     if (encode_thread_.joinable()) {
         encode_running_.store(false, std::memory_order_release);
@@ -1580,7 +1575,7 @@ void App::stop_screen_share() {
     encode_on_encoded_ = nullptr;
 
     if (encoder_) { encoder_->shutdown(); encoder_.reset(); }
-    if (capture_) { capture_->shutdown(); capture_.reset(); }
+    if (capture_) ScreenCapture::shutdown_async(std::move(capture_));
     // video_frame_number_ is deliberately NOT reset here: it is owned by
     // AppCore::send_video_frame and reset only in reset_video_sender (next
     // share start) and on_disconnect_cleanup.

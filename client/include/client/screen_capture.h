@@ -1,8 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <atomic>
 #include <chrono>
 #include <functional>
+#include <future>
 #include <memory>
 #include <string>
 #include <vector>
@@ -64,6 +66,9 @@ public:
     // Initialize D3D11 device for capture
     bool init();
     void shutdown();
+    // Drain callbacks immediately, then release WGC on an independent MTA.
+    // Discarding the returned future does not block the UI message loop.
+    static std::future<void> shutdown_async(std::shared_ptr<ScreenCapture> capture);
 
     // Enumerate available capture targets
     std::vector<CaptureTarget> enumerate_windows();
@@ -71,9 +76,13 @@ public:
 
     // Start capturing the given target at the desired FPS
     bool start(const CaptureTarget& target, uint32_t target_fps = 60);
+    // Stop and drain frame callbacks without entering a blocking WGC RPC.
+    void stop_frame_delivery();
     void stop();
 
-    bool is_capturing() const { return capturing_; }
+    bool is_capturing() const { return capturing_.load(std::memory_order_acquire); }
+    // Includes native window/monitor liveness, even if WGC never reports Closed.
+    bool target_lost() const;
     uint32_t width() const { return width_; }
     uint32_t height() const { return height_; }
 
@@ -84,16 +93,17 @@ public:
     // Callback when a new frame is captured.
     // The texture is only valid for the duration of the callback.
     // You must copy it if you need it longer.
-    std::function<void(ID3D11Texture2D* texture, uint32_t width, uint32_t height)> on_frame;
-
-    // Called when the captured window/monitor is closed or lost.
-    std::function<void()> on_closed;
+    void set_frame_callback(std::function<void(ID3D11Texture2D*, uint32_t, uint32_t)> callback);
 
 private:
     Microsoft::WRL::ComPtr<ID3D11Device> device_;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> context_;
 
-    bool capturing_ = false;
+    std::atomic<bool> capturing_{false};
+    std::atomic<bool> target_closed_{false};
+    CaptureTarget target_{};
+    uint32_t target_process_id_ = 0;
+    std::function<void(ID3D11Texture2D*, uint32_t, uint32_t)> on_frame_;
     bool frame_limited_ = false;
     uint32_t width_ = 0;
     uint32_t height_ = 0;
