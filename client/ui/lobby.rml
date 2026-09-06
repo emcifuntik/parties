@@ -166,22 +166,24 @@
                     <span class="channel-name">{{ ch.name }}</span>
                     <span class="channel-count" data-if="ch.user_count > 0">{{ ch.user_count }}</span>
                 </div>
-                <div data-for="user : ch.users" class="channel-user-item"
+                <div data-for="user : ch.users" class="channel-user-item ui-body"
                      data-class-speaking="user.speaking"
                      data-class-streaming="user.streaming"
+                     data-class-music-playing="user.music_playing"
                      data-class-muted="user.muted"
                      data-class-deafened="user.deafened"
                      data-event-mousedown="user_mousedown(user.id, user.name, user.role)">
                     <div class="user-dot-wrap">
                         <gradient_circle class="user-dot" data-attr-seed="user.name" />
                     </div>
-                    <span class="channel-username">{{ user.name }}</span>
+                    <span class="channel-username ui-body">{{ user.name }}</span>
+                    <svg class="user-state-icon icon-music" src="icon-music.svg" width="14" height="14" title="Playing music" />
                     <svg class="user-state-icon icon-streaming" src="icon-sharing.svg" width="12" height="12" />
                     <svg class="user-state-icon icon-muted" src="icon-mute.svg" width="12" height="12" />
                     <svg class="user-state-icon icon-deafened" src="icon-deafen.svg" width="12" height="12" />
-                    <span class="role-badge" data-if="user.role == 0">OWNER</span>
-                    <span class="role-badge role-admin" data-if="user.role == 1">ADMIN</span>
-                    <span class="role-badge role-mod" data-if="user.role == 2">MOD</span>
+                    <span class="role-badge ui-micro ui-weight-bold" data-if="user.role == 0">OWNER</span>
+                    <span class="role-badge role-admin ui-micro ui-weight-bold" data-if="user.role == 1">ADMIN</span>
+                    <span class="role-badge role-mod ui-micro ui-weight-bold" data-if="user.role == 2">MOD</span>
                 </div>
             </div>
 
@@ -581,9 +583,14 @@
                         <div data-for="user : ch.users" class="voice-stage-card"
                              data-class-speaking="user.speaking"
                              data-class-streaming="user.streaming"
+                             data-class-music-playing="user.music_playing"
                              data-class-muted="user.muted"
                             data-event-click="watch_user_stream(user.id)"
                              data-event-mousedown="user_mousedown(user.id, user.name, user.role)">
+                            <div class="voice-stage-music ui-caption" data-if="user.music_playing">
+                                <svg src="icon-music.svg" width="14" height="14" />
+                                <span>Playing music</span>
+                            </div>
                             <div class="voice-stage-avatar-wrap">
                                 <gradient_circle class="voice-stage-avatar" data-attr-seed="user.name" />
                                 <span class="voice-stage-initial ui-control">{{ user.name }}</span>

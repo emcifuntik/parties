@@ -512,7 +512,6 @@ gradient_circle.server-header-gradient {
     padding: 4dp 8dp;
     margin: 0dp 8dp 0dp 28dp;
     color: #A0A8C0;
-    font-size: 12dp;
     border-radius: 6dp;
     gap: 8dp;
 }
@@ -572,6 +571,12 @@ gradient_circle.user-dot {
     display: block;
 }
 
+.channel-user-item.music-playing .icon-music {
+    display: block;
+    flex-shrink: 0;
+    opacity: 1;
+}
+
 .channel-user-item.streaming .icon-streaming {
     display: block;
     opacity: 1;
@@ -579,8 +584,6 @@ gradient_circle.user-dot {
 
 .role-badge {
     display: block;
-    font-size: 8dp;
-    font-weight: bold;
     color: #6EECD4;
     padding: 1dp 5dp;
     margin-left: 2dp;

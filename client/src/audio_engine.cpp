@@ -140,8 +140,10 @@ void AudioEngine::push_secondary_pcm(const float* pcm, int frame_count) {
                                                     audio::OPUS_FRAME_SIZE,
                                                     secondary_opus_buf_,
                                                     audio::MAX_OPUS_PACKET);
-            if (encoded > 0)
+            if (encoded > 0) {
+                secondary_activity_.observe_pcm(secondary_buf_.data(), audio::OPUS_FRAME_SIZE);
                 on_secondary_encoded_frame(secondary_opus_buf_, static_cast<size_t>(encoded));
+            }
             secondary_pos_ = 0;
         }
     }
@@ -215,6 +217,7 @@ bool AudioEngine::init_devices() {
 }
 
 void AudioEngine::shutdown() {
+    secondary_activity_.reset();
     stop();
     uninit_devices();
     echo_canceller_.shutdown();

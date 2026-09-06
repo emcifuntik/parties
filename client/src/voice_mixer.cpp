@@ -227,6 +227,7 @@ void VoiceMixer::mix_output(float* output, int frame_count) {
                     for (int i = 0; i < audio::OPUS_FRAME_SIZE; i++)
                         sum += user_buf_[i] * user_buf_[i];
                     stream.level = std::sqrt(sum / audio::OPUS_FRAME_SIZE);
+                    stream.activity.observe_level(stream.level);
                 } else {
                     std::memset(stream.pcm_buf.data(), 0,
                                audio::OPUS_FRAME_SIZE * sizeof(float));
@@ -335,6 +336,15 @@ std::unordered_map<UserId, float> VoiceMixer::get_user_levels() const {
     std::unordered_map<UserId, float> result;
     for (auto& [uid, stream] : streams_)
         result[uid] = stream.level;
+    return result;
+}
+
+std::vector<UserId> VoiceMixer::get_active_users() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto now = AudioActivity::Clock::now();
+    std::vector<UserId> result;
+    for (const auto& [uid, stream] : streams_)
+        if (stream.activity.active(now)) result.push_back(uid);
     return result;
 }
 

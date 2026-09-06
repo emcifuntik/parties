@@ -3,6 +3,7 @@
 #include <parties/codec.h>
 #include <parties/audio_common.h>
 #include <client/echo_canceller.h>
+#include <client/audio_activity.h>
 
 #include <miniaudio.h>
 #include <rnnoise.h>
@@ -53,6 +54,7 @@ public:
     // call from any single producer thread; calls are serialized internally.
     void push_secondary_pcm(const float* pcm, int frame_count);
     void set_secondary_send_volume(float volume);
+    bool is_secondary_transmitting() const { return secondary_activity_.active(); }
     float secondary_send_volume() const {
         return secondary_send_volume_.load(std::memory_order_relaxed);
     }
@@ -152,6 +154,7 @@ private:
     size_t secondary_pos_ = 0;
     uint8_t secondary_opus_buf_[audio::MAX_OPUS_PACKET];
     std::atomic<float> secondary_send_volume_{1.0f};
+    AudioActivity secondary_activity_;
 
     // Capture accumulation buffer
     std::vector<float> capture_buf_;

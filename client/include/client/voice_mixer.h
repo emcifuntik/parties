@@ -1,5 +1,6 @@
 #pragma once
 
+#include <client/audio_activity.h>
 #include <parties/types.h>
 #include <parties/codec.h>
 #include <parties/audio_common.h>
@@ -63,6 +64,9 @@ public:
     // Returns map of user_id -> level for all active streams.
     std::unordered_map<UserId, float> get_user_levels() const;
 
+    // Recently audible sources; expires even when playback is suspended.
+    std::vector<UserId> get_active_users() const;
+
     // Cumulative decode-path counters across all streams (observability + tests).
     // normal = in-order decode; fec = a lost frame recovered from the next
     // packet's in-band FEC; plc = a frame concealed (no data/no successor);
@@ -97,6 +101,7 @@ private:
 
         // Audio level (RMS of last decoded frame, updated in mix_output)
         float level = 0.0f;
+        AudioActivity activity;
 
         // Per-user compression (normalization)
         bool compress = false;

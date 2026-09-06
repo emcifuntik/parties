@@ -154,6 +154,8 @@ void PopulateUIFixture(AppCore& core, const std::string& scenario, bool macos)
         FixtureUser("Sara", 4), FixtureUser("Maks", 5, false, true),
         FixtureUser("android", 6), FixtureUser("Noah", 7)
     };
+    general.users[2].music_playing = true;
+    general.users[4].music_playing = true;
     general.user_count = static_cast<int>(general.users.size());
     ChannelInfo lounge;
     lounge.id = 2;

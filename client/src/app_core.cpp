@@ -2068,18 +2068,19 @@ void AppCore::on_server_error(const uint8_t* data, size_t len)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Speaking state (200 ms hysteresis)
+// Voice and secondary audio activity (independent of microphone mute)
 // ─────────────────────────────────────────────────────────────────────────────
 
 void AppCore::update_speaking_state()
 {
-    if (!model_.is_connected || current_channel_ == 0) return;
-
+    const bool in_channel = model_.is_connected && current_channel_ != 0;
     auto now    = std::chrono::steady_clock::now();
     auto levels = mixer_.get_user_levels();
+    const auto music_users = aux_mixer_.get_active_users();
+    const bool self_music = audio_.is_secondary_transmitting();
     bool changed = false;
 
-    bool self_active = !model_.is_muted && audio_.is_transmitting();
+    bool self_active = in_channel && !model_.is_muted && audio_.is_transmitting();
     if (self_active) voice_last_active_[user_id_] = now;
 
     auto& channels = model_.channels.silent();
@@ -2087,6 +2088,19 @@ void AppCore::update_speaking_state()
         for (auto& user : ch.users) {
             bool was_speaking = user.speaking;
             UserId uid = static_cast<UserId>(user.id);
+            const bool in_current_channel = in_channel && ch.id == static_cast<int>(current_channel_);
+            const bool music_playing = in_current_channel && (uid == user_id_
+                ? self_music
+                : std::find(music_users.begin(), music_users.end(), uid) != music_users.end());
+            if (user.music_playing != music_playing) {
+                user.music_playing = music_playing;
+                changed = true;
+            }
+            if (!in_current_channel) {
+                changed |= user.speaking;
+                user.speaking = false;
+                continue;
+            }
 
             bool active_now;
             if (uid == user_id_) {

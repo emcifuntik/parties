@@ -13,6 +13,7 @@
 #include <parties/codec.h>
 #include <parties/audio_common.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -35,7 +36,7 @@ struct Packet { uint16_t seq; std::vector<uint8_t> bytes; };
 
 // A low-amplitude tone (0.2) so the primary mix's makeup gain (+6 dB ≈ 2x) stays
 // well under full scale — no clipping to distort the energy ratio.
-std::vector<Packet> encode_music(int n_frames) {
+std::vector<Packet> encode_music(int n_frames, float amplitude = 0.2f) {
     OpusCodec enc;
     enc.init_encoder(audio::SAMPLE_RATE, audio::CHANNELS, audio::SECONDARY_OPUS_BITRATE,
                      /*inband_fec=*/true, audio::OPUS_EXPECTED_LOSS_PCT, OpusMode::Music);
@@ -48,7 +49,7 @@ std::vector<Packet> encode_music(int n_frames) {
     for (int f = 0; f < n_frames; ++f) {
         float frame[kFrame];
         for (int i = 0; i < kFrame; ++i) {
-            frame[i] = static_cast<float>(0.2 * (std::sin(p1) + 0.4 * std::sin(p2)));
+            frame[i] = static_cast<float>(amplitude * (std::sin(p1) + 0.4 * std::sin(p2)));
             p1 += w1; p2 += w2;
         }
         int n = enc.encode(frame, kFrame, buf, sizeof(buf));
@@ -168,6 +169,57 @@ int main() {
         TEST_ASSERT(stats.normal >= wrap_packets.size(),
                     "all packets around the sequence wrap decode normally");
         TEST_ASSERT(stats.resync == 0, "sequence wrap does not trigger jitter resync");
+    }
+
+    // 5. Activity is attributed to the decoded source before receive volumes.
+    // Removing one participant must not clear another participant's indicator.
+    {
+        VoiceMixer aux(/*apply_makeup=*/false);
+        aux.set_master_volume(0.0f);
+        const auto music = encode_music(8);
+        const auto silence = encode_music(8, 0.0f);
+        std::vector<float> output(kFrame);
+        for (const auto& packet : music) {
+            aux.push_packet(kUser, packet.seq, packet.bytes.data(), packet.bytes.size());
+            aux.push_packet(kUser + 1, packet.seq, packet.bytes.data(), packet.bytes.size());
+            const auto& quiet = silence[packet.seq];
+            aux.push_packet(kUser + 2, quiet.seq, quiet.bytes.data(), quiet.bytes.size());
+            aux.set_user_volume(kUser, 0.0f);
+            aux.mix_output(output.data(), kFrame);
+        }
+        const auto active = aux.get_active_users();
+        TEST_ASSERT(active.size() == 2, "only audible sources are visible, even at zero receive volume");
+        TEST_ASSERT(std::find(active.begin(), active.end(), kUser) != active.end(),
+                    "music activity identifies the sender");
+        aux.remove_user(kUser);
+        const auto remaining = aux.get_active_users();
+        TEST_ASSERT(remaining.size() == 1 && remaining[0] == kUser + 1,
+                    "leaving clears only that sender's music activity");
+        aux.clear();
+        TEST_ASSERT(aux.get_active_users().empty(), "channel cleanup clears music activity");
+    }
+
+    // 6. Silence cannot renew activity, and the deadline needs no audio callback.
+    {
+        using namespace std::chrono_literals;
+        AudioActivity activity;
+        const auto start = AudioActivity::Clock::time_point{} + 1s;
+        TEST_ASSERT(!activity.active(start), "a new source is inactive");
+        activity.observe_level(0.1f, start);
+        activity.observe_level(0.0f, start + 400ms);
+        activity.observe_level(AudioActivity::minimum_rms, start + 450ms);
+        TEST_ASSERT(activity.active(start + 499ms), "short pauses retain the music indicator");
+        TEST_ASSERT(!activity.active(start + 500ms), "stopped or silent sources expire after 500 ms");
+        activity.observe_level(0.1f, start + 600ms);
+        TEST_ASSERT(activity.active(start + 700ms), "music restarts the indicator");
+        activity.reset();
+        TEST_ASSERT(!activity.active(start + 700ms), "reset immediately clears local activity");
+        const float silence[32]{};
+        activity.observe_pcm(silence, 32);
+        TEST_ASSERT(!activity.active(), "silent local PCM does not indicate music");
+        const float audible[] = {0.1f, -0.1f};
+        activity.observe_pcm(audible, 2);
+        TEST_ASSERT(activity.active(), "audible local PCM indicates music");
     }
 
     std::printf("=== ALL AUX STREAM TESTS PASSED ===\n");

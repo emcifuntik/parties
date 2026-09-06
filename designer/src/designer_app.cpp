@@ -363,6 +363,8 @@ struct DesignerApp::PartiesFixture {
 			User("android", 6),
 			User("Noah", 7)
 		};
+		general.users[2].music_playing = true;
+		general.users[4].music_playing = true;
 		general.user_count = static_cast<int>(general.users.size());
 		channels.push_back(general);
 		parties::client::ChannelInfo lounge;
@@ -807,6 +809,10 @@ struct DesignerApp::PartiesFixture {
 			Rml::ElementList pattern_rows;
 			Rml::ElementList capacities;
 			Rml::ElementList legacy_sharer_cards;
+			Rml::ElementList music_icons;
+			Rml::ElementList music_badges;
+			document->GetElementsByClassName(music_icons, "icon-music");
+			document->GetElementsByClassName(music_badges, "voice-stage-music");
 			document->GetElementsByClassName(cards, "voice-stage-card");
 			document->GetElementsByClassName(patterns, "voice-stage-camera-pattern");
 			document->GetElementsByClassName(badges, "voice-stage-stream-badge");
@@ -827,6 +833,19 @@ struct DesignerApp::PartiesFixture {
 			remove_hidden(pattern_rows);
 			remove_hidden(capacities);
 			remove_hidden(legacy_sharer_cards);
+			remove_hidden(music_icons);
+			remove_hidden(music_badges);
+			const bool mobile = document->IsClassSet("platform-ios");
+			const bool music_valid = music_icons.size() == 2 &&
+				music_badges.size() == (mobile ? 0u : 2u);
+			if (!music_valid) {
+				std::fprintf(stderr, "[Designer] Music indicator validation failed: icons=%zu badges=%zu mobile=%d\n",
+					music_icons.size(), music_badges.size(), mobile ? 1 : 0);
+				return false;
+			}
+			// iOS shows room members in the sidebar instead of the desktop stage.
+			if (mobile)
+				return cards.empty() && (!audio_share || !audio_share->IsVisible(true));
 			bool packed_grid = cards.size() == 7;
 			if (packed_grid) {
 				const auto first = cards[0]->GetAbsoluteOffset(Rml::BoxArea::Border);

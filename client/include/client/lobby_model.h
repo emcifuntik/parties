@@ -21,6 +21,7 @@ struct ChannelUser {
     bool muted = false;
     bool deafened = false;
     bool speaking = false;
+    bool music_playing = false;
     bool streaming = false;
     int color_index = 0;  // 0-11, generated from name hash for avatar color
 };

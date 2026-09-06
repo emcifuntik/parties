@@ -17,6 +17,7 @@ void LobbyModel::build(rml::Builder& b) {
          .member("muted",       &ChannelUser::muted)
          .member("deafened",    &ChannelUser::deafened)
          .member("speaking",    &ChannelUser::speaking)
+         .member("music_playing", &ChannelUser::music_playing)
          .member("streaming",   &ChannelUser::streaming)
          .member("color_index", &ChannelUser::color_index);
     });

@@ -122,7 +122,6 @@
         width: 24dp;
         height: 24dp;
     }
-    .channel-user-item .channel-username { font-size: 13dp; }
     .settings-btn {
         display: flex;
         width: 44dp;
