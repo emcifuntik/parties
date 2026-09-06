@@ -72,15 +72,14 @@
     border-bottom: 1dp #1E2030;
 }
 
-.chat-search-input {
+input.chat-search-input.ui-input {
     display: block;
     flex: 1;
-    padding: 8dp 12dp;
+    padding: 0dp 12dp;
     background-color: #181A24;
     border: 1dp #2A2D3E;
     border-radius: 8dp;
     color: #C4C8D8;
-    font-size: 13dp;
 }
 
 /* Pinned messages panel */
@@ -96,10 +95,9 @@
 
 .chat-pinned-header {
     display: flex;
+    align-items: center;
     flex-direction: row;
     margin-bottom: 8dp;
-    font-size: 13dp;
-    font-weight: bold;
     color: #8A8FA6;
 }
 
@@ -147,11 +145,12 @@
 }
 
 .chat-load-more {
-    display: block;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     text-align: center;
     padding: 8dp;
     color: #7C5CFC;
-    font-size: 12dp;
     cursor: pointer;
 }
 
@@ -362,12 +361,11 @@ selectable_text {
 input.text.compose-input {
     display: block;
     flex: 1;
-    padding: 10dp 16dp;
+    padding: 0dp 16dp;
     background-color: #1A1D2A;
     border: 0;
     border-radius: 22dp 0 0 22dp;
     color: #F0F2F8;
-    font-size: 14dp;
     margin-bottom: 0;
     width: auto;
 }
@@ -450,13 +448,8 @@ input.text.compose-input {
 }
 
 .pending-file-remove {
-    display: block;
-    width: 16dp;
-    height: 16dp;
-    font-size: 12dp;
     color: #5A5E73;
     text-align: center;
-    line-height: 16dp;
     cursor: pointer;
     border-radius: 3dp;
 }

@@ -1,4 +1,5 @@
 #include <client/sound_player.h>
+#include <client/audio_context_config.h>
 
 #include <parties/audio_common.h>
 #include <parties/log.h>
@@ -98,6 +99,13 @@ SoundPlayer::~SoundPlayer() {
 }
 
 bool SoundPlayer::init() {
+    if (device_initialized_) return true;
+    const auto context_config = MakeAudioContextConfig();
+    if (ma_context_init(nullptr, 0, &context_config, &context_) != MA_SUCCESS) {
+        LOG_ERROR("Failed to initialize notification audio context");
+        return false;
+    }
+    context_initialized_ = true;
     ma_device_config config = ma_device_config_init(ma_device_type_playback);
     config.playback.format = ma_format_f32;
     config.playback.channels = 1;
@@ -106,8 +114,9 @@ bool SoundPlayer::init() {
     config.pUserData = this;
     config.periodSizeInMilliseconds = 10;
 
-    if (ma_device_init(nullptr, &config, &device_) != MA_SUCCESS) {
+    if (ma_device_init(&context_, &config, &device_) != MA_SUCCESS) {
         LOG_ERROR("Failed to init playback device");
+        shutdown();
         return false;
     }
     device_initialized_ = true;
@@ -120,8 +129,7 @@ bool SoundPlayer::init() {
 
     if (ma_device_start(&device_) != MA_SUCCESS) {
         LOG_ERROR("Failed to start playback device");
-        ma_device_uninit(&device_);
-        device_initialized_ = false;
+        shutdown();
         return false;
     }
 
@@ -133,6 +141,10 @@ void SoundPlayer::shutdown() {
         ma_device_stop(&device_);
         ma_device_uninit(&device_);
         device_initialized_ = false;
+    }
+    if (context_initialized_) {
+        ma_context_uninit(&context_);
+        context_initialized_ = false;
     }
 }
 

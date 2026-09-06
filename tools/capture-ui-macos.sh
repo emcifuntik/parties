@@ -21,7 +21,7 @@ scenarios=(
     launcher launcher-reconnecting update-available party-modal
     onboarding onboarding-restore onboarding-key-import recovery
     login login-existing tofu global-name server-nickname
-    room room-empty chat chat-search chat-pinned chat-attachment
+    room room-empty island-idle island-long-name chat chat-draft chat-search chat-pinned chat-attachment
     settings settings-select-open settings-screen-share settings-hotkeys
     settings-account settings-account-import
     stream-single streams create-channel create-text-channel rename-channel
@@ -29,7 +29,10 @@ scenarios=(
     native-share-picker native-audio-picker
 )
 
+if [[ -n "${UI_SCENARIOS:-}" ]]; then scenarios=(${=UI_SCENARIOS}); fi
+
 fixture_pid=0
+audit_failed=0
 cleanup_fixture() {
     if (( fixture_pid > 0 )) && kill -0 "$fixture_pid" 2>/dev/null; then
         kill "$fixture_pid" 2>/dev/null || true
@@ -41,7 +44,9 @@ trap cleanup_fixture EXIT INT TERM
 
 for scenario in $scenarios; do
     print "Capturing $scenario"
-    "$executable" --ui-fixture "$scenario" >> "$log_file" 2>&1 &
+    log_file="$output/$scenario.log"
+    : > "$log_file"
+    "$executable" --ui-fixture "$scenario" --ui-fixture-size "${UI_WIDTH:-1280}" "${UI_HEIGHT:-720}" >> "$log_file" 2>&1 &
     fixture_pid=$!
 
     window_id=""
@@ -61,13 +66,25 @@ for scenario in $scenarios; do
         exit 1
     fi
 
-    # Data bindings settle in the first frame; the delay also gives AppKit
-    # enough time to animate native menus and popovers into their final shape.
-    if [[ "$scenario" == native-* ]]; then
-        sleep 1.25
-    else
-        sleep 0.45
+    ready=0
+    for attempt in {1..300}; do
+        if ! kill -0 "$fixture_pid" 2>/dev/null; then
+            print -u2 "Fixture exited before capture: $scenario"
+            exit 1
+        fi
+        if /usr/bin/grep -Fq "Ready macOS UI fixture: $scenario" "$log_file"; then
+            ready=1
+            break
+        fi
+        sleep 0.1
+    done
+    if (( ! ready )); then
+        print -u2 "Timed out waiting for fixture: $scenario"
+        cat "$log_file" >&2
+        exit 1
     fi
+    # Native popovers animate separately from the Metal window.
+    if [[ "$scenario" == native-* ]]; then sleep 0.5; fi
     if [[ "$scenario" == "native-share-picker" || "$scenario" == "native-audio-picker" ]]; then
         # SCContentSharingPicker is a system-wide overlay, not an application
         # child window, so a window-only capture intentionally cannot see it.
@@ -75,7 +92,13 @@ for scenario in $scenarios; do
     else
         /usr/sbin/screencapture -x -l "$window_id" "$output/$scenario.png"
     fi
+    if /usr/bin/grep -Eq '\[UI audit\] FAIL|Failed to (initialize|load|render)|\[error\]|\[assert\]' "$log_file"; then
+        print -u2 "Fixture audit failed: $scenario"
+        audit_failed=1
+    fi
     cleanup_fixture
 done
 
 print "Captured ${#scenarios} macOS UI scenarios in $output"
+
+exit "$audit_failed"

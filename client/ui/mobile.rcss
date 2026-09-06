@@ -34,6 +34,7 @@
     }
     .home-content {
         width: 100%;
+        flex: none;
         padding: 28dp 16dp 32dp 16dp;
         box-sizing: border-box;
     }
@@ -50,7 +51,7 @@
     .home-profile { min-height: 44dp; box-sizing: border-box; }
     .home-add-button {
         min-height: 44dp;
-        padding: 13dp 16dp;
+        padding: 0dp 16dp;
         box-sizing: border-box;
     }
     .home-grid {
@@ -103,7 +104,9 @@
         height: 44dp;
         flex-shrink: 0;
         padding: 0dp;
-        line-height: 44dp;
+        display: flex;
+        align-items: center;
+        justify-content: center;
         text-align: center;
     }
     .channel-item, .chat-item { margin: 2dp 4dp; padding: 0dp 12dp; }
@@ -138,6 +141,7 @@
         height: 20dp;
     }
     .user-island { margin: 8dp; padding: 10dp; }
+    .sidebar-bottom { margin-bottom: var(--safe-area-bottom, 0dp); }
     .voice-btn-row { gap: 6dp; }
     .voice-btn { min-width: 44dp; height: 44dp; }
 
@@ -225,13 +229,12 @@
         overflow-x: auto;
     }
     .sharer-tab {
-        display: block;
-        height: 36dp;
-        min-height: 36dp;
+        display: flex;
+        height: 44dp;
+        min-height: 44dp;
         flex-shrink: 0;
         padding: 0dp 14dp;
         box-sizing: border-box;
-        line-height: 36dp;
         text-align: center;
     }
     .stream-playback-tools {
@@ -252,6 +255,7 @@
         flex-direction: column;
         flex-wrap: nowrap;
         overflow-y: auto;
+        margin-bottom: var(--safe-area-bottom, 0dp);
     }
     .stream-grid .stream-cell {
         width: 100%;
@@ -260,7 +264,12 @@
         flex: 0 0 46%;
     }
     .stream-grid.single .stream-cell { flex: 1 1 100%; }
-    .stream-call-dock { bottom: 10dp; }
+    .stream-call-dock { bottom: 10dp; margin-bottom: var(--safe-area-bottom, 0dp); }
+    .screen-share-area.fullscreen {
+        left: var(--safe-area-left, 0dp);
+        right: var(--safe-area-right, 0dp);
+        width: auto;
+    }
     .dock-button { width: 48dp; height: 44dp; }
 
     /* Chat ------------------------------------------------------------- */
@@ -301,8 +310,19 @@
     }
     .msg-avatar-wrap, .msg-avatar { width: 34dp; height: 34dp; }
     .msg-body { min-width: 0dp; }
-    .chat-compose { padding: 8dp; }
+    .chat-compose { padding: 8dp; margin-bottom: var(--safe-area-bottom, 0dp); }
+    .chat-load-more { min-height: 44dp; box-sizing: border-box; }
+    .pending-file { max-width: 100%; padding: 0dp 4dp 0dp 10dp; box-sizing: border-box; }
+    .pending-file-name { min-width: 0dp; overflow: hidden; }
+    .pending-file-remove { width: 44dp; height: 44dp; }
+    .user-island-info { min-height: 44dp; }
     .compose-input-wrap { min-height: 48dp; }
+    input.compose-input.ui-input {
+        height: 48dp;
+        min-height: 48dp;
+        padding-top: 14dp;
+        padding-bottom: 14dp;
+    }
     .compose-attach-btn { width: 44dp; height: 44dp; }
     .send-btn { width: 48dp; height: 48dp; border-radius: 24dp; }
     .chat-search-bar { padding: 8dp; }
@@ -418,8 +438,8 @@
     .stream-mobile-back {
         display: flex;
         min-width: 54dp;
-        height: 36dp;
-        min-height: 36dp;
+        height: 44dp;
+        min-height: 44dp;
         flex-shrink: 0;
         align-items: center;
         gap: 4dp;
@@ -480,7 +500,6 @@
         margin: 0dp;
         padding: 0dp;
         box-sizing: border-box;
-        line-height: 48dp;
         text-align: center;
     }
 
@@ -548,32 +567,13 @@
     .user-menu-slider-row { min-height: 44dp; }
     .user-menu-action { min-height: 44dp; box-sizing: border-box; }
 
-    /* Every control below uses an explicit iOS touch target and flex centering.
-       This avoids baseline-dependent padding, which made labels look too low. */
-    .btn, .btn.btn-secondary, .btn.btn-danger,
-    .home-add-button, .party-card-action, .share-codec-btn {
-        display: block;
-        min-height: 48dp;
-        padding-top: 0dp;
-        padding-bottom: 0dp;
-        box-sizing: border-box;
-        line-height: 48dp;
-        text-align: center;
-    }
-    .btn.btn-small, .home-add-button, .party-card-action {
+    /* Platform density preserves the shared flex formatting context. */
+    .ui-button, .ui-segment { min-height: 48dp; }
+    .ui-button.ui-button-compact, .btn.ui-button.btn-small,
+    .home-add-button.ui-button, .party-card-action.ui-button {
         min-height: 44dp;
-        line-height: 44dp;
     }
-    .settings-secondary-action, .settings-danger-action, .settings-keycap {
-        display: flex;
-        min-height: 48dp;
-        align-items: center;
-        justify-content: center;
-        padding-top: 0dp;
-        padding-bottom: 0dp;
-        box-sizing: border-box;
-        line-height: 16dp;
-    }
+    .settings-keycap { min-height: 48dp; }
     .share-codec-btn.share-fps-120 { display: none; }
     /* RmlUI lays single-line input text out from the top of its content box.
        Make that content box exactly one centered line instead of relying on
@@ -584,7 +584,6 @@
         padding-top: 0dp;
         padding-bottom: 0dp;
         box-sizing: border-box;
-        line-height: 46dp;
     }
     .close-icon { width: 44dp; height: 44dp; flex-shrink: 0; }
     .close-icon-a, .close-icon-b { top: 21dp; left: 14dp; }

@@ -177,6 +177,8 @@ select.settings-device-select {
 }
 select.settings-device-select selectvalue {
     display: block;
+    white-space: nowrap;
+    text-overflow: ellipsis;
     width: auto;
     height: 16dp;
     margin-right: 36dp;

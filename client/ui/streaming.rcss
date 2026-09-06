@@ -49,13 +49,11 @@
 }
 
 .share-codec-btn {
-    display: block;
-    padding: 6dp 12dp;
+    padding: 0dp 12dp;
     background-color: #1C2033;
     color: #A0A8C0;
     cursor: pointer;
     border-radius: 6dp;
-    font-size: 13dp;
 }
 
 .share-codec-btn:hover {
@@ -209,13 +207,15 @@ video_frame {
 }
 
 .sharer-tab {
-    display: block;
-    padding: 6dp 14dp;
+    display: flex;
+    min-height: var(--control-height-compact);
+    align-items: center;
+    justify-content: center;
+    padding: 0dp 14dp;
     background-color: #181B25;
     color: #A0A8C0;
     border-radius: 6dp;
     cursor: pointer;
-    font-size: 13dp;
 }
 
 .sharer-tab:hover {
@@ -519,3 +519,8 @@ input.stream-volume-slider {
     color: #B8C5C2;
     border: 1dp #FFFFFF12;
 }
+
+/* Percentage-sized video surfaces include their borders in the available width. */
+.stream-cell, .stream-cell-video { box-sizing: border-box; }
+.screen-share-area.fullscreen .stream-cell,
+.screen-share-area.fullscreen .stream-cell-video { border-width: 0dp; border-radius: 0dp; }

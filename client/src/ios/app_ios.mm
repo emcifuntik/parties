@@ -41,6 +41,13 @@
 #include <client/video_element.h>
 #include <client/gradient_circle_element.h>
 #include <client/custom_elements.h>
+#include <client/ios_audio_routes.h>
+#include <client/ios_ui_layout.h>
+#include <client/ios_back_gesture.h>
+#ifndef NDEBUG
+#include <client/ui_fixture.h>
+#include <client/ui_layout_audit.h>
+#endif
 
 #include <encdec/apple/VideoDecoderIOS.h>
 
@@ -49,6 +56,17 @@
 
 using namespace parties;
 using namespace parties::client;
+
+static IOSAudioPort AudioPortSnapshot(AVAudioSessionPortDescription* port)
+{
+    if (!port) return {};
+    const bool paired = [port.portType isEqualToString:AVAudioSessionPortBluetoothHFP] ||
+                        [port.portType isEqualToString:AVAudioSessionPortBluetoothLE] ||
+                        [port.portType isEqualToString:AVAudioSessionPortHeadsetMic] ||
+                        [port.portType isEqualToString:AVAudioSessionPortHeadphones];
+    return {port.UID.UTF8String ?: "", port.portName.UTF8String ?: "Audio device", paired,
+            static_cast<bool>([port.portType isEqualToString:AVAudioSessionPortBuiltInSpeaker])};
+}
 using namespace parties::protocol;
 
 namespace {
@@ -93,12 +111,14 @@ ChatMessage PreviewMessage(int64_t id, int senderId, const char* sender,
 bool IsIOSPreviewScenario(const std::string& scenario)
 {
     static constexpr const char* scenarios[] = {
-        "launcher", "sidebar", "party-modal", "onboarding", "onboarding-restore",
+        "launcher", "sidebar", "island-idle", "island-long-name", "party-modal", "onboarding", "onboarding-restore",
         "onboarding-key-import", "recovery", "room", "chat", "settings",
         "settings-screen-share", "settings-hotkeys", "settings-account",
-        "stream-single", "streams", "member", "login", "tofu",
+        "stream-single", "stream-fullscreen", "streams", "member", "login", "tofu",
         "create-channel", "create-text-channel", "rename-channel",
-        "global-name", "server-nickname"
+        "global-name", "server-nickname", "launcher-reconnecting", "room-empty",
+        "chat-search", "chat-draft", "chat-pinned", "chat-attachment", "settings-select-open",
+        "settings-account-import", "login-existing", "settings-airpods", "chat-keyboard", "chat-back-blocked", "room-back-blocked"
     };
     for (const char* value : scenarios)
         if (scenario == value) return true;
@@ -107,6 +127,17 @@ bool IsIOSPreviewScenario(const std::string& scenario)
 
 void PopulateIOSPreview(AppCore& core, const std::string& scenario)
 {
+    if (scenario == "island-idle" || scenario == "island-long-name") {
+        PopulateUIFixture(core, scenario, false);
+        core.model_.mobile_show_content = false;
+        return;
+    }
+    if (scenario == "launcher-reconnecting" || scenario == "room-empty" ||
+        scenario == "chat-search" || scenario == "chat-draft" || scenario == "chat-pinned" || scenario == "chat-attachment" ||
+        scenario == "settings-select-open" || scenario == "settings-account-import" || scenario == "login-existing") {
+        PopulateUIFixture(core, scenario, false);
+        return;
+    }
     LobbyModel& lobby = core.model_;
     ServerListModel& servers = core.server_model_;
     ChatModel& chat = core.chat_model_;
@@ -210,10 +241,10 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
         if (scenario == "settings-account") section = SettingsSection::AccountKeys;
         lobby.router.select_settings(section);
     }
-    else if (scenario == "stream-single" || scenario == "streams") {
+    else if (scenario == "stream-single" || scenario == "stream-fullscreen" || scenario == "streams") {
         lobby.router.go(DocumentRoute::Streams);
         lobby.someone_sharing = true;
-        lobby.watching_count = scenario == "stream-single" ? 1 : 2;
+        lobby.watching_count = scenario == "streams" ? 2 : 1;
         lobby.viewing_sharer_id = 2;
         lobby.stream_fps = 60;
         lobby.sharers = Rml::Vector<ActiveSharer>{{2, "IceTroll", true}, {3, "ivan", true}};
@@ -269,7 +300,7 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     if (scenario == "settings-account") {
         lobby.show_private_key = true;
         lobby.identity_private_key = "8d99c2eed598508a94eb471d7334ee80d28a57139d1a7b7273e16105106fe0a4";
-        lobby.show_import_identity = true;
+        lobby.show_import_identity = false;
     }
 }
 #endif
@@ -324,12 +355,18 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     bool                    _quicInitialized;
     bool                    _previewMode;
     std::string             _previewScenario;
+#ifndef NDEBUG
+    unsigned                _previewFrameCount;
+#endif
 
     // Embedded file interface (must outlive RmlUi)
     EmbeddedFileInterface   _fileInterface;
 
     // Custom element instancers
     parties::rml::ElementRegistry _elementRegistry;
+
+    UIScreenEdgePanGestureRecognizer* _backGesture;
+    bool _backPending;
 
     // Touch scrolling. The weak observer becomes null if data binding removes
     // the target while momentum is still active.
@@ -361,6 +398,7 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     // AppCore — all shared logic
     AppCore                 _core;
     SoundPlayer             _soundPlayer;
+    IOSAudioRoutes          _iosAudioRoutes;
 
     // Video decoder (receive screen shares)
     std::unique_ptr<VideoDecoderIOS> _decoder;
@@ -382,7 +420,7 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     _view = [[MTKView alloc] initWithFrame:UIScreen.mainScreen.bounds device:device];
     _view.colorPixelFormat        = MTLPixelFormatBGRA8Unorm;
     _view.depthStencilPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
-    _view.clearColor              = MTLClearColorMake(0.059, 0.067, 0.090, 1.0); // #0F1117
+    _view.clearColor              = MTLClearColorMake(10.0 / 255.0, 12.0 / 255.0, 17.0 / 255.0, 1.0); // Canvas before the document loads.
     _view.clearStencil            = 0;
     _view.delegate                = self;
     _view.preferredFramesPerSecond = UIScreen.mainScreen.maximumFramesPerSecond;
@@ -415,6 +453,7 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
         [session setCategory:AVAudioSessionCategoryPlayAndRecord
                  withOptions:AVAudioSessionCategoryOptionDefaultToSpeaker |
                              AVAudioSessionCategoryOptionAllowBluetoothHFP |
+                             AVAudioSessionCategoryOptionAllowBluetoothA2DP |
                              AVAudioSessionCategoryOptionMixWithOthers
                        error:&err];
         if (err) NSLog(@"[Parties] Audio session setCategory error: %@", err);
@@ -473,6 +512,17 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     _keyInput = [[RmlKeyInput alloc] initWithFrame:CGRectMake(0, -2, 1, 1)];
     _keyInput.rmlContext = _rmlContext;
     [_view addSubview:_keyInput];
+
+    // RmlUI pages do not use UINavigationController, so UIKit needs an
+    // explicit edge recognizer to provide the standard back gesture.
+    _backGesture = [[UIScreenEdgePanGestureRecognizer alloc]
+        initWithTarget:self action:@selector(handlePageBackGesture:)];
+    _backGesture.edges = UIRectEdgeLeft;
+    _backGesture.maximumNumberOfTouches = 1;
+    _backGesture.delegate = self;
+    _backGesture.delaysTouchesBegan = YES;
+    _backGesture.cancelsTouchesInView = YES;
+    [_view addGestureRecognizer:_backGesture];
 
     // Edit menu (paste/copy) — long-press shows system edit menu over focused input.
     if (@available(iOS 16.0, *)) {
@@ -567,6 +617,8 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
 
     bridge.on_authenticated = [bself]() {
         bself->_core.net_.open_av_streams();
+        // AppCore fills its desktop device cache after this callback returns.
+        dispatch_async(dispatch_get_main_queue(), ^{ [bself refreshIOSAudioRoutes]; });
     };
 
     bridge.stop_screen_share = nullptr;  // iOS doesn't send screen shares
@@ -592,7 +644,25 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
             NSLog(@"[Parties] Failed to initialize iOS UI fixture models");
             return;
         }
-        PopulateIOSPreview(_core, _previewScenario);
+        PopulateIOSPreview(_core, _previewScenario == "settings-airpods" ? "settings" :
+            (_previewScenario == "chat-keyboard" || _previewScenario == "chat-back-blocked") ? "chat" :
+            _previewScenario == "room-back-blocked" ? "room" : _previewScenario);
+        if (_previewScenario == "chat-back-blocked" || _previewScenario == "room-back-blocked") {
+            _core.model_.show_rename_channel = true;
+            _core.model_.new_rename_channel_name = "general";
+        }
+        // Use the shared view-state transitions without live network resources.
+        _core.model_.on_stop_watching = [bself]() { bself->_core.set_single_watched(0); };
+        _core.model_.on_join_channel = [bself](int id) {
+            bself->_core.model_.current_channel = id;
+            bself->_core.model_.router.go(DocumentRoute::Room);
+        };
+        const IOSAudioPort mic{"builtin-mic", "iPhone Microphone"};
+        const IOSAudioPort headset{"airpods-hfp", "AirPods Pro", true};
+        const bool use_headset = _previewScenario == "settings-airpods";
+        _iosAudioRoutes = BuildIOSAudioRoutes({mic, headset}, use_headset ? headset : mic,
+            use_headset ? headset : IOSAudioPort{"builtin-speaker", "iPhone Speaker", false, true});
+        [self publishIOSAudioRoutes];
         NSLog(@"[Parties] Loaded iOS UI fixture: %s", _previewScenario.c_str());
     } else
 #endif
@@ -619,6 +689,10 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
         NSString* deviceName = [[UIDevice currentDevice] name];
         _core.load_or_generate_identity(std::string(deviceName.UTF8String));
         _core.load_saved_prefs();
+        [self refreshIOSAudioRoutes];
+        [[NSNotificationCenter defaultCenter] addObserver:self
+            selector:@selector(audioRouteDidChange:)
+            name:AVAudioSessionRouteChangeNotification object:[AVAudioSession sharedInstance]];
         _core.refresh_server_list();
     }
 
@@ -628,6 +702,24 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
         _doc->SetClass("platform-ios", true);
         _doc->Show();
         [self updateViewportSize];
+#ifndef NDEBUG
+        if (_previewMode) {
+            // Exercise the production Metal video element with the same frames
+            // as the desktop harness, including the iOS fullscreen transition.
+            ApplyUIFixtureDocument(_doc, _previewScenario == "stream-fullscreen"
+                ? "stream-single" : _previewScenario);
+            if (_previewScenario == "stream-single" || _previewScenario == "stream-fullscreen" ||
+                _previewScenario == "streams") {
+                _streamWidth = 640;
+                _streamHeight = 360;
+                _core.model_.on_stream_tap_fullscreen = [bself]() {
+                    [bself toggleStreamFullscreen];
+                };
+                if (_previewScenario == "stream-fullscreen")
+                    [self toggleStreamFullscreen];
+            }
+        }
+#endif
     }
 }
 
@@ -636,6 +728,10 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
 - (void)installIOSModelCallbacks
 {
     PartiesViewController* bself = self;
+
+    // iOS routes must use AVAudioSession rather than desktop device indices.
+    _core.model_.on_select_capture = [bself](int index) { [bself selectIOSAudioRoute:index input:YES]; };
+    _core.model_.on_select_playback = [bself](int index) { [bself selectIOSAudioRoute:index input:NO]; };
 
     // iOS: no screen share sending — disable toggle
     _core.model_.on_toggle_share = nullptr;
@@ -661,6 +757,74 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     _core.model_.on_stream_tap_fullscreen = [bself]() {
         [bself toggleStreamFullscreen];
     };
+}
+
+- (void)refreshIOSAudioRoutes
+{
+    if (!_coreInitialized || _previewMode) return;
+    AVAudioSession* session = [AVAudioSession sharedInstance];
+    std::vector<IOSAudioPort> inputs;
+    for (AVAudioSessionPortDescription* port in session.availableInputs)
+        inputs.push_back(AudioPortSnapshot(port));
+    _iosAudioRoutes = BuildIOSAudioRoutes(inputs, AudioPortSnapshot(session.currentRoute.inputs.firstObject),
+        AudioPortSnapshot(session.currentRoute.outputs.firstObject));
+    [self publishIOSAudioRoutes];
+}
+
+- (void)publishIOSAudioRoutes
+{
+    auto& capture = _core.model_.capture_devices.silent();
+    auto& playback = _core.model_.playback_devices.silent();
+    capture.clear();
+    playback.clear();
+    for (size_t i = 0; i < _iosAudioRoutes.inputs.size(); ++i)
+        capture.push_back({_iosAudioRoutes.inputs[i].name, static_cast<int>(i)});
+    for (size_t i = 0; i < _iosAudioRoutes.outputs.size(); ++i)
+        playback.push_back({_iosAudioRoutes.outputs[i].name, static_cast<int>(i)});
+    _core.model_.capture_devices.notify();
+    _core.model_.playback_devices.notify();
+    _core.model_.selected_capture = _iosAudioRoutes.selected_input;
+    _core.model_.selected_playback = _iosAudioRoutes.selected_output;
+}
+
+- (void)audioRouteDidChange:(NSNotification*)notification
+{
+    // RemoteIO follows the route. Publish its ports only on the UI thread.
+    dispatch_async(dispatch_get_main_queue(), ^{ [self refreshIOSAudioRoutes]; });
+}
+
+- (void)selectIOSAudioRoute:(int)index input:(BOOL)input
+{
+    const auto& choices = input ? _iosAudioRoutes.inputs : _iosAudioRoutes.outputs;
+    if (index < 0 || index >= static_cast<int>(choices.size())) {
+        [self refreshIOSAudioRoutes];
+        return;
+    }
+    // Model-driven select updates also emit changes; they must not reroute audio.
+    if (index == (input ? _iosAudioRoutes.selected_input : _iosAudioRoutes.selected_output)) return;
+    const auto choice = choices[index];
+    if (choice.kind == IOSAudioRouteKind::CurrentOutput) return;
+    AVAudioSession* session = [AVAudioSession sharedInstance];
+    AVAudioSessionPortDescription* preferred = nil;
+    if (choice.kind == IOSAudioRouteKind::Input) {
+        for (AVAudioSessionPortDescription* port in session.availableInputs) {
+            if (choice.uid == (port.UID.UTF8String ?: "")) {
+                preferred = port;
+                break;
+            }
+        }
+        if (!preferred) {
+            [self refreshIOSAudioRoutes];
+            return; // The headset disconnected while the menu was open.
+        }
+    }
+    NSError* error = nil;
+    BOOL changed = [session overrideOutputAudioPort:AVAudioSessionPortOverrideNone error:&error];
+    if (changed) changed = [session setPreferredInput:preferred error:&error];
+    if (changed && choice.kind == IOSAudioRouteKind::Speaker)
+        changed = [session overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker error:&error];
+    if (!changed) NSLog(@"[Parties] Audio route selection failed: %@", error);
+    [self refreshIOSAudioRoutes];
 }
 
 // ── Video frame routing (VideoToolbox decoder) ───────────────────────────────
@@ -818,16 +982,15 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
 - (void)updateViewportSize
 {
     _safeInsets = self.view.safeAreaInsets;
-    _viewportTopPx = (int)(_safeInsets.top * _dpRatio);
+    _viewportTopPx = (int)std::ceil(_safeInsets.top * _dpRatio);
     Backend::SetViewportTopOffset(_viewportTopPx);
 
     // Use view bounds (respects current orientation) instead of
     // nativeBounds (always portrait).
     CGSize pts = self.view.bounds.size;
     int physW = (int)(pts.width  * _dpRatio);
-    int keyboardPx = (int)std::round(_keyboardInsetPt * _dpRatio);
-    int physH = (int)(pts.height * _dpRatio) - _viewportTopPx - keyboardPx;
-    _viewportHeightPx = (std::max)(1, physH);
+    _viewportHeightPx = IOSViewportHeight(pts.height, _safeInsets.top,
+        _keyboardInsetPt, _dpRatio);
     Backend::SetViewport(physW, _viewportHeightPx);
     if (_rmlContext)
         _rmlContext->SetDimensions(Rml::Vector2i(physW, _viewportHeightPx));
@@ -860,22 +1023,7 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
 
 - (void)applySafeAreaToDocument
 {
-    if (!_doc) return;
-
-    Rml::Element* body = nullptr;
-    for (int i = 0; i < _doc->GetNumChildren(); i++) {
-        Rml::Element* child = _doc->GetChild(i);
-        if (child && child->GetTagName() == "body") { body = child; break; }
-    }
-    if (!body) return;
-
-    auto toDp = [](CGFloat pt) -> Rml::String {
-        char buf[32]; snprintf(buf, sizeof(buf), "%.0fdp", (double)pt); return buf;
-    };
-    body->SetProperty("padding-top",    "0dp");
-    body->SetProperty("padding-bottom", toDp(_keyboardInsetPt > 0.0 ? 8.0 : _safeInsets.bottom));
-    body->SetProperty("padding-left",   toDp(_safeInsets.left));
-    body->SetProperty("padding-right",  toDp(_safeInsets.right));
+    ApplyIOSSafeArea(_doc, _safeInsets.left, _safeInsets.right, _safeInsets.bottom, _keyboardInsetPt);
 }
 
 // ── Keyboard avoidance ───────────────────────────────────────────────────────
@@ -906,6 +1054,11 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     }];
 }
 
+- (UIStatusBarStyle)preferredStatusBarStyle
+{
+    return UIStatusBarStyleLightContent;
+}
+
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations
 {
     if (_streamFullscreen && _streamWidth > _streamHeight)
@@ -918,9 +1071,8 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
 - (void)viewDidDisappear:(BOOL)animated
 {
     [super viewDidDisappear:animated];
-    [[NSNotificationCenter defaultCenter] removeObserver:self];
-
     if (self.presentedViewController) return;
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
 
     if (_coreInitialized) {
         _core.shutdown();
@@ -1040,6 +1192,13 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
         }
     }
 
+#ifndef NDEBUG
+    // Focus after data binding has created and laid out the live input element.
+    if (_previewMode && _previewScenario == "chat-keyboard" && _previewFrameCount == 20) {
+        if (auto* composer = _doc->QuerySelector("input.compose-input")) composer->Focus();
+    }
+#endif
+
     // Keyboard show/hide based on focused element.
     if (_keyInput) {
         Rml::Element* focused = _rmlContext->GetFocusElement();
@@ -1055,13 +1214,88 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
             Backend::SetViewport((int)colorTex.width, _viewportHeightPx);
     }
 
-    Backend::BeginFrame(cmd, pass);
     _rmlContext->Update();
+    if (_doc) {
+        const auto canvas = _doc->GetComputedValues().background_color();
+        pass.colorAttachments[0].clearColor = MTLClearColorMake(
+            canvas.red / 255.0, canvas.green / 255.0, canvas.blue / 255.0, canvas.alpha / 255.0);
+    }
+    Backend::BeginFrame(cmd, pass);
     _rmlContext->Render();
     Backend::EndFrame();
 
+#ifndef NDEBUG
+    if (_previewMode && _doc && UIApplication.sharedApplication.applicationState == UIApplicationStateActive &&
+        ++_previewFrameCount == 60) {
+        AuditUIControlLayout(_doc, _previewScenario.c_str());
+        if (_previewScenario == "chat-keyboard" && _keyboardInsetPt <= _safeInsets.bottom)
+            NSLog(@"[UI audit] FAIL chat-keyboard: software keyboard did not appear");
+        NSString* scenario = [NSString stringWithUTF8String:_previewScenario.c_str()];
+        [cmd addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+            if (completed.status == MTLCommandBufferStatusCompleted)
+                NSLog(@"[Parties] Ready iOS UI fixture: %@", scenario);
+            else
+                NSLog(@"[Parties] Failed to render iOS UI fixture: %@", scenario);
+        }];
+    }
+#endif
     [cmd presentDrawable:view.currentDrawable];
     [cmd commit];
+}
+
+// Back navigation follows the visible page's action, preserving voice state.
+- (BOOL)canSwipeBackFromPage
+{
+    return FindIOSBackTarget(_doc, _core.model_.is_connected.get(),
+        _core.model_.mobile_show_content.get(), _streamFullscreen,
+        self.presentedViewController != nil).action != IOSBackAction::None;
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer*)recognizer shouldReceiveTouch:(UITouch*)touch
+{
+    return recognizer != _backGesture || [self canSwipeBackFromPage];
+}
+
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer*)recognizer
+{
+    if (recognizer != _backGesture) return YES;
+    CGPoint direction = [_backGesture translationInView:_view];
+    if (std::abs(direction.x) + std::abs(direction.y) < 1.0)
+        direction = [_backGesture velocityInView:_view];
+    return [self canSwipeBackFromPage] && IsIOSBackSwipeDirection(direction.x, direction.y);
+}
+
+- (void)handlePageBackGesture:(UIScreenEdgePanGestureRecognizer*)gesture
+{
+    if (gesture.state == UIGestureRecognizerStateBegan) {
+        [self cancelRmlTouchTracking];
+    } else if (gesture.state == UIGestureRecognizerStateEnded && [self canSwipeBackFromPage]) {
+        CGPoint translation = [gesture translationInView:_view];
+        CGPoint velocity = [gesture velocityInView:_view];
+        if (!ShouldCompleteIOSBackSwipe(translation.x, translation.y, velocity.x, _view.bounds.size.width))
+            return;
+        [self completePageBackNavigation];
+    }
+}
+
+- (void)completePageBackNavigation
+{
+    const auto target = FindIOSBackTarget(_doc, _core.model_.is_connected.get(),
+        _core.model_.mobile_show_content.get(), _streamFullscreen,
+        self.presentedViewController != nil);
+    if (target.action == IOSBackAction::None) return;
+    if (auto* focused = _rmlContext->GetFocusElement()) focused->Blur();
+    [_keyInput resignFirstResponder];
+    if (@available(iOS 16.0, *)) [_editMenuInteraction dismissMenu];
+    if (target.action == IOSBackAction::ExitFullscreen)
+        [self toggleStreamFullscreen];
+    else
+        target.control->DispatchEvent(Rml::EventId::Click, {});
+#ifndef NDEBUG
+    NSLog(@"[Navigation] iOS swipe back: route=%s content=%d voice=%d connected=%d fullscreen=%d",
+        _core.model_.router.current().c_str(), _core.model_.mobile_show_content.get(),
+        _core.model_.current_channel.get(), _core.model_.is_connected.get(), _streamFullscreen);
+#endif
 }
 
 // ── Touch input ──────────────────────────────────────────────────────────────
@@ -1110,6 +1344,7 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     UITouch* touch = touches.anyObject;
     _touchStart     = [touch locationInView:_view];
     _touchLast      = _touchStart;
+    _backPending = event.allTouches.count == 1 && _touchStart.x <= 24.0 && [self canSwipeBackFromPage];
     _isScrolling    = NO;
     _momentumActive = NO;
     _scrollTarget.reset();
@@ -1200,6 +1435,20 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     Rml::Vector2f pt = [self physFromPt:cur];
     _rmlContext->ProcessMouseMove((int)pt.x, (int)pt.y, 0);
 
+    // A coalesced input sequence can reach touch-up without a move sample.
+    // Recognize an intentional edge drag there too, before it becomes a tap.
+    const float totalX = (float)(cur.x - _touchStart.x);
+    const float totalY = (float)(cur.y - _touchStart.y);
+    if (_backPending && !_isDraggingWidget && !_isScrolling &&
+        ShouldCompleteIOSBackSwipe(totalX, totalY, 0.0f, _view.bounds.size.width)) {
+        [self cancelRmlTouchTracking];
+        [self completePageBackNavigation];
+        return;
+    }
+    _backPending = false;
+    if (!_isDraggingWidget && std::max(std::abs(totalX), std::abs(totalY)) > 10.0f)
+        _isScrolling = YES;
+
     // A finger held still before release must not resume an old velocity
     // sample. UIPanGestureRecognizer behaves the same way and avoids the
     // surprising glide that desktop-style emulations often produce.
@@ -1234,6 +1483,12 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
 
 - (void)touchesCancelled:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)event
 {
+    [self cancelRmlTouchTracking];
+}
+
+- (void)cancelRmlTouchTracking
+{
+    _backPending = false;
     _isScrolling = NO;
     _isDraggingWidget = NO;
     _momentumActive = NO;

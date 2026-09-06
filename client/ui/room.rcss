@@ -162,6 +162,21 @@
     flex: 1;
 }
 
+.channel-empty-state {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 24dp;
+    gap: 10dp;
+    text-align: center;
+}
+.channel-empty-description {
+    max-width: 320dp;
+    color: var(--color-text-muted);
+}
+
 /* Voice room composition. */
 /* Room header and stage */
 .channel-header {

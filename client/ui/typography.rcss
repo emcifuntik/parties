@@ -92,6 +92,14 @@ h2 {
     font-weight: normal;
     line-height: 17dp;
 }
+/* Composer padding centers this line box while keeping the caret text-sized. */
+input.compose-input.ui-body { font-size: 14dp; line-height: 20dp; }
+/* Single-line search fields use their full content height as the line box. */
+.platform-desktop input.chat-search-input.ui-body { font-size: 14dp; line-height: 32dp; }
+.platform-ios input.chat-search-input.ui-body { font-size: 14dp; line-height: 42dp; }
+.party-connect-form input.ui-body { line-height: 36dp; }
+.platform-ios .modal-box input.ui-body,
+.platform-ios .party-connect-form input.ui-body { line-height: 46dp; }
 .ui-label {
     font-size: 10dp;
     font-weight: bold;

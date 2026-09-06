@@ -60,6 +60,8 @@ private:
     std::array<PlayingSound, kMaxPlaying> playing_;
     std::atomic<float> volume_{1.0f};
 
+    ma_context context_{};
+    bool context_initialized_ = false;
     ma_device device_{};
     bool device_initialized_ = false;
 };

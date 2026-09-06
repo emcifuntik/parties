@@ -131,6 +131,8 @@
     height: 38dp;
     min-height: 38dp;
     flex: 1;
+    padding-top: 9dp;
+    padding-bottom: 9dp;
     padding-left: 14dp;
     padding-right: 8dp;
     background-color: transparent;
@@ -166,4 +168,43 @@
     .platform-desktop .sidebar, .platform-desktop .settings-nav { width: 250dp; }
     .platform-desktop .voice-stage-card { width: 180dp; }
     .platform-desktop .channel-header .channel-hint { display: none; }
+}
+
+/* Keep onboarding usable when the desktop window is narrowed or shortened. */
+.platform-desktop .onboarding-main { min-width: 0dp; box-sizing: border-box; }
+.platform-desktop .onboarding-choice,
+.platform-desktop .onboarding-form,
+.platform-desktop .onboarding-recovery { width: 100%; max-width: 560dp; flex: none; }
+@media (max-width: 1100dp) {
+    .platform-desktop .onboarding-shell { flex-direction: column; }
+    .platform-desktop .onboarding-story {
+        width: 100%; height: 74dp; flex: none; padding: 24dp 32dp;
+        border-right: 0dp; border-bottom: 1dp var(--color-border);
+    }
+    .platform-desktop .onboarding-story-copy,
+    .platform-desktop .onboarding-proof,
+    .platform-desktop .onboarding-recovery-aside,
+    .platform-desktop .onboarding-story-footer { display: none; }
+    .platform-desktop .onboarding-main {
+        width: 100%; min-height: 0dp; padding: 42dp 28dp 28dp;
+        justify-content: flex-start; overflow-y: auto;
+    }
+    .platform-desktop .onboarding-progress { top: 18dp; right: 28dp; }
+    .platform-desktop .settings-device-grid { flex-direction: column; }
+    .platform-desktop .settings-device-field { width: 100%; flex: none; }
+}
+@media (min-width: 1101dp) and (max-height: 650dp) {
+    .platform-desktop .onboarding-main { justify-content: flex-start; overflow-y: auto; }
+    .platform-desktop .onboarding-story { overflow-y: auto; }
+    .platform-desktop .onboarding-story-copy,
+    .platform-desktop .onboarding-recovery-aside { margin-top: 32dp; }
+}
+
+.platform-desktop .home-inner { min-height: 0dp; overflow-y: auto; }
+.platform-desktop .home-content { flex: none; }
+.platform-desktop .user-menu-popup { max-height: 90%; overflow-y: auto; }
+.platform-desktop .user-menu-popup > div { flex: none; }
+@media (max-width: 1100dp) {
+    .platform-desktop .home-inner { padding: 16dp; }
+    .platform-desktop .home-content { padding: 24dp; }
 }

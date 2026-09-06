@@ -37,7 +37,7 @@
 .party-connect-body { display: block; padding: 22dp 24dp; }
 .party-connect-form { width: 100%; }
 .party-connect-form .label { margin-top: 0dp; margin-bottom: 6dp; }
-.party-connect-form input { width: 100%; margin-bottom: 14dp; padding: 11dp 12dp; box-sizing: border-box; background-color: #0D1118; color: var(--color-text); border: 1dp var(--color-border-strong); border-radius: 9dp; }
+.party-connect-form input { width: 100%; margin-bottom: 14dp; padding: 0dp 12dp; box-sizing: border-box; background-color: #0D1118; color: var(--color-text); border: 1dp var(--color-border-strong); border-radius: 9dp; }
 .party-connect-dialog > .error-text { margin: 0dp 24dp 12dp 24dp; }
 .party-connect-footer { display: flex; justify-content: flex-end; gap: 9dp; padding: 14dp 24dp; background-color: #0D1118; border-top: 1dp var(--color-border); }
 .party-connect-footer .btn { width: auto; margin: 0dp; padding: 10dp 15dp; }

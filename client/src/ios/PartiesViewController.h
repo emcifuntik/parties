@@ -2,5 +2,5 @@
 #import <UIKit/UIKit.h>
 #import <MetalKit/MetalKit.h>
 
-@interface PartiesViewController : UIViewController <MTKViewDelegate, UIEditMenuInteractionDelegate>
+@interface PartiesViewController : UIViewController <MTKViewDelegate, UIEditMenuInteractionDelegate, UIGestureRecognizerDelegate>
 @end
