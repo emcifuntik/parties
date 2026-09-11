@@ -1676,6 +1676,10 @@ void Server::process_video_frames() {
                 forward_video_frame(id, data.data(), data.size());
             },
             [this, user = session->user_id](uint32_t) { request_keyframe_from_sharer(user, 0); });
+        // Recovery no longer forwards undecodable deltas. Keep retrying even
+        // when the sharer is idle or the requested keyframe is itself lost.
+        if (it->second.reorder.needs_keyframe())
+            request_keyframe_from_sharer(session->user_id, 0);
         ++it;
     }
 }

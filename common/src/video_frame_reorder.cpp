@@ -19,11 +19,11 @@
 // are matched by their actual frame_seq, never by the (possibly stale) key.
 //
 // Invariants kept between calls:
-//   * before the first keyframe, held_ contains bounded startup delta frames;
+//   * while waiting for a keyframe, held_ contains bounded delta frames;
 //   * once have_last_, every held frame is newer than last_delivered_;
 //   * held_bytes_ == sum of held frame sizes;
 //   * gap_since_us_ == earliest arrival time among held frames, 0 when none
-//     (a gap is open exactly when held_ is non-empty).
+//     (recovery deltas never advance the last usable decode baseline).
 //
 // This translation unit is also compiled stand-alone by
 // tests/parties_video_frame_reorder_test, so it must not depend on the
@@ -69,6 +69,7 @@ VideoFrameReorderBuffer::VideoFrameReorderBuffer(const VideoFrameReorderConfig& 
 
 void VideoFrameReorderBuffer::reset() {
     have_last_ = false;
+    awaiting_keyframe_ = true;
     last_delivered_ = 0;
     held_.clear();
     held_bytes_ = 0;
@@ -83,21 +84,21 @@ void VideoFrameReorderBuffer::on_frame(const VideoFrameHeader& hdr, std::vector<
                                        int64_t now_us, const DeliverFn& deliver, const LostFn& lost) {
     const uint32_t seq = hdr.frame_seq;
 
+    if (have_last_ && !video_seq_newer(seq, last_delivered_)) return;
+
     // A small delta can finish before its much larger initial keyframe.
     // Keep those successors without committing a decode baseline: otherwise
     // the delayed keyframe would be discarded as stale.
-    if (!have_last_) {
+    // After loss the same rule applies: a delta cannot establish a usable
+    // reference chain or make the keyframe it depends on look stale.
+    if (!have_last_ || awaiting_keyframe_) {
         if (!hdr.keyframe()) {
-            if (held_.empty()) last_delivered_ = seq;
+            if (!have_last_ && held_.empty()) last_delivered_ = seq;
             const int64_t key = key_for(seq);
             if (held_.contains(key)) return;
             held_bytes_ += frame.size();
             held_.emplace(key, Held{hdr, std::move(frame), now_us});
-            while (held_.size() > cfg_.max_held_frames || held_bytes_ > cfg_.max_bytes) {
-                held_bytes_ -= held_.begin()->second.frame.size();
-                held_.erase(held_.begin());
-            }
-            gap_since_us_ = earliest_arrival(held_);
+            bound_held();
             return;
         }
         for (auto it = held_.begin(); it != held_.end();) {
@@ -109,6 +110,7 @@ void VideoFrameReorderBuffer::on_frame(const VideoFrameHeader& hdr, std::vector<
             }
         }
         have_last_ = true;
+        awaiting_keyframe_ = false;
         last_delivered_ = seq;
         rekey_held(held_, seq);
         deliver_one(Held{hdr, std::move(frame), now_us}, deliver);
@@ -121,13 +123,6 @@ void VideoFrameReorderBuffer::on_frame(const VideoFrameHeader& hdr, std::vector<
         last_delivered_ = seq;
         deliver_one(Held{hdr, std::move(frame), now_us}, deliver);
         drain(deliver);
-        return;
-    }
-
-    if (!video_seq_newer(seq, last_delivered_)) {
-        // Independent reliable streams may arrive arbitrarily late. A large
-        // backward jump is not evidence of a restart; only the owner's share
-        // lifecycle may reset the baseline.
         return;
     }
 
@@ -156,22 +151,19 @@ void VideoFrameReorderBuffer::on_frame(const VideoFrameHeader& hdr, std::vector<
     held_bytes_ += frame.size();
     held_.emplace(key, Held{hdr, std::move(frame), now_us});
 
-    // Bound the buffer: each skip_gap() delivers at least the oldest held
-    // frame, so the loop always terminates.
-    while (!held_.empty() &&
-           (held_.size() > cfg_.max_held_frames || held_bytes_ > cfg_.max_bytes))
-        skip_gap(now_us, deliver, lost);
+    if (held_.size() > cfg_.max_held_frames || held_bytes_ > cfg_.max_bytes) {
+        require_keyframe(lost);
+        bound_held();
+    }
 }
 
 void VideoFrameReorderBuffer::on_frame_aborted(uint32_t frame_seq, int64_t /*now_us*/,
-                                               const DeliverFn& deliver, const LostFn& lost) {
+                                               const DeliverFn& /*deliver*/, const LostFn& lost) {
     if (!have_last_) return;   // nothing waits on it
 
     if (frame_seq == last_delivered_ + 1) {
-        // The frame we were waiting for will never come: report it and move on.
-        lost(frame_seq);
-        last_delivered_ = frame_seq;
-        drain(deliver);
+        // No successor can be decoded without a fresh random-access point.
+        require_keyframe(lost);
         return;
     }
 
@@ -185,9 +177,9 @@ void VideoFrameReorderBuffer::on_frame_aborted(uint32_t frame_seq, int64_t /*now
     gap_since_us_ = earliest_arrival(held_);
 }
 
-void VideoFrameReorderBuffer::poll(int64_t now_us, const DeliverFn& deliver, const LostFn& lost) {
+void VideoFrameReorderBuffer::poll(int64_t now_us, const DeliverFn& /*deliver*/, const LostFn& lost) {
     const int64_t max_hold_us = static_cast<int64_t>(cfg_.max_hold_ms) * 1000;
-    if (!have_last_) {
+    if (!have_last_ || awaiting_keyframe_) {
         for (auto it = held_.begin(); it != held_.end();) {
             if (now_us - it->second.arrived_us >= max_hold_us) {
                 held_bytes_ -= it->second.frame.size();
@@ -199,9 +191,8 @@ void VideoFrameReorderBuffer::poll(int64_t now_us, const DeliverFn& deliver, con
         gap_since_us_ = earliest_arrival(held_);
         return;
     }
-    // A second gap left behind by skip_gap() may already have expired too.
-    while (!held_.empty() && now_us - gap_since_us_ >= max_hold_us)
-        skip_gap(now_us, deliver, lost);
+    if (!held_.empty() && now_us - gap_since_us_ >= max_hold_us)
+        require_keyframe(lost);
 }
 
 void VideoFrameReorderBuffer::deliver_one(Held&& h, const DeliverFn& deliver) {
@@ -224,14 +215,18 @@ void VideoFrameReorderBuffer::drain(const DeliverFn& deliver) {
     gap_since_us_ = earliest_arrival(held_);
 }
 
-void VideoFrameReorderBuffer::skip_gap(int64_t /*now_us*/, const DeliverFn& deliver, const LostFn& lost) {
-    if (held_.empty()) return;
-    // Give up on the missing frame(s): report the first one once and resume
-    // right before the oldest held frame so drain() releases it. The decode
-    // gate sees the discontinuity and the caller requests a keyframe.
+void VideoFrameReorderBuffer::require_keyframe(const LostFn& lost) {
+    if (awaiting_keyframe_) return;
+    awaiting_keyframe_ = true;
     lost(last_delivered_ + 1);
-    last_delivered_ = held_.begin()->second.hdr.frame_seq - 1;
-    drain(deliver);
+}
+
+void VideoFrameReorderBuffer::bound_held() {
+    while (held_.size() > cfg_.max_held_frames || held_bytes_ > cfg_.max_bytes) {
+        held_bytes_ -= held_.begin()->second.frame.size();
+        held_.erase(held_.begin());
+    }
+    gap_since_us_ = earliest_arrival(held_);
 }
 
 } // namespace parties

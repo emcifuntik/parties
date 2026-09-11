@@ -108,33 +108,36 @@ bool test_hold_then_fill() {
 }
 
 bool test_hold_then_timeout() {
-    VideoFrameReorderConfig cfg;
-    cfg.max_hold_ms = 150;
-    VideoFrameReorderBuffer b(cfg);
+    VideoFrameReorderBuffer b;
     Sink s;
     feed(b, s, 10, true, T0);
     feed(b, s, 12, false, T0 + 10 * MS);
     feed(b, s, 13, false, T0 + 40 * MS);
-    b.poll(T0 + 159 * MS, s.deliver_fn(), s.lost_fn());   // 149 ms since 12 arrived
-    if (!same(s.delivered, {10}) || !s.lost.empty()) return fail("timeout: gave up before max_hold_ms");
-    b.poll(T0 + 160 * MS, s.deliver_fn(), s.lost_fn());   // 150 ms
-    if (!same(s.lost, {11})) return fail("timeout: lost must be reported once with the first missing seq");
-    if (!same(s.delivered, {10, 12, 13})) return fail("timeout: held frames not released");
-    if (b.last_delivered() != 13 || b.held_frames() != 0) return fail("timeout: state after skip");
-    b.poll(T0 + 500 * MS, s.deliver_fn(), s.lost_fn());
-    if (!same(s.lost, {11})) return fail("timeout: loss reported twice");
-    // The late frame 11 is now stale and ignored.
-    feed(b, s, 11, false, T0 + 200 * MS);
-    if (!same(s.delivered, {10, 12, 13})) return fail("timeout: stale frame delivered");
-    // Filling a later gap partially must not restart the timer: 15 and 16
-    // arrive, then 14 does not; the wait started when 15 arrived.
+    b.poll(T0 + 159 * MS, s.deliver_fn(), s.lost_fn());
+    if (!same(s.delivered, {10}) || !s.lost.empty()) return fail("timeout: gave up too early");
+    b.poll(T0 + 160 * MS, s.deliver_fn(), s.lost_fn());
+    if (!same(s.lost, {11}) || !b.needs_keyframe()) return fail("timeout: recovery not requested");
+    if (!same(s.delivered, {10}) || b.last_delivered() != 10)
+        return fail("timeout: broken deltas advanced the decode baseline");
+    // A late delta cannot repair a reference chain already declared lost.
+    feed(b, s, 11, false, T0 + 170 * MS);
+    if (!same(s.delivered, {10})) return fail("timeout: late delta resumed decoding");
+    feed(b, s, 11, true, T0 + 180 * MS);
+    if (!same(s.delivered, {10, 11, 12, 13}) || b.needs_keyframe())
+        return fail("timeout: late keyframe did not recover buffered successors");
+    // Filling a later gap partially must not restart its timer.
     feed(b, s, 16, false, T0 + 300 * MS);
     feed(b, s, 15, false, T0 + 400 * MS);
     b.poll(T0 + 449 * MS, s.deliver_fn(), s.lost_fn());
-    if (!same(s.lost, {11})) return fail("timeout: timer restarted by a later-arriving older frame");
+    if (!same(s.lost, {11})) return fail("timeout: second gap expired too early");
     b.poll(T0 + 450 * MS, s.deliver_fn(), s.lost_fn());
-    if (!same(s.lost, {11, 14})) return fail("timeout: second gap not reported");
-    if (!same(s.delivered, {10, 12, 13, 15, 16})) return fail("timeout: second gap not released");
+    b.poll(T0 + 800 * MS, s.deliver_fn(), s.lost_fn());
+    if (!same(s.lost, {11, 14}) || !b.needs_keyframe() || b.held_bytes() != 0)
+        return fail("timeout: loss repeated or expired recovery deltas retained");
+    feed(b, s, 14, true, T0 + 810 * MS);
+    feed(b, s, 15, false, T0 + 820 * MS);
+    if (!same(s.delivered, {10, 11, 12, 13, 14, 15}))
+        return fail("timeout: keyframe was made stale by expired recovery deltas");
     return true;
 }
 
@@ -144,27 +147,24 @@ bool test_abort_resolves_gap() {
     feed(b, s, 10, true, T0);
     feed(b, s, 12, false, T0 + 10 * MS);
     b.on_frame_aborted(11, T0 + 20 * MS, s.deliver_fn(), s.lost_fn());
-    if (!same(s.lost, {11})) return fail("abort: missing frame not reported");
-    if (!same(s.delivered, {10, 12})) return fail("abort: held frame not released");
-    if (b.last_delivered() != 12) return fail("abort: baseline after release");
-    // Abort of a frame nobody waits for is ignored.
+    if (!same(s.lost, {11}) || !same(s.delivered, {10}) || !b.needs_keyframe())
+        return fail("abort: missing frame did not enter recovery");
+    b.on_frame_aborted(11, T0 + 30 * MS, s.deliver_fn(), s.lost_fn());
     b.on_frame_aborted(5, T0 + 30 * MS, s.deliver_fn(), s.lost_fn());
     b.on_frame_aborted(20, T0 + 30 * MS, s.deliver_fn(), s.lost_fn());
-    if (!same(s.lost, {11}) || !same(s.delivered, {10, 12})) return fail("abort: unrelated abort had an effect");
-    // Abort of the next expected frame with nothing held: reported, baseline advances.
-    b.on_frame_aborted(13, T0 + 40 * MS, s.deliver_fn(), s.lost_fn());
-    if (!same(s.lost, {11, 13}) || b.last_delivered() != 13) return fail("abort: tail abort");
-    feed(b, s, 14, false, T0 + 50 * MS);
-    if (!same(s.delivered, {10, 12, 14})) return fail("abort: frame after aborted one not delivered");
-    // Abort of a frame behind an open gap only removes it (tolerance path).
+    if (!same(s.lost, {11})) return fail("abort: repeated or unrelated abort reported loss");
+    feed(b, s, 13, true, T0 + 40 * MS);
+    b.on_frame_aborted(14, T0 + 50 * MS, s.deliver_fn(), s.lost_fn());
+    if (!same(s.lost, {11, 14}) || b.last_delivered() != 13 || !b.needs_keyframe())
+        return fail("abort: tail abort lost the last usable baseline");
     feed(b, s, 16, false, T0 + 60 * MS);
     feed(b, s, 17, false, T0 + 60 * MS);
     b.on_frame_aborted(17, T0 + 70 * MS, s.deliver_fn(), s.lost_fn());
     if (b.held_frames() != 1 || b.held_bytes() != VIDEO_FRAME_HEADER_SIZE + 100)
         return fail("abort: held frame not removed");
-    b.on_frame_aborted(15, T0 + 80 * MS, s.deliver_fn(), s.lost_fn());
-    if (!same(s.delivered, {10, 12, 14, 16}) || !same(s.lost, {11, 13, 15}))
-        return fail("abort: second gap not resolved");
+    feed(b, s, 15, true, T0 + 80 * MS);
+    if (!same(s.delivered, {10, 13, 15, 16}) || b.needs_keyframe())
+        return fail("abort: recovery keyframe did not resume delivery");
     return true;
 }
 
@@ -190,7 +190,11 @@ bool test_keyframe_over_gap() {
     feed(b, s, 23, false, T0 + 60 * MS);
     b.poll(T0 + 210 * MS, s.deliver_fn(), s.lost_fn());   // 150 ms after 23 arrived
     if (!same(s.lost, {22})) return fail("keyframe: later delta-frame gap not reported");
-    if (!same(s.delivered, {10, 20, 21, 23})) return fail("keyframe: later gap not released");
+    if (!same(s.delivered, {10, 20, 21}) || !b.needs_keyframe())
+        return fail("keyframe: later gap forwarded a broken delta");
+    feed(b, s, 22, true, T0 + 220 * MS);
+    if (!same(s.delivered, {10, 20, 21, 22, 23}))
+        return fail("keyframe: late recovery keyframe did not drain its successor");
     return true;
 }
 
@@ -302,27 +306,21 @@ bool test_duplicates_and_old() {
 bool test_max_held_frames_overflow() {
     VideoFrameReorderConfig cfg;
     cfg.max_held_frames = 3;
-    cfg.max_hold_ms = 10'000;   // never time out in this test
+    cfg.max_hold_ms = 10'000;
     VideoFrameReorderBuffer b(cfg);
     Sink s;
     feed(b, s, 10, true, T0);
-    feed(b, s, 12, false, T0 + 1 * MS);
-    feed(b, s, 13, false, T0 + 2 * MS);
-    feed(b, s, 14, false, T0 + 3 * MS);
-    if (b.held_frames() != 3 || !same(s.delivered, {10})) return fail("overflow: below the limit");
-    feed(b, s, 15, false, T0 + 4 * MS);
-    if (!same(s.lost, {11})) return fail("overflow: gap not reported");
-    if (!same(s.delivered, {10, 12, 13, 14, 15})) return fail("overflow: held frames not released");
-    if (b.held_frames() != 0 || b.held_bytes() != 0) return fail("overflow: buffer not empty");
-    // Two gaps: overflow releases only up to the second gap.
-    feed(b, s, 17, false, T0 + 5 * MS);
-    feed(b, s, 19, false, T0 + 6 * MS);
-    feed(b, s, 20, false, T0 + 7 * MS);
-    feed(b, s, 21, false, T0 + 8 * MS);
-    if (!same(s.lost, {11, 16})) return fail("overflow: first of two gaps not reported");
-    if (!same(s.delivered, {10, 12, 13, 14, 15, 17})) return fail("overflow: released past the second gap");
-    if (b.held_frames() != 3) return fail("overflow: second gap frames not kept");
-    if (b.held_bytes() != 3 * (VIDEO_FRAME_HEADER_SIZE + 100)) return fail("overflow: held bytes");
+    for (uint32_t seq = 12; seq <= 14; ++seq)
+        feed(b, s, seq, false, T0 + seq * MS);
+    if (b.held_frames() != 3 || !s.lost.empty()) return fail("overflow: below limit");
+    feed(b, s, 15, false, T0 + 15 * MS);
+    if (!same(s.lost, {11}) || !same(s.delivered, {10}) || !b.needs_keyframe())
+        return fail("overflow: broken deltas advanced the baseline");
+    if (b.held_frames() != 3 || b.held_bytes() != 3 * (VIDEO_FRAME_HEADER_SIZE + 100))
+        return fail("overflow: bounded recovery accounting");
+    feed(b, s, 12, true, T0 + 20 * MS);
+    if (!same(s.delivered, {10, 12, 13, 14, 15}) || b.held_frames() || b.needs_keyframe())
+        return fail("overflow: late keyframe and successors did not recover");
     return true;
 }
 
@@ -333,13 +331,15 @@ bool test_max_bytes_overflow() {
     VideoFrameReorderBuffer b(cfg);
     Sink s;
     feed(b, s, 10, true, T0);
-    feed(b, s, 12, false, T0 + 1 * MS, 400);   // 414 bytes
-    feed(b, s, 13, false, T0 + 2 * MS, 400);   // 828 bytes
+    feed(b, s, 12, false, T0 + MS, 400);
+    feed(b, s, 13, false, T0 + 2 * MS, 400);
     if (b.held_bytes() != 828) return fail("bytes: accounting");
-    feed(b, s, 14, false, T0 + 3 * MS, 400);   // 1242 > 1000
-    if (!same(s.lost, {11}) || !same(s.delivered, {10, 12, 13, 14}))
-        return fail("bytes: overflow did not release the held frames");
-    if (b.held_bytes() != 0) return fail("bytes: not zero after release");
+    feed(b, s, 14, false, T0 + 3 * MS, 400);
+    if (!same(s.lost, {11}) || !same(s.delivered, {10}) || b.held_bytes() != 828)
+        return fail("bytes: overflow did not retain bounded recovery deltas");
+    feed(b, s, 12, true, T0 + 4 * MS, 400);
+    if (!same(s.delivered, {10, 12, 13, 14}) || b.held_bytes() != 0)
+        return fail("bytes: recovery did not drain");
     return true;
 }
 
@@ -358,9 +358,58 @@ bool test_reset() {
     return true;
 }
 
+bool test_delayed_recovery_keyframes() {
+    VideoFrameReorderBuffer b;
+    Sink s;
+    feed(b, s, 100, true, T0);
+    // A large recovery keyframe completes after more than eight small deltas.
+    // Repeating this pattern used to advance past every recovery point forever.
+    for (uint32_t round = 0; round < 20; ++round) {
+        const uint32_t key = 101 + round * 20;
+        const int64_t now = T0 + round * 500 * MS;
+        for (uint32_t delta = 1; delta <= 10; ++delta)
+            feed(b, s, key + delta, false, now + delta * MS);
+        feed(b, s, key, true, now + 200 * MS, 60'000);
+        bool delivered_key = false;
+        for (uint32_t seq : s.delivered) delivered_key |= seq == key;
+        if (!delivered_key) return fail("recovery: delayed keyframe discarded after delta overflow");
+        if (b.held_frames() > 8 || b.held_bytes() > 8 * 1024 * 1024)
+            return fail("recovery: buffer exceeded its bounds");
+    }
+    return true;
+}
+
+bool test_recovery_wrap_and_independent_viewers() {
+    VideoFrameReorderBuffer slow, healthy;
+    Sink stalled, playing;
+    const uint32_t base = UINT32_MAX - 2;
+    feed(slow, stalled, base, true, T0);
+    feed(healthy, playing, base, true, T0);
+    feed(healthy, playing, base + 1, false, T0 + MS);
+    feed(healthy, playing, base + 2, false, T0 + 2 * MS);
+    feed(slow, stalled, 0, false, T0 + 3 * MS);
+    slow.poll(T0 + 160 * MS, stalled.deliver_fn(), stalled.lost_fn());
+    if (!slow.needs_keyframe() || healthy.needs_keyframe())
+        return fail("recovery: one viewer's loss affected another viewer");
+    feed(slow, stalled, base - 100, true, T0 + 161 * MS);
+    feed(slow, stalled, base, true, T0 + 162 * MS);
+    if (!same(stalled.delivered, {base})) return fail("recovery: stale keyframe rolled back the stream");
+    feed(slow, stalled, UINT32_MAX, true, T0 + 163 * MS);
+    if (!same(stalled.delivered, {base, UINT32_MAX, 0}) || slow.needs_keyframe())
+        return fail("recovery: delayed keyframe across wrap did not drain");
+    feed(slow, stalled, 1, false, T0 + 164 * MS);
+    if (!same(stalled.delivered, {base, UINT32_MAX, 0, 1}))
+        return fail("recovery: playback did not continue after recovery");
+    slow.reset();
+    if (!slow.needs_keyframe() || slow.has_baseline()) return fail("recovery: reset state");
+    return true;
+}
+
 } // namespace
 
 int main() {
+    if (!test_delayed_recovery_keyframes()) return 1;
+    if (!test_recovery_wrap_and_independent_viewers()) return 1;
     if (!test_in_order()) return 1;
     if (!test_hold_then_fill()) return 1;
     if (!test_hold_then_timeout()) return 1;

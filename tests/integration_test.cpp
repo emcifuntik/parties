@@ -1037,9 +1037,38 @@ int main() {
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
-        std::lock_guard<std::mutex> lock(c_video_mutex);
-        TEST_ASSERT((c_received_sequences == std::vector<uint32_t>{20, 21, 22, 500, 501}),
-                    "legacy viewer receives reordered frames and ignores stale keyframes");
+        {
+            std::lock_guard<std::mutex> lock(c_video_mutex);
+            TEST_ASSERT((c_received_sequences == std::vector<uint32_t>{20, 21, 22, 500, 501}),
+                        "legacy viewer receives reordered frames and ignores stale keyframes");
+        }
+        // Force ingress recovery by completing small deltas before a delayed
+        // keyframe. The server must not forward the broken reference chain or
+        // make the recovery keyframe stale, including on a repeated stall.
+        std::vector<uint32_t> expected{20, 21, 22, 500, 501};
+        for (uint32_t key : {502u, 522u}) {
+            for (uint32_t seq = key + 1; seq <= key + 10; ++seq)
+                TEST_ASSERT(send_frame(seq, false), "send deltas ahead of delayed recovery keyframe");
+            std::this_thread::sleep_for(std::chrono::milliseconds(350));
+            {
+                std::lock_guard<std::mutex> lock(c_video_mutex);
+                TEST_ASSERT(c_received_sequences == expected, "broken deltas not forwarded during recovery");
+            }
+            // Expire the first request and check that an idle recovery retries.
+            pli_received = false;
+            auto retry_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while (!pli_received && std::chrono::steady_clock::now() < retry_deadline)
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            TEST_ASSERT(pli_received.load(), "server retries recovery PLI without new frames");
+            TEST_ASSERT(send_frame(key, true), "send delayed recovery keyframe");
+            expected.push_back(key);
+            TEST_ASSERT(wait_sequences(expected.size()), "delayed keyframe reaches viewer after gap timeout");
+            TEST_ASSERT(send_frame(key + 1, false), "send successor after recovery");
+            expected.push_back(key + 1);
+            TEST_ASSERT(wait_sequences(expected.size()), "playback continues after recovery");
+            std::lock_guard<std::mutex> lock(c_video_mutex);
+            TEST_ASSERT(c_received_sequences == expected, "recovery preserves usable frame order");
+        }
         LOG("[18/21] Legacy ingress reordering and stale-frame rejection verified\n");
     }
     // ── Client C shares; a pre-1.2 sharer gets no viewer notifications ──

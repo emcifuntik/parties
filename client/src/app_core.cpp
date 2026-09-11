@@ -1316,10 +1316,16 @@ void AppCore::retry_pending_plis()
         ids.assign(watched_.begin(), watched_.end());
     }
     for (UserId id : ids) {
-        const bool awaiting = bridge_.stream_awaiting_keyframe
+        bool awaiting_ingress = false;
+        {
+            std::lock_guard<std::mutex> lock(reorder_mutex_);
+            const auto it = reorder_buffers_.find(id);
+            awaiting_ingress = it != reorder_buffers_.end() && it->second.needs_keyframe();
+        }
+        const bool awaiting = awaiting_ingress || (bridge_.stream_awaiting_keyframe
             ? bridge_.stream_awaiting_keyframe(id)
             : (awaiting_keyframe_.load(std::memory_order_relaxed) &&
-               viewing_sharer_.load(std::memory_order_relaxed) == id);
+               viewing_sharer_.load(std::memory_order_relaxed) == id));
         if (awaiting) send_pli(id);
     }
 }

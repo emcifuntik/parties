@@ -12,8 +12,9 @@
 //   * holds newer complete frames while an older one is missing, bounded by
 //     max_hold_ms / max_held_frames / max_bytes;
 //   * on timeout, abort of the missing frame, or overflow, reports the gap once
-//     via `lost` and resumes from the oldest held frame (the decode gate then
-//     sees a discontinuity and the caller requests a keyframe);
+//     via `lost` and waits for a keyframe without advancing over broken deltas;
+//   * retains bounded recovery deltas, so a delayed keyframe can release its
+//     successors even after the original gap expired;
 //   * delivers a held keyframe immediately: nothing before a keyframe matters;
 //   * ignores frames older than the last delivered one and duplicates;
 //   * resets its baseline only when the owner explicitly resets the share.
@@ -44,9 +45,9 @@ class VideoFrameReorderBuffer {
 public:
     // `frame` is the full [14-byte header][encoded] buffer the decode path expects.
     using DeliverFn = std::function<void(const VideoFrameHeader& hdr, std::vector<uint8_t>&& frame)>;
-    // Called once per gap that is resumed at a DELTA frame (timeout, abort,
-    // overflow) with the first missing frame_seq — the decoder will need a
-    // keyframe. A gap closed by a keyframe is NOT reported: the keyframe
+    // Called once per broken reference chain (timeout, abort, overflow) with
+    // the first missing frame_seq. No more deltas are delivered until a
+    // keyframe arrives. A gap closed by a keyframe is NOT reported: the keyframe
     // re-anchors the decoder by itself (the server deliberately resumes a
     // throttled viewer at a keyframe, so this is the normal recovery path).
     using LostFn    = std::function<void(uint32_t first_missing_seq)>;
@@ -59,7 +60,7 @@ public:
                   int64_t now_us, const DeliverFn& deliver, const LostFn& lost);
 
     // The stream carrying `frame_seq` was aborted before completing: the frame
-    // will never arrive. Unblocks anything held behind it.
+    // will never arrive. Enters keyframe recovery when it breaks the chain.
     void on_frame_aborted(uint32_t frame_seq, int64_t now_us,
                           const DeliverFn& deliver, const LostFn& lost);
 
@@ -73,6 +74,9 @@ public:
     size_t held_frames() const { return held_.size(); }
     size_t held_bytes() const { return held_bytes_; }
     bool   has_baseline() const { return have_last_; }
+    // The owner retries a coalesced PLI while this is true, including when no
+    // further frames arrive. A downstream decoder may still have a valid gate.
+    bool   needs_keyframe() const { return !have_last_ || awaiting_keyframe_; }
     uint32_t last_delivered() const { return last_delivered_; }
 
 private:
@@ -84,6 +88,7 @@ private:
 
     VideoFrameReorderConfig cfg_;
     bool     have_last_ = false;
+    bool     awaiting_keyframe_ = true;
     uint32_t last_delivered_ = 0;
     // Keyed by frame_seq re-based so that std::map ordering matches wrap-safe
     // ordering relative to last_delivered_ (see .cpp).
@@ -93,7 +98,8 @@ private:
 
     void deliver_one(Held&& h, const DeliverFn& deliver);
     void drain(const DeliverFn& deliver);
-    void skip_gap(int64_t now_us, const DeliverFn& deliver, const LostFn& lost);
+    void require_keyframe(const LostFn& lost);
+    void bound_held();
     int64_t key_for(uint32_t seq) const;
 };
 
