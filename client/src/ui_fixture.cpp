@@ -85,7 +85,7 @@ bool IsUIFixtureScenario(const std::string& scenario)
         "launcher", "launcher-reconnecting", "party-modal", "update-available",
         "onboarding", "onboarding-restore", "onboarding-key-import", "recovery",
         "login", "login-existing", "tofu", "global-name", "server-nickname",
-        "room", "room-empty", "chat", "chat-search", "chat-pinned", "chat-attachment",
+        "room", "room-empty", "island-idle", "island-long-name", "chat", "chat-draft", "chat-search", "chat-pinned", "chat-attachment",
         "settings", "settings-select-open", "settings-screen-share", "settings-hotkeys",
         "settings-account", "settings-account-import", "share", "audio-share",
         "stream-single", "streams", "member", "create-channel", "create-text-channel",
@@ -199,6 +199,11 @@ void PopulateUIFixture(AppCore& core, const std::string& scenario, bool macos)
     servers.global_name = "tuxick";
     servers.connected_server_id = disconnected ? 0 : 1;
     servers.fingerprint = "5E7A 91C2 4D3F";
+    if (scenario == "island-idle" || scenario == "island-long-name") {
+        lobby.current_channel = 0;
+        lobby.username = scenario == "island-long-name" ? "Alexander with a very long display name" : "tuxick ios";
+        servers.fingerprint = "57:8b:dc:a9:50:75:b7:b0:7f:48:e8:f5:84:08:ca:8f:da:6d:33:d7:66:12:34:56:78:90:ab:cd:ef:01:23:45";
+    }
     servers.has_identity = true;
     servers.seed_phrase = "amber vessel orbit meadow copper velvet island echo marble lunar gentle harbor";
 
@@ -224,6 +229,7 @@ void PopulateUIFixture(AppCore& core, const std::string& scenario, bool macos)
     chat.messages = Rml::Vector<ChatMessage>{pinned, second, third, own};
     chat.has_more_history = scenario == "chat-attachment";
     chat.show_search = scenario == "chat-search";
+    chat.compose_text = scenario == "chat-draft" ? "Ready for tonight's party?" : "";
     chat.search_query = "server";
     chat.search_results = Rml::Vector<ChatMessage>{third};
     chat.show_pinned = scenario == "chat-pinned";

@@ -32,7 +32,6 @@
     display: block;
     min-width: 0dp;
     color: var(--color-text-muted);
-    font-size: var(--type-caption);
     overflow: hidden;
     white-space: nowrap;
 }
@@ -57,9 +56,6 @@
     color: var(--color-accent-ink);
     border: 1dp transparent;
     border-radius: var(--radius-md);
-    font-size: var(--type-control);
-    font-weight: bold;
-    line-height: 16dp;
     text-align: center;
     white-space: nowrap;
     cursor: pointer;
@@ -79,7 +75,6 @@
     background-color: var(--color-surface-raised);
     color: var(--color-text-soft);
     border-color: var(--color-border-strong);
-    font-weight: bold;
 }
 .ui-button.ui-button-secondary:hover,
 .ui-button.btn-secondary:hover {
@@ -105,7 +100,6 @@
     min-height: 30dp;
     margin-top: 0dp;
     padding: 0dp 10dp;
-    font-size: var(--type-caption);
 }
 
 .ui-icon-button {
@@ -141,8 +135,6 @@
     color: var(--color-text);
     border: 1dp var(--color-border-strong);
     border-radius: var(--radius-md);
-    font-size: var(--type-control);
-    line-height: 16dp;
 }
 .ui-input:hover { border-color: #FFFFFF2B; }
 .ui-input:focus { border-color: #5EEAD499; }
@@ -212,7 +204,6 @@ input.ui-range sliderarrowinc { width: 0dp; height: 0dp; }
     background-color: transparent;
     color: var(--color-text-muted);
     border-radius: var(--radius-sm);
-    font-size: var(--type-control);
     cursor: pointer;
 }
 .ui-segment:hover { background-color: var(--color-surface-hover); color: var(--color-text); }
@@ -233,12 +224,8 @@ input.ui-range sliderarrowinc { width: 0dp; height: 0dp; }
 .ui-dialog > h1 {
     margin: 0dp 0dp var(--space-1) 0dp;
     color: var(--color-text);
-    font-size: var(--type-page);
-    line-height: 24dp;
 }
 .ui-dialog > .subtitle {
     margin-bottom: var(--space-5);
     color: var(--color-text-muted);
-    font-size: var(--type-body);
-    line-height: 17dp;
 }

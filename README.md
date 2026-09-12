@@ -65,6 +65,20 @@ enable automatic signing for device installation or archiving. Without a team
 ID the generated iOS project remains unsigned, which is suitable for CI compile
 checks.
 
+For production iOS screen verification and a signed TestFlight archive:
+
+```sh
+tools/capture-ui-ios.sh
+tools/archive-ios.sh build/ios/Parties.xcarchive <TEAM_ID>
+```
+
+The capture script requires a booted simulator and a Debug simulator build.
+The archive script builds Retail Release, packages matching dSYM symbols, and
+verifies the signature before the archive is distributed through Xcode or
+`xcodebuild -exportArchive`. Set `CMAKE` to an absolute CMake executable path
+when it is not on `PATH`. See [designer/README.md](designer/README.md) for the
+screen scenarios and interaction checks.
+
 ## Architecture
 
 Single QUIC connection on UDP port 7800:

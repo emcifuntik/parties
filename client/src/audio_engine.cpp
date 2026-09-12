@@ -1,4 +1,5 @@
 #include <client/audio_engine.h>
+#include <client/audio_context_config.h>
 #include <client/stream_audio_player.h>
 #include <parties/profiler.h>
 #include <client/voice_mixer.h>
@@ -38,7 +39,8 @@ AudioEngine::~AudioEngine() {
 bool AudioEngine::init() {
 	ZoneScopedN("AudioEngine::init");
     // Initialize miniaudio context (needed for device enumeration)
-    if (ma_context_init(nullptr, 0, nullptr, &context_) != MA_SUCCESS) {
+    const auto context_config = MakeAudioContextConfig();
+    if (ma_context_init(nullptr, 0, &context_config, &context_) != MA_SUCCESS) {
         LOG_ERROR("Failed to initialize audio context");
         return false;
     }

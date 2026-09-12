@@ -86,7 +86,7 @@
                             <gradient_circle class="home-profile-avatar" data-attr-seed="global_name" />
                             <span class="home-profile-name">{{ global_name }}</span>
                         </div>
-                        <div class="home-add-button ui-button" data-model="serverlist" data-event-click="add_server"><span class="ui-button-label">+ Add party</span></div>
+                        <div class="home-add-button ui-button" data-model="serverlist" data-event-click="add_server"><span class="ui-button-label ui-control">+ Add party</span></div>
                     </div>
                 </div>
 
@@ -114,8 +114,8 @@
                                 </div>
                                 <div class="party-card-footer">
                                     <span class="party-card-host">{{ srv.host }}</span>
-                                    <span class="party-card-action ui-button ui-button-compact" data-if="srv.online"><span class="ui-button-label">Join</span></span>
-                                    <span class="party-card-action secondary ui-button ui-button-secondary ui-button-compact" data-if="srv.online == false"><span class="ui-button-label">Reconnect</span></span>
+                                    <span class="party-card-action ui-button ui-button-compact" data-if="srv.online"><span class="ui-button-label ui-control">Join</span></span>
+                                    <span class="party-card-action secondary ui-button ui-button-secondary ui-button-compact" data-if="srv.online == false"><span class="ui-button-label ui-control">Reconnect</span></span>
                                 </div>
                             </div>
                         </div>
@@ -155,8 +155,8 @@
         <div class="channel-section">
             <div class="channel-category-row">
                 <span class="channel-category">Rooms</span>
-                <span class="channel-add-btn" data-if="can_manage_channels"
-                      data-event-click="show_create_channel_form">+</span>
+                <span class="channel-add-btn ui-icon-button ui-symbol" data-if="can_manage_channels"
+                      data-event-click="show_create_channel_form"><span class="ui-symbol">+</span></span>
             </div>
             <div data-for="ch : channels">
                 <div class="channel-item"
@@ -191,8 +191,8 @@
 
             <div class="channel-category-row" data-model="chat">
                 <span class="channel-category">Chats</span>
-                <span class="channel-add-btn" data-if="can_manage_channels"
-                      data-event-click="show_create_text_channel_form">+</span>
+                <span class="channel-add-btn ui-icon-button ui-symbol" data-if="can_manage_channels"
+                      data-event-click="show_create_text_channel_form"><span class="ui-symbol">+</span></span>
             </div>
             <div data-model="chat" data-for="tc : text_channels">
                 <div class="chat-item"
@@ -215,9 +215,10 @@
                 <!-- User info row -->
                 <div class="user-island-top">
                     <gradient_circle class="user-avatar" data-attr-seed="username" />
-                    <div class="user-island-info">
-                        <span class="user-name">{{ username }}</span>
-                        <span class="user-fingerprint" data-model="serverlist" data-if="fingerprint != ''" data-event-click="copy_fingerprint">{{ fingerprint }}</span>
+                    <div class="user-island-info" data-model="serverlist"
+                         data-event-click="copy_fingerprint" title="Copy fingerprint">
+                        <span class="user-name ui-control" data-model="lobby">{{ username }}</span>
+                        <span class="user-fingerprint ui-micro" data-if="fingerprint != ''">{{ fingerprint }}</span>
                     </div>
                     <div class="settings-btn ui-icon-button" data-event-click="open_settings">
                         <svg src="icon-settings.svg" width="16" height="16" />
@@ -431,21 +432,21 @@
                     </div>
                     <div class="settings-config-card settings-share-config">
                         <div class="share-setting-group"><div class="settings-field-label ui-label">Codec</div><div class="share-codec-buttons ui-segment-group">
-                            <div class="share-codec-btn ui-segment" data-class-active="share_codec == 0" data-event-click="select_share_codec(0)">AV1</div>
-                            <div class="share-codec-btn ui-segment" data-class-active="share_codec == 1" data-event-click="select_share_codec(1)">H.265</div>
-                            <div class="share-codec-btn ui-segment" data-class-active="share_codec == 2" data-event-click="select_share_codec(2)">H.264</div>
+                            <div class="share-codec-btn ui-segment ui-control" data-class-active="share_codec == 0" data-event-click="select_share_codec(0)"><span class="ui-control">AV1</span></div>
+                            <div class="share-codec-btn ui-segment ui-control" data-class-active="share_codec == 1" data-event-click="select_share_codec(1)"><span class="ui-control">H.265</span></div>
+                            <div class="share-codec-btn ui-segment ui-control" data-class-active="share_codec == 2" data-event-click="select_share_codec(2)"><span class="ui-control">H.264</span></div>
                         </div></div>
                         <div class="share-setting-group"><div class="settings-field-label ui-label">Scale</div><div class="share-codec-buttons ui-segment-group">
-                            <div class="share-codec-btn ui-segment" data-class-active="share_scale == 0" data-event-click="select_share_scale(0)">Source</div>
-                            <div class="share-codec-btn ui-segment" data-class-active="share_scale == 1" data-event-click="select_share_scale(1)">75%</div>
-                            <div class="share-codec-btn ui-segment" data-class-active="share_scale == 2" data-event-click="select_share_scale(2)">50%</div>
-                            <div class="share-codec-btn ui-segment" data-class-active="share_scale == 3" data-event-click="select_share_scale(3)">25%</div>
+                            <div class="share-codec-btn ui-segment ui-control" data-class-active="share_scale == 0" data-event-click="select_share_scale(0)"><span class="ui-control">Source</span></div>
+                            <div class="share-codec-btn ui-segment ui-control" data-class-active="share_scale == 1" data-event-click="select_share_scale(1)"><span class="ui-control">75%</span></div>
+                            <div class="share-codec-btn ui-segment ui-control" data-class-active="share_scale == 2" data-event-click="select_share_scale(2)"><span class="ui-control">50%</span></div>
+                            <div class="share-codec-btn ui-segment ui-control" data-class-active="share_scale == 3" data-event-click="select_share_scale(3)"><span class="ui-control">25%</span></div>
                         </div></div>
                         <div class="share-setting-group"><div class="settings-field-label ui-label">Frame Rate</div><div class="share-codec-buttons ui-segment-group">
-                            <div class="share-codec-btn ui-segment" data-class-active="share_fps == 0" data-event-click="select_share_fps(0)">15</div>
-                            <div class="share-codec-btn ui-segment" data-class-active="share_fps == 1" data-event-click="select_share_fps(1)">30</div>
-                            <div class="share-codec-btn ui-segment" data-class-active="share_fps == 2" data-event-click="select_share_fps(2)">60</div>
-                            <div class="share-codec-btn share-fps-120 ui-segment" data-class-active="share_fps == 3" data-event-click="select_share_fps(3)">120</div>
+                            <div class="share-codec-btn ui-segment ui-control" data-class-active="share_fps == 0" data-event-click="select_share_fps(0)"><span class="ui-control">15</span></div>
+                            <div class="share-codec-btn ui-segment ui-control" data-class-active="share_fps == 1" data-event-click="select_share_fps(1)"><span class="ui-control">30</span></div>
+                            <div class="share-codec-btn ui-segment ui-control" data-class-active="share_fps == 2" data-event-click="select_share_fps(2)"><span class="ui-control">60</span></div>
+                            <div class="share-codec-btn share-fps-120 ui-segment ui-control" data-class-active="share_fps == 3" data-event-click="select_share_fps(3)"><span class="ui-control">120</span></div>
                         </div></div>
                         <div class="share-setting-group"><div class="settings-slider-heading settings-bitrate-heading"><span class="settings-field-label" id="settings-bitrate-label">Average bitrate</span><span class="settings-field-label settings-bitrate-value" id="settings-bitrate-value">{{ share_bitrate }} Mbps</span></div>
                             <input type="range" class="settings-wide-slider ui-range" id="settings-bitrate-slider" min="0.5" max="20" step="0.5"
@@ -471,10 +472,10 @@
                 <div class="settings-scroll" id="settings-account-page" data-if="settings_section == 3">
                     <div class="settings-page-intro" id="settings-account-intro">Your identity is stored locally. Keep an offline recovery copy before replacing it.</div>
                     <div class="settings-config-card settings-account-actions">
-                        <div class="settings-account-row"><div><span class="settings-feature-title">Private key</span><span class="settings-feature-copy">Reveal the key for this local identity</span></div><div class="settings-secondary-action ui-button ui-button-secondary ui-button-compact" data-event-click="toggle_private_key"><span data-if="show_private_key == false">Show</span><span data-if="show_private_key">Hide</span></div></div>
-                        <div class="seed-phrase-display" data-if="show_private_key"><div class="private-key-text">{{ identity_private_key }}</div><div class="settings-secondary-action ui-button ui-button-secondary ui-button-compact" id="settings-copy-private-key" data-event-click="copy_private_key"><span>Copy</span></div></div>
-                        <div class="settings-account-row" data-if="show_import_identity == false"><div><span class="settings-feature-title">Import identity</span><span class="settings-feature-copy">Restore from 12 words or a private key</span></div><div class="settings-secondary-action ui-button ui-button-secondary ui-button-compact" id="settings-show-import" data-event-click="show_import_form"><span>Import</span></div></div>
-                        <div class="import-identity-form" data-if="show_import_identity"><div class="settings-feature-copy">Enter a 12-word recovery phrase or 64-character private key.</div><input type="text" class="restore-input ui-input ui-input-multiline" data-value="import_phrase" /><div class="error-text" data-if="import_error != ''">{{ import_error }}</div><div class="settings-danger-action ui-button ui-button-danger" id="settings-replace-identity" data-event-click="do_import_identity"><span>Replace Identity</span></div><div class="settings-secondary-action ui-button ui-button-secondary" id="settings-cancel-import" data-event-click="cancel_import"><span>Cancel</span></div></div>
+                        <div class="settings-account-row"><div><span class="settings-feature-title">Private key</span><span class="settings-feature-copy">Reveal the key for this local identity</span></div><div class="settings-secondary-action ui-button ui-button-secondary ui-button-compact" data-event-click="toggle_private_key"><span class="ui-button-label ui-control" data-if="show_private_key == false">Show</span><span class="ui-button-label ui-control" data-if="show_private_key">Hide</span></div></div>
+                        <div class="seed-phrase-display" data-if="show_private_key"><div class="private-key-text">{{ identity_private_key }}</div><div class="settings-secondary-action ui-button ui-button-secondary ui-button-compact" id="settings-copy-private-key" data-event-click="copy_private_key"><span class="ui-button-label ui-control">Copy</span></div></div>
+                        <div class="settings-account-row" data-if="show_import_identity == false"><div><span class="settings-feature-title">Import identity</span><span class="settings-feature-copy">Restore from 12 words or a private key</span></div><div class="settings-secondary-action ui-button ui-button-secondary ui-button-compact" id="settings-show-import" data-event-click="show_import_form"><span class="ui-button-label ui-control">Import</span></div></div>
+                        <div class="import-identity-form" data-if="show_import_identity"><div class="settings-feature-copy">Enter a 12-word recovery phrase or 64-character private key.</div><input type="text" class="restore-input ui-input ui-input-multiline ui-body" data-value="import_phrase" /><div class="error-text" data-if="import_error != ''">{{ import_error }}</div><div class="settings-danger-action ui-button ui-button-danger" id="settings-replace-identity" data-event-click="do_import_identity"><span class="ui-button-label ui-control">Replace Identity</span></div><div class="settings-secondary-action ui-button ui-button-secondary" id="settings-cancel-import" data-event-click="cancel_import"><span class="ui-button-label ui-control">Cancel</span></div></div>
                     </div>
                 </div>
             </div>
@@ -546,11 +547,11 @@
             </div>
 
             <div class="share-picker-section native-share" data-if="use_native_picker">
-                <div class="btn ui-button ui-button-block" data-event-click="start_native_share"><span class="ui-button-label">Open system picker</span></div>
+                <div class="btn ui-button ui-button-block" data-event-click="start_native_share"><span class="ui-button-label ui-control">Open system picker</span></div>
             </div>
             <div class="share-picker-footer">
                 <div class="share-picker-footer-actions">
-                    <div class="btn btn-secondary ui-button ui-button-secondary" data-event-click="cancel_share"><span class="ui-button-label">Cancel</span></div>
+                    <div class="btn btn-secondary ui-button ui-button-secondary" data-event-click="cancel_share"><span class="ui-button-label ui-control">Cancel</span></div>
                     <div class="btn share-start-button ui-button" data-class-disabled="selected_share_target < 0"
                          data-event-click="start_selected_share">
                         <span data-if="share_picker_mode == 0">Start sharing</span>
@@ -569,8 +570,9 @@
                 </div>
                 <span class="channel-hint">Drop in, talk, or share something with the room.</span>
             </div>
-            <div class="channel-header ui-header" data-if="route == 'room' && current_channel == 0">
-                <span class="channel-hint">Select a channel</span>
+            <div class="channel-empty-state" data-if="route == 'room' && current_channel == 0">
+                <span class="ui-heading-page">Choose a channel</span>
+                <span class="channel-empty-description ui-body">Select a room or chat from the channel list to get started.</span>
             </div>
             <!-- Voice stage. The existing channel collection remains the single
                  source of truth; this is only a second, purpose-built view of it. -->
@@ -620,10 +622,10 @@
                     </div>
                     <div class="sharer-tabs">
                         <div data-for="sharer : sharers">
-                            <div class="sharer-tab"
+                            <div class="sharer-tab ui-control"
                                  data-class-active="sharer.watching"
                                  data-event-click="toggle_watch(sharer.id)">
-                                {{ sharer.name }}
+                                <span class="ui-control">{{ sharer.name }}</span>
                             </div>
                         </div>
                     </div>
@@ -704,7 +706,7 @@
 
             <!-- Search bar -->
             <div class="chat-search-bar" data-if="show_search">
-                <input type="text" class="chat-search-input ui-input"
+                <input type="text" class="chat-search-input ui-input ui-body"
                        data-value="search_query"
                        data-event-keydown="search_keydown"
                        placeholder="Search messages..." />
@@ -713,7 +715,7 @@
             <!-- Pinned messages panel -->
             <div class="chat-pinned-panel" data-if="show_pinned">
                 <div class="chat-pinned-header">
-                    <span>Pinned Messages</span>
+                    <span class="ui-item-title">Pinned Messages</span>
                     <div class="close-icon" data-event-click="toggle_pinned">
                         <div class="close-icon-a"></div>
                         <div class="close-icon-b"></div>
@@ -769,8 +771,8 @@
                     <span class="date-separator-text">Today</span>
                     <span class="date-separator-line"></span>
                 </div>
-                <div class="chat-load-more" data-if="has_more_history"
-                     data-event-click="load_more_history">Load older messages</div>
+                <div class="chat-load-more ui-control" data-if="has_more_history"
+                     data-event-click="load_more_history"><span class="ui-control">Load older messages</span></div>
                 <div data-for="msg : messages" class="msg-row"
                      data-event-mousedown="message_mousedown(msg.id)">
                     <div class="msg-avatar-wrap">
@@ -815,14 +817,14 @@
                         <div class="pending-file">
                             <span class="pending-file-name">{{ pf.name }}</span>
                             <span class="pending-file-size">{{ pf.size_str }}</span>
-                            <div class="pending-file-remove"
-                                 data-event-click="remove_pending_file(pf.path)">x</div>
+                            <div class="pending-file-remove ui-icon-button"
+                                 data-event-click="remove_pending_file(pf.path)"><svg src="icon-close.svg" width="14" height="14" /></div>
                         </div>
                     </div>
                 </div>
                 <div class="compose-row">
                     <div class="compose-input-wrap">
-                        <input type="text" class="compose-input ui-input"
+                        <input type="text" class="compose-input ui-input ui-body"
                                data-value="compose_text"
                                data-event-keydown="compose_keydown"
                                placeholder="Write something..." />
@@ -924,8 +926,8 @@
             <div class="label">New fingerprint:</div>
             <div class="tofu-fingerprint">{{ tofu_fingerprint }}</div>
 
-            <div class="btn btn-danger ui-button ui-button-danger" data-event-click="tofu_accept"><span class="ui-button-label">Trust New Certificate</span></div>
-            <div class="btn btn-secondary ui-button ui-button-secondary" data-event-click="tofu_reject"><span class="ui-button-label">Cancel</span></div>
+            <div class="btn btn-danger ui-button ui-button-danger" data-event-click="tofu_accept"><span class="ui-button-label ui-control">Trust New Certificate</span></div>
+            <div class="btn btn-secondary ui-button ui-button-secondary" data-event-click="tofu_reject"><span class="ui-button-label ui-control">Cancel</span></div>
         </div>
     </div>
 
@@ -936,10 +938,10 @@
             <h1>Change Display Name</h1>
             <div class="subtitle">This name is used as the default nickname for new parties.</div>
             <div class="label">Global name</div>
-            <input type="text" class="ui-input" data-value="global_name_input" />
+            <input type="text" class="ui-input ui-body" data-value="global_name_input" />
             <div class="error-text" data-if="global_name_error != ''">{{ global_name_error }}</div>
-            <div class="btn ui-button" data-event-click="save_global_name"><span class="ui-button-label">Save</span></div>
-            <div class="btn btn-secondary ui-button ui-button-secondary" data-event-click="cancel_global_name"><span class="ui-button-label">Cancel</span></div>
+            <div class="btn ui-button" data-event-click="save_global_name"><span class="ui-button-label ui-control">Save</span></div>
+            <div class="btn btn-secondary ui-button ui-button-secondary" data-event-click="cancel_global_name"><span class="ui-button-label ui-control">Cancel</span></div>
         </div>
     </div>
 
@@ -949,11 +951,11 @@
             <h1>Change Server Nickname</h1>
             <div class="subtitle">Nickname used when connecting to {{ server_nickname_server_name }}.</div>
             <div class="label">Nickname</div>
-            <input type="text" class="ui-input" data-value="server_nickname_input"
+            <input type="text" class="ui-input ui-body" data-value="server_nickname_input"
                    data-attr-placeholder="global_name" />
             <div class="error-text" data-if="server_nickname_error != ''">{{ server_nickname_error }}</div>
-            <div class="btn ui-button" data-event-click="save_server_nickname"><span class="ui-button-label">Save</span></div>
-            <div class="btn btn-secondary ui-button ui-button-secondary" data-event-click="cancel_server_nickname"><span class="ui-button-label">Cancel</span></div>
+            <div class="btn ui-button" data-event-click="save_server_nickname"><span class="ui-button-label ui-control">Save</span></div>
+            <div class="btn btn-secondary ui-button ui-button-secondary" data-event-click="cancel_server_nickname"><span class="ui-button-label ui-control">Cancel</span></div>
         </div>
     </div>
 
@@ -965,17 +967,17 @@
 
             <div data-if="login_show_username">
                 <div class="label">Nickname</div>
-                <input type="text" class="ui-input" data-value="login_username"
+                <input type="text" class="ui-input ui-body" data-value="login_username"
                        data-attr-placeholder="global_name" />
             </div>
 
             <div class="label">Server Password</div>
-            <input type="password" class="password ui-input" data-value="login_password" />
+            <input type="password" class="password ui-input ui-body" data-value="login_password" />
 
             <div class="error-text" data-if="login_error != ''">{{ login_error }}</div>
 
-            <div class="btn ui-button" data-event-click="do_connect"><span class="ui-button-label">Connect</span></div>
-            <div class="btn btn-secondary ui-button ui-button-secondary" data-event-click="cancel_login"><span class="ui-button-label">Cancel</span></div>
+            <div class="btn ui-button" data-event-click="do_connect"><span class="ui-button-label ui-control">Connect</span></div>
+            <div class="btn btn-secondary ui-button ui-button-secondary" data-event-click="cancel_login"><span class="ui-button-label ui-control">Cancel</span></div>
         </div>
     </div>
 
@@ -1035,9 +1037,9 @@
                     <div class="onboarding-step-label">Restore identity</div>
                     <h1>Enter your recovery phrase</h1>
                     <p class="onboarding-lead">Use the 12 words in their original order.</p>
-                    <input type="text" class="restore-input recovery-input ui-input ui-input-multiline" data-value="restore_phrase" />
+                    <input type="text" class="restore-input recovery-input ui-input ui-input-multiline ui-body" data-value="restore_phrase" />
                     <div class="error-text" data-if="login_error != ''">{{ login_error }}</div>
-                    <div class="btn onboarding-primary ui-button" data-event-click="restore_identity"><span class="ui-button-label">Restore identity</span></div>
+                    <div class="btn onboarding-primary ui-button" data-event-click="restore_identity"><span class="ui-button-label ui-control">Restore identity</span></div>
                 </div>
 
                 <div class="onboarding-form" data-if="show_key_import">
@@ -1045,9 +1047,9 @@
                     <div class="onboarding-step-label">Import identity</div>
                     <h1>Enter your private key</h1>
                     <p class="onboarding-lead">Paste the 64-character hexadecimal key.</p>
-                    <input type="text" class="restore-input recovery-input ui-input ui-input-multiline" data-value="import_key_hex" />
+                    <input type="text" class="restore-input recovery-input ui-input ui-input-multiline ui-body" data-value="import_key_hex" />
                     <div class="error-text" data-if="login_error != ''">{{ login_error }}</div>
-                    <div class="btn onboarding-primary ui-button" data-event-click="import_key"><span class="ui-button-label">Import identity</span></div>
+                    <div class="btn onboarding-primary ui-button" data-event-click="import_key"><span class="ui-button-label ui-control">Import identity</span></div>
                 </div>
 
                 <div class="onboarding-recovery" data-if="onboarding_step == 1 && show_restore == false && show_key_import == false">
@@ -1059,11 +1061,11 @@
                         <div class="seed-card-label"><span>Recovery phrase</span><span>12 words</span></div>
                         <span class="seed-phrase-text">{{ seed_phrase }}</span>
                         <div class="seed-card-actions">
-                            <div class="btn btn-secondary btn-small ui-button ui-button-secondary ui-button-compact" data-event-click="copy_seed"><span class="ui-button-label">Copy phrase</span></div>
+                            <div class="btn btn-secondary btn-small ui-button ui-button-secondary ui-button-compact" data-event-click="copy_seed"><span class="ui-button-label ui-control">Copy phrase</span></div>
                         </div>
                     </div>
                     <div class="recovery-warning"><span class="recovery-warning-icon ui-symbol">!</span><p class="ui-body">Anyone with these words can use your identity. Parties support cannot recover them.</p></div>
-                    <div class="btn onboarding-primary ui-button" data-event-click="save_identity"><span class="ui-button-label">I saved my recovery phrase</span></div>
+                    <div class="btn onboarding-primary ui-button" data-event-click="save_identity"><span class="ui-button-label ui-control">I saved my recovery phrase</span></div>
                 </div>
             </div>
         </div>
@@ -1079,18 +1081,18 @@
             <div class="party-connect-body">
                 <div class="party-connect-form">
                     <div class="label">Server address</div>
-                    <input type="text" class="ui-input" data-value="edit_host" placeholder="voice.example.com" />
+                    <input type="text" class="ui-input ui-body" data-value="edit_host" placeholder="voice.example.com" />
                     <div class="label">Port</div>
-                    <input type="text" class="ui-input" data-value="edit_port" />
+                    <input type="text" class="ui-input ui-body" data-value="edit_port" />
                     <div class="label">Server nickname</div>
-                    <input type="text" class="ui-input" data-value="edit_nickname"
+                    <input type="text" class="ui-input ui-body" data-value="edit_nickname"
                            data-attr-placeholder="global_name" />
                 </div>
             </div>
             <div class="error-text" data-if="edit_error != ''">{{ edit_error }}</div>
             <div class="party-connect-footer">
-                <div class="btn btn-secondary ui-button ui-button-secondary" data-event-click="cancel_edit"><span class="ui-button-label">Cancel</span></div>
-                <div class="btn ui-button" data-event-click="save_server"><span class="ui-button-label">Save and continue</span></div>
+                <div class="btn btn-secondary ui-button ui-button-secondary" data-event-click="cancel_edit"><span class="ui-button-label ui-control">Cancel</span></div>
+                <div class="btn ui-button" data-event-click="save_server"><span class="ui-button-label ui-control">Save and continue</span></div>
             </div>
         </div>
     </div>
@@ -1101,10 +1103,10 @@
             <h1>Create Channel</h1>
 
             <div class="label">Channel Name</div>
-            <input type="text" class="ui-input" data-value="new_channel_name" />
+            <input type="text" class="ui-input ui-body" data-value="new_channel_name" />
 
-            <div class="btn ui-button" data-event-click="create_channel"><span class="ui-button-label">Create</span></div>
-            <div class="btn btn-secondary ui-button ui-button-secondary" data-event-click="cancel_create_channel"><span class="ui-button-label">Cancel</span></div>
+            <div class="btn ui-button" data-event-click="create_channel"><span class="ui-button-label ui-control">Create</span></div>
+            <div class="btn btn-secondary ui-button ui-button-secondary" data-event-click="cancel_create_channel"><span class="ui-button-label ui-control">Cancel</span></div>
         </div>
     </div>
 
@@ -1114,10 +1116,10 @@
             <h1>Create Text Channel</h1>
 
             <div class="label">Channel Name</div>
-            <input type="text" class="ui-input" data-value="new_text_channel_name" />
+            <input type="text" class="ui-input ui-body" data-value="new_text_channel_name" />
 
-            <div class="btn ui-button" data-event-click="create_text_channel"><span class="ui-button-label">Create</span></div>
-            <div class="btn btn-secondary ui-button ui-button-secondary" data-event-click="cancel_create_text_channel"><span class="ui-button-label">Cancel</span></div>
+            <div class="btn ui-button" data-event-click="create_text_channel"><span class="ui-button-label ui-control">Create</span></div>
+            <div class="btn btn-secondary ui-button ui-button-secondary" data-event-click="cancel_create_text_channel"><span class="ui-button-label ui-control">Cancel</span></div>
         </div>
     </div>
 
@@ -1127,10 +1129,10 @@
             <h1>Rename Channel</h1>
 
             <div class="label">New Name</div>
-            <input type="text" class="ui-input" data-value="new_rename_channel_name" />
+            <input type="text" class="ui-input ui-body" data-value="new_rename_channel_name" />
 
-            <div class="btn ui-button" data-event-click="rename_channel"><span class="ui-button-label">Rename</span></div>
-            <div class="btn btn-secondary ui-button ui-button-secondary" data-event-click="cancel_rename_channel"><span class="ui-button-label">Cancel</span></div>
+            <div class="btn ui-button" data-event-click="rename_channel"><span class="ui-button-label ui-control">Rename</span></div>
+            <div class="btn btn-secondary ui-button ui-button-secondary" data-event-click="cancel_rename_channel"><span class="ui-button-label ui-control">Cancel</span></div>
         </div>
     </div>
 

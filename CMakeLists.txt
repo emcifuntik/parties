@@ -114,6 +114,16 @@ if(BUILD_CLIENT)
     add_subdirectory(encdec)
     add_subdirectory(client)
 endif()
+if(APPLE)
+    # CMake's Release configuration disables debug information at target level.
+    # Override each target so the dSYM format above produces usable symbols.
+    foreach(symbol_target parties_common parties_encdec parties_client)
+        if(TARGET ${symbol_target})
+            set_property(TARGET ${symbol_target} PROPERTY
+                XCODE_ATTRIBUTE_GCC_GENERATE_DEBUGGING_SYMBOLS "YES")
+        endif()
+    endforeach()
+endif()
 if(NOT APPLE)
     add_subdirectory(server)
 endif()

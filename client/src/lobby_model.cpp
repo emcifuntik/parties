@@ -453,7 +453,8 @@ void LobbyModel::build(rml::Builder& b) {
 
     b.on("stop_watching", [this] {
         if (on_stop_watching) on_stop_watching();
-        mobile_show_content = false;
+        // The viewer's Room action returns to the voice page, preserving the call.
+        mobile_show_content = true;
     });
 
     b.on("mobile_back", [this] {

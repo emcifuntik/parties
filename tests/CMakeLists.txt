@@ -70,7 +70,12 @@ target_link_libraries(parties_aux_stream_test
 
 # ── RmlUi client tests (offline, deterministic) ─────────────────────────────
 if(BUILD_CLIENT)
+    add_executable(parties_ios_back_gesture_test ios_back_gesture_test.cpp)
+    target_include_directories(parties_ios_back_gesture_test PRIVATE ../client/include)
+    add_executable(parties_ios_audio_routes_test ios_audio_routes_test.cpp)
+    target_include_directories(parties_ios_audio_routes_test PRIVATE ../client/include)
     add_executable(parties_ui_stylesheet_test ui_stylesheet_test.cpp)
+    target_include_directories(parties_ui_stylesheet_test PRIVATE ../client/include)
     target_link_libraries(parties_ui_stylesheet_test PRIVATE RmlUi::RmlUi)
     target_compile_definitions(parties_ui_stylesheet_test PRIVATE
         PARTIES_UI_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../client/ui")
@@ -217,6 +222,8 @@ add_test(NAME parties_aux_stream COMMAND parties_aux_stream_test)
 add_test(NAME parties_aux_stream_soak COMMAND parties_aux_stream_test --soak)
 set_tests_properties(parties_aux_stream_soak PROPERTIES TIMEOUT 120)
 if(BUILD_CLIENT)
+    add_test(NAME parties_ios_back_gesture COMMAND parties_ios_back_gesture_test)
+    add_test(NAME parties_ios_audio_routes COMMAND parties_ios_audio_routes_test)
     add_test(NAME parties_ui_stylesheet_variables COMMAND parties_ui_stylesheet_test)
     add_test(NAME parties_document_router COMMAND parties_document_router_test)
     add_test(NAME parties_audio_device_selection_model COMMAND parties_audio_device_selection_model_test)

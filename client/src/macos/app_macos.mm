@@ -48,6 +48,7 @@
 #include <client/gradient_circle_element.h>
 #include <client/custom_elements.h>
 #include <client/ui_fixture.h>
+#include <client/ui_layout_audit.h>
 
 #ifdef SENTRY_COCOA_ENABLED
 #import <Sentry/Sentry.h>
@@ -273,6 +274,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     bool                  _debuggerInitialized;
     bool                  _coreInitialized;
     bool                  _soundInitialized;
+    int                   _previewFrameCount;
     bool                  _previewMode;
     std::string           _previewScenario;
     std::unique_ptr<MacOSContextMenuController> _contextMenus;
@@ -646,8 +648,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         _doc->Show();
         if (_previewMode) {
             ApplyUIFixtureDocument(_doc, _previewScenario);
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(350 * NSEC_PER_MSEC)),
-                           dispatch_get_main_queue(), ^{ [self showPreviewNativeUI]; });
         }
     }
 
@@ -758,6 +758,15 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     _rmlContext->Render();
     Backend::EndFrame();
 
+    if (_previewMode && _doc && ++_previewFrameCount == 60) {
+        AuditUIControlLayout(_doc, _previewScenario.c_str());
+        NSString* scenario = [NSString stringWithUTF8String:_previewScenario.c_str()];
+        [buffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+            NSLog(@"[Parties] %s macOS UI fixture: %@",
+                completed.status == MTLCommandBufferStatusCompleted ? "Ready" : "Failed to render", scenario);
+            dispatch_async(dispatch_get_main_queue(), ^{ [self showPreviewNativeUI]; });
+        }];
+    }
     [buffer presentDrawable:view.currentDrawable];
     [buffer commit];
 }
@@ -1274,6 +1283,14 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     _viewController = [[PartiesViewController alloc] init];
 
     NSRect frame = NSMakeRect(0, 0, 1280, 720);
+    if (_previewMode) {
+        NSArray<NSString*>* arguments = NSProcessInfo.processInfo.arguments;
+        NSUInteger sizeIndex = [arguments indexOfObject:@"--ui-fixture-size"];
+        if (sizeIndex != NSNotFound && sizeIndex + 2 < arguments.count) {
+            frame.size.width = MAX(800, arguments[sizeIndex + 1].doubleValue);
+            frame.size.height = MAX(500, arguments[sizeIndex + 2].doubleValue);
+        }
+    }
     NSWindowStyleMask style =
         NSWindowStyleMaskTitled
       | NSWindowStyleMaskClosable
@@ -1292,6 +1309,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     _window.styleMask                 |= NSWindowStyleMaskFullSizeContentView;
     _window.contentViewController      = _viewController;
     _window.minSize                    = NSMakeSize(800, 500);
+    if (_previewMode) [_window setContentSize:frame.size];
 
     [_window center];
     [_window makeKeyAndOrderFront:nil];

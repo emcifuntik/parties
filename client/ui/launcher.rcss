@@ -388,13 +388,11 @@ gradient_circle.party-card-gradient {
 .home-profile-name { color: #DFE4EC; font-size: 12dp; font-weight: bold; cursor: pointer; }
 .home-profile-name:hover { color: #FFFFFF; }
 .home-add-button {
-    display: block;
-    padding: 11dp 17dp;
+    padding: 0dp 17dp;
     background-color: #5EEAD4;
     color: #06231F;
     border-radius: 10dp;
-    font-size: 12dp;
-    font-weight: bold;
+
     cursor: pointer;
 }
 .home-add-button:hover { background-color: #79F3DE; }
@@ -439,13 +437,11 @@ gradient_circle.party-card-gradient {
 }
 .party-card-host { display: block; flex: 1; color: #596473; font-size: 10dp; }
 .party-card-action {
-    display: block;
-    padding: 8dp 14dp;
+    padding: 0dp 14dp;
     background-color: #5EEAD4;
     color: #06231F;
     border-radius: 8dp;
-    font-size: 11dp;
-    font-weight: bold;
+
 }
 .party-card-action.secondary { background-color: #171D26; color: #9AA3B0; border: 1dp #FFFFFF14; }
 .party-card:hover {

@@ -388,9 +388,7 @@ gradient_circle.server-header-gradient {
 }
 
 .channel-add-btn {
-    display: block;
     color: #5C6280;
-    font-size: 16dp;
     cursor: pointer;
 }
 
@@ -632,13 +630,17 @@ gradient_circle.user-avatar {
     display: flex;
     flex-direction: column;
     flex: 1;
+    min-width: 0dp;
+    justify-content: center;
     overflow: hidden;
+    cursor: pointer;
 }
 
 .user-name {
     color: #F0F2F8;
-    font-size: 12dp;
-    font-weight: bold;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .settings-btn {
@@ -691,13 +693,13 @@ gradient_circle.user-avatar {
 .user-fingerprint {
     display: block;
     color: #4A5170;
-    font-size: 9dp;
     margin-top: 1dp;
     overflow: hidden;
-    cursor: pointer;
+    white-space: nowrap;
+    text-overflow: ellipsis;
 }
 
-.user-fingerprint:hover {
+.user-island-info:hover .user-fingerprint {
     color: #6B7394;
 }
 
