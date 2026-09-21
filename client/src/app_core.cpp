@@ -1034,17 +1034,11 @@ void AppCore::join_channel(ChannelId id)
 {
     if (!authenticated_) return;
 
-    // Voice, chat, settings, sharing, and streams are document routes. Moving
-    // to a room replaces the current page atomically.
-    model_.router.go(DocumentRoute::Room);
+    model_.show_voice_channel(static_cast<int>(id));
     chat_model_.active_channel = 0;
     chat_model_.active_channel_name = "";
 
     if (id == current_channel_) return;
-
-    // Deselect text channel when joining voice channel
-    chat_model_.active_channel = 0;
-    chat_model_.active_channel_name = "";
 
     awaiting_channel_join_ = true;
     pending_channel_id_ = id;
@@ -1117,6 +1111,11 @@ void AppCore::watch_sharer(UserId id)
         return;
     if (multi_stream()) { add_watch(id); return; }
 
+    if (is_watching(id)) {
+        model_.show_voice_channel(static_cast<int>(current_channel_));
+        return;
+    }
+
     // Tear down the previous single stream (server sub + decoder), keep at most one.
     if (viewing_sharer_ != 0 && viewing_sharer_ != id && bridge_.stop_video_stream)
         bridge_.stop_video_stream(viewing_sharer_);
@@ -1149,9 +1148,15 @@ void AppCore::add_watch(UserId id)
         return;
     if (!multi_stream()) { watch_sharer(id); return; }
 
+    bool added;
     {
         std::lock_guard<std::mutex> lock(watched_mutex_);
-        if (!watched_.insert(id).second) return;   // already watching
+        added = watched_.insert(id).second;
+    }
+    if (!added) {
+        // Reopen an existing subscription when its viewer was hidden by chat.
+        model_.show_voice_channel(static_cast<int>(current_channel_));
+        return;
     }
     BinaryWriter w; w.write_u32(id); w.write_u8(1);   // additive subscribe
     net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_VIEW,

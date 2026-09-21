@@ -64,6 +64,9 @@ struct WatchedStream {
 
 class LobbyModel : public rml::Model {
 public:
+    // Return to the joined channel's viewer, or show the room when joining another.
+    void show_voice_channel(int channel_id);
+
     // Stream notifications and watch actions are scoped to the joined channel.
     bool add_channel_sharer(int user_id);
     void remove_channel_sharer(int user_id);

@@ -20,6 +20,90 @@ bool check(bool condition, const char* message) {
     if (!condition) std::fprintf(stderr, "Channel streams: %s\n", message);
     return condition;
 }
+
+bool check_voice_navigation(Rml::Context* context, parties::client::LobbyModel& model) {
+    using namespace parties::client;
+    ChannelUser carol; carol.id = 33; carol.name = "Carol";
+    model.channels.silent()[1].users.push_back(carol);
+    model.add_channel_sharer(carol.id);
+    model.on_join_channel = [&](int id) { model.show_voice_channel(id); };
+
+    // Exercise the sidebar event and the room/viewer visibility conditions used
+    // by lobby.rml. Chat retains the voice connection and its media subscriptions.
+    auto* document = context->LoadDocumentFromMemory(R"RML(
+<rml><body class="ui-body" data-model="lobby">
+<button class="ui-control" id="voice" data-event-mousedown="channel_mousedown(2, 'Voice')">Voice</button>
+<div id="room" data-if="route == 'room' && current_channel > 0 && watching_count == 0">
+    <button class="ui-control" id="watch" data-event-click="watch_user_stream(22)">Watch Bob</button>
+</div>
+<div id="viewer" data-if="route == 'streams' && watching_count > 0">
+    <div id="sharer-list">
+        <button class="ui-control" data-for="sharer : sharers" data-attr-id="'sharer-' + sharer.id"
+                data-event-click="toggle_watch(sharer.id)">{{ sharer.name }}</button>
+    </div>
+</div>
+<div id="chat" data-if="route == 'chat'">Chat</div>
+</body></rml>)RML");
+    if (!check(document != nullptr, "voice navigation document did not load")) return false;
+    document->Show();
+    bool passed = true;
+    for (int count : {0, 1, 2}) {
+        model.watched = Rml::Vector<WatchedStream>{};
+        for (auto& sharer : model.sharers.silent()) sharer.watching = false;
+        for (int i = 0; i < count; ++i) {
+            auto& sharer = model.sharers.silent()[i];
+            sharer.watching = true;
+            model.watched.silent().push_back({sharer.id, sharer.name, "stream"});
+        }
+        model.sharers.notify();
+        model.watched.notify();
+        model.watching_count = count;
+        model.router.go(DocumentRoute::Chat);
+        context->Update();
+        passed &= check(document->GetElementById("chat")->IsVisible(), "chat did not open");
+
+        document->GetElementById("voice")->DispatchEvent("mousedown", {});
+        context->Update();
+        passed &= check(!document->GetElementById("chat")->IsVisible(), "voice navigation left chat visible");
+        passed &= check(document->GetElementById("room")->IsVisible() == (count == 0),
+            "return from chat did not restore room visibility");
+        passed &= check(document->GetElementById("viewer")->IsVisible() == (count > 0),
+            "return from chat hid the subscribed streams");
+        passed &= check(model.current_channel.get() == 2 && model.watching_count.get() == count &&
+            model.watched.get().size() == static_cast<size_t>(count), "navigation changed voice or watch state");
+        passed &= check(model.sharers.get().size() == 2 && model.channels.get()[1].users[0].streaming,
+            "return from chat lost sharers or streaming badges");
+
+        int watched_id = 0;
+        model.on_watch_sharer = [&](int id) { watched_id = id; };
+        model.on_toggle_watch = [&](int id) { watched_id = id; };
+        auto* watch = document->GetElementById(count == 0 ? "watch" : "sharer-33");
+        passed &= check(watch && watch->IsVisible(true), "stream entry is not visible after returning from chat");
+        if (watch) watch->DispatchEvent("click", {});
+        passed &= check(watched_id == (count == 0 ? 22 : 33), "watch action was lost after returning from chat");
+        model.on_watch_sharer = {};
+        model.on_toggle_watch = {};
+    }
+
+    model.router.go(DocumentRoute::Chat);
+    model.show_voice_channel(1);
+    passed &= check(model.router.is(DocumentRoute::Room), "another channel reopened the old viewer");
+
+    // If every watched stream stops while chat is open, return to the room.
+    model.router.go(DocumentRoute::Chat);
+    model.watched = Rml::Vector<WatchedStream>{};
+    model.watching_count = 0;
+    model.router.leave_streams();
+    passed &= check(model.router.is(DocumentRoute::Chat), "stream teardown dismissed chat");
+    document->GetElementById("voice")->DispatchEvent("mousedown", {});
+    context->Update();
+    passed &= check(document->GetElementById("room")->IsVisible(), "finished streams left an empty viewer");
+
+    document->Close();
+    model.on_join_channel = {};
+    model.remove_channel_sharer(carol.id);
+    return passed;
+}
 } // namespace
 
 int main() {
@@ -72,6 +156,8 @@ int main() {
         document->GetElementById("current")->DispatchEvent("click", {});
         passed &= check(watched_id == 22, "current-channel watch action was blocked");
         document->Close();
+
+        passed &= check_voice_navigation(context, model);
 
         model.remove_channel_sharer(22);
         passed &= check(model.sharers.get().empty() && !model.someone_sharing.get() &&

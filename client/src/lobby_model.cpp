@@ -6,6 +6,13 @@
 
 namespace parties::client {
 
+void LobbyModel::show_voice_channel(int channel_id) {
+    // Chat keeps the voice connection and subscriptions alive. A room route
+    // with active watches hides both the participant cards and the stream grid.
+    const bool resume_streams = channel_id == current_channel.get() && watching_count.get() > 0;
+    router.go(resume_streams ? DocumentRoute::Streams : DocumentRoute::Room);
+}
+
 bool LobbyModel::add_channel_sharer(int user_id) {
     if (current_channel.get() == 0) return false;
     for (auto& channel : channels.silent()) {
