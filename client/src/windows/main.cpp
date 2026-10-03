@@ -1,5 +1,6 @@
 #include <client/app.h>
 #include <client/auto_updater.h>
+#include <client/win32_single_instance.h>
 #include <parties/version.h>
 #include <parties/crypto.h>
 #include <parties/net_common.h>
@@ -271,6 +272,17 @@ int main(int argc, char* argv[]) {
     // Must be first: if launched as crashpad handler subprocess, run handler and exit.
     parties::crash_reporter_is_crashpad_handler(argc, argv);
 
+    if (AutoUpdater::handle_update_args(argc, argv)) return 1;
+
+    Win32SingleInstance instance;
+    const auto instance_result = instance.acquire();
+    if (instance_result == Win32SingleInstance::Result::Activated) return 0;
+    if (instance_result == Win32SingleInstance::Result::Error) {
+        MessageBoxW(nullptr, L"Unable to access the running Parties client.",
+                    L"Parties", MB_OK | MB_ICONERROR);
+        return 1;
+    }
+
     parties::TimerResolutionGuard timer_resolution(1);
     const bool main_priority_set = parties::set_current_thread_highest_priority();
 
@@ -289,9 +301,6 @@ int main(int argc, char* argv[]) {
 #endif
     LOG_INFO("{} Client v{}", parties::APP_NAME, parties::APP_VERSION);
     parties::alloctrack::start_reporting(10);
-
-    // Handle auto-updater lifecycle args (--update-replace, --update-cleanup)
-    AutoUpdater::handle_update_args(argc, argv);
 
     // Per-monitor DPI awareness (must be set before creating any windows)
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -387,6 +396,7 @@ int main(int argc, char* argv[]) {
     bool running = true;
     MSG msg{};
     while (running) {
+        instance.restore_if_requested(hwnd);
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) {
                 running = false;
@@ -402,7 +412,8 @@ int main(int argc, char* argv[]) {
 
         // Block until input arrives or a short timeout (~8 ms logic cadence),
         // without spinning. Rendering is paced separately on the render thread.
-        MsgWaitForMultipleObjectsEx(0, nullptr, 8, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        const HANDLE activation_event = instance.activation_event();
+        MsgWaitForMultipleObjectsEx(1, &activation_event, 8, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     }
 
     // Cleanup (order matters: app before window destruction)

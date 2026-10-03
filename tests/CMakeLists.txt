@@ -191,6 +191,12 @@ if(WIN32 AND BUILD_CLIENT)
     target_include_directories(parties_context_window_lifecycle_test PRIVATE ../client/include)
     target_link_libraries(parties_context_window_lifecycle_test PRIVATE user32)
 
+    add_executable(parties_win32_single_instance_test win32_single_instance_test.cpp)
+    target_include_directories(parties_win32_single_instance_test PRIVATE ../client/include)
+    target_link_libraries(parties_win32_single_instance_test PRIVATE user32)
+    add_test(NAME parties_win32_single_instance COMMAND parties_win32_single_instance_test)
+    set_tests_properties(parties_win32_single_instance PROPERTIES TIMEOUT 15)
+
     add_executable(parties_win32_power_request_test win32_power_request_test.cpp)
     target_include_directories(parties_win32_power_request_test PRIVATE ../client/include)
 
