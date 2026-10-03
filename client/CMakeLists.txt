@@ -107,6 +107,7 @@ elseif(APPLE)
         src/macos/main.mm
         src/macos/app_macos.mm
         src/macos/context_menu_macos.mm
+        src/macos/PartiesStatusItemController.mm
 
         # RmlUI Metal backend (shared with iOS)
         src/metal/RmlUi_Renderer_Metal.mm
@@ -128,6 +129,7 @@ else()
         src/windows/stream_audio_capture.cpp
         src/windows/ui_manager.cpp
         src/windows/context_window_manager.cpp
+        src/windows/win32_tray.cpp
 
         # Parties application adapter over RmlUi's upstream Win32/DX12 backend
 
@@ -327,7 +329,7 @@ else()
         PRIVATE
             d3d11 d3d12 dxgi d3dcompiler
             windowsapp
-            dwmapi gdi32
+            dwmapi gdi32 shell32
             winhttp wintrust crypt32
     )
 endif()
