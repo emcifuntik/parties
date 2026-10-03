@@ -191,6 +191,18 @@ bool App::handle_chat_input(unsigned int msg, WPARAM wParam, LPARAM lParam) {
 App::App() = default;
 App::~App() { shutdown(); }
 
+bool App::handle_tray_message(UINT message, WPARAM w_param, LPARAM l_param) {
+    return tray_.handle_message(message, w_param, l_param);
+}
+
+void App::on_window_visibility_changed(bool visible) {
+    ui_.on_visibility_change(visible);
+    if (!visible) {
+        std::lock_guard<std::recursive_mutex> lock(ui_mutex_);
+        context_windows_.close();
+    }
+}
+
 bool App::init(HWND hwnd) {
     hwnd_ = hwnd;
 
@@ -459,6 +471,17 @@ bool App::init(HWND hwnd) {
     // Load saved prefs into model/audio
     core_.load_saved_prefs();
 
+    const bool tray_enabled = core_.settings_.get_pref("window.tray_mode").value_or("1") != "0";
+    if (!tray_.init(hwnd, tray_enabled, [this](bool enabled) {
+            std::lock_guard<std::recursive_mutex> lock(ui_mutex_);
+            if (core_.settings_.set_pref("window.tray_mode", enabled ? "1" : "0"))
+                return true;
+            LOG_ERROR("Failed to save tray mode preference");
+            return false;
+        }, [this] { tick_message_thread(); })) {
+        LOG_WARN("Tray icon unavailable; closing the window will exit until it is available");
+    }
+
     // Load Win32-specific prefs (hotkeys)
     {
         auto pref = [&](const char* key) -> std::string {
@@ -516,6 +539,7 @@ bool App::init(HWND hwnd) {
 }
 
 void App::shutdown() {
+    tray_.shutdown();
     // The thumbnail worker owns a D3D11/WinRT capture session. Stop it while the
     // main graphics runtime is still fully alive so its resources are released
     // from the worker body, not during OS thread teardown after rendering stops.
@@ -711,7 +735,7 @@ void App::render_loop() {
             std::lock_guard<std::recursive_mutex> lock(ui_mutex_);
             ui_.on_dpi_change(scale);
         }
-        if (ui_.is_minimized()) {
+        if (ui_.is_render_suspended()) {
             Sleep(16);          // nothing to draw — don't spin
             continue;
         }

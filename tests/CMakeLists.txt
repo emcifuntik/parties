@@ -104,6 +104,16 @@ if(BUILD_CLIENT)
     target_link_libraries(parties_context_render_manager_lifecycle_test PRIVATE RmlUi::RmlUi)
 endif()
 
+if(APPLE AND BUILD_CLIENT AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    add_executable(parties_macos_status_item_test
+        macos_status_item_test.mm
+        ../client/src/macos/PartiesStatusItemController.mm)
+    target_include_directories(parties_macos_status_item_test PRIVATE ../client/src/macos)
+    target_link_libraries(parties_macos_status_item_test PRIVATE "-framework AppKit")
+    add_test(NAME parties_macos_status_item COMMAND parties_macos_status_item_test)
+    set_tests_properties(parties_macos_status_item PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 15)
+endif()
+
 add_executable(parties_server_query_wake_test server_query_wake_test.cpp)
 target_include_directories(parties_server_query_wake_test PRIVATE ../client/include)
 
@@ -193,6 +203,14 @@ if(WIN32 AND BUILD_CLIENT)
 
     add_executable(parties_win32_power_request_test win32_power_request_test.cpp)
     target_include_directories(parties_win32_power_request_test PRIVATE ../client/include)
+
+    add_executable(parties_win32_tray_test
+        win32_tray_test.cpp
+        ../client/src/windows/win32_tray.cpp)
+    target_include_directories(parties_win32_tray_test PRIVATE ../client/include)
+    target_link_libraries(parties_win32_tray_test PRIVATE user32 shell32)
+    add_test(NAME parties_win32_tray COMMAND parties_win32_tray_test)
+    set_tests_properties(parties_win32_tray PROPERTIES TIMEOUT 15)
 
     add_executable(parties_window_thumbnail_test
         window_thumbnail_test.cpp

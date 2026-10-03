@@ -49,11 +49,21 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     auto* app = reinterpret_cast<App*>(GetPropW(hwnd, L"App"));
     auto* ui = app ? app->ui_manager() : nullptr;
 
+    if (app && app->handle_tray_message(msg, wParam, lParam))
+        return 0;
+
     switch (msg) {
     case WM_CLOSE:
-        // Don't let DefWindowProcW call DestroyWindow — we do cleanup in main()
         PostQuitMessage(0);
         return 0;
+
+    case WM_ENDSESSION:
+        if (wParam) PostQuitMessage(0);
+        return 0;
+
+    case WM_SHOWWINDOW:
+        if (app) app->on_window_visibility_changed(wParam != FALSE);
+        break;
 
     case WM_NCCALCSIZE:
         if (wParam == TRUE) {

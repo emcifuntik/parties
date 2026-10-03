@@ -9,6 +9,7 @@
 #include <client/stream_audio_capture.h>
 #include <client/context_window_manager.h>
 #include <client/win32_power_request.h>
+#include <client/win32_tray.h>
 #include <client/video_decode_gate.h>
 #include <client/video_decode_backlog.h>
 #include <parties/types.h>
@@ -75,6 +76,8 @@ public:
 
     // Public accessor for WndProc
     UiManager* ui_manager() { return &ui_; }
+    bool handle_tray_message(UINT message, WPARAM w_param, LPARAM l_param);
+    void on_window_visibility_changed(bool visible);
 
     // Chat text selection (drag-select + Ctrl+C copy). Called from WndProc with
     // ui_mutex_ held. Returns true only when the event is fully consumed (Ctrl+C).
@@ -118,6 +121,7 @@ private:
     void render_frame();
 
     HWND hwnd_ = nullptr;
+    Win32Tray tray_;
     SoundPlayer sound_player_;
     Win32PowerRequest call_power_request_;
     UiManager ui_;

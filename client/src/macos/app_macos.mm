@@ -5,6 +5,7 @@
 
 #import "PartiesAppDelegate.h"
 #import "context_menu_macos.h"
+#import "PartiesStatusItemController.h"
 #import "screen_capture_macos.h"
 #import <encdec/apple/video_encoder_macos.h>
 
@@ -262,6 +263,9 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 // Called by the app delegate before quic_cleanup() to close all MsQuic handles.
 - (void)shutdown;
 - (void)showPreviewNativeUI;
+- (BOOL)trayModeEnabled;
+- (BOOL)saveTrayModeEnabled:(BOOL)enabled;
+- (void)tickApplication:(NSTimer*)timer;
 @end
 
 @implementation PartiesViewController {
@@ -274,6 +278,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     bool                  _debuggerInitialized;
     bool                  _coreInitialized;
     bool                  _soundInitialized;
+    NSTimer*              _logicTimer;
     int                   _previewFrameCount;
     bool                  _previewMode;
     std::string           _previewScenario;
@@ -636,6 +641,13 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         _core.load_or_generate_identity(hostname);
         _core.load_saved_prefs();
         _core.refresh_server_list();
+
+        _logicTimer = [[NSTimer timerWithTimeInterval:1.0 / 60.0
+                                             target:self
+                                           selector:@selector(tickApplication:)
+                                           userInfo:nil
+                                            repeats:YES] retain];
+        [[NSRunLoop mainRunLoop] addTimer:_logicTimer forMode:NSRunLoopCommonModes];
     }
 
     // ── UI document ───────────────────────────────────────────────────────
@@ -720,13 +732,36 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     }
 }
 
+- (BOOL)trayModeEnabled
+{
+    return _coreInitialized && _core.settings_.get_pref("window.tray_mode").value_or("1") != "0";
+}
+
+- (BOOL)saveTrayModeEnabled:(BOOL)enabled
+{
+    if (!_coreInitialized)
+        return NO;
+    if (_core.settings_.set_pref("window.tray_mode", enabled ? "1" : "0"))
+        return YES;
+    NSLog(@"[Parties] Failed to save tray mode preference");
+    return NO;
+}
+
+- (void)tickApplication:(NSTimer*)timer
+{
+    if (!_coreInitialized)
+        return;
+    _core.tick();
+    BOOL visible = _metalView.window.visible && !_metalView.window.miniaturized && !NSApp.hidden;
+    if (!visible && !_metalView.paused && _contextMenus)
+        _contextMenus->Close();
+    if (_metalView.paused == visible)
+        _metalView.paused = !visible;
+}
+
 - (void)drawInMTKView:(MTKView*)view
 {
     if (!_backendInitialized || !_rmlContext || !_commandQueue) return;
-
-    // Tick shared logic (network messages, FPS counter, audio levels, etc.)
-    if (_coreInitialized)
-        _core.tick();
 
     // Update FPS + ping in titlebar (once per second)
     _fpsFrameCount++;
@@ -1193,6 +1228,10 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
 - (void)shutdown
 {
+    [_logicTimer invalidate];
+    [_logicTimer release];
+    _logicTimer = nil;
+    _metalView.paused = YES;
     if (_contextMenus) {
         _contextMenus->Close();
         _contextMenus.reset();
@@ -1247,6 +1286,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 @implementation PartiesAppDelegate {
     NSWindow*              _window;
     PartiesViewController* _viewController;
+    PartiesStatusItemController* _statusItemController;
     bool                   _quicInitialized;
     bool                   _previewMode;
 }
@@ -1308,6 +1348,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     _window.titleVisibility            = NSWindowTitleHidden;
     _window.styleMask                 |= NSWindowStyleMaskFullSizeContentView;
     _window.contentViewController      = _viewController;
+    _window.releasedWhenClosed         = NO;
     _window.minSize                    = NSMakeSize(800, 500);
     if (_previewMode) [_window setContentSize:frame.size];
 
@@ -1316,6 +1357,16 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
     [NSApp activateIgnoringOtherApps:YES];
+
+    if (!_previewMode) {
+        PartiesViewController* controller = _viewController;
+        _statusItemController = [[PartiesStatusItemController alloc]
+            initWithWindow:_window
+                   enabled:[controller trayModeEnabled]
+                  saveMode:[controller](bool enabled) {
+                      return [controller saveTrayModeEnabled:enabled] == YES;
+                  }];
+    }
 
     [self installMainMenu];
 
@@ -1332,9 +1383,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 #endif
 }
 
-// Build a minimal standard application menu. The app otherwise ships no menu
-// bar; this provides About / Hide / Quit and, crucially, a user-triggerable
-// "Check for Updates…" item wired to Sparkle.
 - (void)installMainMenu
 {
     NSString* appName = [[NSProcessInfo processInfo] processName];
@@ -1350,6 +1398,11 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
                        action:@selector(orderFrontStandardAboutPanel:)
                 keyEquivalent:@""];
     [appMenu addItem:[NSMenuItem separatorItem]];
+
+    if (_statusItemController) {
+        [appMenu addItem:[_statusItemController trayModeMenuItem]];
+        [appMenu addItem:[NSMenuItem separatorItem]];
+    }
 
 #ifdef SPARKLE_ENABLED
     NSMenuItem* updateItem =
@@ -1399,8 +1452,17 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     return YES;
 }
 
+- (BOOL)applicationShouldHandleReopen:(NSApplication*)sender hasVisibleWindows:(BOOL)hasVisibleWindows
+{
+    if (!hasVisibleWindows && _statusItemController)
+        [_statusItemController showWindow:nil];
+    return YES;
+}
+
 - (void)applicationWillTerminate:(NSNotification*)notification
 {
+    [_statusItemController release];
+    _statusItemController = nil;
     [_viewController shutdown];
     if (_quicInitialized) {
         parties::quic_cleanup();
