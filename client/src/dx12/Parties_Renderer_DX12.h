@@ -27,6 +27,7 @@ public:
 	bool IsFrameActive() const override { return frame_active_; }
 	void Clear() override;
 	void EndFrame() override;
+	void ReleaseRetiredResources() override;
 	void CaptureNextFrame(std::string output_path);
 	bool LastCaptureSucceeded() const { return last_capture_succeeded_; }
 	bool IsViewportValid() const { return upstream_.IsViewportValid(); }

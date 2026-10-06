@@ -649,12 +649,28 @@
                      data-class-trio="watching_count == 3"
                      data-class-many="watching_count > 3">
                     <div class="stream-cell" data-for="w : watched">
+                        <!-- A stream in picture-in-picture renders only there;
+                             its cell shows a placeholder instead of the video. -->
                         <video_frame class="stream-cell-video"
+                                     data-if="w.id != pip_stream_id"
                                      data-attr-id="w.element_id"
                                      data-attr-streamid="w.id"
                                      data-event-dblclick="toggle_stream_fullscreen"
                                      data-event-click="stream_tap_fullscreen" />
-                        <div class="stream-cell-label">{{ w.name }}</div>
+                        <div class="stream-cell-pip-placeholder" data-if="w.id == pip_stream_id">
+                            <span class="ui-body">Playing in picture-in-picture</span>
+                        </div>
+                        <div class="stream-cell-footer">
+                            <span class="stream-cell-label ui-body">{{ w.name }}</span>
+                            <div class="stream-cell-pip ui-icon-button"
+                                 data-if="pip_supported"
+                                 data-attr-id="'stream-pip-' + w.id"
+                                 data-event-click="toggle_stream_pip(w.id)"
+                                 data-attr-title="w.id == pip_stream_id ? 'Exit picture-in-picture' : 'Picture-in-picture'">
+                                <svg src="icon-pip.svg" width="18" height="18" data-if="w.id != pip_stream_id" />
+                                <svg src="icon-pip-exit.svg" width="18" height="18" data-if="w.id == pip_stream_id" />
+                            </div>
+                        </div>
                     </div>
                 </div>
                 <div class="stream-call-dock">

@@ -9,7 +9,9 @@
 #include <client/video_decode_backlog.h>
 #include <client/video_element.h>
 #include <client/custom_elements.h>
+#include <client/pip_geometry.h>
 #include "RmlUi_RenderInterface_Extended.h"
+#include "pip_window_host.h"
 #include <parties/protocol.h>
 #include <parties/serialization.h>
 #include <parties/crypto.h>
@@ -27,6 +29,7 @@
 #endif
 #include <windows.h>
 #include <windowsx.h>
+#include <dwmapi.h>
 #include <roapi.h>
 
 #include <algorithm>
@@ -398,9 +401,38 @@ bool App::init(HWND hwnd) {
         call_power_request_.set(keep_awake);
     };
 
+    // Picture-in-picture: AppCore decides, the PiP window presents. The window
+    // is created lazily on the message thread inside show().
+    pip_host_ = std::make_unique<PipWindowHost>();
+    bridge.show_pip = [this](UserId, const std::string& title) {
+        // AppCore is mid-transition here; a failure is reported back to it
+        // from the next tick instead of re-entering the controller.
+        if (!pip_host_->show(title)) pip_open_failed_ = true;
+    };
+    bridge.hide_pip = [this](UserId, PipCloseReason) { pip_host_->hide(); };
+    bridge.show_main_window = [this] {
+        ShowWindow(hwnd_, IsIconic(hwnd_) ? SW_RESTORE : SW_SHOW);
+        SetForegroundWindow(hwnd_);
+    };
+
     // Initialize UI
     if (!ui_.init(hwnd)) return false;
     decode_d3d12_device_ = static_cast<ID3D12Device*>(ui_.renderer()->GetD3D12Device());
+    {
+        PipWindowHost::Actions actions;
+        actions.return_to_main = [this] { core_.return_from_pip(); };
+        actions.set_volume = [this](float volume) { core_.set_stream_volume(volume); };
+        actions.close = [this] { core_.close_pip(PipCloseReason::UserClosed); };
+        actions.load_geometry = [this]() -> std::optional<PipRect> {
+            const auto saved = core_.settings_.get_pref("window.pip_rect");
+            return saved ? pip_rect_from_string(*saved) : std::nullopt;
+        };
+        actions.save_geometry = [this](const PipRect& rect) {
+            if (rect.width > 0.0 && rect.height > 0.0)
+                core_.settings_.set_pref("window.pip_rect", pip_rect_to_string(rect));
+        };
+        pip_host_->init(&ui_mutex_, decode_d3d12_device_, std::move(actions));
+    }
     if (!context_windows_.init(hwnd, &ui_mutex_)) {
         LOG_ERROR("Context window manager init failed");
         return false;
@@ -557,6 +589,10 @@ void App::shutdown() {
         render_thread_.join();
 
     context_windows_.prepare_shutdown();
+    if (pip_host_) {
+        std::lock_guard<std::recursive_mutex> lock(ui_mutex_);
+        pip_host_->prepare_shutdown();
+    }
     // WGC activation is performed on a detached worker because Windows may
     // block indefinitely in its out-of-process GraphicsCapture RPC. Dropping
     // our references is safe: an in-flight job owns its ScreenCapture until
@@ -590,6 +626,7 @@ void App::shutdown() {
     core_.shutdown();
     ui_.shutdown();
     context_windows_.shutdown();
+    if (pip_host_) pip_host_->shutdown();
 }
 
 void App::poll_hotkeys() {
@@ -736,25 +773,141 @@ void App::render_loop() {
             ui_.on_dpi_change(scale);
         }
         if (ui_.is_render_suspended()) {
-            Sleep(16);          // nothing to draw — don't spin
+            // Hidden to the tray or minimized: only picture-in-picture is on
+            // screen, and it must keep playing.
+            if (pip_host_ && pip_host_->visible()) {
+                render_pip_only();
+            } else {
+                // PiP may have just closed (overlay, stream end, leaving):
+                // release its surface and leases now, not when the main
+                // window comes back. A no-op when nothing changed.
+                {
+                    std::lock_guard<std::recursive_mutex> lock(ui_mutex_);
+                    sync_video_router();
+                }
+                Sleep(16);      // nothing to draw — don't spin
+            }
             continue;
         }
         render_frame();         // self-paced by vsync (BeginFrame wait + present)
     }
 }
 
-// Walk a subtree for the <video_frame> whose bound "streamid" attribute matches
-// the given sharer id (the grid cells are created by a data-for binding).
-static Rml::Element* find_grid_video(Rml::Element* el, uint32_t streamid) {
-    if (el->GetTagName() == "video_frame" &&
-        el->GetAttribute<int>("streamid", -1) == static_cast<int>(streamid))
-        return el;
-    const int n = el->GetNumChildren();
-    for (int i = 0; i < n; ++i) {
-        if (auto* found = find_grid_video(el->GetChild(i), streamid))
-            return found;
+VideoFrameRouter::Surfaces App::video_surfaces() {
+    VideoFrameRouter::Surfaces surfaces;
+    surfaces.grid = doc_ ? doc_->GetElementById("stream-grid") : nullptr;
+    surfaces.pip = pip_host_ ? pip_host_->video_surface() : nullptr;
+    return surfaces;
+}
+
+void App::sync_video_router() {
+    const auto cleared = video_router_.sync(core_.pip_.stream(), video_surfaces());
+    // A cleared surface retired its textures (and any AMF/NVDEC lease) into
+    // its renderer's back-buffer buckets. Those buckets are only collected
+    // when that renderer presents, which a hidden main window or a closed PiP
+    // window will not do; a decoder waiting on the lease would stall.
+    if (cleared.grid) ui_.renderer()->ReleaseRetiredResources();
+    if (cleared.pip && pip_host_ && pip_host_->renderer())
+        pip_host_->renderer()->ReleaseRetiredResources();
+}
+
+void App::deliver_video_frames(bool grid_visible) {
+    // Swap planes out under the locks, then upload after releasing them so the
+    // QUIC receive thread isn't blocked on streams_mutex_ during GPU work.
+    if (!doc_) return;
+    ZoneScopedN("App::deliver_video_frames");
+    struct PendingUpload {
+        uint32_t sharer;
+        std::shared_ptr<void> native_owner;
+        void* native_resource = nullptr;
+        void* native_chroma_resource = nullptr;
+        void* native_ready_fence = nullptr;
+        uint64_t native_ready_value = 0;
+        uint32_t native_resource_state = 0;
+        bool native_rgba = false;
+        uint32_t native_texture_width = 0;
+        uint32_t native_texture_height = 0;
+        uint32_t native_crop_x = 0;
+        uint32_t native_crop_y = 0;
+        std::vector<uint8_t> y, u, v;
+        uint32_t w, h, ys, uvs;
+        bool nv12;
+    };
+    const UserId pip_stream = video_router_.pip_stream();
+    std::vector<PendingUpload> uploads;
+    {
+        std::lock_guard<std::mutex> slock(streams_mutex_);
+        for (auto& [uid, sp] : video_streams_) {
+            VideoStream* s = sp.get();
+            if (!grid_visible && s->sharer_id != pip_stream) continue;
+            if (!s->new_frame.load(std::memory_order_acquire)) continue;
+            std::lock_guard<std::mutex> flock(s->frame_mutex);
+            if (!s->new_frame.load(std::memory_order_relaxed)) continue;
+            PendingUpload up;
+            up.sharer = static_cast<uint32_t>(s->sharer_id);
+            up.native_owner = std::move(s->native_owner);
+            up.native_resource = s->native_resource;
+            up.native_chroma_resource = s->native_chroma_resource;
+            up.native_ready_fence = s->native_ready_fence;
+            up.native_ready_value = s->native_ready_value;
+            up.native_resource_state = s->native_resource_state;
+            up.native_rgba = s->native_rgba;
+            up.native_texture_width = s->native_texture_width;
+            up.native_texture_height = s->native_texture_height;
+            up.native_crop_x = s->native_crop_x;
+            up.native_crop_y = s->native_crop_y;
+            s->native_resource = nullptr;
+            s->native_chroma_resource = nullptr;
+            s->native_ready_fence = nullptr;
+            s->native_ready_value = 0;
+            s->native_resource_state = 0;
+            s->native_rgba = false;
+            s->native_texture_width = 0;
+            s->native_texture_height = 0;
+            s->native_crop_x = 0;
+            s->native_crop_y = 0;
+            up.y.swap(s->y); up.u.swap(s->u); up.v.swap(s->v);
+            up.w = s->width; up.h = s->height;
+            up.ys = s->y_stride; up.uvs = s->uv_stride;
+            up.nv12 = s->nv12;
+            s->new_frame.store(false, std::memory_order_relaxed);
+            uploads.push_back(std::move(up));
+        }
     }
-    return nullptr;
+    if (uploads.empty()) return;
+    // Exactly one destination per frame: the PiP surface for the PiP stream,
+    // the stream's grid cell for every other stream.
+    const auto surfaces = video_surfaces();
+    for (auto& up : uploads) {
+        if ((!up.native_resource && up.y.empty()) || up.w == 0 || up.h == 0) continue;
+        core_.stream_frame_count_.fetch_add(1, std::memory_order_relaxed);
+        VideoElement* ve = video_router_.target(up.sharer, surfaces);
+        if (!ve) continue;
+        if (up.native_resource)
+            ve->UpdateNativeNV12Frame(
+                up.native_resource, up.native_chroma_resource,
+                std::move(up.native_owner), up.native_ready_fence,
+                up.native_ready_value, up.native_resource_state, up.native_rgba, up.w, up.h,
+                up.native_texture_width, up.native_texture_height,
+                up.native_crop_x, up.native_crop_y);
+        else if (up.nv12)
+            ve->UpdateNV12Frame(up.y, up.ys, up.u, up.uvs, up.w, up.h);
+        else
+            ve->UpdateYUVFrame(up.y, up.ys, up.u, up.v, up.uvs, up.w, up.h);
+    }
+}
+
+void App::render_pip_only() {
+    ZoneScopedN("App::render_pip_only");
+    {
+        std::lock_guard<std::recursive_mutex> lock(ui_mutex_);
+        sync_video_router();
+        deliver_video_frames(false);
+        pip_host_->render(core_.model_.stream_volume.get());
+    }
+    // The main swap chain is idle, so nothing else paces this thread; wait
+    // for the next compositor frame instead.
+    if (FAILED(DwmFlush())) Sleep(16);
 }
 
 static Rml::Element* find_share_thumbnail(Rml::ElementDocument* document, int target_index) {
@@ -768,6 +921,13 @@ void App::render_frame() {
 
     const auto frame_start = std::chrono::steady_clock::now();
 
+    // Surface changes free retired textures with a GPU wait, which must not
+    // happen while a frame is being recorded: apply them before BeginFrame.
+    {
+        std::lock_guard<std::recursive_mutex> lock(ui_mutex_);
+        sync_video_router();
+    }
+
     if (!ui_.render_begin()) {  // BeginFrame: GPU/vsync wait — no context, no lock
         Sleep(16);              // Invalid/lost renderer: avoid a busy retry loop.
         return;
@@ -776,92 +936,7 @@ void App::render_frame() {
     {
         std::lock_guard<std::recursive_mutex> lock(ui_mutex_);
 
-        // Deliver each watched stream's latest decoded frame to its grid cell.
-        // Swap planes out under the locks, then upload after releasing them so the
-        // QUIC receive thread isn't blocked on streams_mutex_ during GPU work.
-        if (doc_) {
-            ZoneScopedN("App::deliver_video_frames");
-            struct PendingUpload {
-                uint32_t sharer;
-                std::shared_ptr<void> native_owner;
-                void* native_resource = nullptr;
-                void* native_chroma_resource = nullptr;
-                void* native_ready_fence = nullptr;
-                uint64_t native_ready_value = 0;
-                uint32_t native_resource_state = 0;
-                bool native_rgba = false;
-                uint32_t native_texture_width = 0;
-                uint32_t native_texture_height = 0;
-                uint32_t native_crop_x = 0;
-                uint32_t native_crop_y = 0;
-                std::vector<uint8_t> y, u, v;
-                uint32_t w, h, ys, uvs;
-                bool nv12;
-            };
-            std::vector<PendingUpload> uploads;
-            {
-                std::lock_guard<std::mutex> slock(streams_mutex_);
-                for (auto& [uid, sp] : video_streams_) {
-                    VideoStream* s = sp.get();
-                    if (!s->new_frame.load(std::memory_order_acquire)) continue;
-                    std::lock_guard<std::mutex> flock(s->frame_mutex);
-                    if (!s->new_frame.load(std::memory_order_relaxed)) continue;
-                    PendingUpload up;
-                    up.sharer = static_cast<uint32_t>(s->sharer_id);
-                    up.native_owner = std::move(s->native_owner);
-                    up.native_resource = s->native_resource;
-                    up.native_chroma_resource = s->native_chroma_resource;
-                    up.native_ready_fence = s->native_ready_fence;
-                    up.native_ready_value = s->native_ready_value;
-                    up.native_resource_state = s->native_resource_state;
-                    up.native_rgba = s->native_rgba;
-                    up.native_texture_width = s->native_texture_width;
-                    up.native_texture_height = s->native_texture_height;
-                    up.native_crop_x = s->native_crop_x;
-                    up.native_crop_y = s->native_crop_y;
-                    s->native_resource = nullptr;
-                    s->native_chroma_resource = nullptr;
-                    s->native_ready_fence = nullptr;
-                    s->native_ready_value = 0;
-                    s->native_resource_state = 0;
-                    s->native_rgba = false;
-                    s->native_texture_width = 0;
-                    s->native_texture_height = 0;
-                    s->native_crop_x = 0;
-                    s->native_crop_y = 0;
-                    up.y.swap(s->y); up.u.swap(s->u); up.v.swap(s->v);
-                    up.w = s->width; up.h = s->height;
-                    up.ys = s->y_stride; up.uvs = s->uv_stride;
-                    up.nv12 = s->nv12;
-                    s->new_frame.store(false, std::memory_order_relaxed);
-                    uploads.push_back(std::move(up));
-                }
-            }
-            // Resolve each sharer's grid cell by walking the grid for the
-            // <video_frame> tagged with the matching "streamid" attribute. This
-            // is the same proven attribute-read path SelectableTextElement uses,
-            // and avoids relying on GetElementById finding a data-bound id.
-            Rml::Element* grid = uploads.empty() ? nullptr : doc_->GetElementById("stream-grid");
-            for (auto& up : uploads) {
-                if ((!up.native_resource && up.y.empty()) || up.w == 0 || up.h == 0) continue;
-                core_.stream_frame_count_.fetch_add(1, std::memory_order_relaxed);
-                auto* elem = grid ? find_grid_video(grid, up.sharer) : nullptr;
-                if (elem) {
-                    auto* ve = static_cast<VideoElement*>(elem);
-                    if (up.native_resource)
-                        ve->UpdateNativeNV12Frame(
-                            up.native_resource, up.native_chroma_resource,
-                            std::move(up.native_owner), up.native_ready_fence,
-                            up.native_ready_value, up.native_resource_state, up.native_rgba, up.w, up.h,
-                            up.native_texture_width, up.native_texture_height,
-                            up.native_crop_x, up.native_crop_y);
-                    else if (up.nv12)
-                        ve->UpdateNV12Frame(up.y, up.ys, up.u, up.uvs, up.w, up.h);
-                    else
-                        ve->UpdateYUVFrame(up.y, up.ys, up.u, up.v, up.uvs, up.w, up.h);
-                }
-            }
-        }
+        deliver_video_frames(true);
 
         // Update voice level meter
 
@@ -937,6 +1012,7 @@ void App::render_frame() {
     {
         std::lock_guard<std::recursive_mutex> lock(ui_mutex_);
         context_windows_.render();
+        if (pip_host_) pip_host_->render(core_.model_.stream_volume.get());
     }
     const auto frame_complete = std::chrono::steady_clock::now();
 
@@ -983,6 +1059,13 @@ void App::tick_message_thread() {
 
     // Tick shared logic (network messages, speaking state, model updates, etc.)
     core_.tick();
+
+    // The PiP window could not be created during the last open: return the
+    // stream to the grid so the state matches what is on screen.
+    if (pip_open_failed_) {
+        pip_open_failed_ = false;
+        core_.close_pip(PipCloseReason::UserClosed);
+    }
 
     poll_hotkeys();
 

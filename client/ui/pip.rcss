@@ -1,0 +1,110 @@
+/* Desktop picture-in-picture window (pip.rml). Layout and colour only: text
+   uses the semantic classes from typography.rcss. No chrome or title bar; the
+   overlay fades in within 150 ms. The actions stay centred and the volume
+   control spans the bottom edge, so both fit the 192 dp minimum width. */
+
+body.pip-body {
+    position: absolute;
+    left: 0dp;
+    top: 0dp;
+    right: 0dp;
+    bottom: 0dp;
+    margin: 0dp;
+    padding: 0dp;
+    background-color: #000000;
+}
+
+.pip-video {
+    display: block;
+    position: absolute;
+    left: 0dp;
+    top: 0dp;
+    width: 100%;
+    height: 100%;
+    background-color: #000000;
+}
+
+.pip-overlay {
+    display: flex;
+    position: absolute;
+    left: 0dp;
+    top: 0dp;
+    right: 0dp;
+    bottom: 0dp;
+    align-items: center;
+    justify-content: center;
+    background-color: #0000005C;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s linear-in-out;
+}
+
+.pip-overlay.visible {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.pip-actions {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 20dp;
+}
+
+.pip-actions .pip-action {
+    display: flex;
+    width: 36dp;
+    height: 36dp;
+    align-items: center;
+    justify-content: center;
+    color: #DCE1EA;
+    cursor: pointer;
+}
+
+.pip-actions .pip-action svg {
+    display: block;
+    image-color: #DCE1EA;
+}
+
+.pip-actions .pip-action:hover { color: #FFFFFF; }
+
+/* Volume: speaker icon, slider (same range as the main stream volume) and the
+   current level, which doubles as the control's visible label. */
+.pip-volume {
+    display: flex;
+    position: absolute;
+    left: 10dp;
+    right: 10dp;
+    bottom: 10dp;
+    height: 24dp;
+    flex-direction: row;
+    align-items: center;
+    gap: 6dp;
+    padding: 0dp 8dp;
+    border-radius: 12dp;
+    background-color: #000000A0;
+    color: #DCE1EA;
+}
+
+.pip-volume-icon {
+    display: block;
+    flex-shrink: 0;
+    image-color: #DCE1EA;
+}
+
+.pip-volume.silent .pip-volume-icon { image-color: #DCE1EA66; }
+
+input.pip-volume-slider {
+    flex: 1;
+    width: auto;
+    min-width: 0dp;
+}
+
+input.pip-volume-slider:focus sliderbar { background-color: var(--color-accent); }
+
+.pip-volume-value {
+    display: block;
+    flex-shrink: 0;
+    width: 30dp;
+    text-align: right;
+}

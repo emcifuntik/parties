@@ -68,6 +68,10 @@ endif()
 set(CLIENT_COMMON_SOURCES
     src/application_audio.cpp
     src/context_window_model.cpp
+    src/pip_geometry.cpp
+    src/pip_window_model.cpp
+    src/stream_pip.cpp
+    src/video_frame_router.cpp
     src/echo_canceller.cpp
     src/lobby_model.cpp
     src/server_list_model.cpp
@@ -95,6 +99,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
         src/ios/main.mm
         src/ios/AppDelegate.mm
         src/ios/app_ios.mm
+        src/ios/StreamPictureInPicture.mm
 
         # RmlUI Metal backend (renderer shared with macOS)
         src/metal/RmlUi_Renderer_Metal.mm
@@ -108,6 +113,8 @@ elseif(APPLE)
         src/macos/app_macos.mm
         src/macos/context_menu_macos.mm
         src/macos/PartiesStatusItemController.mm
+        src/macos/PartiesPipPanelController.mm
+        src/macos/pip_host_macos.mm
 
         # RmlUI Metal backend (shared with iOS)
         src/metal/RmlUi_Renderer_Metal.mm
@@ -129,6 +136,8 @@ else()
         src/windows/stream_audio_capture.cpp
         src/windows/ui_manager.cpp
         src/windows/context_window_manager.cpp
+        src/windows/pip_window_host.cpp
+        src/windows/win32_pip_window.cpp
         src/windows/win32_tray.cpp
 
         # Parties application adapter over RmlUi's upstream Win32/DX12 backend
@@ -317,7 +326,8 @@ if(APPLE)
             "-framework Security"
     )
     if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
-        target_link_libraries(parties_client PRIVATE "-framework UIKit")
+        target_link_libraries(parties_client PRIVATE "-framework UIKit"
+            "-framework AVKit" "-framework CoreMedia")
     else()
         target_link_libraries(parties_client PRIVATE
             "-framework AppKit"

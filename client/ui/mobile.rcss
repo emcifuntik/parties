@@ -263,6 +263,7 @@
         flex: 0 0 46%;
     }
     .stream-grid.single .stream-cell { flex: 1 1 100%; }
+    .stream-cell-pip { min-width: 44dp; min-height: 44dp; box-sizing: border-box; }
     .stream-call-dock { bottom: 10dp; margin-bottom: var(--safe-area-bottom, 0dp); }
     .screen-share-area.fullscreen {
         left: var(--safe-area-left, 0dp);

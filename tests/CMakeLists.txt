@@ -102,6 +102,30 @@ if(BUILD_CLIENT)
     add_executable(parties_context_render_manager_lifecycle_test
         context_render_manager_lifecycle_test.cpp)
     target_link_libraries(parties_context_render_manager_lifecycle_test PRIVATE RmlUi::RmlUi)
+
+    add_executable(parties_svg_multiwindow_test svg_multiwindow_test.cpp)
+    target_link_libraries(parties_svg_multiwindow_test PRIVATE RmlUi::RmlUi)
+    target_compile_definitions(parties_svg_multiwindow_test PRIVATE
+        PARTIES_UI_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../client/ui")
+    add_test(NAME parties_svg_multiwindow COMMAND parties_svg_multiwindow_test)
+
+    # Shared picture-in-picture state, frame routing and texture retirement.
+    add_executable(parties_stream_pip_model_test
+        stream_pip_model_test.cpp
+        ../client/src/lobby_model.cpp
+        ../client/src/stream_pip.cpp
+        ../client/src/video_element.cpp
+        ../client/src/video_frame_router.cpp)
+    target_include_directories(parties_stream_pip_model_test PRIVATE
+        ../client/include ../client/src ../common/include)
+    target_link_libraries(parties_stream_pip_model_test PRIVATE RmlUi::RmlUi)
+    add_test(NAME parties_stream_pip_model COMMAND parties_stream_pip_model_test)
+
+    add_executable(parties_pip_geometry_test
+        pip_geometry_test.cpp
+        ../client/src/pip_geometry.cpp)
+    target_include_directories(parties_pip_geometry_test PRIVATE ../client/include)
+    add_test(NAME parties_pip_geometry COMMAND parties_pip_geometry_test)
 endif()
 
 if(APPLE AND BUILD_CLIENT AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
@@ -112,6 +136,16 @@ if(APPLE AND BUILD_CLIENT AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
     target_link_libraries(parties_macos_status_item_test PRIVATE "-framework AppKit")
     add_test(NAME parties_macos_status_item COMMAND parties_macos_status_item_test)
     set_tests_properties(parties_macos_status_item PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 15)
+
+    add_executable(parties_macos_pip_panel_test
+        macos_pip_panel_test.mm
+        ../client/src/macos/PartiesPipPanelController.mm
+        ../client/src/pip_geometry.cpp)
+    target_include_directories(parties_macos_pip_panel_test PRIVATE
+        ../client/src/macos ../client/include)
+    target_link_libraries(parties_macos_pip_panel_test PRIVATE "-framework AppKit")
+    add_test(NAME parties_macos_pip_panel COMMAND parties_macos_pip_panel_test)
+    set_tests_properties(parties_macos_pip_panel PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 15)
 endif()
 
 add_executable(parties_server_query_wake_test server_query_wake_test.cpp)
@@ -200,6 +234,16 @@ if(WIN32 AND BUILD_CLIENT)
     add_executable(parties_context_window_lifecycle_test context_window_lifecycle_test.cpp)
     target_include_directories(parties_context_window_lifecycle_test PRIVATE ../client/include)
     target_link_libraries(parties_context_window_lifecycle_test PRIVATE user32)
+
+    add_executable(parties_pip_window_lifecycle_test
+        pip_window_lifecycle_test.cpp
+        ../client/src/windows/win32_pip_window.cpp
+        ../client/src/pip_geometry.cpp)
+    target_include_directories(parties_pip_window_lifecycle_test PRIVATE
+        ../client/include ../client/src/windows)
+    target_link_libraries(parties_pip_window_lifecycle_test PRIVATE user32)
+    add_test(NAME parties_pip_window_lifecycle COMMAND parties_pip_window_lifecycle_test)
+    set_tests_properties(parties_pip_window_lifecycle PROPERTIES TIMEOUT 15)
 
     add_executable(parties_win32_single_instance_test win32_single_instance_test.cpp)
     target_include_directories(parties_win32_single_instance_test PRIVATE ../client/include)
