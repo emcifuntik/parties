@@ -163,10 +163,41 @@ video_frame {
 
 .stream-cell-label {
     display: block;
-    flex: none;
+    flex: 1;
+    min-width: 0dp;
     padding: 4dp 2dp;
     color: #9AA3B2;
-    font-size: 12dp;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+/* Name row under each stream: label plus the picture-in-picture toggle. */
+.stream-cell-footer {
+    display: flex;
+    flex: none;
+    flex-direction: row;
+    align-items: center;
+}
+
+.stream-cell-pip {
+    flex: none;
+    margin: 0dp 8dp 0dp 4dp;
+}
+
+/* Stands in for the video while the stream plays in picture-in-picture; the
+   cell keeps its size so the grid does not reflow. */
+.stream-cell-pip-placeholder {
+    display: flex;
+    flex: 1;
+    width: 100%;
+    min-height: 200dp;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    background-color: #07090D;
+    border: 1dp #FFFFFF0D;
+    border-radius: 14dp;
+    color: var(--color-text-muted);
 }
 
 /* Fullscreen stream */
@@ -364,6 +395,7 @@ input.stream-volume-slider {
 }
 .stream-grid.single .stream-cell { flex-basis: 100%; border-radius: 0dp; }
 .stream-grid.single .stream-cell-video { border-radius: 0dp; }
+.stream-grid.single .stream-cell-pip-placeholder { border-radius: 0dp; }
 .stream-grid.pair .stream-cell { flex-basis: 45%; }
 .stream-grid.trio .stream-cell { flex-basis: 45%; }
 .stream-grid.many .stream-cell { flex-basis: 30%; }

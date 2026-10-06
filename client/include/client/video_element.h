@@ -7,6 +7,9 @@
 #include <memory>
 #include <vector>
 
+class ExtendedRenderInterface;
+namespace Rml { class Context; }
+
 namespace parties::client {
 
 // Custom RmlUi element that renders video frames as GPU textures.
@@ -69,18 +72,30 @@ public:
     uint32_t frame_width() const { return frame_width_; }
     uint32_t frame_height() const { return frame_height_; }
 
+    // A context that renders through its own renderer (a picture-in-picture
+    // window) registers it here before its first render, and unregisters it
+    // only after its documents are unloaded. Video elements in that context
+    // then allocate and release textures on that renderer; every other context
+    // uses the global render interface.
+    static void RegisterContextRenderInterface(Rml::Context* context, ExtendedRenderInterface* renderer);
+    static void UnregisterContextRenderInterface(Rml::Context* context);
+
 protected:
     bool GetIntrinsicDimensions(Rml::Vector2f& dimensions, float& ratio) override;
     void OnRender() override;
     void OnResize() override;
 
 private:
+    // Resolved on first render and kept for the element's lifetime, so its
+    // resources are always released on the renderer that created them.
+    ExtendedRenderInterface* ResolveRenderInterface();
     void ReleaseResources();
     void RebuildGeometry();
     void SetTextureCrop(uint32_t texture_width, uint32_t texture_height,
                         uint32_t crop_x, uint32_t crop_y,
                         uint32_t visible_width, uint32_t visible_height);
 
+    ExtendedRenderInterface* render_interface_ = nullptr;
     uint32_t frame_width_ = 0;
     uint32_t frame_height_ = 0;
     bool has_frame_ = false;

@@ -11,6 +11,7 @@
 #include <client/server_query_wake.h>
 #include <client/sound_player.h>
 #include <client/stream_audio_player.h>
+#include <client/stream_pip.h>
 #include <parties/types.h>
 #include <parties/video_common.h>
 #include <parties/video_frame_reorder.h>
@@ -74,6 +75,13 @@ struct PlatformBridge {
     std::function<void(UserId)>                                start_video_stream;
     std::function<void(UserId)>                                stop_video_stream;
     std::function<void(bool)>                                  set_keep_awake;
+    // Picture-in-picture presentation (see StreamPipController::Presenter).
+    // AppCore owns the state; leave show_pip unset on a platform without PiP
+    // and the PiP button stays hidden. show_pip with another id switches.
+    std::function<void(UserId, const std::string& title)>      show_pip;
+    std::function<void(UserId, PipCloseReason)>                hide_pip;
+    // PiP "return" action: bring the main window to the front (desktop).
+    std::function<void()>                                      show_main_window;
 };
 
 class AppCore {
@@ -198,6 +206,15 @@ public:
     // single hardware decoder) rather than going through add_watch/remove_watch.
     void set_single_watched(UserId id);
     void send_voice_state();
+
+    // ── Picture-in-picture (one watched stream at a time) ───────────────────
+    // Main thread. pip_.stream() may also be read from decode/render threads.
+    StreamPipController pip_;
+    void open_pip(UserId id);                 // open, or switch the open PiP
+    void toggle_pip(UserId id);               // PiP button
+    void close_pip(PipCloseReason reason = PipCloseReason::UserClosed);
+    void return_from_pip();                   // close PiP, show its stream in the main window
+    void set_stream_muted(bool muted);        // stream audio only, never the microphone
     // Single PLI funnel: every keyframe request toward a sharer (decode-gate
     // discontinuity, reorder-buffer loss, tick() retry) goes through here and
     // is rate-limited per target to VIDEO_PLI_COOLDOWN_MS. Thread-safe.
@@ -270,6 +287,7 @@ private:
     mutable std::mutex watched_mutex_;
     std::unordered_set<UserId> watched_;
     bool multi_stream() const { return static_cast<bool>(bridge_.start_video_stream); }
+    std::unordered_set<UserId> watched_snapshot() const;
     void rebuild_watched_model();   // refresh model_.watched + sharers[].watching + counts
 
     std::unordered_map<UserId, std::chrono::steady_clock::time_point> voice_last_active_;

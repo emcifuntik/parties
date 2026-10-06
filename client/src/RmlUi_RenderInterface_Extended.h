@@ -44,6 +44,13 @@ public:
 	// CPU-plane upload path.
 	virtual void* GetD3D12Device() const { return nullptr; }
 
+	// Wait for this renderer's GPU work and release every texture it has
+	// retired but not yet freed (and the decoder leases they hold). Call when a
+	// video surface was cleared while this renderer may not present again soon
+	// (a hidden window, a closed picture-in-picture surface). Never call while a
+	// frame is being recorded. Backends that free immediately do nothing.
+	virtual void ReleaseRetiredResources() {}
+
 	// Re-map existing VB with new vertex data (no GPU resource allocation).
 	// The Windows adapter overrides this; Metal does not currently implement it.
 	virtual void UpdateGeometryVertices(Rml::CompiledGeometryHandle /*geometry*/, Rml::Span<const Rml::Vertex> /*vertices*/) {}

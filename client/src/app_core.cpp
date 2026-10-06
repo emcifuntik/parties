@@ -67,6 +67,19 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
 {
     bridge_ = std::move(bridge);
 
+    // Picture-in-picture: AppCore owns the state, the platform presents it.
+    // Each surface move asks the sharer for a keyframe through the PLI funnel
+    // so a static screen repaints on its new surface.
+    // Mute exists only on the PiP overlay, so it ends with PiP: the grid has
+    // no indicator that would explain a silent stream.
+    auto hide_pip = [this](UserId id, PipCloseReason reason) {
+        if (model_.stream_muted.get()) set_stream_muted(false);
+        if (bridge_.hide_pip) bridge_.hide_pip(id, reason);
+    };
+    pip_.attach(&model_, {bridge_.show_pip, std::move(hide_pip),
+                          [this](UserId id) { send_pli(id); }});
+    model_.pip_supported = static_cast<bool>(bridge_.show_pip);
+
     if (!settings_.open(settings_path)) {
         LOG_ERROR("Failed to open settings: {}", settings_path);
     }
@@ -1217,6 +1230,54 @@ void AppCore::set_single_watched(UserId id)
     rebuild_watched_model();
 }
 
+std::unordered_set<UserId> AppCore::watched_snapshot() const
+{
+    std::lock_guard<std::mutex> lock(watched_mutex_);
+    return watched_;
+}
+
+void AppCore::open_pip(UserId id)
+{
+    if (!pip_.open(id, watched_snapshot())) return;
+    // The stream in PiP is the one the user follows while the main window is
+    // away, so it becomes the primary stream whose audio is played.
+    viewing_sharer_ = id;
+    model_.viewing_sharer_id = static_cast<int>(id);
+    // PiP replaces fullscreen: the main window would otherwise stay
+    // borderless-fullscreen around a placeholder.
+    model_.stream_fullscreen = false;
+}
+
+void AppCore::toggle_pip(UserId id)
+{
+    if (id != 0 && pip_.stream() == id) close_pip(PipCloseReason::UserClosed);
+    else                                open_pip(id);
+}
+
+void AppCore::close_pip(PipCloseReason reason)
+{
+    pip_.close(reason);
+}
+
+void AppCore::return_from_pip()
+{
+    const UserId id = pip_.stream();
+    pip_.close(PipCloseReason::ReturnedToMain);
+    if (id != 0 && is_watching(id)) {
+        viewing_sharer_ = id;
+        model_.viewing_sharer_id = static_cast<int>(id);
+        model_.router.go(DocumentRoute::Streams);
+        model_.mobile_show_content = true;
+    }
+    if (bridge_.show_main_window) bridge_.show_main_window();
+}
+
+void AppCore::set_stream_muted(bool muted)
+{
+    model_.stream_muted = muted;
+    stream_audio_player_.set_volume(muted ? 0.0f : model_.stream_volume.get());
+}
+
 bool AppCore::is_watching(UserId id) const
 {
     std::lock_guard<std::mutex> lock(watched_mutex_);
@@ -1258,6 +1319,9 @@ void AppCore::rebuild_watched_model()
 {
     std::unordered_set<UserId> w;
     { std::lock_guard<std::mutex> lock(watched_mutex_); w = watched_; }
+    // Every watch mutation ends here: a stream that is no longer watched
+    // (share stopped, stop watching, replaced) cannot stay in PiP.
+    pip_.reconcile(w);
 
     auto& sharers = model_.sharers.silent();
     auto& wv = model_.watched.silent();
@@ -1354,6 +1418,7 @@ void AppCore::clear_all_sharers()
 
     viewing_sharer_ = 0;
     awaiting_keyframe_ = false;
+    pip_.reconcile({});   // channel left / disconnected: nothing is watched
     active_sharers_.clear();
     model_.clear_channel_sharers();
     model_.watched.silent().clear();
@@ -2319,7 +2384,11 @@ void AppCore::setup_model_callbacks()
     model_.on_select_sharer = [this](int id) { watch_sharer(static_cast<UserId>(id)); };
     model_.on_stop_watching = [this]()       { stop_watching(); };
 
+    model_.on_toggle_stream_pip  = [this](int id) { toggle_pip(static_cast<UserId>(id)); };
+    model_.on_toggle_stream_mute = [this]() { set_stream_muted(!model_.stream_muted.get()); };
     model_.on_stream_volume_changed = [this](float v) {
+        // Moving the volume slider is an explicit request to hear the stream.
+        model_.stream_muted = false;
         stream_audio_player_.set_volume(v);
         save_pref_debounced("audio.stream_volume", std::to_string(v));
     };

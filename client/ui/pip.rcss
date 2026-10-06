@@ -1,0 +1,63 @@
+/* Desktop picture-in-picture window (pip.rml). Layout and colour only: text
+   uses the semantic classes from typography.rcss. No chrome, title bar or
+   button containers; the overlay fades in within 150 ms. */
+
+body.pip-body {
+    position: absolute;
+    left: 0dp;
+    top: 0dp;
+    right: 0dp;
+    bottom: 0dp;
+    margin: 0dp;
+    padding: 0dp;
+    background-color: #000000;
+}
+
+.pip-video {
+    display: block;
+    position: absolute;
+    left: 0dp;
+    top: 0dp;
+    width: 100%;
+    height: 100%;
+    background-color: #000000;
+}
+
+.pip-overlay {
+    display: flex;
+    position: absolute;
+    left: 0dp;
+    top: 0dp;
+    right: 0dp;
+    bottom: 0dp;
+    align-items: center;
+    justify-content: center;
+    gap: 20dp;
+    background-color: #0000005C;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s linear-in-out;
+}
+
+.pip-overlay.visible {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.pip-action {
+    display: flex;
+    width: 36dp;
+    height: 36dp;
+    align-items: center;
+    justify-content: center;
+    color: #DCE1EA;
+    cursor: pointer;
+}
+
+.pip-action svg {
+    display: block;
+    image-color: #DCE1EA;
+}
+
+.pip-action:hover { color: #FFFFFF; }
+.pip-action:hover svg { image-color: #FFFFFF; }

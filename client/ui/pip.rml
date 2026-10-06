@@ -1,0 +1,26 @@
+<rml>
+<head>
+    <title>Parties picture-in-picture</title>
+    <link type="text/rcss" href="theme.rcss" />
+    <link type="text/rcss" href="typography.rcss" />
+    <link type="text/rcss" href="pip.rcss" />
+</head>
+<!-- Desktop picture-in-picture surface. The host window has no chrome; the
+     overlay appears only while the cursor is over the window. Elements with
+     class "pip-action" are clickable; the rest of the window drags it. -->
+<body class="pip-body" data-model="pip">
+    <video_frame class="pip-video" id="pip-video" />
+    <div class="pip-overlay" id="pip-overlay" data-class-visible="overlay_visible">
+        <div class="pip-action" id="pip-return" title="Return to Parties" data-event-click="pip_return">
+            <span class="ui-symbol">&#x21A9;</span>
+        </div>
+        <div class="pip-action" id="pip-mute" title="Mute or unmute the stream" data-event-click="pip_toggle_mute">
+            <svg src="icon-undeafen.svg" width="20" height="20" data-if="muted == false" />
+            <svg src="icon-deafen.svg" width="20" height="20" data-if="muted" />
+        </div>
+        <div class="pip-action" id="pip-close" title="Close picture-in-picture" data-event-click="pip_close">
+            <span class="ui-symbol">&#xD7;</span>
+        </div>
+    </div>
+</body>
+</rml>

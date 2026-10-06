@@ -8,9 +8,49 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
+#include <unordered_map>
 #include <parties/profiler.h>
 
 namespace parties::client {
+
+namespace {
+
+std::mutex& context_renderers_mutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+std::unordered_map<Rml::Context*, ExtendedRenderInterface*>& context_renderers() {
+    static std::unordered_map<Rml::Context*, ExtendedRenderInterface*> renderers;
+    return renderers;
+}
+
+} // namespace
+
+void VideoElement::RegisterContextRenderInterface(Rml::Context* context,
+                                                  ExtendedRenderInterface* renderer) {
+    if (!context || !renderer) return;
+    std::lock_guard<std::mutex> lock(context_renderers_mutex());
+    context_renderers()[context] = renderer;
+}
+
+void VideoElement::UnregisterContextRenderInterface(Rml::Context* context) {
+    std::lock_guard<std::mutex> lock(context_renderers_mutex());
+    context_renderers().erase(context);
+}
+
+ExtendedRenderInterface* VideoElement::ResolveRenderInterface() {
+    if (render_interface_) return render_interface_;
+    if (Rml::Context* context = GetContext()) {
+        std::lock_guard<std::mutex> lock(context_renderers_mutex());
+        const auto found = context_renderers().find(context);
+        if (found != context_renderers().end()) render_interface_ = found->second;
+    }
+    if (!render_interface_)
+        render_interface_ = static_cast<ExtendedRenderInterface*>(Rml::GetRenderInterface());
+    return render_interface_;
+}
 
 // ── VideoElement ────────────────────────────────────────────────────
 
@@ -313,7 +353,8 @@ void VideoElement::Clear() {
 }
 
 void VideoElement::ReleaseResources() {
-    auto* ri = Rml::GetRenderInterface();
+    // Resources exist only after a render resolved the interface.
+    auto* ri = render_interface_;
     if (!ri) return;
 
     if (video_texture_) {
@@ -323,13 +364,13 @@ void VideoElement::ReleaseResources() {
     texture_w_ = texture_h_ = 0;
 
     if (yuv_texture_) {
-        static_cast<ExtendedRenderInterface*>(ri)->ReleaseYUVTexture(yuv_texture_);
+        ri->ReleaseYUVTexture(yuv_texture_);
         yuv_texture_ = 0;
     }
     yuv_tex_w_ = yuv_tex_h_ = 0;
 
     if (nv12_texture_) {
-        static_cast<ExtendedRenderInterface*>(ri)->ReleaseNV12Texture(nv12_texture_);
+        ri->ReleaseNV12Texture(nv12_texture_);
         nv12_texture_ = 0;
     }
     nv12_tex_w_ = nv12_tex_h_ = 0;
@@ -354,7 +395,7 @@ bool VideoElement::GetIntrinsicDimensions(Rml::Vector2f& dimensions, float& rati
 
 void VideoElement::RebuildGeometry() {
 	ZoneScopedN("VideoElement::RebuildGeometry");
-    auto* ri = Rml::GetRenderInterface();
+    auto* ri = ResolveRenderInterface();
     if (!ri) return;
 
     if (video_geom_) {
@@ -412,9 +453,9 @@ void VideoElement::OnResize() {
     // Invalidate geometry so it gets rebuilt with new dimensions
     Rml::Vector2f size = GetBox().GetSize(Rml::BoxArea::Content);
     if (size.x != geom_w_ || size.y != geom_h_) {
-        if (video_geom_) {
-            auto* ri = Rml::GetRenderInterface();
-            if (ri) { ri->ReleaseGeometry(video_geom_); video_geom_ = 0; }
+        if (video_geom_ && render_interface_) {
+            render_interface_->ReleaseGeometry(video_geom_);
+            video_geom_ = 0;
         }
     }
 }
@@ -423,9 +464,9 @@ void VideoElement::OnRender() {
 	ZoneScopedN("VideoElement::OnRender");
     if (!has_frame_ || frame_width_ == 0 || frame_height_ == 0) return;
 
-    auto* ri = Rml::GetRenderInterface();
-    if (!ri) return;
-    auto* ext_ri = static_cast<ExtendedRenderInterface*>(ri);
+    auto* ext_ri = ResolveRenderInterface();
+    if (!ext_ri) return;
+    Rml::RenderInterface* ri = ext_ri;
 
     // Rebuild geometry if element size changed
     Rml::Vector2f size = GetBox().GetSize(Rml::BoxArea::Content);

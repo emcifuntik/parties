@@ -19,6 +19,12 @@ static constexpr unsigned char embed_context_window_rml[] = {
     #embed "../ui/context_window.rml"
 };
 
+static constexpr unsigned char embed_pip_rml[] = {
+    #embed "../ui/pip.rml"
+};
+static constexpr unsigned char embed_pip_rcss[] = {
+    #embed "../ui/pip.rcss"
+};
 static constexpr unsigned char embed_theme_rcss[] = {
     #embed "../ui/theme.rcss"
 };
@@ -235,6 +241,8 @@ struct OpenFile {
 EmbeddedFileInterface::EmbeddedFileInterface() {
     entries_["ui/lobby.rml"] = { embed_lobby_rml, sizeof(embed_lobby_rml) };
     entries_["ui/context_window.rml"] = { embed_context_window_rml, sizeof(embed_context_window_rml) };
+    entries_["ui/pip.rml"] = { embed_pip_rml, sizeof(embed_pip_rml) };
+    entries_["ui/pip.rcss"] = { embed_pip_rcss, sizeof(embed_pip_rcss) };
     entries_["ui/theme.rcss"] = { embed_theme_rcss, sizeof(embed_theme_rcss) };
     entries_["ui/primitives.rcss"] = { embed_primitives_rcss, sizeof(embed_primitives_rcss) };
     entries_["ui/shell.rcss"] = { embed_shell_rcss, sizeof(embed_shell_rcss) };

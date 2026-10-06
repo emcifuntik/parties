@@ -12,6 +12,7 @@
 #include <client/win32_tray.h>
 #include <client/video_decode_gate.h>
 #include <client/video_decode_backlog.h>
+#include <client/video_frame_router.h>
 #include <parties/types.h>
 #include <parties/video_common.h>
 
@@ -45,6 +46,7 @@ class VideoEncoder;
 class VideoDecoder;
 class VideoElement;
 class LevelMeterElement;
+class PipWindowHost;
 
 class App {
 public:
@@ -119,6 +121,16 @@ private:
     // video delivery, paced by vsync. Independent of the Win32 message loop.
     void render_loop();
     void render_frame();
+    // Render thread, UI mutex held. Applies a PiP stream change to the video
+    // surfaces (see VideoFrameRouter) and frees what the left surface retired.
+    void sync_video_router();
+    VideoFrameRouter::Surfaces video_surfaces();
+    // Moves each stream's newest decoded frame to its one surface. With the
+    // main window hidden only the PiP stream is taken; the others keep their
+    // newest frame until the grid is visible again.
+    void deliver_video_frames(bool grid_visible);
+    // Main window hidden or minimized while PiP is open: keep PiP live.
+    void render_pip_only();
 
     HWND hwnd_ = nullptr;
     Win32Tray tray_;
@@ -127,6 +139,10 @@ private:
     UiManager ui_;
     ID3D12Device* decode_d3d12_device_ = nullptr; // owned by ui_ renderer
     ContextWindowManager context_windows_;
+    // Picture-in-picture window; state lives in core_.pip_.
+    std::unique_ptr<PipWindowHost> pip_host_;
+    VideoFrameRouter video_router_;          // render thread
+    bool pip_open_failed_ = false;           // message thread
 
     // ── Render thread + UI synchronization ───────────────────────────────
     std::recursive_mutex ui_mutex_;            // guards RmlUi context + data model

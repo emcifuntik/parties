@@ -111,6 +111,62 @@ message variants supply semantic action lists. The shared model is also loaded
 by RmlUI Designer, so screenshots exercise the production document rather than
 a separate mock.
 
+## Picture-in-picture
+
+A watched stream can be popped out into picture-in-picture (PiP). The state is
+platform-neutral: `StreamPipController` (`client/include/client/stream_pip.h`),
+owned by `AppCore`, is either closed or open on exactly one watched stream, and
+mirrors it into `LobbyModel::pip_stream_id`. The RML intent is
+`toggle_stream_pip(id)` from the button in each stream cell's footer; picking it
+on another stream switches PiP to that stream. `AppCore` reconciles the
+controller against the authoritative watched set after every watch mutation
+(`rebuild_watched_model`, `clear_all_sharers`), so a stream that ends, stop
+watching, leaving the channel and disconnecting all close PiP through one path.
+Opening PiP also makes its stream the primary one, so its audio is played, and
+leaves fullscreen.
+
+While a stream is in PiP its grid cell shows "Playing in picture-in-picture"
+instead of the `<video_frame>`; frame routing is described in
+`docs/video-pipeline.md`. Platforms implement only `PlatformBridge::show_pip`,
+`hide_pip` and `show_main_window`; leaving `show_pip` unset hides the button
+(`pip_supported`).
+
+The desktop overlay is shared: `ui/pip.rml`, `ui/pip.rcss` (layout and colour
+only) and `PipWindowModel` provide three `ui-symbol`/icon actions: return to the
+main window (closes PiP and shows the stream on the Streams route), mute or
+unmute the stream audio (never the microphone; the mute ends when PiP closes,
+since the grid has no mute indicator), and close PiP (keeps watching in
+the grid). The overlay dims the video and fades in within 120 ms only while the
+cursor is over the window. Remembered geometry uses the `window.pip_rect`
+preference and `pip_geometry`, which keeps the window fully on a visible work
+area and at the stream's aspect ratio.
+
+- **Windows.** `Win32PipWindow` (`client/src/windows/win32_pip_window.*`) is an
+  unowned `WS_POPUP` tool window with `WS_EX_TOPMOST | WS_EX_NOACTIVATE`; an
+  owned window would be hidden with a minimized owner. `WM_NCHITTEST` returns
+  `HTCAPTION` everywhere except overlay actions and the resize edges, and
+  `WM_SIZING` keeps the aspect ratio. `PipWindowHost` adds its own DX12
+  renderer, RmlUi context and document; like context windows it is created on
+  first use and kept until `Rml::Shutdown`. The render thread renders it after
+  the main window and keeps rendering it alone while the main window is
+  minimized or hidden to the tray.
+- **macOS.** `PartiesPipPanelController` owns a borderless, non-activating
+  floating `NSPanel` that joins all Spaces and fullscreen Spaces, ignores
+  application hiding (`canHide = NO`) and the menu-bar mode, and enforces
+  `contentAspectRatio`. `PartiesPipHost` renders `ui/pip.rml` into the panel
+  with its own `MTKView`, `RenderInterface_Metal` and RmlUi context; clicks
+  outside the actions drag the panel (`performWindowDragWithEvent:`).
+- **iOS.** There is no custom window: `PartiesStreamPictureInPicture` uses
+  `AVPictureInPictureController` with an `AVSampleBufferDisplayLayer` content
+  source. The same layer shows the watched stream inline, kept over its
+  `<video_frame>` cell every frame (the RmlUi element still receives the taps),
+  so PiP starts automatically when the app goes to the background
+  (`canStartPictureInPictureAutomaticallyFromInline`) and from the cell's
+  button. The system restore button returns to the Streams route on that
+  stream. While a stream is watched the audio session drops
+  `MixWithOthers`, which automatic PiP requires; `UIBackgroundModes` already
+  contains `audio`.
+
 ## Application audio sharing
 
 Application audio is selected through the regular share-picker route in an
@@ -140,6 +196,7 @@ client/ui/
   chat.rcss
   settings.rcss
   streaming.rcss
+  pip.rcss          (desktop picture-in-picture document, ui/pip.rml)
   dialogs.rcss
   desktop.rcss
   mobile.rcss

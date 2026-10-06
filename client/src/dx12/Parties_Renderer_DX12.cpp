@@ -169,6 +169,15 @@ void PartiesRenderInterface_DX12::EndFrame() {
 	CollectRetiredTextures(upstream_.Get_CurrentFrameIndex());
 }
 
+void PartiesRenderInterface_DX12::ReleaseRetiredResources() {
+	if (!upstream_ || frame_active_) return;
+	// Every retired texture was last sampled by an already submitted frame;
+	// once the queue is idle all buckets are safe, not only the current one.
+	upstream_.WaitIdle();
+	for (uint32_t frame = 0; frame < retired_textures_.size(); ++frame)
+		CollectRetiredTextures(frame);
+}
+
 void PartiesRenderInterface_DX12::CaptureNextFrame(std::string output_path) {
 	// The upstream raw swap-chain helper reads the newly acquired flip buffer,
 	// whose contents are undefined after Present. Capture the composed HWND
