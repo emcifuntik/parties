@@ -1,6 +1,7 @@
 /* Desktop picture-in-picture window (pip.rml). Layout and colour only: text
-   uses the semantic classes from typography.rcss. No chrome, title bar or
-   button containers; the overlay fades in within 150 ms. */
+   uses the semantic classes from typography.rcss. No chrome or title bar; the
+   overlay fades in within 150 ms. The actions stay centred and the volume
+   control spans the bottom edge, so both fit the 192 dp minimum width. */
 
 body.pip-body {
     position: absolute;
@@ -32,7 +33,6 @@ body.pip-body {
     bottom: 0dp;
     align-items: center;
     justify-content: center;
-    gap: 20dp;
     background-color: #0000005C;
     opacity: 0;
     pointer-events: none;
@@ -44,7 +44,14 @@ body.pip-body {
     pointer-events: auto;
 }
 
-.pip-action {
+.pip-actions {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 20dp;
+}
+
+.pip-actions .pip-action {
     display: flex;
     width: 36dp;
     height: 36dp;
@@ -54,10 +61,50 @@ body.pip-body {
     cursor: pointer;
 }
 
-.pip-action svg {
+.pip-actions .pip-action svg {
     display: block;
     image-color: #DCE1EA;
 }
 
-.pip-action:hover { color: #FFFFFF; }
-.pip-action:hover svg { image-color: #FFFFFF; }
+.pip-actions .pip-action:hover { color: #FFFFFF; }
+
+/* Volume: speaker icon, slider (same range as the main stream volume) and the
+   current level, which doubles as the control's visible label. */
+.pip-volume {
+    display: flex;
+    position: absolute;
+    left: 10dp;
+    right: 10dp;
+    bottom: 10dp;
+    height: 24dp;
+    flex-direction: row;
+    align-items: center;
+    gap: 6dp;
+    padding: 0dp 8dp;
+    border-radius: 12dp;
+    background-color: #000000A0;
+    color: #DCE1EA;
+}
+
+.pip-volume-icon {
+    display: block;
+    flex-shrink: 0;
+    image-color: #DCE1EA;
+}
+
+.pip-volume.silent .pip-volume-icon { image-color: #DCE1EA66; }
+
+input.pip-volume-slider {
+    flex: 1;
+    width: auto;
+    min-width: 0dp;
+}
+
+input.pip-volume-slider:focus sliderbar { background-color: var(--color-accent); }
+
+.pip-volume-value {
+    display: block;
+    flex-shrink: 0;
+    width: 30dp;
+    text-align: right;
+}

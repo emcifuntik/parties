@@ -35,7 +35,7 @@ class PipWindowHost {
 public:
     struct Actions {
         std::function<void()> return_to_main;
-        std::function<void()> toggle_mute;
+        std::function<void(float)> set_volume;   // stream playback volume
         std::function<void()> close;
         std::function<std::optional<PipRect>()> load_geometry;
         std::function<void(const PipRect&)> save_geometry;
@@ -56,8 +56,9 @@ public:
     // Render thread. The PiP video surface (null before the first show).
     VideoElement* video_surface() const { return video_; }
     ExtendedRenderInterface* renderer() const { return renderer_.get(); }
-    // Render one PiP frame if the window is visible.
-    void render(bool muted);
+    // Render one PiP frame if the window is visible, mirroring the current
+    // stream playback volume into the overlay.
+    void render(float volume);
 
     // Before Rml::Shutdown: unload the document and remove the context.
     void prepare_shutdown();

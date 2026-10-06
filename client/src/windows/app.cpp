@@ -421,7 +421,7 @@ bool App::init(HWND hwnd) {
     {
         PipWindowHost::Actions actions;
         actions.return_to_main = [this] { core_.return_from_pip(); };
-        actions.toggle_mute = [this] { core_.set_stream_muted(!core_.model_.stream_muted.get()); };
+        actions.set_volume = [this](float volume) { core_.set_stream_volume(volume); };
         actions.close = [this] { core_.close_pip(PipCloseReason::UserClosed); };
         actions.load_geometry = [this]() -> std::optional<PipRect> {
             const auto saved = core_.settings_.get_pref("window.pip_rect");
@@ -903,7 +903,7 @@ void App::render_pip_only() {
         std::lock_guard<std::recursive_mutex> lock(ui_mutex_);
         sync_video_router();
         deliver_video_frames(false);
-        pip_host_->render(core_.model_.stream_muted.get());
+        pip_host_->render(core_.model_.stream_volume.get());
     }
     // The main swap chain is idle, so nothing else paces this thread; wait
     // for the next compositor frame instead.
@@ -1012,7 +1012,7 @@ void App::render_frame() {
     {
         std::lock_guard<std::recursive_mutex> lock(ui_mutex_);
         context_windows_.render();
-        if (pip_host_) pip_host_->render(core_.model_.stream_muted.get());
+        if (pip_host_) pip_host_->render(core_.model_.stream_volume.get());
     }
     const auto frame_complete = std::chrono::steady_clock::now();
 

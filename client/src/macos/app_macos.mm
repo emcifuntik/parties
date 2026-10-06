@@ -1252,11 +1252,9 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         PartiesViewController* bself = self;
         MacPipActions actions;
         actions.return_to_main = [bself]() { bself->_core.return_from_pip(); };
-        actions.toggle_mute = [bself]() {
-            bself->_core.set_stream_muted(!bself->_core.model_.stream_muted.get());
-        };
+        actions.set_volume = [bself](float volume) { bself->_core.set_stream_volume(volume); };
         actions.close = [bself]() { bself->_core.close_pip(PipCloseReason::UserClosed); };
-        actions.muted = [bself]() { return bself->_core.model_.stream_muted.get(); };
+        actions.volume = [bself]() { return bself->_core.model_.stream_volume.get(); };
         actions.load_geometry = [bself]() -> std::optional<PipRect> {
             const auto saved = bself->_core.settings_.get_pref("window.pip_rect");
             return saved ? pip_rect_from_string(*saved) : std::nullopt;

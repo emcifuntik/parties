@@ -246,9 +246,51 @@ LRESULT Win32PipWindow::handle(UINT message, WPARAM w_param, LPARAM l_param) {
         }
         break;
     }
+    case WM_LBUTTONDOWN: {
+        // A control that needs the keyboard (the volume slider) activates the
+        // window explicitly: WS_EX_NOACTIVATE only blocks click activation.
+        const int x = GET_X_LPARAM(l_param);
+        const int y = GET_Y_LPARAM(l_param);
+        if (callbacks_.takes_keyboard_at && callbacks_.takes_keyboard_at(x, y))
+            SetForegroundWindow(hwnd_);
+        const bool consumed = callbacks_.on_input && callbacks_.on_input(message, w_param, l_param);
+        // The hosted UI captures the mouse for the press so a slider drag
+        // keeps receiving moves outside the window.
+        pointer_captured_.store(GetCapture() == hwnd_, std::memory_order_release);
+        if (consumed) return 0;
+        break;
+    }
+    case WM_LBUTTONUP: {
+        releasing_capture_ = true;
+        const bool consumed = callbacks_.on_input && callbacks_.on_input(message, w_param, l_param);
+        releasing_capture_ = false;
+        pointer_captured_.store(false, std::memory_order_release);
+        if (consumed) return 0;
+        break;
+    }
+    case WM_CAPTURECHANGED:
+        // Capture taken away mid-drag (another window, a system gesture): end
+        // the press so the hosted UI does not keep dragging without a button.
+        if (pointer_captured_.exchange(false, std::memory_order_acq_rel) && !releasing_capture_ &&
+            reinterpret_cast<HWND>(l_param) != hwnd_ && callbacks_.on_input) {
+            POINT point{};
+            GetCursorPos(&point);
+            ScreenToClient(hwnd_, &point);
+            releasing_capture_ = true;
+            callbacks_.on_input(WM_LBUTTONUP, 0, MAKELPARAM(point.x, point.y));
+            releasing_capture_ = false;
+        }
+        break;
+    case WM_ACTIVATE:
+        active_.store(LOWORD(w_param) != WA_INACTIVE, std::memory_order_release);
+        break;
+    case WM_KEYDOWN:
+    case WM_KEYUP:
+        // Only reaches the window after a keyboard control activated it.
+        if (callbacks_.on_input && callbacks_.on_input(message, w_param, l_param))
+            return 0;
+        break;
     case WM_MOUSEMOVE:
-    case WM_LBUTTONDOWN:
-    case WM_LBUTTONUP:
     case WM_RBUTTONDOWN:
     case WM_RBUTTONUP:
     case WM_MOUSELEAVE:

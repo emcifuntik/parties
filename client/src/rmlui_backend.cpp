@@ -105,6 +105,14 @@ static constexpr unsigned char embed_icon_sharing[] = {
     #embed "../ui/icon-sharing.svg"
 };
 
+static constexpr unsigned char embed_icon_pip[] = {
+    #embed "../ui/icon-pip.svg"
+};
+
+static constexpr unsigned char embed_icon_pip_exit[] = {
+    #embed "../ui/icon-pip-exit.svg"
+};
+
 static constexpr unsigned char embed_icon_leave[] = {
     #embed "../ui/icon-leave.svg"
 };
@@ -263,6 +271,8 @@ EmbeddedFileInterface::EmbeddedFileInterface() {
     entries_["ui/icon-deafen.svg"] = { embed_icon_deafen, sizeof(embed_icon_deafen) };
     entries_["ui/icon-share.svg"] = { embed_icon_share, sizeof(embed_icon_share) };
     entries_["ui/icon-sharing.svg"] = { embed_icon_sharing, sizeof(embed_icon_sharing) };
+    entries_["ui/icon-pip.svg"] = { embed_icon_pip, sizeof(embed_icon_pip) };
+    entries_["ui/icon-pip-exit.svg"] = { embed_icon_pip_exit, sizeof(embed_icon_pip_exit) };
     entries_["ui/icon-leave.svg"] = { embed_icon_leave, sizeof(embed_icon_leave) };
     entries_["ui/icon-settings.svg"] = { embed_icon_settings, sizeof(embed_icon_settings) };
     entries_["ui/icon-volume.svg"] = { embed_icon_volume, sizeof(embed_icon_volume) };

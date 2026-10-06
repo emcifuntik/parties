@@ -18,8 +18,9 @@
 namespace parties::client {
 
 // Win32 shell of the desktop picture-in-picture window: a borderless,
-// always-on-top tool window that never takes activation and is not owned by
-// the main window (an owned window would be hidden with a minimized owner).
+// always-on-top tool window that is not owned by the main window (an owned
+// window would be hidden with a minimized owner). It never takes activation,
+// except when the user clicks an overlay control that needs the keyboard.
 // The whole surface drags the window except overlay actions; the edges resize
 // it while keeping the stream's aspect ratio.
 //
@@ -33,6 +34,9 @@ public:
         // Hit test: is client point (physical px) on an overlay action? Those
         // points receive clicks; everything else drags the window.
         std::function<bool(int x, int y)> is_action_at;
+        // Is client point (physical px) on an overlay control that takes the
+        // keyboard? Clicking one activates the window so it receives keys.
+        std::function<bool(int x, int y)> takes_keyboard_at;
         // Client-area input for the hosted UI. Return true when consumed.
         std::function<bool(UINT message, WPARAM w_param, LPARAM l_param)> on_input;
         // Client size or DPI changed (physical px, scale = dpi / 96).
@@ -69,6 +73,12 @@ public:
     bool request_size(int width, int height) const;
     // True while the cursor is over the window (any thread, no messages).
     bool cursor_inside() const;
+    // True while an overlay control holds the mouse capture (a slider drag)
+    // or the keyboard (the window is active). Any thread.
+    bool interacting() const {
+        return pointer_captured_.load(std::memory_order_acquire) ||
+               active_.load(std::memory_order_acquire);
+    }
 
     // Work areas of all monitors, primary first (virtual-screen px).
     static std::vector<PipRect> visible_work_areas();
@@ -90,6 +100,9 @@ private:
     HWND hwnd_ = nullptr;
     Callbacks callbacks_;
     std::atomic<bool> visible_{false};
+    std::atomic<bool> pointer_captured_{false};
+    std::atomic<bool> active_{false};
+    bool releasing_capture_ = false;   // owner thread
     std::atomic<double> aspect_{kPipDefaultAspect};
 };
 

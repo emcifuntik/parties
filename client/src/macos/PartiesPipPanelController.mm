@@ -21,6 +21,17 @@ NSRect to_ns(const PipRect& rect)
 
 } // namespace
 
+// Borderless windows cannot become key by default. The panel may, but only
+// when the content view asks for it (becomesKeyOnlyIfNeeded and an explicit
+// makeKeyWindow for keyboard controls), and never activates the application.
+@interface PartiesPipPanel : NSPanel
+@end
+
+@implementation PartiesPipPanel
+- (BOOL)canBecomeKeyWindow { return YES; }
+- (BOOL)canBecomeMainWindow { return NO; }
+@end
+
 @implementation PartiesPipPanelController {
     NSPanel* _panel;
     std::function<void(NSRect)> _geometryChanged;
@@ -33,8 +44,9 @@ NSRect to_ns(const PipRect& rect)
         return nil;
 
     // Borderless: no title bar or chrome. Non-activating: clicking the
-    // overlay or dragging never steals focus from the app the user is in.
-    _panel = [[NSPanel alloc] initWithContentRect:NSMakeRect(0, 0, 384, 216)
+    // overlay or dragging never activates the application; only the volume
+    // control makes the panel key, for its arrow keys.
+    _panel = [[PartiesPipPanel alloc] initWithContentRect:NSMakeRect(0, 0, 384, 216)
                                         styleMask:NSWindowStyleMaskBorderless |
                                                   NSWindowStyleMaskNonactivatingPanel |
                                                   NSWindowStyleMaskResizable

@@ -156,7 +156,6 @@ public:
     // mirrors it for RML (the grid shows a placeholder in that stream's cell).
     rml::Prop<int>         pip_stream_id{0};            // stream shown in PiP (0 = closed)
     rml::Prop<bool>        pip_supported{false};        // platform presents PiP (shows the button)
-    rml::Prop<bool>        stream_muted{false};         // stream audio muted (PiP overlay action)
 
     // Share picker
     rml::Prop<bool>        use_native_picker{false};  // true on macOS (native picker, no target list)
@@ -257,7 +256,6 @@ public:
     std::function<void(float)> on_stream_volume_changed;
     std::function<void()>      on_stream_tap_fullscreen;  // iOS: single tap toggles fullscreen
     std::function<void(int)>   on_toggle_stream_pip;      // open/switch/close PiP for this stream
-    std::function<void()>      on_toggle_stream_mute;     // mute/unmute stream audio
 
     // Auto-update
     std::function<void()>      on_apply_update;

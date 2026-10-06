@@ -132,12 +132,19 @@ instead of the `<video_frame>`; frame routing is described in
 (`pip_supported`).
 
 The desktop overlay is shared: `ui/pip.rml`, `ui/pip.rcss` (layout and colour
-only) and `PipWindowModel` provide three `ui-symbol`/icon actions: return to the
-main window (closes PiP and shows the stream on the Streams route), mute or
-unmute the stream audio (never the microphone; the mute ends when PiP closes,
-since the grid has no mute indicator), and close PiP (keeps watching in
-the grid). The overlay dims the video and fades in within 120 ms only while the
-cursor is over the window. Remembered geometry uses the `window.pip_rect`
+only) and `PipWindowModel` provide two `ui-symbol` actions, return to the main
+window (closes PiP and shows the stream on the Streams route) and close PiP
+(keeps watching in the grid), plus a stream volume control along the bottom
+edge: a `ui-range` slider with the same 0-200% range as the Streams header
+slider and a percentage label. Both sliders call `AppCore::set_stream_volume`,
+which drives the stream player and the `audio.stream_volume` preference; the
+PiP model is refreshed from `LobbyModel::stream_volume` every frame, and both
+change handlers ignore the `change` event a programmatic update dispatches, so
+the controls stay in sync without echoing. The volume never touches the
+microphone. Clicking the slider gives the PiP window keyboard focus (arrows,
+Page Up/Down, Home/End). The overlay dims the video and fades in within 120 ms
+while the cursor is over the window, the slider is being dragged, or the window
+has keyboard focus. Remembered geometry uses the `window.pip_rect`
 preference and `pip_geometry`, which keeps the window fully on a visible work
 area and at the stream's aspect ratio.
 
@@ -145,7 +152,9 @@ area and at the stream's aspect ratio.
   unowned `WS_POPUP` tool window with `WS_EX_TOPMOST | WS_EX_NOACTIVATE`; an
   owned window would be hidden with a minimized owner. `WM_NCHITTEST` returns
   `HTCAPTION` everywhere except overlay actions and the resize edges, and
-  `WM_SIZING` keeps the aspect ratio. `PipWindowHost` adds its own DX12
+  `WM_SIZING` keeps the aspect ratio. A press on a `pip-keyboard` control (the
+  volume slider) calls `SetForegroundWindow`, the only way the window is
+  activated, and keys are then forwarded to RmlUi. `PipWindowHost` adds its own DX12
   renderer, RmlUi context and document; like context windows it is created on
   first use and kept until `Rml::Shutdown`. The render thread renders it after
   the main window and keeps rendering it alone while the main window is
@@ -155,7 +164,9 @@ area and at the stream's aspect ratio.
   application hiding (`canHide = NO`) and the menu-bar mode, and enforces
   `contentAspectRatio`. `PartiesPipHost` renders `ui/pip.rml` into the panel
   with its own `MTKView`, `RenderInterface_Metal` and RmlUi context; clicks
-  outside the actions drag the panel (`performWindowDragWithEvent:`).
+  outside the actions drag the panel (`performWindowDragWithEvent:`). The
+  panel can become key, but only the volume slider makes it key (the
+  application stays inactive), for its arrow keys.
 - **iOS.** There is no custom window: `PartiesStreamPictureInPicture` uses
   `AVPictureInPictureController` with an `AVSampleBufferDisplayLayer` content
   source. The same layer shows the watched stream inline, kept over its

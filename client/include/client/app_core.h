@@ -214,7 +214,10 @@ public:
     void toggle_pip(UserId id);               // PiP button
     void close_pip(PipCloseReason reason = PipCloseReason::UserClosed);
     void return_from_pip();                   // close PiP, show its stream in the main window
-    void set_stream_muted(bool muted);        // stream audio only, never the microphone
+    // Stream playback volume (0.0 - 2.0) from either the main or the PiP
+    // control: applies it to the stream player, mirrors it to the model and
+    // persists it. Stream audio only, never the microphone.
+    void set_stream_volume(float volume);
     // Single PLI funnel: every keyframe request toward a sharer (decode-gate
     // discontinuity, reorder-buffer loss, tick() retry) goes through here and
     // is rate-limited per target to VIDEO_PLI_COOLDOWN_MS. Thread-safe.

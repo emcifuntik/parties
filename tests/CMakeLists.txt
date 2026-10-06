@@ -103,6 +103,12 @@ if(BUILD_CLIENT)
         context_render_manager_lifecycle_test.cpp)
     target_link_libraries(parties_context_render_manager_lifecycle_test PRIVATE RmlUi::RmlUi)
 
+    add_executable(parties_svg_multiwindow_test svg_multiwindow_test.cpp)
+    target_link_libraries(parties_svg_multiwindow_test PRIVATE RmlUi::RmlUi)
+    target_compile_definitions(parties_svg_multiwindow_test PRIVATE
+        PARTIES_UI_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../client/ui")
+    add_test(NAME parties_svg_multiwindow COMMAND parties_svg_multiwindow_test)
+
     # Shared picture-in-picture state, frame routing and texture retirement.
     add_executable(parties_stream_pip_model_test
         stream_pip_model_test.cpp

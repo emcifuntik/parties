@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -70,13 +71,7 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
     // Picture-in-picture: AppCore owns the state, the platform presents it.
     // Each surface move asks the sharer for a keyframe through the PLI funnel
     // so a static screen repaints on its new surface.
-    // Mute exists only on the PiP overlay, so it ends with PiP: the grid has
-    // no indicator that would explain a silent stream.
-    auto hide_pip = [this](UserId id, PipCloseReason reason) {
-        if (model_.stream_muted.get()) set_stream_muted(false);
-        if (bridge_.hide_pip) bridge_.hide_pip(id, reason);
-    };
-    pip_.attach(&model_, {bridge_.show_pip, std::move(hide_pip),
+    pip_.attach(&model_, {bridge_.show_pip, bridge_.hide_pip,
                           [this](UserId id) { send_pli(id); }});
     model_.pip_supported = static_cast<bool>(bridge_.show_pip);
 
@@ -471,7 +466,11 @@ void AppCore::load_saved_prefs()
     }
 
     v = pref("audio.stream_volume");
-    if (!v.empty()) { float vol = std::strtof(v.c_str(), nullptr); stream_audio_player_.set_volume(vol); model_.stream_volume = vol; }
+    if (!v.empty()) {
+        const float vol = std::clamp(std::strtof(v.c_str(), nullptr), 0.0f, 2.0f);
+        stream_audio_player_.set_volume(vol);
+        model_.stream_volume = vol;
+    }
 
     v = pref("audio.voice_volume");
     if (!v.empty()) { float vol = std::strtof(v.c_str(), nullptr); mixer_.set_master_volume(vol); model_.voice_volume = vol; }
@@ -1272,10 +1271,12 @@ void AppCore::return_from_pip()
     if (bridge_.show_main_window) bridge_.show_main_window();
 }
 
-void AppCore::set_stream_muted(bool muted)
+void AppCore::set_stream_volume(float volume)
 {
-    model_.stream_muted = muted;
-    stream_audio_player_.set_volume(muted ? 0.0f : model_.stream_volume.get());
+    volume = std::isfinite(volume) ? std::clamp(volume, 0.0f, 2.0f) : model_.stream_volume.get();
+    model_.stream_volume = volume;
+    stream_audio_player_.set_volume(volume);
+    save_pref_debounced("audio.stream_volume", std::to_string(volume));
 }
 
 bool AppCore::is_watching(UserId id) const
@@ -2385,13 +2386,7 @@ void AppCore::setup_model_callbacks()
     model_.on_stop_watching = [this]()       { stop_watching(); };
 
     model_.on_toggle_stream_pip  = [this](int id) { toggle_pip(static_cast<UserId>(id)); };
-    model_.on_toggle_stream_mute = [this]() { set_stream_muted(!model_.stream_muted.get()); };
-    model_.on_stream_volume_changed = [this](float v) {
-        // Moving the volume slider is an explicit request to hear the stream.
-        model_.stream_muted = false;
-        stream_audio_player_.set_volume(v);
-        save_pref_debounced("audio.stream_volume", std::to_string(v));
-    };
+    model_.on_stream_volume_changed = [this](float v) { set_stream_volume(v); };
 
     model_.on_notification_volume_changed = [this](float v) {
         if (bridge_.set_notification_volume) bridge_.set_notification_volume(v);

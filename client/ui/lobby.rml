@@ -662,13 +662,13 @@
                         </div>
                         <div class="stream-cell-footer">
                             <span class="stream-cell-label ui-body">{{ w.name }}</span>
-                            <div class="stream-cell-pip ui-button ui-button-secondary ui-button-compact"
+                            <div class="stream-cell-pip ui-icon-button"
                                  data-if="pip_supported"
                                  data-attr-id="'stream-pip-' + w.id"
                                  data-event-click="toggle_stream_pip(w.id)"
-                                 title="Show this stream in a floating window">
-                                <span class="ui-button-label ui-control" data-if="w.id != pip_stream_id">Picture-in-picture</span>
-                                <span class="ui-button-label ui-control" data-if="w.id == pip_stream_id">Exit picture-in-picture</span>
+                                 data-attr-title="w.id == pip_stream_id ? 'Exit picture-in-picture' : 'Picture-in-picture'">
+                                <svg src="icon-pip.svg" width="18" height="18" data-if="w.id != pip_stream_id" />
+                                <svg src="icon-pip-exit.svg" width="18" height="18" data-if="w.id == pip_stream_id" />
                             </div>
                         </div>
                     </div>

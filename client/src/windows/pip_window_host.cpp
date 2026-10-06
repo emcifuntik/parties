@@ -27,12 +27,6 @@ std::wstring widen(const std::string& utf8) {
     return wide;
 }
 
-bool is_action(Rml::Element* element) {
-    for (; element; element = element->GetParentNode())
-        if (element->IsClassSet("pip-action")) return true;
-    return false;
-}
-
 } // namespace
 
 PipWindowHost::PipWindowHost() = default;
@@ -52,7 +46,13 @@ bool PipWindowHost::ensure_surface() {
     callbacks.is_action_at = [this](int x, int y) {
         std::lock_guard<std::recursive_mutex> lock(*ui_mutex_);
         if (!context_ || !model_ || !model_->overlay_visible.get()) return false;
-        return is_action(context_->GetElementAtPoint(
+        return PipWindowModel::is_action(context_->GetElementAtPoint(
+            {static_cast<float>(x), static_cast<float>(y)}));
+    };
+    callbacks.takes_keyboard_at = [this](int x, int y) {
+        std::lock_guard<std::recursive_mutex> lock(*ui_mutex_);
+        if (!context_ || !model_ || !model_->overlay_visible.get()) return false;
+        return PipWindowModel::takes_keyboard(context_->GetElementAtPoint(
             {static_cast<float>(x), static_cast<float>(y)}));
     };
     callbacks.on_input = [this](UINT message, WPARAM w_param, LPARAM l_param) {
@@ -78,7 +78,7 @@ bool PipWindowHost::ensure_surface() {
 
     Backend::RmlRendererSettings settings{};
     settings.vsync = false;           // the main window's present paces the render thread
-    settings.msaa_sample_count = 1;   // video plus three glyphs: no geometry to smooth
+    settings.msaa_sample_count = 1;   // video plus a few overlay controls: no geometry to smooth
     auto renderer = std::make_unique<PartiesRenderInterface_DX12>(window_.hwnd(), settings);
     if (!renderer || !*renderer) {
         LOG_ERROR("Picture-in-picture renderer creation failed");
@@ -112,7 +112,7 @@ bool PipWindowHost::ensure_surface() {
 
     model_ = std::make_unique<PipWindowModel>();
     model_->on_return = [this] { if (actions_.return_to_main) actions_.return_to_main(); };
-    model_->on_toggle_mute = [this] { if (actions_.toggle_mute) actions_.toggle_mute(); };
+    model_->on_volume_changed = [this](float volume) { if (actions_.set_volume) actions_.set_volume(volume); };
     model_->on_close = [this] { if (actions_.close) actions_.close(); };
     if (!model_->init(context_) || !(document_ = context_->LoadDocument("ui/pip.rml"))) {
         LOG_ERROR("Picture-in-picture document failed to load");
@@ -171,11 +171,13 @@ void PipWindowHost::fit_window_to_video() {
                          static_cast<int>(std::lround(pip_height_for_width(rect.width, aspect))));
 }
 
-void PipWindowHost::render(bool muted) {
+void PipWindowHost::render(float volume) {
     if (!context_ || !renderer_ || !window_.visible()) return;
     apply_pending_resize();
-    model_->overlay_visible = window_.cursor_inside();
-    model_->muted = muted;
+    // Stay visible while a control is in use, e.g. a volume drag that left
+    // the window or keyboard adjustment after the cursor moved away.
+    model_->overlay_visible = window_.cursor_inside() || window_.interacting();
+    model_->volume = volume;
     fit_window_to_video();
 
     context_->Update();

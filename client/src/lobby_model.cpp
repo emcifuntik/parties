@@ -3,6 +3,7 @@
 #include <RmlUi/Core/Event.h>
 
 #include <algorithm>
+#include <cmath>
 
 namespace parties::client {
 
@@ -173,7 +174,6 @@ void LobbyModel::build(rml::Builder& b) {
      .bind("stream_fps",        stream_fps)
      .bind("pip_stream_id",     pip_stream_id)
      .bind("pip_supported",     pip_supported)
-     .bind("stream_muted",      stream_muted)
      .bind("use_native_picker", use_native_picker)
      .bind("share_monitor_targets", share_monitor_targets)
      .bind("share_application_targets", share_application_targets)
@@ -478,9 +478,13 @@ void LobbyModel::build(rml::Builder& b) {
 
     b.on_event("stream_volume_changed", [this](Rml::Event& event, const Rml::VariantList&) {
         // data-event-change runs before the data-value binding commits the
-        // slider value, so the model still holds the previous one here.
-        stream_volume = event.GetParameter<float>("value", stream_volume.get());
-        if (on_stream_volume_changed) on_stream_volume_changed(stream_volume.get());
+        // slider value, so the model still holds the previous one here. A
+        // programmatic update (preference restore, the PiP volume control)
+        // dispatches change with the value the model already holds.
+        const float value = event.GetParameter<float>("value", stream_volume.get());
+        if (std::fabs(value - stream_volume.get()) < 0.005f) return;
+        stream_volume = value;
+        if (on_stream_volume_changed) on_stream_volume_changed(value);
     });
 
     b.on("toggle_stream_fullscreen", [this] {
@@ -493,10 +497,6 @@ void LobbyModel::build(rml::Builder& b) {
 
     b.on_args<int>("toggle_stream_pip", [this](int id) {
         if (on_toggle_stream_pip) on_toggle_stream_pip(id);
-    });
-
-    b.on("toggle_stream_mute", [this] {
-        if (on_toggle_stream_mute) on_toggle_stream_mute();
     });
 
     // Admin event callbacks

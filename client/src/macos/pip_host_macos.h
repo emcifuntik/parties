@@ -14,9 +14,9 @@ namespace parties::client { class VideoElement; }
 // What the macOS PiP host asks of the application.
 struct MacPipActions {
     std::function<void()> return_to_main;
-    std::function<void()> toggle_mute;
+    std::function<void(float)> set_volume;   // stream playback volume
     std::function<void()> close;
-    std::function<bool()> muted;
+    std::function<float()> volume;
     std::function<std::optional<parties::client::PipRect>()> load_geometry;
     std::function<void(const parties::client::PipRect&)> save_geometry;
 };

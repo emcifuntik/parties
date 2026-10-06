@@ -20,26 +20,40 @@ namespace {
 
 constexpr const char* kContextName = "picture-in-picture";
 
-bool is_action(Rml::Element* element)
+// The keys the overlay's volume control uses (see PipWindowModel).
+Rml::Input::KeyIdentifier pip_key(unsigned short key_code)
 {
-    for (; element; element = element->GetParentNode())
-        if (element->IsClassSet("pip-action")) return true;
-    return false;
+    switch (key_code) {
+    case 0x7B: return Rml::Input::KI_LEFT;
+    case 0x7C: return Rml::Input::KI_RIGHT;
+    case 0x7D: return Rml::Input::KI_DOWN;
+    case 0x7E: return Rml::Input::KI_UP;
+    case 0x74: return Rml::Input::KI_PRIOR;
+    case 0x79: return Rml::Input::KI_NEXT;
+    case 0x73: return Rml::Input::KI_HOME;
+    case 0x77: return Rml::Input::KI_END;
+    default:   return Rml::Input::KI_UNKNOWN;
+    }
 }
 
 } // namespace
 
 // The PiP surface. Overlay actions receive clicks; everywhere else the mouse
 // drags the panel. The panel is non-activating, so the first click counts.
+// Clicking a keyboard control (the volume slider) makes the panel key without
+// activating the application, so it receives the arrow keys.
 @interface PartiesPipView : MTKView
 @property (nonatomic, assign) Rml::Context* rmlContext;
 @property (nonatomic, assign) PipWindowModel* pipModel;
+// True between a press on an overlay action and its release.
+@property (nonatomic, readonly) BOOL pointerActive;
 @end
 
 @implementation PartiesPipView
 
 - (BOOL)acceptsFirstMouse:(NSEvent*)event { return YES; }
 - (BOOL)mouseDownCanMoveWindow { return NO; }
+- (BOOL)acceptsFirstResponder { return YES; }
 
 - (Rml::Vector2f)rmlPoint:(NSEvent*)event
 {
@@ -61,7 +75,13 @@ bool is_action(Rml::Element* element)
     const auto point = [self rmlPoint:event];
     _rmlContext->ProcessMouseMove((int)point.x, (int)point.y, 0);
     const bool overlay = _pipModel && _pipModel->overlay_visible.get();
-    if (overlay && is_action(_rmlContext->GetElementAtPoint(point))) {
+    Rml::Element* target = overlay ? _rmlContext->GetElementAtPoint(point) : nullptr;
+    if (PipWindowModel::is_action(target)) {
+        if (PipWindowModel::takes_keyboard(target)) {
+            [self.window makeKeyWindow];
+            [self.window makeFirstResponder:self];
+        }
+        _pointerActive = YES;
         _rmlContext->ProcessMouseButtonDown(0, 0);
         return;
     }
@@ -69,9 +89,31 @@ bool is_action(Rml::Element* element)
     [self.window performWindowDragWithEvent:event];
 }
 
+- (void)mouseDragged:(NSEvent*)event
+{
+    // AppKit keeps sending drags to this view outside the panel, so a slider
+    // drag follows the cursor anywhere.
+    if (!_rmlContext || !_pointerActive) return;
+    const auto point = [self rmlPoint:event];
+    _rmlContext->ProcessMouseMove((int)point.x, (int)point.y, 0);
+}
+
 - (void)mouseUp:(NSEvent*)event
 {
+    _pointerActive = NO;
     if (_rmlContext) _rmlContext->ProcessMouseButtonUp(0, 0);
+}
+
+- (void)keyDown:(NSEvent*)event
+{
+    const auto key = pip_key(event.keyCode);
+    if (_rmlContext && key != Rml::Input::KI_UNKNOWN) _rmlContext->ProcessKeyDown(key, 0);
+}
+
+- (void)keyUp:(NSEvent*)event
+{
+    const auto key = pip_key(event.keyCode);
+    if (_rmlContext && key != Rml::Input::KI_UNKNOWN) _rmlContext->ProcessKeyUp(key, 0);
 }
 
 @end
@@ -161,7 +203,9 @@ bool is_action(Rml::Element* element)
 
     _model = std::make_unique<PipWindowModel>();
     _model->on_return = [host] { if (host->_actions.return_to_main) host->_actions.return_to_main(); };
-    _model->on_toggle_mute = [host] { if (host->_actions.toggle_mute) host->_actions.toggle_mute(); };
+    _model->on_volume_changed = [host](float volume) {
+        if (host->_actions.set_volume) host->_actions.set_volume(volume);
+    };
     _model->on_close = [host] { if (host->_actions.close) host->_actions.close(); };
     if (!_model->init(_context) || !(_document = _context->LoadDocument("ui/pip.rml"))) {
         NSLog(@"[Parties] Picture-in-picture document failed to load");
@@ -250,8 +294,10 @@ bool is_action(Rml::Element* element)
 - (void)drawInMTKView:(MTKView*)view
 {
     if (!_renderer || !_context || !_panel.isVisible) return;
-    _model->overlay_visible = [_panel cursorInside];
-    _model->muted = _actions.muted && _actions.muted();
+    // Stay visible while a control is in use: a volume drag that left the
+    // panel, or keyboard adjustment while the panel is key.
+    _model->overlay_visible = [_panel cursorInside] || _view.pointerActive || _panel.panel.keyWindow;
+    if (_actions.volume) _model->volume = _actions.volume();
     [self fitPanelToVideo];
 
     MTLRenderPassDescriptor* pass = view.currentRenderPassDescriptor;
