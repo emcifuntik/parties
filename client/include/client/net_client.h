@@ -2,13 +2,17 @@
 
 #include <parties/types.h>
 #include <parties/protocol.h>
+#include <parties/net_common.h>
 #include <parties/thread_queue.h>
 
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
+
+namespace parties { class VideoSendAccounting; struct VideoFrameHeader; }
 
 namespace parties::client {
 
@@ -39,18 +43,15 @@ public:
     bool send_message(protocol::ControlMessageType type,
                       const uint8_t* payload, size_t payload_len);
 
-    // Send a voice/control packet as an unreliable datagram. `priority` puts it
-    // ahead of other queued datagrams (QUIC_SEND_FLAG_DGRAM_PRIORITY) — use it
-    // for voice so video never delays it.
-    bool send_data(const uint8_t* data, size_t len, bool priority = false);
+    bool send_data(const uint8_t* data, size_t len,
+                   DatagramPriority priority = DatagramPriority::Normal);
 
-    bool send_video(const uint8_t* data, size_t len);
+    bool send_stream1_record(const uint8_t* data, size_t len);
 
-    bool send_video_parts(const uint8_t* header, size_t header_len,
-                          const uint8_t* payload, size_t payload_len);
-
-    bool send_video_frame_stream(const uint8_t* header, size_t header_len,
-                                 const uint8_t* payload, size_t payload_len);
+    bool send_video_frame(protocol::VideoTransport transport,
+                          const VideoFrameHeader& header,
+                          std::span<const uint8_t> encoded,
+                          VideoSendAccounting& accounting);
 
     struct ConnectionStats {
         bool     valid = false;
@@ -72,8 +73,6 @@ public:
     std::function<void(const uint8_t* data, size_t len)>   on_data_received;
     std::function<void()>                                   on_disconnected;
     std::function<void(const uint8_t* ticket, size_t len)> on_resumption_ticket;
-
-    std::function<void(size_t bytes)>                       on_video_bytes_completed;
 
     std::function<void(uint32_t sender_id, std::vector<uint8_t>&& frame)> on_video_stream_frame;
     std::function<void(uint32_t sender_id, uint32_t frame_seq, bool have_seq)> on_video_stream_aborted;

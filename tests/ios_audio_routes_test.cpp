@@ -38,5 +38,26 @@ int main()
         "duplicate UIDs are removed and an input-only USB mic is not advertised as an output");
     routes = BuildIOSAudioRoutes({}, {}, {});
     check(routes.selected_input == 0 && routes.selected_output == 0, "empty session has valid defaults");
+
+    routes = BuildIOSAudioRoutes({mic, airpods}, mic, speaker);
+    check(ios_route_already_active(routes, routes.selected_input, IOSAudioRouteDirection::Input),
+        "republished input selection is an echo, not a route change");
+    check(ios_route_already_active(routes, routes.selected_output, IOSAudioRouteDirection::Output),
+        "republished output selection is an echo, not a route change");
+    check(!ios_route_already_active(routes, 2, IOSAudioRouteDirection::Input),
+        "picking the inactive AirPods input changes the route");
+    check(!ios_route_already_active(routes, 0, IOSAudioRouteDirection::Output),
+        "picking the system default output changes the route");
+    check(!ios_route_already_active(routes, 3, IOSAudioRouteDirection::Output)
+            && !ios_route_already_active(routes, -1, IOSAudioRouteDirection::Input),
+        "out-of-range picks are not treated as active");
+
+    routes = BuildIOSAudioRoutes({mic}, mic, {"airpods-a2dp", "AirPods Pro"});
+    const int current_output = routes.selected_output;
+    check(ios_route_already_active(routes, current_output, IOSAudioRouteDirection::Output),
+        "the routed output-only device is already active");
+    routes.selected_output = 0;
+    check(ios_route_already_active(routes, current_output, IOSAudioRouteDirection::Output),
+        "an output-only route cannot be selected, only observed");
     return failures ? 1 : 0;
 }

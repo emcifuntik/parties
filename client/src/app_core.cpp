@@ -1,4 +1,5 @@
 #include <client/app_core.h>
+#include <client/url.h>
 #ifdef _WIN32
 #include <client/auto_updater.h>
 #endif
@@ -53,6 +54,93 @@ int64_t steady_now_us() {
     return std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
+
+struct ScreenShareStarted {
+    uint32_t sharer_id = 0;
+    bool     late_join_replay = false;
+};
+
+std::optional<ScreenShareStarted> parse_screen_share_started(const uint8_t* data, size_t len) {
+    BinaryReader reader(data, len);
+    ScreenShareStarted started;
+    started.sharer_id = reader.read_u32();
+    if (reader.error()) return std::nullopt;
+    if (reader.has_remaining(sizeof(protocol::AnnouncedShareCodec)))
+        reader.skip<protocol::AnnouncedShareCodec>();
+    if (reader.has_remaining(sizeof(protocol::AnnouncedShareWidth)))
+        reader.skip<protocol::AnnouncedShareWidth>();
+    if (reader.has_remaining(sizeof(protocol::AnnouncedShareHeight)))
+        reader.skip<protocol::AnnouncedShareHeight>();
+    started.late_join_replay = reader.has_remaining(1) && reader.read_u8() != 0;
+    return started;
+}
+}
+
+ReorderOutcome ReorderBuffers::on_frame(UserId sharer, ParsedVideoFrame&& frame, int64_t now_us)
+{
+    std::lock_guard<std::mutex> lock(m_);
+    return buffers_[sharer].on_frame(std::move(frame), now_us);
+}
+
+KeyframeRequest ReorderBuffers::on_aborted(UserId sharer, uint32_t frame_seq)
+{
+    std::lock_guard<std::mutex> lock(m_);
+    return buffers_[sharer].on_frame_aborted(frame_seq);
+}
+
+std::vector<UserId> ReorderBuffers::poll(int64_t now_us)
+{
+    std::vector<UserId> needs_keyframe;
+    std::lock_guard<std::mutex> lock(m_);
+    for (auto& [sharer, buffer] : buffers_)
+        if (buffer.poll(now_us) == KeyframeRequest::Needed) needs_keyframe.push_back(sharer);
+    return needs_keyframe;
+}
+
+bool ReorderBuffers::wants_pli_retry(UserId sharer) const
+{
+    std::lock_guard<std::mutex> lock(m_);
+    const auto it = buffers_.find(sharer);
+    return it != buffers_.end() && it->second.wants_pli_retry();
+}
+
+void ReorderBuffers::erase(UserId sharer)
+{
+    std::lock_guard<std::mutex> lock(m_);
+    buffers_.erase(sharer);
+}
+
+void ReorderBuffers::clear()
+{
+    std::lock_guard<std::mutex> lock(m_);
+    buffers_.clear();
+}
+
+bool PliLimiter::admit_outgoing(UserId target, Clock::time_point now)
+{
+    std::lock_guard<std::mutex> lock(m_);
+    auto [it, inserted] = last_sent_.try_emplace(target, now);
+    if (inserted) return true;
+    if (now - it->second < std::chrono::milliseconds(VIDEO_PLI_COOLDOWN_MS)) return false;
+    it->second = now;
+    return true;
+}
+
+bool PliLimiter::admit_incoming(Clock::time_point now)
+{
+    std::lock_guard<std::mutex> lock(m_);
+    if (last_incoming_ &&
+        now - *last_incoming_ < std::chrono::milliseconds(VIDEO_KEYFRAME_REQUEST_COOLDOWN_MS))
+        return false;
+    last_incoming_ = now;
+    return true;
+}
+
+void PliLimiter::clear()
+{
+    std::lock_guard<std::mutex> lock(m_);
+    last_sent_.clear();
+    last_incoming_.reset();
 }
 
 AppCore::AppCore() = default;
@@ -62,9 +150,20 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
 {
     bridge_ = std::move(bridge);
 
-    pip_.attach(&model_, {bridge_.show_pip, bridge_.hide_pip,
-                          [this](UserId id) { send_pli(id); }});
-    model_.pip_supported = static_cast<bool>(bridge_.show_pip);
+    if (const auto* multi = multi_stream_video();
+        multi && (!multi->start_stream || !multi->stop_stream || !multi->wants_pli_retry)) {
+        LOG_ERROR("Multi-stream video bridge is missing a hook");
+        return false;
+    }
+
+    StreamPipController::Presenter presenter;
+    if (bridge_.pip) {
+        presenter.show = bridge_.pip->show;
+        presenter.hide = bridge_.pip->hide;
+    }
+    presenter.stream_moved = [this](UserId id) { send_pli(id); };
+    pip_.attach(&model_, std::move(presenter));
+    model_.pip_supported = bridge_.pip.has_value();
 
     if (!settings_.open(settings_path)) {
         LOG_ERROR("Failed to open settings: {}", settings_path);
@@ -81,7 +180,7 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
         pkt[0] = protocol::VOICE_PACKET_TYPE;
         std::memcpy(pkt.data() + 1, &seq, 2);
         std::memcpy(pkt.data() + 3, data, len);
-        net_.send_data(pkt.data(), pkt.size(), true);
+        net_.send_data(pkt.data(), pkt.size(), DatagramPriority::AheadOfVideo);
     };
 
     audio_.on_secondary_encoded_frame = [this](const uint8_t* data, size_t len) {
@@ -91,7 +190,7 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
         pkt[0] = protocol::VOICE2_PACKET_TYPE;
         std::memcpy(pkt.data() + 1, &seq, 2);
         std::memcpy(pkt.data() + 3, data, len);
-        net_.send_data(pkt.data(), pkt.size(), true);
+        net_.send_data(pkt.data(), pkt.size(), DatagramPriority::AheadOfVideo);
     };
 
     net_.on_disconnected = [this]() { disconnect_pending_.store(true, std::memory_order_release); };
@@ -117,12 +216,14 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
             std::memcpy(&seq, data + 5, 2);
             aux_mixer_.push_packet(sender_id, seq, data + 7, len - 7);
         } else if (type == protocol::VIDEO_FRAME_PACKET_TYPE) {
-            if (len < 19) return;
+            if (len < VIDEO_RELAY_PREFIX_BYTES) return;
             uint32_t sender_id;
             std::memcpy(&sender_id, data + 1, 4);
             if (sender_id == user_id_) return;
-            if (on_video_frame_received)
-                on_video_frame_received(sender_id, data + 5, len - 5);
+            auto frame = ParsedVideoFrame::parse(
+                std::vector<uint8_t>(data + VIDEO_RELAY_PREFIX_BYTES, data + len));
+            if (frame && on_video_frame_received)
+                on_video_frame_received(sender_id, std::move(*frame));
         } else if (type == protocol::STREAM_AUDIO_PACKET_TYPE) {
             if (len < 6) return;
             uint32_t sender_id;
@@ -131,23 +232,13 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
             if (sender_id == viewing_sharer_)
                 stream_audio_player_.push_packet(data + 5, len - 5);
         } else if (type == protocol::VIDEO_CONTROL_TYPE) {
-            if (len >= 2 && data[1] == protocol::VIDEO_CTL_PLI && bridge_.request_keyframe) {
-                bool allowed = false;
-                {
-                    std::lock_guard<std::mutex> lock(pli_mutex_);
-                    const auto now = std::chrono::steady_clock::now();
-                    if (now - keyframe_request_last_ >=
-                        std::chrono::milliseconds(VIDEO_KEYFRAME_REQUEST_COOLDOWN_MS)) {
-                        keyframe_request_last_ = now;
-                        allowed = true;
-                    }
-                }
-                if (allowed) bridge_.request_keyframe();
-            }
+            if (len >= 2 &&
+                static_cast<protocol::VideoControl>(data[1]) == protocol::VideoControl::Pli &&
+                bridge_.request_keyframe &&
+                pli_.admit_incoming(std::chrono::steady_clock::now()))
+                bridge_.request_keyframe();
         }
     };
-
-    net_.on_video_bytes_completed = [this](size_t bytes) { video_sender_.accounting().on_bytes_retired(bytes); };
 
     net_.on_video_stream_frame = [this](uint32_t sender_id, std::vector<uint8_t>&& frame) {
         route_video_stream_frame(sender_id, std::move(frame));
@@ -252,7 +343,7 @@ void AppCore::tick()
 
     feed_video_sender_stats();
     video_sender_.tick(steady_now_us());
-    poll_video_reorder_buffers();
+    for (UserId id : reorder_.poll(steady_now_us())) send_pli(id);
     retry_pending_plis();
 
 #ifdef _WIN32
@@ -334,10 +425,7 @@ void AppCore::tick()
 
 void AppCore::apply_sleep_inhibit(bool wanted)
 {
-    const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
-
-    switch (sleep_inhibitor_.update(wanted, now_ms)) {
+    switch (sleep_inhibitor_.update(wanted, std::chrono::steady_clock::now())) {
     case SleepInhibitAction::Acquire:
         if (bridge_.set_keep_awake) bridge_.set_keep_awake(true);
         break;
@@ -455,6 +543,8 @@ void AppCore::load_saved_prefs()
             }
         }
     }
+
+    if (bridge_.on_audio_devices_published) bridge_.on_audio_devices_published();
 }
 
 void AppCore::load_or_generate_identity(const std::string& username_hint)
@@ -765,15 +855,8 @@ void AppCore::on_disconnect_cleanup()
     server_protocol_version_ = protocol::PROTOCOL_VERSION_ASSUMED_LEGACY;
 
     video_sender_.on_connection_lost();
-    {
-        std::lock_guard<std::mutex> lock(reorder_mutex_);
-        reorder_buffers_.clear();
-    }
-    {
-        std::lock_guard<std::mutex> lock(pli_mutex_);
-        pli_last_sent_.clear();
-        keyframe_request_last_ = {};
-    }
+    reorder_.clear();
+    pli_.clear();
 
     audio_.stop();
     mixer_.clear();
@@ -1002,24 +1085,38 @@ void AppCore::watch_sharer(UserId id)
         model_.show_voice_channel(static_cast<int>(current_channel_));
         return;
     }
+    begin_single_watch(id);
+}
 
-    if (viewing_sharer_ != 0 && viewing_sharer_ != id && bridge_.stop_video_stream)
-        bridge_.stop_video_stream(viewing_sharer_);
-    {
-        std::lock_guard<std::mutex> lock(watched_mutex_);
-        watched_.clear();
-        watched_.insert(id);
-    }
-    viewing_sharer_ = id;
+void AppCore::begin_single_watch(UserId sharer)
+{
+    viewing_sharer_ = sharer;
     awaiting_keyframe_ = true;
-    if (bridge_.start_video_stream) bridge_.start_video_stream(id);
-
-    uint32_t id32 = id;
+    uint32_t id32 = sharer;
     net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_VIEW,
                       reinterpret_cast<const uint8_t*>(&id32), 4);
-    send_pli(id);
-    model_.viewing_sharer_id = static_cast<int>(id);
-    rebuild_watched_model();
+    send_pli(sharer);
+    set_single_watched(sharer);
+}
+
+void AppCore::end_single_watch()
+{
+    viewing_sharer_ = 0;
+    awaiting_keyframe_ = false;
+    uint32_t zero = 0;
+    net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_VIEW,
+                      reinterpret_cast<const uint8_t*>(&zero), 4);
+    set_single_watched(0);
+}
+
+SingleWatchAdmit AppCore::admit_single_watch_frame(UserId sender, const VideoFrameHeader& header)
+{
+    if (sender != viewing_sharer_.load()) return SingleWatchAdmit::NotWatched;
+    if (header.keyframe) {
+        awaiting_keyframe_ = false;
+        return SingleWatchAdmit::Decode;
+    }
+    return awaiting_keyframe_.load() ? SingleWatchAdmit::DropUntilKeyframe : SingleWatchAdmit::Decode;
 }
 
 void AppCore::add_watch(UserId id)
@@ -1030,7 +1127,8 @@ void AppCore::add_watch(UserId id)
             return sharer.id == static_cast<int>(id);
         }))
         return;
-    if (!multi_stream()) { watch_sharer(id); return; }
+    auto* multi = multi_stream_video();
+    if (!multi) { watch_sharer(id); return; }
 
     bool added;
     {
@@ -1044,7 +1142,7 @@ void AppCore::add_watch(UserId id)
     BinaryWriter w; w.write_u32(id); w.write_u8(1);
     net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_VIEW,
                       w.data().data(), w.data().size());
-    if (bridge_.start_video_stream) bridge_.start_video_stream(id);
+    multi->start_stream(id);
     send_pli(id);
     viewing_sharer_ = id;
     model_.viewing_sharer_id = static_cast<int>(id);
@@ -1064,8 +1162,8 @@ void AppCore::remove_watch(UserId id)
     BinaryWriter w; w.write_u32(id); w.write_u8(0);
     net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_VIEW,
                       w.data().data(), w.data().size());
-    if (bridge_.stop_video_stream) bridge_.stop_video_stream(id);
-    erase_reorder_buffer(id);
+    if (auto* multi = multi_stream_video()) multi->stop_stream(id);
+    reorder_.erase(id);
 
     if (empty_now) {
         viewing_sharer_ = 0;
@@ -1160,12 +1258,9 @@ void AppCore::stop_watching()
         to_stop.assign(watched_.begin(), watched_.end());
         watched_.clear();
     }
-    for (UserId id : to_stop)
-        if (bridge_.stop_video_stream) bridge_.stop_video_stream(id);
-    {
-        std::lock_guard<std::mutex> lock(reorder_mutex_);
-        reorder_buffers_.clear();
-    }
+    if (auto* multi = multi_stream_video())
+        for (UserId id : to_stop) multi->stop_stream(id);
+    reorder_.clear();
 
     uint32_t zero = 0;
     net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_VIEW,
@@ -1213,20 +1308,12 @@ void AppCore::rebuild_watched_model()
 void AppCore::send_pli(UserId target)
 {
     if (target == 0 || target == user_id_) return;
-    {
-        std::lock_guard<std::mutex> lock(pli_mutex_);
-        const auto now = std::chrono::steady_clock::now();
-        auto it = pli_last_sent_.find(target);
-        if (it != pli_last_sent_.end() &&
-            now - it->second < std::chrono::milliseconds(VIDEO_PLI_COOLDOWN_MS))
-            return;
-        pli_last_sent_[target] = now;
-    }
+    if (!pli_.admit_outgoing(target, std::chrono::steady_clock::now())) return;
     uint8_t pkt[6];
     pkt[0] = protocol::VIDEO_CONTROL_TYPE;
-    pkt[1] = protocol::VIDEO_CTL_PLI;
+    pkt[1] = static_cast<uint8_t>(protocol::VideoControl::Pli);
     std::memcpy(pkt + 2, &target, 4);
-    net_.send_video(pkt, sizeof(pkt));
+    net_.send_stream1_record(pkt, sizeof(pkt));
 }
 
 void AppCore::retry_pending_plis()
@@ -1237,18 +1324,13 @@ void AppCore::retry_pending_plis()
         if (watched_.empty()) return;
         ids.assign(watched_.begin(), watched_.end());
     }
+    const auto* multi = multi_stream_video();
     for (UserId id : ids) {
-        bool awaiting_ingress = false;
-        {
-            std::lock_guard<std::mutex> lock(reorder_mutex_);
-            const auto it = reorder_buffers_.find(id);
-            awaiting_ingress = it != reorder_buffers_.end() && it->second.wants_pli_retry();
-        }
-        const bool awaiting = awaiting_ingress || (bridge_.stream_awaiting_keyframe
-            ? bridge_.stream_awaiting_keyframe(id)
-            : (awaiting_keyframe_.load(std::memory_order_relaxed) &&
-               viewing_sharer_.load(std::memory_order_relaxed) == id));
-        if (awaiting) send_pli(id);
+        const bool decoder_waits = multi
+            ? multi->wants_pli_retry(id)
+            : awaiting_keyframe_.load(std::memory_order_relaxed) &&
+              viewing_sharer_.load(std::memory_order_relaxed) == id;
+        if (reorder_.wants_pli_retry(id) || decoder_waits) send_pli(id);
     }
 }
 
@@ -1260,12 +1342,9 @@ void AppCore::clear_all_sharers()
         to_stop.assign(watched_.begin(), watched_.end());
         watched_.clear();
     }
-    for (UserId id : to_stop)
-        if (bridge_.stop_video_stream) bridge_.stop_video_stream(id);
-    {
-        std::lock_guard<std::mutex> lock(reorder_mutex_);
-        reorder_buffers_.clear();
-    }
+    if (auto* multi = multi_stream_video())
+        for (UserId id : to_stop) multi->stop_stream(id);
+    reorder_.clear();
 
     viewing_sharer_ = 0;
     awaiting_keyframe_ = false;
@@ -1281,11 +1360,11 @@ void AppCore::clear_all_sharers()
     model_.router.leave_streams();
 }
 
-void AppCore::reset_video_sender(uint32_t target_bitrate_bps)
+void AppCore::begin_video_share(uint32_t ceiling_bitrate_bps)
 {
     video_frame_number_.store(0, std::memory_order_relaxed);
     VideoSendControllerConfig cfg;
-    cfg.ceiling_bitrate_bps = std::clamp(target_bitrate_bps, VIDEO_MIN_BITRATE, VIDEO_MAX_BITRATE);
+    cfg.ceiling_bitrate_bps = std::clamp(ceiling_bitrate_bps, VIDEO_MIN_BITRATE, VIDEO_MAX_BITRATE);
     cfg.floor_bitrate_bps = (std::min)(cfg.floor_bitrate_bps, cfg.ceiling_bitrate_bps);
     video_sender_.start_share(cfg);
     LOG_INFO("Video sender reset: target {} kbps, {} transport",
@@ -1294,25 +1373,9 @@ void AppCore::reset_video_sender(uint32_t target_bitrate_bps)
                  ? "per-frame streams" : "legacy stream 1");
 }
 
-void AppCore::set_video_target_bitrate(uint32_t target_bitrate_bps)
+void AppCore::set_video_ceiling_bitrate(uint32_t bps)
 {
-    video_sender_.set_ceiling_bitrate(
-        std::clamp(target_bitrate_bps, VIDEO_MIN_BITRATE, VIDEO_MAX_BITRATE));
-}
-
-bool AppCore::video_admit_frame()
-{
-    return video_sender_.accounting().admit_frame();
-}
-
-std::optional<uint32_t> AppCore::take_video_bitrate_update()
-{
-    return video_sender_.encode_feedback().take_bitrate_update();
-}
-
-bool AppCore::take_video_keyframe_request()
-{
-    return video_sender_.encode_feedback().take_keyframe_request();
+    video_sender_.set_ceiling_bitrate(std::clamp(bps, VIDEO_MIN_BITRATE, VIDEO_MAX_BITRATE));
 }
 
 AppCore::VideoSendResult AppCore::send_video_frame(const uint8_t* encoded, size_t len, bool keyframe,
@@ -1329,32 +1392,9 @@ AppCore::VideoSendResult AppCore::send_video_frame(const uint8_t* encoded, size_
     hdr.height    = height;
     hdr.codec     = codec;
 
-    // Charge the bytes BEFORE handing them to MsQuic and undo on a synchronous
-    // failure. The transport's SEND_COMPLETE (which reports exactly the same
-    // count, canceled or not) can run on the worker thread before a send call
-    // returns — e.g. an asynchronous stream-start failure cancels the queued
-    // send immediately — and a completion that lands before its enqueue would
-    // clamp at zero and leave the counter permanently over-counted.
-    size_t accounted = 0;
-    if (protocol::protocol_supports_frame_streams(server_protocol_version_)) {
-        uint8_t h[VIDEO_FRAME_HEADER_SIZE];
-        hdr.write(h);
-        accounted = 1 + sizeof(h) + len;
-        video_sender_.accounting().on_bytes_queued(accounted);
-        result.sent = net_.send_video_frame_stream(h, sizeof(h), encoded, len);
-    } else {
-        uint8_t pkt[1 + VIDEO_FRAME_HEADER_SIZE];
-        pkt[0] = protocol::VIDEO_FRAME_PACKET_TYPE;
-        hdr.write(std::span(pkt).subspan<1>());
-        accounted = 4 + sizeof(pkt) + len;
-        video_sender_.accounting().on_bytes_queued(accounted);
-        result.sent = net_.send_video_parts(pkt, sizeof(pkt), encoded, len);
-    }
-
-    if (!result.sent) {
-        video_sender_.accounting().on_bytes_retired(accounted);
-        video_sender_.accounting().on_send_failed();
-    }
+    result.sent = net_.send_video_frame(protocol::video_transport_for(server_protocol_version_),
+                                        hdr, {encoded, len}, video_sender_.accounting());
+    if (!result.sent) video_sender_.accounting().on_send_failed();
 
     if (keyframe)
         LOG_DEBUG("Video keyframe {} ({} bytes, {}x{}) {}", result.frame_seq, len, width, height,
@@ -1378,55 +1418,27 @@ void AppCore::feed_video_sender_stats()
     });
 }
 
-void AppCore::route_video_stream_frame(uint32_t sender_id, std::vector<uint8_t>&& frame)
+void AppCore::route_video_stream_frame(UserId sender, std::vector<uint8_t>&& wire)
 {
-    if (sender_id == user_id_ || !is_watching(sender_id)) return;
-    auto parsed = ParsedVideoFrame::parse(std::move(frame));
-    if (!parsed) return;
+    if (sender == user_id_ || !is_watching(sender)) return;
+    auto frame = ParsedVideoFrame::parse(std::move(wire));
+    if (!frame) return;
+    dispatch_video(sender, reorder_.on_frame(sender, std::move(*frame), steady_now_us()));
+}
 
-    const int64_t now = steady_now_us();
-    ReorderOutcome out;
-    {
-        std::lock_guard<std::mutex> lock(reorder_mutex_);
-        out = reorder_buffers_[sender_id].on_frame(std::move(*parsed), now);
-    }
+void AppCore::dispatch_video(UserId sender, ReorderOutcome&& outcome)
+{
     if (on_video_frame_received)
-        for (const auto& f : out.deliver)
-            on_video_frame_received(sender_id, f.wire().data(), f.wire_size());
-    if (out.keyframe == KeyframeRequest::Needed) send_pli(sender_id);
+        for (auto& frame : outcome.deliver)
+            on_video_frame_received(sender, std::move(frame));
+    if (outcome.keyframe == KeyframeRequest::Needed) send_pli(sender);
 }
 
-void AppCore::route_video_stream_aborted(uint32_t sender_id, uint32_t frame_seq, bool have_seq)
+void AppCore::route_video_stream_aborted(UserId sender, uint32_t frame_seq, bool have_seq)
 {
-    if (sender_id == user_id_ || !is_watching(sender_id)) return;
-    if (!have_seq) {
-        send_pli(sender_id);
-        return;
-    }
-    KeyframeRequest request;
-    {
-        std::lock_guard<std::mutex> lock(reorder_mutex_);
-        request = reorder_buffers_[sender_id].on_frame_aborted(frame_seq);
-    }
-    if (request == KeyframeRequest::Needed) send_pli(sender_id);
-}
-
-void AppCore::poll_video_reorder_buffers()
-{
-    std::vector<UserId> keyframe_requests;
-    {
-        std::lock_guard<std::mutex> lock(reorder_mutex_);
-        const int64_t now = steady_now_us();
-        for (auto& [sender_id, buffer] : reorder_buffers_)
-            if (buffer.poll(now) == KeyframeRequest::Needed) keyframe_requests.push_back(sender_id);
-    }
-    for (UserId id : keyframe_requests) send_pli(id);
-}
-
-void AppCore::erase_reorder_buffer(UserId sharer_id)
-{
-    std::lock_guard<std::mutex> lock(reorder_mutex_);
-    reorder_buffers_.erase(sharer_id);
+    if (sender == user_id_ || !is_watching(sender)) return;
+    if (!have_seq || reorder_.on_aborted(sender, frame_seq) == KeyframeRequest::Needed)
+        send_pli(sender);
 }
 
 void AppCore::send_voice_state()
@@ -1469,7 +1481,7 @@ void AppCore::handle_server_message(protocol::ControlMessageType type,
     case protocol::ControlMessageType::SCREEN_SHARE_STOPPED:
         on_screen_share_stopped(data, len); break;
     case protocol::ControlMessageType::SCREEN_SHARE_DENIED:
-        on_screen_share_denied(data, len); break;
+        on_screen_share_denied(); break;
     case protocol::ControlMessageType::SCREEN_SHARE_VIEWER:
         on_screen_share_viewer(data, len); break;
     case protocol::ControlMessageType::ADMIN_RESULT:
@@ -1506,8 +1518,7 @@ void AppCore::on_auth_response(const uint8_t* data, size_t len)
 {
     BinaryReader reader(data, len);
     user_id_ = reader.read_u32();
-    uint8_t session_token[32];
-    reader.read_bytes(session_token, 32);
+    reader.skip<protocol::ReservedSessionToken>();
     role_ = reader.read_u8();
     std::string server_name = reader.read_string();
     server_protocol_version_ = reader.remaining() >= 2
@@ -1528,8 +1539,6 @@ void AppCore::on_auth_response(const uint8_t* data, size_t len)
                           net_.get_server_fingerprint(), username_, server_password_);
     server_password_.clear();
     refresh_server_list();
-
-    if (bridge_.on_authenticated) bridge_.on_authenticated();
 
     model_.server_name          = Rml::String(server_name);
     if (server_name.size() >= 2)
@@ -1570,6 +1579,7 @@ void AppCore::on_auth_response(const uint8_t* data, size_t len)
         play_devices.push_back({Rml::String(d.name), d.index});
     model_.capture_devices.notify();
     model_.playback_devices.notify();
+    if (bridge_.on_audio_devices_published) bridge_.on_audio_devices_published();
 
     if (rejoin_pending_) {
         rejoin_pending_ = false;
@@ -1600,10 +1610,9 @@ void AppCore::on_channel_list(const uint8_t* data, size_t len)
         uint32_t ch_id    = reader.read_u32();
         std::string name  = reader.read_string();
         uint32_t max_u    = reader.read_u32();
-        uint32_t sort_ord = reader.read_u32();
+        reader.skip<protocol::ChannelSortOrder>();
         uint32_t user_cnt = reader.read_u32();
         if (reader.error()) break;
-        (void)sort_ord;
 
         ChannelInfo ch;
         ch.id         = static_cast<int>(ch_id);
@@ -1817,17 +1826,11 @@ void AppCore::on_user_role_changed(const uint8_t* data, size_t len)
 
 void AppCore::on_screen_share_started(const uint8_t* data, size_t len)
 {
-    BinaryReader reader(data, len);
-    uint32_t sharer_id = reader.read_u32();
-    if (reader.error()) return;
-    const uint8_t  codec  = reader.has_remaining(1) ? reader.read_u8()  : 0;
-    const uint16_t width  = reader.has_remaining(2) ? reader.read_u16() : 0;
-    const uint16_t height = reader.has_remaining(2) ? reader.read_u16() : 0;
-    const uint8_t  replay = reader.has_remaining(1) ? reader.read_u8()  : 0;
-    (void)codec; (void)width; (void)height;
+    const auto started = parse_screen_share_started(data, len);
+    if (!started) return;
 
-    if (!model_.add_channel_sharer(static_cast<int>(sharer_id))) return;
-    if (sharer_id != user_id_ && replay == 0 && bridge_.play_sound)
+    if (!model_.add_channel_sharer(static_cast<int>(started->sharer_id))) return;
+    if (started->sharer_id != user_id_ && !started->late_join_replay && bridge_.play_sound)
         bridge_.play_sound(SoundPlayer::Effect::StreamStarted);
     rebuild_watched_model();
 }
@@ -1846,7 +1849,7 @@ void AppCore::on_screen_share_stopped(const uint8_t* data, size_t len)
         rebuild_watched_model();
 }
 
-void AppCore::on_screen_share_denied(const uint8_t*, size_t)
+void AppCore::on_screen_share_denied()
 {
     model_.is_sharing = false;
     if (bridge_.stop_screen_share) bridge_.stop_screen_share();
@@ -1867,12 +1870,11 @@ void AppCore::on_screen_share_viewer(const uint8_t* data, size_t len)
 void AppCore::on_admin_result(const uint8_t* data, size_t len)
 {
     BinaryReader reader(data, len);
-    uint8_t ok      = reader.read_u8();
+    reader.skip<protocol::AdminResultStatus>();
     std::string msg = reader.read_string();
     if (!msg.empty()) {
         model_.admin_message = Rml::String(msg);
     }
-    (void)ok;
 }
 
 void AppCore::on_server_error(const uint8_t* data, size_t len)
@@ -2112,23 +2114,37 @@ void AppCore::setup_model_callbacks()
         model_.deafen_binding = true; model_.mute_binding = false; model_.ptt_binding = false;
     };
 
-    model_.on_toggle_share = [this]() {
-        if (model_.is_sharing) {
-            if (bridge_.stop_screen_share) bridge_.stop_screen_share();
-        } else {
-            if (bridge_.open_share_picker) bridge_.open_share_picker();
-        }
+    auto toggle_share = [this](std::function<void()> start) {
+        return [this, start = std::move(start)]() {
+            if (model_.is_sharing) {
+                if (bridge_.stop_screen_share) bridge_.stop_screen_share();
+            } else if (start) {
+                start();
+            }
+        };
     };
-    model_.on_toggle_audio_share = [this]() {
-        if (model_.is_audio_sharing) {
-            if (bridge_.stop_audio_share) bridge_.stop_audio_share();
-        } else {
-            if (bridge_.open_audio_share_picker) bridge_.open_audio_share_picker();
-        }
+    auto toggle_audio_share = [this](std::function<void()> start) {
+        return [this, start = std::move(start)]() {
+            if (model_.is_audio_sharing) {
+                if (bridge_.stop_audio_share) bridge_.stop_audio_share();
+            } else if (start) {
+                start();
+            }
+        };
     };
-    model_.on_cancel_share = [this]() {
-        model_.router.back();
-    };
+    auto router_back = [this]() { model_.router.back(); };
+    if (const auto* picker = std::get_if<PickerShareFlow>(&bridge_.share)) {
+        model_.on_toggle_share       = toggle_share(picker->open_picker);
+        model_.on_toggle_audio_share = toggle_audio_share(picker->open_audio_picker);
+        model_.on_cancel_share       = picker->cancel_picker;
+    } else if (const auto* native = std::get_if<NativeShareFlow>(&bridge_.share)) {
+        model_.on_toggle_share       = toggle_share(native->start_native_share);
+        model_.on_toggle_audio_share = toggle_audio_share(native->start_native_audio_share);
+        model_.on_start_native_share = native->start_native_share;
+        model_.on_cancel_share       = router_back;
+    } else {
+        model_.on_cancel_share       = router_back;
+    }
 
     model_.on_watch_sharer  = [this](int id) { add_watch(static_cast<UserId>(id)); };
     model_.on_toggle_watch  = [this](int id) { toggle_watch(static_cast<UserId>(id)); };
@@ -2658,8 +2674,8 @@ void AppCore::setup_chat_model_callbacks()
 
         BinaryWriter writer;
         writer.write_u32(static_cast<uint32_t>(channel_id));
-        writer.write_u64(0);
-        writer.write_u16(30);
+        writer.write_u64(protocol::CHAT_BEFORE_ID_LATEST);
+        writer.write_u16(protocol::CHAT_PAGE_SIZE);
         net_.send_message(protocol::ControlMessageType::CHAT_HISTORY_REQ,
                          writer.data().data(), writer.data().size());
     };
@@ -2707,7 +2723,7 @@ void AppCore::setup_chat_model_callbacks()
         BinaryWriter writer;
         writer.write_u32(static_cast<uint32_t>(chat_model_.active_channel));
         writer.write_u64(static_cast<uint64_t>(chat_model_.messages.get().front().id));
-        writer.write_u16(30);
+        writer.write_u16(protocol::CHAT_PAGE_SIZE);
         net_.send_message(protocol::ControlMessageType::CHAT_HISTORY_REQ,
                          writer.data().data(), writer.data().size());
     };
@@ -2745,8 +2761,8 @@ void AppCore::setup_chat_model_callbacks()
         BinaryWriter writer;
         writer.write_u32(static_cast<uint32_t>(chat_model_.active_channel));
         writer.write_string(std::string(chat_model_.search_query));
-        writer.write_u64(0);
-        writer.write_u16(30);
+        writer.write_u64(protocol::CHAT_BEFORE_ID_LATEST);
+        writer.write_u16(protocol::CHAT_PAGE_SIZE);
         net_.send_message(protocol::ControlMessageType::CHAT_SEARCH,
                          writer.data().data(), writer.data().size());
     };
@@ -2777,7 +2793,7 @@ void AppCore::setup_chat_model_callbacks()
     };
 
     chat_model_.on_open_url = [](const std::string& url) {
-        if (url.find("http://") != 0 && url.find("https://") != 0) return;
+        if (!is_http_url(url)) return;
 #ifdef _WIN32
         ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 #elif defined(__APPLE__)
@@ -2923,9 +2939,10 @@ static Rml::Vector<TextSegment> split_text_with_urls(const Rml::String& text) {
     Rml::Vector<TextSegment> segments;
     size_t pos = 0;
     while (pos < text.size()) {
-        size_t http_pos = text.find("http://", pos);
-        size_t https_pos = text.find("https://", pos);
-        size_t url_start = (std::min)(http_pos, https_pos);
+        size_t url_start = text.find("http", pos);
+        while (url_start != Rml::String::npos &&
+               !is_http_url(std::string_view(text).substr(url_start)))
+            url_start = text.find("http", url_start + 1);
         if (url_start == Rml::String::npos) {
             if (pos < text.size())
                 segments.push_back({text.substr(pos), false});
@@ -2948,11 +2965,16 @@ static Rml::Vector<TextSegment> split_text_with_urls(const Rml::String& text) {
     return segments;
 }
 
-static ChatMessage parse_chat_message(BinaryReader& reader, uint32_t my_user_id = 0) {
-    ChatMessage msg;
+struct ParsedChatMessage {
+    ChatMessage message;
+    ChannelId   channel_id = 0;
+};
+
+static ParsedChatMessage parse_chat_message(BinaryReader& reader, uint32_t my_user_id) {
+    ParsedChatMessage parsed;
+    ChatMessage& msg = parsed.message;
     msg.id = static_cast<int64_t>(reader.read_u64());
-    uint32_t channel_id = reader.read_u32();
-    (void)channel_id;
+    parsed.channel_id = reader.read_u32();
     msg.sender_id = static_cast<int>(reader.read_u32());
     msg.sender_name = Rml::String(reader.read_string());
     msg.initials = make_initials(msg.sender_name);
@@ -2982,13 +3004,12 @@ static ChatMessage parse_chat_message(BinaryReader& reader, uint32_t my_user_id 
         else
             att.size_str = Rml::String(std::format("{:.1f} MB", fsize / (1024.0 * 1024.0)));
 
-        std::string mime = reader.read_string();
-        (void)mime;
+        reader.skip<protocol::AttachmentMime>();
         att.uploaded = reader.read_u8() != 0;
         msg.attachments.push_back(std::move(att));
     }
 
-    return msg;
+    return parsed;
 }
 
 void AppCore::on_chat_channel_list(const uint8_t* data, size_t len) {
@@ -3002,7 +3023,7 @@ void AppCore::on_chat_channel_list(const uint8_t* data, size_t len) {
         TextChannel tc;
         tc.id = static_cast<int>(reader.read_u32());
         tc.name = Rml::String(reader.read_string());
-        reader.read_u32();
+        reader.skip<protocol::ChannelSortOrder>();
         channels.push_back(std::move(tc));
     }
     chat_model_.text_channels.notify();
@@ -3010,12 +3031,8 @@ void AppCore::on_chat_channel_list(const uint8_t* data, size_t len) {
 
 void AppCore::on_chat_message(const uint8_t* data, size_t len) {
     BinaryReader reader(data, len);
-    auto msg = parse_chat_message(reader, user_id_);
+    auto [msg, channel_id] = parse_chat_message(reader, user_id_);
     if (reader.error()) return;
-
-    BinaryReader peek(data, len);
-    peek.read_u64();
-    uint32_t channel_id = peek.read_u32();
 
     if (msg.sender_id == static_cast<int>(user_id_) && !pending_uploads_.empty()) {
         size_t upload_count = (std::min)(pending_uploads_.size(), msg.attachments.size());
@@ -3039,11 +3056,11 @@ void AppCore::on_chat_message(const uint8_t* data, size_t len) {
         }
         if (!found)
             msgs.push_back(std::move(msg));
-        if (msgs.size() > 30) {
+        if (msgs.size() > protocol::CHAT_PAGE_SIZE) {
             msgs.erase(
                 msgs.begin(),
                 msgs.begin() +
-                    static_cast<int>(msgs.size() - 30));
+                    static_cast<int>(msgs.size() - protocol::CHAT_PAGE_SIZE));
             chat_model_.has_more_history = true;
         }
         assign_date_labels(msgs);
@@ -3072,7 +3089,7 @@ void AppCore::on_chat_history_resp(const uint8_t* data, size_t len) {
 
     Rml::Vector<ChatMessage> batch;
     for (uint16_t i = 0; i < count && !reader.error(); i++)
-        batch.push_back(parse_chat_message(reader, user_id_));
+        batch.push_back(parse_chat_message(reader, user_id_).message);
 
     auto& msgs = chat_model_.messages.silent();
     if (!batch.empty()) {
@@ -3103,27 +3120,27 @@ void AppCore::on_chat_message_deleted(const uint8_t* data, size_t len) {
 
 void AppCore::on_chat_search_resp(const uint8_t* data, size_t len) {
     BinaryReader reader(data, len);
-    reader.read_u32();
+    reader.skip<ChannelId>();
     uint16_t count = reader.read_u16();
     if (reader.error()) return;
 
     auto& results = chat_model_.search_results.silent();
     results.clear();
     for (uint16_t i = 0; i < count && !reader.error(); i++)
-        results.push_back(parse_chat_message(reader, user_id_));
+        results.push_back(parse_chat_message(reader, user_id_).message);
     chat_model_.search_results.notify();
 }
 
 void AppCore::on_chat_pinned_resp(const uint8_t* data, size_t len) {
     BinaryReader reader(data, len);
-    reader.read_u32();
+    reader.skip<ChannelId>();
     uint16_t count = reader.read_u16();
     if (reader.error()) return;
 
     auto& pinned = chat_model_.pinned_messages.silent();
     pinned.clear();
     for (uint16_t i = 0; i < count && !reader.error(); i++)
-        pinned.push_back(parse_chat_message(reader, user_id_));
+        pinned.push_back(parse_chat_message(reader, user_id_).message);
     chat_model_.pinned_messages.notify();
 }
 

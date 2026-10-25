@@ -93,7 +93,7 @@ private:
     void stop_screen_share();
     void start_application_audio_share(int target_index);
     void stop_application_audio_share();
-    void on_video_frame_received(uint32_t sender_id, const uint8_t* data, size_t len);
+    void on_video_frame_received(UserId sender, ParsedVideoFrame&& frame);
 
     void start_video_stream(UserId sharer_id);
     void stop_video_stream(UserId sharer_id);

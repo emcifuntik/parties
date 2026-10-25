@@ -168,7 +168,7 @@ void Server::process_data_packets() {
                 }
             }
             if (!targets.empty())
-                quic_.send_to_many(targets, fwd.data(), fwd.size(), true);
+                quic_.send_to_many(targets, fwd.data(), fwd.size(), DatagramPriority::AheadOfVideo);
         }
         else if (pkt.packet_type == protocol::VIDEO_FRAME_PACKET_TYPE) {
             if (auto session = quic_.get_session(pkt.session_id))
@@ -462,8 +462,8 @@ void Server::handle_message(const IncomingMessage& msg) {
 
         BinaryWriter writer;
         writer.write_u32(session->user_id);
-        const uint8_t reserved_session_token[32]{};
-        writer.write_bytes(reserved_session_token, sizeof(reserved_session_token));
+        const protocol::ReservedSessionToken reserved_session_token{};
+        writer.write_bytes(reserved_session_token.data(), reserved_session_token.size());
         writer.write_u8(static_cast<uint8_t>(session->role));
         writer.write_string(config_.server_name);
         writer.write_u16(protocol::PROTOCOL_VERSION);
@@ -1547,7 +1547,7 @@ void Server::handle_video_control(const DataPacket& pkt) {
     if (pkt.data.size() < 2) return;
     uint8_t subtype = pkt.data[0];
 
-    if (subtype == protocol::VIDEO_CTL_PLI) {
+    if (static_cast<protocol::VideoControl>(subtype) == protocol::VideoControl::Pli) {
         if (pkt.data.size() < 5) return;
         uint32_t target_id;
         std::memcpy(&target_id, pkt.data.data() + 1, 4);
@@ -1585,10 +1585,10 @@ void Server::request_keyframe_from_sharer(UserId sharer_user_id, UserId requeste
 
     uint8_t pli[6];
     pli[0] = protocol::VIDEO_CONTROL_TYPE;
-    pli[1] = protocol::VIDEO_CTL_PLI;
+    pli[1] = static_cast<uint8_t>(protocol::VideoControl::Pli);
     uint32_t requester_id = requester;
     std::memcpy(pli + 2, &requester_id, 4);
-    quic_.send_datagram(sharer->id, pli, sizeof(pli), true);
+    quic_.send_datagram(sharer->id, pli, sizeof(pli), DatagramPriority::AheadOfVideo);
 }
 
 void Server::notify_viewer_change(UserId sharer_user_id, UserId viewer_user_id, bool watching) {

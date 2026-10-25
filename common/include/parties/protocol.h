@@ -1,6 +1,9 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
+#include <string>
+#include <string_view>
 
 namespace parties::protocol {
 
@@ -27,6 +30,12 @@ constexpr uint16_t PROTOCOL_VERSION_ASSUMED_LEGACY = (1u << 8) | 1u;
 constexpr uint16_t PROTOCOL_VERSION_FRAME_STREAMS  = (1u << 8) | 2u;
 constexpr bool protocol_supports_frame_streams(uint16_t version) {
     return protocol_major(version) == 1 && version >= PROTOCOL_VERSION_FRAME_STREAMS;
+}
+
+enum class VideoTransport : uint8_t { LegacyStream1, PerFrameStreams };
+constexpr VideoTransport video_transport_for(uint16_t peer_protocol_version) {
+    return protocol_supports_frame_streams(peer_protocol_version) ? VideoTransport::PerFrameStreams
+                                                                  : VideoTransport::LegacyStream1;
 }
 
 // SERVER_ERROR payload: [code(u16)][message(string)]. The code lets the client
@@ -67,7 +76,8 @@ enum class ControlMessageType : uint16_t {
     USER_VOICE_STATE      = 0x0106,
     USER_ROLE_CHANGED     = 0x0108,   // [user_id(4)][new_role(1)]
     KEEPALIVE_PONG        = 0x0107,
-    SCREEN_SHARE_STARTED  = 0x010A,   // [sharer_id(4)][codec(1)][width(2)][height(2)][replay(1), optional since 1.2:
+    RETIRED_CHANNEL_KEY   = 0x0109,
+    SCREEN_SHARE_STARTED  = 0x010A,  // [sharer_id(4)][codec(1)][width(2)][height(2)][replay(1), optional since 1.2:
                                       //  1 = late-join replay of an already active share, 0/absent = live start]
     SCREEN_SHARE_STOPPED  = 0x010B,
     SCREEN_SHARE_DENIED   = 0x010C,
@@ -112,6 +122,65 @@ enum class ControlMessageType : uint16_t {
     ADMIN_DELETE_TEXT_CHANNEL = 0x040B,  // [channel_id(4)]
 };
 
+// Every enumerator is a case label, so reusing a value (retired ones included)
+// is a duplicate-case error and a missing case is a -Wswitch error.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic error "-Wswitch"
+constexpr std::string_view control_message_name(ControlMessageType type) {
+    switch (type) {
+    case ControlMessageType::AUTH_IDENTITY:             return "AUTH_IDENTITY";
+    case ControlMessageType::CHANNEL_JOIN:              return "CHANNEL_JOIN";
+    case ControlMessageType::CHANNEL_LEAVE:             return "CHANNEL_LEAVE";
+    case ControlMessageType::KEEPALIVE_PING:            return "KEEPALIVE_PING";
+    case ControlMessageType::VOICE_STATE_UPDATE:        return "VOICE_STATE_UPDATE";
+    case ControlMessageType::SCREEN_SHARE_START:        return "SCREEN_SHARE_START";
+    case ControlMessageType::SCREEN_SHARE_STOP:         return "SCREEN_SHARE_STOP";
+    case ControlMessageType::SCREEN_SHARE_VIEW:         return "SCREEN_SHARE_VIEW";
+    case ControlMessageType::SCREEN_SHARE_UPDATE:       return "SCREEN_SHARE_UPDATE";
+    case ControlMessageType::AUTH_RESPONSE:             return "AUTH_RESPONSE";
+    case ControlMessageType::CHANNEL_LIST:              return "CHANNEL_LIST";
+    case ControlMessageType::CHANNEL_USER_LIST:         return "CHANNEL_USER_LIST";
+    case ControlMessageType::USER_JOINED_CHANNEL:       return "USER_JOINED_CHANNEL";
+    case ControlMessageType::USER_LEFT_CHANNEL:         return "USER_LEFT_CHANNEL";
+    case ControlMessageType::USER_VOICE_STATE:          return "USER_VOICE_STATE";
+    case ControlMessageType::USER_ROLE_CHANGED:         return "USER_ROLE_CHANGED";
+    case ControlMessageType::KEEPALIVE_PONG:            return "KEEPALIVE_PONG";
+    case ControlMessageType::RETIRED_CHANNEL_KEY:       return "RETIRED_CHANNEL_KEY";
+    case ControlMessageType::SCREEN_SHARE_STARTED:      return "SCREEN_SHARE_STARTED";
+    case ControlMessageType::SCREEN_SHARE_STOPPED:      return "SCREEN_SHARE_STOPPED";
+    case ControlMessageType::SCREEN_SHARE_DENIED:       return "SCREEN_SHARE_DENIED";
+    case ControlMessageType::SCREEN_SHARE_VIEWER:       return "SCREEN_SHARE_VIEWER";
+    case ControlMessageType::SERVER_ERROR:              return "SERVER_ERROR";
+    case ControlMessageType::ADMIN_CREATE_CHANNEL:      return "ADMIN_CREATE_CHANNEL";
+    case ControlMessageType::ADMIN_DELETE_CHANNEL:      return "ADMIN_DELETE_CHANNEL";
+    case ControlMessageType::ADMIN_SET_ROLE:            return "ADMIN_SET_ROLE";
+    case ControlMessageType::ADMIN_KICK_USER:           return "ADMIN_KICK_USER";
+    case ControlMessageType::ADMIN_RENAME_CHANNEL:      return "ADMIN_RENAME_CHANNEL";
+    case ControlMessageType::ADMIN_RESULT:              return "ADMIN_RESULT";
+    case ControlMessageType::CHAT_SEND:                 return "CHAT_SEND";
+    case ControlMessageType::CHAT_HISTORY_REQ:          return "CHAT_HISTORY_REQ";
+    case ControlMessageType::CHAT_PIN:                  return "CHAT_PIN";
+    case ControlMessageType::CHAT_UNPIN:                return "CHAT_UNPIN";
+    case ControlMessageType::CHAT_DELETE:               return "CHAT_DELETE";
+    case ControlMessageType::CHAT_FILE_UPLOAD_REQ:      return "CHAT_FILE_UPLOAD_REQ";
+    case ControlMessageType::CHAT_FILE_DOWNLOAD_REQ:    return "CHAT_FILE_DOWNLOAD_REQ";
+    case ControlMessageType::CHAT_SEARCH:               return "CHAT_SEARCH";
+    case ControlMessageType::CHAT_PINNED_REQ:           return "CHAT_PINNED_REQ";
+    case ControlMessageType::CHAT_MESSAGE:              return "CHAT_MESSAGE";
+    case ControlMessageType::CHAT_HISTORY_RESP:         return "CHAT_HISTORY_RESP";
+    case ControlMessageType::CHAT_MESSAGE_DELETED:      return "CHAT_MESSAGE_DELETED";
+    case ControlMessageType::CHAT_FILE_UPLOAD_RESP:     return "CHAT_FILE_UPLOAD_RESP";
+    case ControlMessageType::CHAT_FILE_READY:           return "CHAT_FILE_READY";
+    case ControlMessageType::CHAT_SEARCH_RESP:          return "CHAT_SEARCH_RESP";
+    case ControlMessageType::CHAT_PINNED_RESP:          return "CHAT_PINNED_RESP";
+    case ControlMessageType::CHAT_CHANNEL_LIST:         return "CHAT_CHANNEL_LIST";
+    case ControlMessageType::ADMIN_CREATE_TEXT_CHANNEL: return "ADMIN_CREATE_TEXT_CHANNEL";
+    case ControlMessageType::ADMIN_DELETE_TEXT_CHANNEL: return "ADMIN_DELETE_TEXT_CHANNEL";
+    }
+    return "UNKNOWN";
+}
+#pragma GCC diagnostic pop
+
 // Data plane packet types (first byte of every datagram/stream)
 constexpr uint8_t VOICE_PACKET_TYPE        = 0x01;
 constexpr uint8_t VIDEO_FRAME_PACKET_TYPE  = 0x02;
@@ -140,9 +209,39 @@ constexpr uint8_t STREAM_TYPE_FILE_DOWNLOAD = 0x11;
 constexpr uint8_t STREAM_TYPE_VIDEO_FRAME   = 0x12;
 
 // Video control subtypes (VIDEO_CONTROL_TYPE datagrams / stream-1 packets)
-constexpr uint8_t VIDEO_CTL_PLI         = 0x01;
-constexpr uint8_t VIDEO_CTL_SHARE_START = 0x02;
-constexpr uint8_t VIDEO_CTL_SHARE_STOP  = 0x03;
+enum class VideoControl : uint8_t {
+    Pli                    = 0x01,
+    ReservedShareStart     = 0x02,
+    ReservedShareStop      = 0x03,
+    ReservedNack           = 0x04,
+    ReservedReceiverReport = 0x05,
+};
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic error "-Wswitch"
+constexpr std::string_view video_control_name(VideoControl control) {
+    switch (control) {
+    case VideoControl::Pli:                    return "Pli";
+    case VideoControl::ReservedShareStart:     return "ReservedShareStart";
+    case VideoControl::ReservedShareStop:      return "ReservedShareStop";
+    case VideoControl::ReservedNack:           return "ReservedNack";
+    case VideoControl::ReservedReceiverReport: return "ReservedReceiverReport";
+    }
+    return "UNKNOWN";
+}
+#pragma GCC diagnostic pop
+
+// CHAT_HISTORY_REQ / CHAT_SEARCH before_id: no upper bound, start from the newest.
+constexpr uint64_t CHAT_BEFORE_ID_LATEST = 0;
+constexpr uint16_t CHAT_PAGE_SIZE        = 30;
+
+using ChannelSortOrder     = uint32_t;
+using AttachmentMime       = std::string;
+using AdminResultStatus    = uint8_t;
+using ReservedSessionToken = std::array<uint8_t, 32>;
+using AnnouncedShareCodec  = uint8_t;
+using AnnouncedShareWidth  = uint16_t;
+using AnnouncedShareHeight = uint16_t;
 
 // Control-message wire notes for optional trailing fields (1.2+). Readers must
 // tolerate their absence (older peer) and ignore unknown trailing bytes.

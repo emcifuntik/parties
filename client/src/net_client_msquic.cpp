@@ -4,8 +4,10 @@
 #include <parties/protocol.h>
 #include <parties/crypto.h>
 #include <parties/video_common.h>
+#include <parties/video_send_controller.h>
 
 #include "net_client_parsing.h"
+#include "video_send_charge.h"
 
 #include <parties/log.h>
 
@@ -14,32 +16,25 @@
 #include <condition_variable>
 #include <cstring>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <thread>
 #include <vector>
 
 namespace parties::client {
 
-enum class SendKind : uint8_t {
-    Control      = 0,
-    VideoStream1 = 1,
-    VideoFrame   = 2,
-    Stream1Ctl   = 3,
-};
-
 struct SendCtx {
     QUIC_BUFFER buf{};
     uint8_t*    data = nullptr;
     uint32_t    len  = 0;
-    SendKind    kind = SendKind::Control;
+    std::optional<detail::InFlightVideoBytes::Completion> completion;
 };
 
-static SendCtx* new_send_ctx(size_t len, SendKind kind)
+static SendCtx* new_send_ctx(size_t len)
 {
     auto* ctx = new SendCtx;
     ctx->data = new uint8_t[len];
     ctx->len  = static_cast<uint32_t>(len);
-    ctx->kind = kind;
     ctx->buf  = QUIC_BUFFER{ ctx->len, ctx->data };
     return ctx;
 }
@@ -61,11 +56,11 @@ static void free_send_ctx(SendCtx* ctx)
 // sender then asks for an ABORT|IMMEDIATE shutdown (asynchronous) whose
 // SHUTDOWN_COMPLETE performs the cleanup. The sender never calls StreamClose.
 struct VideoOutCtx {
-    NetClient*            parent = nullptr;
     const QUIC_API_TABLE* api    = nullptr;
     QUIC_BUFFER           buf{};
     uint8_t*              data   = nullptr;
     uint32_t              len    = 0;
+    detail::InFlightVideoBytes::Completion completion;
 };
 
 static QUIC_STATUS QUIC_API s_video_out_stream_cb(HQUIC stream, void* ctx,
@@ -74,8 +69,7 @@ static QUIC_STATUS QUIC_API s_video_out_stream_cb(HQUIC stream, void* ctx,
     auto* c = static_cast<VideoOutCtx*>(ctx);
     switch (ev->Type) {
     case QUIC_STREAM_EVENT_SEND_COMPLETE:
-        if (c->parent->on_video_bytes_completed)
-            c->parent->on_video_bytes_completed(c->len);
+        c->completion.retire();
         delete[] c->data;
         c->data = nullptr;
         break;
@@ -299,7 +293,7 @@ struct NetClient::Impl {
         settings.KeepAliveIntervalMs    = 15000; settings.IsSet.KeepAliveIntervalMs    = TRUE;
         settings.DatagramReceiveEnabled = TRUE;  settings.IsSet.DatagramReceiveEnabled = TRUE;
         // No send buffering: SEND_COMPLETE fires on ACK, which is what the
-        // video backpressure accounting (on_video_bytes_completed) relies on.
+        // video backpressure accounting (InFlightVideoBytes) relies on.
         settings.SendBufferingEnabled   = FALSE; settings.IsSet.SendBufferingEnabled   = TRUE;
         settings.PacingEnabled          = TRUE;  settings.IsSet.PacingEnabled          = TRUE;
         // Per-frame video streams (1.2+): the server opens one unidirectional
@@ -394,7 +388,7 @@ struct NetClient::Impl {
         if (!connected || !cs) return false;
 
         const size_t total_len = 6 + payload_len;
-        SendCtx* ctx = new_send_ctx(total_len, SendKind::Control);
+        SendCtx* ctx = new_send_ctx(total_len);
 
         uint32_t msg_len = static_cast<uint32_t>(2 + payload_len);
         std::memcpy(ctx->data, &msg_len, 4);
@@ -409,7 +403,7 @@ struct NetClient::Impl {
         return true;
     }
 
-    bool send_data(const uint8_t* data, size_t len, bool priority)
+    bool send_data(const uint8_t* data, size_t len, DatagramPriority priority)
     {
         ZoneScopedN("NetClient::send_data");
         std::shared_lock<std::shared_mutex> hlock(handles_mutex);
@@ -418,29 +412,26 @@ struct NetClient::Impl {
         auto* buf = new uint8_t[len];
         std::memcpy(buf, data, len);
         auto* qb = new QUIC_BUFFER{ static_cast<uint32_t>(len), buf };
-        const QUIC_SEND_FLAGS flags = priority ? QUIC_SEND_FLAG_DGRAM_PRIORITY
-                                               : QUIC_SEND_FLAG_NONE;
+        const QUIC_SEND_FLAGS flags = priority == DatagramPriority::AheadOfVideo
+                                          ? QUIC_SEND_FLAG_DGRAM_PRIORITY
+                                          : QUIC_SEND_FLAG_NONE;
         if (QUIC_FAILED(api->DatagramSend(connection, qb, 1, flags, qb))) {
             delete[] buf; delete qb; return false;
         }
         return true;
     }
 
-    bool send_stream1(const uint8_t* header, size_t header_len,
-                      const uint8_t* payload, size_t payload_len, SendKind kind)
+    bool send_stream1_record(const uint8_t* data, size_t len)
     {
-        ZoneScopedN("NetClient::send_video_parts");
+        ZoneScopedN("NetClient::send_stream1_record");
         std::shared_lock<std::shared_mutex> hlock(handles_mutex);
         HQUIC vs = video_stream.load(std::memory_order_acquire);
         if (!connected || !vs) return false;
 
-        const size_t len       = header_len + payload_len;
-        const size_t total_len = 4 + len;
-        SendCtx* ctx = new_send_ctx(total_len, kind);
+        SendCtx* ctx = new_send_ctx(4 + len);
         uint32_t flen = static_cast<uint32_t>(len);
         std::memcpy(ctx->data, &flen, 4);
-        if (header_len)  std::memcpy(ctx->data + 4, header, header_len);
-        if (payload_len) std::memcpy(ctx->data + 4 + header_len, payload, payload_len);
+        if (len) std::memcpy(ctx->data + 4, data, len);
 
         if (QUIC_FAILED(api->StreamSend(vs, &ctx->buf, 1, QUIC_SEND_FLAG_NONE, ctx))) {
             free_send_ctx(ctx);
@@ -449,42 +440,57 @@ struct NetClient::Impl {
         return true;
     }
 
-    bool send_video_parts(const uint8_t* header, size_t header_len,
-                          const uint8_t* payload, size_t payload_len)
+    bool send_video_frame_stream1(const VideoFrameHeader& header, std::span<const uint8_t> encoded,
+                                  VideoSendAccounting& accounting)
     {
-        if (header_len + payload_len > VIDEO_FRAME_MAX_PAYLOAD_BYTES) return false;
-        return send_stream1(header, header_len, payload, payload_len, SendKind::VideoStream1);
+        ZoneScopedN("NetClient::send_video_frame_stream1");
+        const size_t record_len = 1 + VIDEO_FRAME_HEADER_SIZE + encoded.size();
+        if (record_len > VIDEO_FRAME_MAX_PAYLOAD_BYTES) return false;
+
+        std::shared_lock<std::shared_mutex> hlock(handles_mutex);
+        HQUIC vs = video_stream.load(std::memory_order_acquire);
+        if (!connected || !vs) return false;
+
+        SendCtx* ctx = new_send_ctx(4 + record_len);
+        uint32_t flen = static_cast<uint32_t>(record_len);
+        std::memcpy(ctx->data, &flen, 4);
+        ctx->data[4] = protocol::VIDEO_FRAME_PACKET_TYPE;
+        header.write(std::span<uint8_t, VIDEO_FRAME_HEADER_SIZE>(ctx->data + 5, VIDEO_FRAME_HEADER_SIZE));
+        if (!encoded.empty())
+            std::memcpy(ctx->data + 5 + VIDEO_FRAME_HEADER_SIZE, encoded.data(), encoded.size());
+
+        detail::InFlightVideoBytes charge(accounting, ctx->len);
+        ctx->completion = charge.completion();
+        if (QUIC_FAILED(api->StreamSend(vs, &ctx->buf, 1, QUIC_SEND_FLAG_NONE, ctx))) {
+            free_send_ctx(ctx);
+            return false;
+        }
+        std::move(charge).disarm();
+        return true;
     }
 
-    bool send_video(const uint8_t* data, size_t len)
-    {
-        return send_stream1(nullptr, 0, data, len, SendKind::Stream1Ctl);
-    }
-
-    // Stream credit: the server allows 128 concurrent per-frame streams. When
-    // all of them are still open the start does NOT fail (no FAIL_BLOCKED):
-    // MsQuic parks the stream until the server grants more credit, the bytes
-    // stay charged in the caller's controller, and the sharer's admission gate
-    // bounds how much can pile up behind the wait.
-    bool send_video_frame_stream(const uint8_t* header, size_t header_len,
-                                 const uint8_t* payload, size_t payload_len)
+    bool send_video_frame_stream(const VideoFrameHeader& header, std::span<const uint8_t> encoded,
+                                 VideoSendAccounting& accounting)
     {
         ZoneScopedN("NetClient::send_video_frame_stream");
         std::shared_lock<std::shared_mutex> hlock(handles_mutex);
         if (!connected || !connection) return false;
 
-        if (header_len + payload_len > VIDEO_FRAME_MAX_PAYLOAD_BYTES) return false;
-        const size_t total = 1 + header_len + payload_len;
+        if (VIDEO_FRAME_HEADER_SIZE + encoded.size() > VIDEO_FRAME_MAX_PAYLOAD_BYTES) return false;
+        const size_t total = 1 + VIDEO_FRAME_HEADER_SIZE + encoded.size();
 
         auto* ctx = new VideoOutCtx;
-        ctx->parent = &parent;
         ctx->api    = api;
         ctx->data   = new uint8_t[total];
         ctx->len    = static_cast<uint32_t>(total);
         ctx->data[0] = protocol::STREAM_TYPE_VIDEO_FRAME;
-        if (header_len)  std::memcpy(ctx->data + 1, header, header_len);
-        if (payload_len) std::memcpy(ctx->data + 1 + header_len, payload, payload_len);
+        header.write(std::span<uint8_t, VIDEO_FRAME_HEADER_SIZE>(ctx->data + 1, VIDEO_FRAME_HEADER_SIZE));
+        if (!encoded.empty())
+            std::memcpy(ctx->data + 1 + VIDEO_FRAME_HEADER_SIZE, encoded.data(), encoded.size());
         ctx->buf = QUIC_BUFFER{ ctx->len, ctx->data };
+
+        detail::InFlightVideoBytes charge(accounting, total);
+        ctx->completion = charge.completion();
 
         HQUIC stream = nullptr;
         if (QUIC_FAILED(api->StreamOpen(connection, QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL,
@@ -509,6 +515,7 @@ struct NetClient::Impl {
                 QUIC_STREAM_SHUTDOWN_FLAG_ABORT | QUIC_STREAM_SHUTDOWN_FLAG_IMMEDIATE, 0);
             return false;
         }
+        std::move(charge).disarm();
         return true;
     }
 
@@ -680,8 +687,7 @@ struct NetClient::Impl {
         case QUIC_STREAM_EVENT_SEND_COMPLETE: {
             auto* ctx = static_cast<SendCtx*>(ev->SEND_COMPLETE.ClientContext);
             if (ctx) {
-                if (ctx->kind == SendKind::VideoStream1 && parent.on_video_bytes_completed)
-                    parent.on_video_bytes_completed(ctx->len);
+                if (ctx->completion) ctx->completion->retire();
                 free_send_ctx(ctx);
             }
             break;
@@ -804,26 +810,26 @@ bool NetClient::send_message(protocol::ControlMessageType type,
     return impl_->send_message(type, payload, payload_len);
 }
 
-bool NetClient::send_data(const uint8_t* data, size_t len, bool priority)
+bool NetClient::send_data(const uint8_t* data, size_t len, DatagramPriority priority)
 {
     return impl_->send_data(data, len, priority);
 }
 
-bool NetClient::send_video(const uint8_t* data, size_t len)
+bool NetClient::send_stream1_record(const uint8_t* data, size_t len)
 {
-    return impl_->send_video(data, len);
+    return impl_->send_stream1_record(data, len);
 }
 
-bool NetClient::send_video_parts(const uint8_t* header, size_t header_len,
-                                 const uint8_t* payload, size_t payload_len)
+bool NetClient::send_video_frame(protocol::VideoTransport transport, const VideoFrameHeader& header,
+                                 std::span<const uint8_t> encoded, VideoSendAccounting& accounting)
 {
-    return impl_->send_video_parts(header, header_len, payload, payload_len);
-}
-
-bool NetClient::send_video_frame_stream(const uint8_t* header, size_t header_len,
-                                        const uint8_t* payload, size_t payload_len)
-{
-    return impl_->send_video_frame_stream(header, header_len, payload, payload_len);
+    switch (transport) {
+    case protocol::VideoTransport::PerFrameStreams:
+        return impl_->send_video_frame_stream(header, encoded, accounting);
+    case protocol::VideoTransport::LegacyStream1:
+        return impl_->send_video_frame_stream1(header, encoded, accounting);
+    }
+    return false;
 }
 
 NetClient::ConnectionStats NetClient::connection_stats() const

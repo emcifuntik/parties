@@ -1,4 +1,5 @@
 #include <client/chat_model.h>
+#include <client/url.h>
 
 #include <RmlUi/Core/Element.h>
 #include <RmlUi/Core/Event.h>
@@ -118,7 +119,7 @@ void ChatModel::build(rml::Builder& b) {
     });
 
     b.on_args<Rml::String>("open_url", [this](Rml::String url) {
-        if (on_open_url && (url.find("http://") == 0 || url.find("https://") == 0))
+        if (on_open_url && is_http_url(url))
             on_open_url(std::string(url));
     });
 

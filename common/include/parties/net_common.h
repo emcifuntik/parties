@@ -1,8 +1,11 @@
 #pragma once
 
+#include <cstdint>
 #include <optional>
 
 namespace parties {
+
+enum class DatagramPriority : uint8_t { Normal, AheadOfVideo };
 
 class NetLibrary {
 public:

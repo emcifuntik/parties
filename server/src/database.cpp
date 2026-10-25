@@ -1,4 +1,5 @@
 #include <server/database.h>
+#include <parties/protocol.h>
 
 #include <sqlite3.h>
 #include <parties/log.h>
@@ -568,8 +569,9 @@ static MessageRow read_message_row(sqlite3_stmt* stmt) {
 std::vector<MessageRow> Database::get_messages(uint32_t channel_id, uint64_t before_id, int limit) {
     sqlite3_stmt* stmt = nullptr;
     const char* sql;
+    const bool latest = before_id == protocol::CHAT_BEFORE_ID_LATEST;
 
-    if (before_id == 0) {
+    if (latest) {
         sql = "SELECT id, channel_id, sender_id, sender_name, text, pinned, created_at "
               "FROM messages WHERE channel_id = ? AND deleted = 0 "
               "ORDER BY id DESC LIMIT ?";
@@ -583,7 +585,7 @@ std::vector<MessageRow> Database::get_messages(uint32_t channel_id, uint64_t bef
         return {};
 
     sqlite3_bind_int(stmt, 1, static_cast<int>(channel_id));
-    if (before_id == 0) {
+    if (latest) {
         sqlite3_bind_int(stmt, 2, limit);
     } else {
         sqlite3_bind_int64(stmt, 2, static_cast<sqlite3_int64>(before_id));
@@ -682,8 +684,9 @@ std::vector<MessageRow> Database::search_messages(uint32_t channel_id, const std
                                                    uint64_t before_id, int limit) {
     sqlite3_stmt* stmt = nullptr;
     const char* sql;
+    const bool latest = before_id == protocol::CHAT_BEFORE_ID_LATEST;
 
-    if (before_id == 0) {
+    if (latest) {
         sql = "SELECT m.id, m.channel_id, m.sender_id, m.sender_name, m.text, m.pinned, m.created_at "
               "FROM messages m JOIN messages_fts f ON m.id = f.rowid "
               "WHERE m.channel_id = ? AND m.deleted = 0 AND messages_fts MATCH ? "
@@ -698,7 +701,7 @@ std::vector<MessageRow> Database::search_messages(uint32_t channel_id, const std
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
         return {};
 
-    if (before_id == 0) {
+    if (latest) {
         sqlite3_bind_int(stmt, 1, static_cast<int>(channel_id));
         sqlite3_bind_text(stmt, 2, query.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_int(stmt, 3, limit);

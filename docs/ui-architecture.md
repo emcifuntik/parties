@@ -127,9 +127,9 @@ leaves fullscreen.
 
 While a stream is in PiP its grid cell shows "Playing in picture-in-picture"
 instead of the `<video_frame>`; frame routing is described in
-`docs/video-pipeline.md`. Platforms implement only `PlatformBridge::show_pip`,
-`hide_pip` and `show_main_window`; leaving `show_pip` unset hides the button
-(`pip_supported`).
+`docs/video-pipeline.md`. Platforms implement only `PlatformBridge::pip`
+(`PictureInPicture::show` and `hide`) and `show_main_window`; leaving `pip`
+empty hides the button (`pip_supported`).
 
 The desktop overlay is shared: `ui/pip.rml`, `ui/pip.rcss` (layout and colour
 only) and `PipWindowModel` provide two `ui-symbol` actions, return to the main

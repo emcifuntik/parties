@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace parties {
@@ -33,11 +34,24 @@ public:
     std::string read_string();
     void read_bytes(uint8_t* out, size_t len);
 
+    template <class T>
+    void skip() {
+        if constexpr (std::is_same_v<T, std::string>) {
+            skip_bytes(read_u16());
+        } else {
+            static_assert(std::has_unique_object_representations_v<T>,
+                          "skip<T> needs a fixed-width wire field");
+            skip_bytes(sizeof(T));
+        }
+    }
+
     bool has_remaining(size_t bytes) const;
     size_t remaining() const;
     bool error() const { return error_; }
 
 private:
+    void skip_bytes(size_t len);
+
     const uint8_t* data_;
     size_t len_;
     size_t pos_ = 0;

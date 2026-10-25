@@ -126,7 +126,9 @@ if(BUILD_CLIENT)
     target_include_directories(parties_pip_geometry_test PRIVATE ../client/include)
     add_test(NAME parties_pip_geometry COMMAND parties_pip_geometry_test)
 
-    add_executable(parties_chat_compose_clear_test chat_compose_clear_test.cpp)
+    add_executable(parties_chat_compose_clear_test
+        chat_compose_clear_test.cpp
+        ../client/src/chat_model.cpp)
     target_include_directories(parties_chat_compose_clear_test PRIVATE ../client/include ../common/include)
     target_link_libraries(parties_chat_compose_clear_test PRIVATE RmlUi::RmlUi)
     add_test(NAME parties_chat_compose_clear COMMAND parties_chat_compose_clear_test)

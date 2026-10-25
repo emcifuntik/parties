@@ -27,6 +27,7 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <variant>
 #include <vector>
 
 namespace Rml { class Context; }
@@ -46,6 +47,36 @@ struct UserContextWindowRequest {
     float compression_target = 0.8f;
 };
 
+struct MultiStreamVideo {
+    std::function<void(UserId)> start_stream;
+    std::function<void(UserId)> stop_stream;
+    std::function<bool(UserId)> wants_pli_retry;
+};
+
+struct SingleDecoderVideo {};
+
+using VideoPresentation = std::variant<MultiStreamVideo, SingleDecoderVideo>;
+
+struct PictureInPicture {
+    std::function<void(UserId, const std::string& title)> show;
+    std::function<void(UserId, PipCloseReason)>           hide;
+};
+
+struct PickerShareFlow {
+    std::function<void()> open_picker;
+    std::function<void()> open_audio_picker;
+    std::function<void()> cancel_picker;
+};
+
+struct NativeShareFlow {
+    std::function<void()> start_native_share;
+    std::function<void()> start_native_audio_share;
+};
+
+struct NoShareFlow {};
+
+using ShareFlow = std::variant<PickerShareFlow, NativeShareFlow, NoShareFlow>;
+
 struct PlatformBridge {
     std::function<void(const std::string&)>                    copy_to_clipboard;
     std::function<void(SoundPlayer::Effect)>                   play_sound;
@@ -54,21 +85,48 @@ struct PlatformBridge {
     std::function<void(int channel_id, const std::string& name)> show_channel_menu;
     std::function<void(int server_id)>                         show_server_menu;
     std::function<void(int64_t message_id)>                    show_message_menu;
-    std::function<void()>                                      open_share_picker;
-    std::function<void()>                                      open_audio_share_picker;
-    std::function<void()>                                      on_authenticated;
     std::function<void()>                                      stop_screen_share;
     std::function<void()>                                      stop_audio_share;
     std::function<void()>                                      request_keyframe;
-    std::function<bool(UserId)>                                stream_awaiting_keyframe;
     std::function<void()>                                      clear_video_element;
-    std::function<void(UserId)>                                start_video_stream;
-    std::function<void(UserId)>                                stop_video_stream;
     std::function<void(bool)>                                  set_keep_awake;
-    std::function<void(UserId, const std::string& title)>      show_pip;
-    std::function<void(UserId, PipCloseReason)>                hide_pip;
     std::function<void()>                                      show_main_window;
+    std::function<void()>                                      on_audio_devices_published;
+    VideoPresentation                                          video;
+    ShareFlow                                                  share;
+    std::optional<PictureInPicture>                            pip;
 };
+
+// on_frame/on_aborted run only on the connection's MsQuic worker, so frames of
+// one sharer stay ordered after the lock is released for delivery.
+class ReorderBuffers {
+public:
+    [[nodiscard]] ReorderOutcome on_frame(UserId sharer, ParsedVideoFrame&& frame, int64_t now_us);
+    [[nodiscard]] KeyframeRequest on_aborted(UserId sharer, uint32_t frame_seq);
+    [[nodiscard]] std::vector<UserId> poll(int64_t now_us);
+    bool wants_pli_retry(UserId sharer) const;
+    void erase(UserId sharer);
+    void clear();
+
+private:
+    mutable std::mutex m_;
+    std::unordered_map<UserId, VideoFrameReorderBuffer> buffers_;
+};
+
+class PliLimiter {
+public:
+    using Clock = std::chrono::steady_clock;
+    [[nodiscard]] bool admit_outgoing(UserId target, Clock::time_point now);
+    [[nodiscard]] bool admit_incoming(Clock::time_point now);
+    void clear();
+
+private:
+    std::mutex m_;
+    std::unordered_map<UserId, Clock::time_point> last_sent_;
+    std::optional<Clock::time_point> last_incoming_;
+};
+
+enum class SingleWatchAdmit { Decode, DropUntilKeyframe, NotWatched };
 
 class AppCore {
 public:
@@ -80,8 +138,12 @@ public:
     void tick();
     void load_saved_prefs();
 
-    std::function<void(uint32_t sender_id, const uint8_t* data, size_t len)> on_video_frame_received;
+    std::function<void(UserId sender, ParsedVideoFrame&& frame)> on_video_frame_received;
 
+private:
+    VideoSendController video_sender_;
+
+public:
     NetClient         net_;
     AudioEngine       audio_;
     VoiceMixer        mixer_;
@@ -111,19 +173,14 @@ public:
     ChannelId   pending_channel_id_    = 0;
     uint16_t    voice_seq_             = 0;
     uint16_t    voice2_seq_            = 0;
-    std::atomic<UserId> viewing_sharer_{0};
-    std::atomic<bool>   awaiting_keyframe_{false};
     std::atomic<uint32_t> video_frame_number_{0};
     std::atomic<uint32_t> stream_frame_count_{0};
     uint16_t    server_protocol_version_ = protocol::PROTOCOL_VERSION_ASSUMED_LEGACY;
 
-    VideoSendController video_sender_;
-
-    void reset_video_sender(uint32_t target_bitrate_bps);
-    void set_video_target_bitrate(uint32_t target_bitrate_bps);
-    bool video_admit_frame();
-    std::optional<uint32_t> take_video_bitrate_update();
-    bool take_video_keyframe_request();
+    void begin_video_share(uint32_t ceiling_bitrate_bps);
+    void set_video_ceiling_bitrate(uint32_t bps);
+    VideoSendAccounting& video_accounting() { return video_sender_.accounting(); }
+    VideoEncodeFeedback& video_encode_feedback() { return video_sender_.encode_feedback(); }
 
     struct VideoSendResult {
         uint32_t frame_seq = 0;
@@ -155,6 +212,11 @@ public:
     void toggle_watch(UserId id);
     bool is_watching(UserId id) const;
     void set_single_watched(UserId id);
+    UserId viewing_sharer() const { return viewing_sharer_.load(); }
+
+    void begin_single_watch(UserId sharer);
+    void end_single_watch();
+    [[nodiscard]] SingleWatchAdmit admit_single_watch_frame(UserId sender, const VideoFrameHeader& header);
     void send_voice_state();
 
     StreamPipController pip_;
@@ -197,16 +259,14 @@ private:
     struct SharerInfo { UserId user_id = 0; std::string name; };
     std::unordered_map<UserId, SharerInfo> active_sharers_;
 
-    std::mutex reorder_mutex_;
-    std::unordered_map<UserId, VideoFrameReorderBuffer> reorder_buffers_;
-    void route_video_stream_frame(uint32_t sender_id, std::vector<uint8_t>&& frame);
-    void route_video_stream_aborted(uint32_t sender_id, uint32_t frame_seq, bool have_seq);
-    void poll_video_reorder_buffers();
-    void erase_reorder_buffer(UserId sharer_id);
+    std::atomic<UserId> viewing_sharer_{0};
+    std::atomic<bool>   awaiting_keyframe_{false};
 
-    std::mutex pli_mutex_;
-    std::unordered_map<UserId, std::chrono::steady_clock::time_point> pli_last_sent_;
-    std::chrono::steady_clock::time_point keyframe_request_last_{};
+    ReorderBuffers reorder_;
+    PliLimiter     pli_;
+    void route_video_stream_frame(UserId sender, std::vector<uint8_t>&& wire);
+    void route_video_stream_aborted(UserId sender, uint32_t frame_seq, bool have_seq);
+    void dispatch_video(UserId sender, ReorderOutcome&& outcome);
     void retry_pending_plis();
     void feed_video_sender_stats();
 
@@ -214,7 +274,9 @@ private:
 
     mutable std::mutex watched_mutex_;
     std::unordered_set<UserId> watched_;
-    bool multi_stream() const { return static_cast<bool>(bridge_.start_video_stream); }
+    MultiStreamVideo* multi_stream_video() { return std::get_if<MultiStreamVideo>(&bridge_.video); }
+    bool multi_stream() const { return std::holds_alternative<MultiStreamVideo>(bridge_.video); }
+    void publish_audio_devices();
     std::unordered_set<UserId> watched_snapshot() const;
     void rebuild_watched_model();
 
@@ -267,7 +329,7 @@ private:
     void on_user_role_changed(const uint8_t* data, size_t len);
     void on_screen_share_started(const uint8_t* data, size_t len);
     void on_screen_share_stopped(const uint8_t* data, size_t len);
-    void on_screen_share_denied(const uint8_t* data, size_t len);
+    void on_screen_share_denied();
     void on_admin_result(const uint8_t* data, size_t len);
     void on_server_error(const uint8_t* data, size_t len);
     void on_chat_channel_list(const uint8_t* data, size_t len);

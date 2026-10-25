@@ -293,7 +293,7 @@ std::vector<std::shared_ptr<Session>> QuicServer::get_sessions() {
 }
 
 bool QuicServer::send_datagram(uint32_t session_id, const uint8_t* data, size_t len,
-                               bool priority) {
+                               DatagramPriority priority) {
 	ZoneScopedN("QuicServer::send_datagram");
     std::shared_ptr<Session> session = get_session(session_id);
     if (!session) return false;
@@ -305,7 +305,9 @@ bool QuicServer::send_datagram(uint32_t session_id, const uint8_t* data, size_t 
 
     auto* quic_buf = new QUIC_BUFFER{ static_cast<uint32_t>(len), buf_data };
     const auto status = session->transport_->send_datagram(*api_, quic_buf,
-        priority ? QUIC_SEND_FLAG_DGRAM_PRIORITY : QUIC_SEND_FLAG_NONE, quic_buf);
+        priority == DatagramPriority::AheadOfVideo ? QUIC_SEND_FLAG_DGRAM_PRIORITY
+                                                   : QUIC_SEND_FLAG_NONE,
+        quic_buf);
 
     if (!status || QUIC_FAILED(*status)) {
         delete[] buf_data;
@@ -316,7 +318,8 @@ bool QuicServer::send_datagram(uint32_t session_id, const uint8_t* data, size_t 
 }
 
 void QuicServer::send_to_many(const std::vector<uint32_t>& session_ids,
-                               const uint8_t* data, size_t len, bool priority) {
+                               const uint8_t* data, size_t len,
+                              DatagramPriority priority) {
 	ZoneScopedN("QuicServer::send_to_many");
     for (uint32_t id : session_ids)
         send_datagram(id, data, len, priority);

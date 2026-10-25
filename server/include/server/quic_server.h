@@ -5,6 +5,7 @@
 #include <parties/thread_queue.h>
 #include <parties/protocol.h>
 #include <parties/quic_common.h>
+#include <parties/net_common.h>
 
 #include <string>
 #include <cstdint>
@@ -127,10 +128,11 @@ public:
     ThreadQueue<DataPacket>& data_incoming() { return data_incoming_; }
 
     bool send_datagram(uint32_t session_id, const uint8_t* data, size_t len,
-                       bool priority = false);
+                       DatagramPriority priority = DatagramPriority::Normal);
 
     void send_to_many(const std::vector<uint32_t>& session_ids,
-                      const uint8_t* data, size_t len, bool priority = false);
+                      const uint8_t* data, size_t len,
+                      DatagramPriority priority = DatagramPriority::Normal);
 
     bool send_video_frame_to(const std::shared_ptr<Session>& session,
                              std::shared_ptr<const std::vector<uint8_t>> frame);

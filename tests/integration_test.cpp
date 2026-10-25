@@ -7,6 +7,7 @@
 #include <parties/codec.h>
 #include <parties/audio_common.h>
 #include <parties/video_common.h>
+#include <parties/video_send_controller.h>
 
 #include <server/config.h>
 #include <server/server.h>
@@ -200,6 +201,7 @@ int main() {
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     LOG("[2/21] Server started on port %u\n", TEST_PORT);
 
+    VideoSendController a_video_sender;
     NetClient client_a;
     NetClient client_b;
     NetClient client_c;
@@ -262,8 +264,7 @@ int main() {
         BinaryReader r(payload.data(), payload.size());
         user_a_id = r.read_u32();
         TEST_ASSERT(user_a_id > 0, "client A user_id > 0");
-        uint8_t token_a[32];
-        r.read_bytes(token_a, 32);
+        r.skip<ReservedSessionToken>();
         (void)r.read_u8();
         (void)r.read_string();
         TEST_ASSERT(!r.error(), "client A auth response well-formed");
@@ -319,8 +320,7 @@ int main() {
         BinaryReader r(payload.data(), payload.size());
         user_b_id = r.read_u32();
         TEST_ASSERT(user_b_id > 0, "client B user_id > 0");
-        uint8_t token_b[32];
-        r.read_bytes(token_b, 32);
+        r.skip<ReservedSessionToken>();
         (void)r.read_u8();
         (void)r.read_string();
         TEST_ASSERT(!r.error(), "client B auth response well-formed");
@@ -512,24 +512,28 @@ int main() {
         if (len > 0 && data[0] == VIDEO_FRAME_PACKET_TYPE) legacy_video_seen = true;
     };
 
+    auto wait_video_bytes_retired = [&]() {
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(TIMEOUT_MS);
+        while (a_video_sender.outstanding_bytes() != 0 && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        return a_video_sender.outstanding_bytes() == 0;
+    };
+
     std::vector<uint8_t> original_video_payload;
     {
-        BinaryWriter vw;
-        vw.write_u32(1);
-        vw.write_u32(0);
-        vw.write_u8(VIDEO_FLAG_KEYFRAME);
-        vw.write_u16(1920);
-        vw.write_u16(1080);
-        vw.write_u8(static_cast<uint8_t>(VideoCodecId::AV1));
-        for (uint8_t i = 0; i < 32; i++) vw.write_u8(0xAA ^ i);
-        original_video_payload = vw.data();
+        VideoFrameHeader hdr;
+        hdr.frame_seq = 1;
+        hdr.keyframe  = true;
+        hdr.width     = 1920;
+        hdr.height    = 1080;
+        hdr.codec     = VideoCodecId::AV1;
+        std::vector<uint8_t> encoded;
+        for (uint8_t i = 0; i < 32; i++) encoded.push_back(0xAA ^ i);
+        const auto assembled = ParsedVideoFrame::assemble(hdr, encoded);
+        original_video_payload.assign(assembled.wire().begin(), assembled.wire().end());
 
-        std::vector<uint8_t> pkt;
-        pkt.push_back(VIDEO_FRAME_PACKET_TYPE);
-        pkt.insert(pkt.end(), original_video_payload.begin(), original_video_payload.end());
-
-        TEST_ASSERT(client_a.send_video(pkt.data(), pkt.size()),
-                    "client A send video frame");
+        TEST_ASSERT(client_a.send_video_frame(VideoTransport::LegacyStream1, hdr, encoded,
+                    a_video_sender.accounting()), "client A send video frame on legacy stream 1");
     }
     LOG("[12/21] Client A sent video frame (%zu bytes)\n",
         original_video_payload.size());
@@ -555,6 +559,7 @@ int main() {
         LOG("[13/21] Video frame verified: sender=%u, %zu bytes OK\n",
             received_video_sender, received_video.size());
     }
+    TEST_ASSERT(wait_video_bytes_retired(), "legacy stream-1 video bytes retired on SEND_COMPLETE");
 
     LOG("[14/21] Sending 5 frames on per-frame streams...\n");
     std::vector<std::vector<uint8_t>> stream_originals;
@@ -577,8 +582,8 @@ int main() {
             whole.insert(whole.end(), payload.begin(), payload.end());
             stream_originals.push_back(std::move(whole));
 
-            TEST_ASSERT(client_a.send_video_frame_stream(hdr_bytes, VIDEO_FRAME_HEADER_SIZE,
-                        payload.data(), payload.size()), "client A send per-frame stream");
+            TEST_ASSERT(client_a.send_video_frame(VideoTransport::PerFrameStreams, hdr, payload,
+                        a_video_sender.accounting()), "client A send per-frame stream");
         }
 
         auto deadline = std::chrono::steady_clock::now() +
@@ -605,12 +610,14 @@ int main() {
         }
         LOG("[14/21] All 5 per-frame streams verified (frame_seq 10..14)\n");
     }
+    TEST_ASSERT(wait_video_bytes_retired(), "per-frame stream video bytes retired on SEND_COMPLETE");
 
     std::mutex pli_mutex;
     std::vector<uint8_t> received_pli;
     std::atomic<bool> pli_received{false};
     client_a.on_data_received = [&](const uint8_t* data, size_t len) {
-        if (len >= 6 && data[0] == VIDEO_CONTROL_TYPE && data[1] == VIDEO_CTL_PLI) {
+        if (len >= 6 && data[0] == VIDEO_CONTROL_TYPE &&
+            static_cast<VideoControl>(data[1]) == VideoControl::Pli) {
             std::lock_guard<std::mutex> lock(pli_mutex);
             received_pli.assign(data, data + len);
             pli_received = true;
@@ -675,7 +682,7 @@ int main() {
 
         std::vector<uint8_t> pli_pkt(6);
         pli_pkt[0] = VIDEO_CONTROL_TYPE;
-        pli_pkt[1] = VIDEO_CTL_PLI;
+        pli_pkt[1] = static_cast<uint8_t>(VideoControl::Pli);
         std::memcpy(pli_pkt.data() + 2, &user_a_id, 4);
         TEST_ASSERT(client_b.send_data(pli_pkt.data(), pli_pkt.size()),
                     "client B send PLI");
@@ -691,7 +698,7 @@ int main() {
         std::lock_guard<std::mutex> lock(pli_mutex);
         TEST_ASSERT(received_pli.size() >= 6, "PLI packet size");
         TEST_ASSERT(received_pli[0] == VIDEO_CONTROL_TYPE, "PLI type byte");
-        TEST_ASSERT(received_pli[1] == VIDEO_CTL_PLI, "PLI subtype byte");
+        TEST_ASSERT(static_cast<VideoControl>(received_pli[1]) == VideoControl::Pli, "PLI subtype byte");
         uint32_t requester_id;
         std::memcpy(&requester_id, received_pli.data() + 2, 4);
         TEST_ASSERT(requester_id == user_b_id, "PLI requester_id matches client B");
@@ -752,8 +759,7 @@ int main() {
         BinaryReader r(payload.data(), payload.size());
         user_c_id = r.read_u32();
         TEST_ASSERT(user_c_id > 0, "client C user_id > 0");
-        uint8_t token_c[32];
-        r.read_bytes(token_c, 32);
+        r.skip<ReservedSessionToken>();
         (void)r.read_u8();
         (void)r.read_string();
         TEST_ASSERT(!r.error(), "client C auth response well-formed");
@@ -820,15 +826,13 @@ int main() {
         hdr.width     = 1920;
         hdr.height    = 1080;
         hdr.codec     = VideoCodecId::AV1;
-        uint8_t hdr_bytes[VIDEO_FRAME_HEADER_SIZE];
-        hdr.write(hdr_bytes);
 
         legacy_frame_payload.resize(96);
         for (size_t k = 0; k < legacy_frame_payload.size(); k++)
             legacy_frame_payload[k] = static_cast<uint8_t>((0xC3 + 5 * k) & 0xFF);
 
-        TEST_ASSERT(client_a.send_video_frame_stream(hdr_bytes, VIDEO_FRAME_HEADER_SIZE,
-                    legacy_frame_payload.data(), legacy_frame_payload.size()),
+        TEST_ASSERT(client_a.send_video_frame(VideoTransport::PerFrameStreams, hdr,
+                    legacy_frame_payload, a_video_sender.accounting()),
                     "client A send per-frame stream for the legacy viewer");
 
         auto deadline = std::chrono::steady_clock::now() +
@@ -866,10 +870,8 @@ int main() {
             hdr.width = 1920;
             hdr.height = 1080;
             hdr.codec = VideoCodecId::AV1;
-            uint8_t bytes[VIDEO_FRAME_HEADER_SIZE];
-            hdr.write(bytes);
-            return client_a.send_video_frame_stream(bytes, sizeof(bytes),
-                legacy_frame_payload.data(), legacy_frame_payload.size());
+            return client_a.send_video_frame(VideoTransport::PerFrameStreams, hdr,
+                legacy_frame_payload, a_video_sender.accounting());
         };
         auto wait_sequences = [&](size_t count) {
             auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(TIMEOUT_MS);

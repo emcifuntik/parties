@@ -215,8 +215,8 @@ Which fields each backend consumes:
 | VideoToolbox | `average` plus a `DataRateLimits` window derived from `peak` |
 
 Bitrate changes reach the encoder only from the encode thread
-(`AppCore::take_video_bitrate_update()`); the UI slider merely updates the
-controller's target ceiling.
+(`AppCore::video_encode_feedback().take_bitrate_update()`); the UI slider
+merely updates the controller's target ceiling.
 
 ## Fallbacks
 

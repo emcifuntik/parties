@@ -323,10 +323,20 @@ bool App::init(HWND hwnd) {
         });
     };
 
-    bridge.open_share_picker = [this]() { show_share_picker(false); };
-    bridge.open_audio_share_picker = [this]() { show_share_picker(true); };
-
-    bridge.on_authenticated = nullptr;
+    bridge.share = PickerShareFlow{
+        .open_picker = [this]() { show_share_picker(false); },
+        .open_audio_picker = [this]() { show_share_picker(true); },
+        .cancel_picker = [this]() {
+            if (core_.model_.router.is(DocumentRoute::SharePicker))
+                core_.model_.router.back();
+            cancel_share_thumbnails();
+            capture_targets_.clear();
+            if (core_.model_.share_picker_mode == 0 && capture_) {
+                capture_->shutdown();
+                capture_.reset();
+            }
+        },
+    };
 
     bridge.stop_screen_share = [this]() { stop_screen_share(); };
     bridge.stop_audio_share = [this]() { stop_application_audio_share(); };
@@ -348,31 +358,34 @@ bool App::init(HWND hwnd) {
         }
     };
 
-    bridge.stream_awaiting_keyframe = [this](UserId id) -> bool {
-        std::lock_guard<std::mutex> slock(streams_mutex_);
-        auto it = video_streams_.find(id);
-        if (it == video_streams_.end()) return false;
-        VideoStream* s = it->second.get();
-        if (s->self_preview) return false;
-        std::lock_guard<std::mutex> qlock(s->queue_mutex);
-        if (s->stale_flushes.suppressed()) return false;
-        return s->decode_gate.awaiting_keyframe();
+    bridge.video = MultiStreamVideo{
+        .start_stream = [this](UserId id) { start_video_stream(id); },
+        .stop_stream = [this](UserId id) { stop_video_stream(id); },
+        .wants_pli_retry = [this](UserId id) -> bool {
+            std::lock_guard<std::mutex> slock(streams_mutex_);
+            auto it = video_streams_.find(id);
+            if (it == video_streams_.end()) return false;
+            VideoStream* s = it->second.get();
+            if (s->self_preview) return false;
+            std::lock_guard<std::mutex> qlock(s->queue_mutex);
+            if (s->stale_flushes.suppressed()) return false;
+            return s->decode_gate.awaiting_keyframe();
+        },
     };
 
     bridge.clear_video_element = []() {};
-
-    bridge.start_video_stream = [this](UserId id) { start_video_stream(id); };
-    bridge.stop_video_stream  = [this](UserId id) { stop_video_stream(id); };
 
     bridge.set_keep_awake = [this](bool keep_awake) {
         call_power_request_.set(keep_awake);
     };
 
     pip_host_ = std::make_unique<PipWindowHost>();
-    bridge.show_pip = [this](UserId, const std::string& title) {
-        if (!pip_host_->show(title)) pip_open_failed_ = true;
+    bridge.pip = PictureInPicture{
+        .show = [this](UserId, const std::string& title) {
+            if (!pip_host_->show(title)) pip_open_failed_ = true;
+        },
+        .hide = [this](UserId, PipCloseReason) { pip_host_->hide(); },
     };
-    bridge.hide_pip = [this](UserId, PipCloseReason) { pip_host_->hide(); };
     bridge.show_main_window = [this] {
         ShowWindow(hwnd_, IsIconic(hwnd_) ? SW_RESTORE : SW_SHOW);
         SetForegroundWindow(hwnd_);
@@ -410,8 +423,8 @@ bool App::init(HWND hwnd) {
         return out;
     };
 
-    core_.on_video_frame_received = [this](uint32_t sender_id, const uint8_t* data, size_t len) {
-        on_video_frame_received(sender_id, data, len);
+    core_.on_video_frame_received = [this](UserId sender, ParsedVideoFrame&& frame) {
+        on_video_frame_received(sender, std::move(frame));
     };
 
     core_.model_.on_select_share_target = [this](int index) {
@@ -423,23 +436,13 @@ bool App::init(HWND hwnd) {
         else
             start_screen_share(index);
     };
-    core_.model_.on_cancel_share = [this]() {
-        if (core_.model_.router.is(DocumentRoute::SharePicker))
-            core_.model_.router.back();
-        cancel_share_thumbnails();
-        capture_targets_.clear();
-        if (core_.model_.share_picker_mode == 0 && capture_) {
-            capture_->shutdown();
-            capture_.reset();
-        }
-    };
 
     core_.model_.on_share_bitrate_changed = [this](float mbps) {
         core_.settings_.set_pref("video.share_bitrate", std::to_string(mbps));
         uint32_t bps = static_cast<uint32_t>(mbps * 1'000'000.0f);
         bps = (std::max)(bps, VIDEO_MIN_BITRATE);
         bps = (std::min)(bps, VIDEO_MAX_BITRATE);
-        core_.set_video_target_bitrate(bps);
+        core_.set_video_ceiling_bitrate(bps);
     };
 
     char computer_name[MAX_COMPUTERNAME_LENGTH + 1] = {};
@@ -1309,7 +1312,7 @@ void App::finish_screen_share_start(uint32_t target_process_id) {
         uint32_t bitrate_bps = static_cast<uint32_t>(core_.model_.share_bitrate * 1'000'000.0f);
         bitrate_bps = (std::max)(bitrate_bps, VIDEO_MIN_BITRATE);
         bitrate_bps = (std::min)(bitrate_bps, VIDEO_MAX_BITRATE);
-        core_.reset_video_sender(bitrate_bps);
+        core_.begin_video_share(bitrate_bps);
     }
 
     LARGE_INTEGER freq, now;
@@ -1368,7 +1371,7 @@ void App::finish_screen_share_start(uint32_t target_process_id) {
         if (next_capture_qpc_ < now.QuadPart - capture_interval_qpc_)
             next_capture_qpc_ = now.QuadPart + capture_interval_qpc_;
 
-        if (!core_.video_admit_frame()) return;
+        if (!core_.video_accounting().admit_frame()) return;
 
         uint32_t cap_w = (desc.Width  + 1) & ~1u;
         uint32_t cap_h = (desc.Height + 1) & ~1u;
@@ -1541,27 +1544,14 @@ void App::stop_screen_share() {
         core_.net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_STOP, nullptr, 0);
 }
 
-void App::on_video_frame_received(uint32_t sender_id, const uint8_t* data, size_t len) {
+void App::on_video_frame_received(UserId sender, ParsedVideoFrame&& frame) {
     ZoneScopedN("App::on_video_frame_received");
-    if (len < 14) return;
+    const auto encoded = frame.encoded();
+    if (encoded.empty()) return;
 
-    uint8_t flags = data[8];
-    bool is_keyframe = (flags & VIDEO_FLAG_KEYFRAME) != 0;
-    uint16_t width, height;
-    std::memcpy(&width,  data + 9,  2);
-    std::memcpy(&height, data + 11, 2);
-    auto codec = static_cast<VideoCodecId>(data[13]);
-
-    const uint8_t* encoded     = data + 14;
-    size_t         encoded_len = len  - 14;
-    if (encoded_len == 0) return;
-
-    uint32_t frame_number;
-    std::memcpy(&frame_number, data, 4);
-
-    std::vector<uint8_t> copy(encoded, encoded + encoded_len);
-    enqueue_decode_work(sender_id, std::move(copy), static_cast<int64_t>(frame_number),
-                        codec, width, height, is_keyframe);
+    const VideoFrameHeader& h = frame.header();
+    enqueue_decode_work(sender, std::vector<uint8_t>(encoded.begin(), encoded.end()),
+                        static_cast<int64_t>(h.frame_seq), h.codec, h.width, h.height, h.keyframe);
 }
 
 static int64_t steady_now_us() {
@@ -1646,7 +1636,7 @@ void App::encode_loop() {
                                                                 : VideoCodecId::AV1;
             encoder_.reset(); encode_registered_ = false;
             auto enc = std::make_unique<VideoEncoder>();
-            uint32_t bitrate_bps = core_.video_sender_.accounting().bitrate_bps();
+            uint32_t bitrate_bps = core_.video_accounting().bitrate_bps();
             if (bitrate_bps == 0)
                 bitrate_bps = static_cast<uint32_t>(core_.model_.share_bitrate * 1'000'000.0f);
             bitrate_bps = (std::max)(bitrate_bps, VIDEO_MIN_BITRATE);
@@ -1681,13 +1671,13 @@ void App::encode_loop() {
             }
         }
 
-        if (auto b = core_.take_video_bitrate_update()) {
+        if (auto b = core_.video_encode_feedback().take_bitrate_update()) {
             uint32_t bitrate_bps = (std::max)(*b, VIDEO_MIN_BITRATE);
             bitrate_bps = (std::min)(bitrate_bps, VIDEO_MAX_BITRATE);
             LOG_INFO("Encoder bitrate -> {} kbps", bitrate_bps / 1000);
             encoder_->set_average_bitrate_bps(bitrate_bps);
         }
-        if (core_.take_video_keyframe_request())
+        if (core_.video_encode_feedback().take_keyframe_request())
             encoder_->force_keyframe();
 
         {
