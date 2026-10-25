@@ -1,4 +1,5 @@
 #include <client/screen_capture.h>
+#include "test_skip.h"
 #include <roapi.h>
 #include <dwmapi.h>
 
@@ -87,12 +88,12 @@ int main(int argc, char** argv) {
     if (argc == 2 && std::string(argv[1]) == "--capture-source") return run_source_window();
     using namespace parties::client;
     const HRESULT apartment = RoInitialize(RO_INIT_MULTITHREADED);
-    if (FAILED(apartment)) return 77;
+    if (FAILED(apartment)) return kSkipExitCode;
     bool passed = true;
     {
         for (int iteration = 0; iteration < 4; ++iteration) {
             auto capture = std::make_shared<ScreenCapture>();
-            if (!capture->init()) return 77;
+            if (!capture->init()) return kSkipExitCode;
             // WGC requires a shown window. Keep the source offscreen and never
             // activate it. A child process matches a captured application exit.
             SourceWindow source;
@@ -132,7 +133,7 @@ int main(int argc, char** argv) {
             capture->stop();
             passed &= check(source.close(), "source process did not exit");
             passed &= check(frames.load() == stopped_frames, "callback ran after asynchronous shutdown");
-            if (!capture->init()) return 77;
+            if (!capture->init()) return kSkipExitCode;
             passed &= check(!capture->start(target, 30), "destroyed source was restarted");
             capture->shutdown();
         }

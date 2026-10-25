@@ -27,6 +27,7 @@ target_include_directories(rmlui_designer PRIVATE
 target_link_libraries(rmlui_designer PRIVATE
     RmlUi::RmlUi
     RmlUi::Debugger
+    rapidjson
     parties_rmlui_dx12_backend
     d3d12 dxgi d3dcompiler dcomp dwmapi
 )

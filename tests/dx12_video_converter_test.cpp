@@ -1,4 +1,5 @@
 #include "dx12/Dx12VideoConverter.h"
+#include "test_skip.h"
 
 #include <d3d12.h>
 #include <wrl/client.h>
@@ -211,7 +212,7 @@ int main() {
 	ComPtr<ID3D12Device> device;
 	if (FAILED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0,
 		IID_PPV_ARGS(&device))))
-		return 77;
+		return kSkipExitCode;
 	D3D12_COMMAND_QUEUE_DESC queue_desc{};
 	queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
 	ComPtr<ID3D12CommandQueue> queue;

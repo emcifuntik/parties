@@ -1,5 +1,6 @@
 #include "nvidia/nvdec_decoder.h"
 #include "nvidia/nvenc_encoder.h"
+#include "test_skip.h"
 
 #include <d3d11.h>
 #include <d3d12.h>
@@ -123,7 +124,7 @@ int main(int argc, char** argv) {
     }
     if (!nvidia_adapter) {
         std::cout << "NVIDIA adapter unavailable; skipping\n";
-        return 77;
+        return kSkipExitCode;
     }
 
     ComPtr<ID3D11Device> d3d11_device;
@@ -150,7 +151,7 @@ int main(int argc, char** argv) {
     if (!encoder.init(d3d11_device.Get(), width, height, 30, 1'500'000,
                       test_codec) || encoder.info().codec != test_codec) {
         std::cout << "Requested NVENC codec unavailable; skipping\n";
-        return 77;
+        return kSkipExitCode;
     }
     std::vector<EncodedFrame> encoded;
     encoder.on_encoded = [&encoded](const uint8_t* data, size_t size, bool) {
@@ -197,7 +198,7 @@ int main(int argc, char** argv) {
     NvdecDecoder decoder;
     if (!decoder.init(test_codec, width, height, d3d12_device.Get())) {
         std::cout << "NVDEC unavailable; skipping\n";
-        return 77;
+        return kSkipExitCode;
     }
     decoder.on_decoded = [&](const parties::encdec::DecodedFrame& frame) {
             auto* resource = static_cast<ID3D12Resource*>(frame.native_d3d12_resource);

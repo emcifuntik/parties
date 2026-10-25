@@ -1,5 +1,5 @@
 #include "amf_decoder.h"
-#include "amf_decode_state.h"
+#include "amf_submit.h"
 #include "amf_loader.h"
 
 #include <AMF/components/VideoDecoderUVD.h>

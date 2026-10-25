@@ -1,4 +1,5 @@
 #include <client/win32_power_request.h>
+#include "test_skip.h"
 
 #include <iostream>
 
@@ -43,7 +44,7 @@ int main() {
             // Windows 7 and later always provide PowerCreateRequest; falling
             // back here means the modern path broke, not that the OS is old.
             std::cerr << "PowerCreateRequest unavailable — skipping\n";
-            return 77;
+            return kSkipExitCode;
         }
 
         const DWORD after_acquire = handle_count();

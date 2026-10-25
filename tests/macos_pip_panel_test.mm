@@ -1,4 +1,5 @@
 #import "PartiesPipPanelController.h"
+#include "test_skip.h"
 
 #include <cstdio>
 
@@ -34,7 +35,7 @@ int main()
         [NSApp finishLaunching];
         if (NSScreen.screens.count == 0) {
             std::fprintf(stderr, "A window server with a screen is required for this test\n");
-            return 77;
+            return kSkipExitCode;
         }
 
         NSWindow* mainWindow = [[NSWindow alloc]

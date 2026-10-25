@@ -3,6 +3,8 @@ find_package(OpenSSL REQUIRED)
 find_package(msquic CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 
+add_subdirectory(video_policy)
+
 add_library(parties_common STATIC
     src/serialization.cpp
     src/server_query.cpp
@@ -13,8 +15,7 @@ add_library(parties_common STATIC
     src/log.cpp
     src/crash_reporter.cpp
     src/thread_scheduling.cpp
-    src/video_send_controller.cpp
-    src/video_frame_reorder.cpp
+    src/process_services.cpp
 )
 set_target_properties(parties_common PROPERTIES XCODE_ATTRIBUTE_SKIP_INSTALL "YES")
 
@@ -39,6 +40,7 @@ endif()
 
 target_link_libraries(parties_common
     PUBLIC
+        parties_video_policy
         Opus::opus
         OpenSSL::Crypto
         msquic::msquic

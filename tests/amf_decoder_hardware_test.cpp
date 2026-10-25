@@ -1,5 +1,6 @@
 #include "amd/amf_decoder.h"
 #include "openh264/openh264_encoder.h"
+#include "test_skip.h"
 
 #include <d3d11.h>
 #include <d3d12.h>
@@ -107,7 +108,7 @@ int main() {
         AmfDecoder decoder;
         if (!decoder.init(VideoCodecId::H264, width, height, nullptr)) {
             std::cout << "AMF hardware is unavailable; skipping\n";
-            return 77;
+            return kSkipExitCode;
         }
 
         uint32_t decoded = 0;

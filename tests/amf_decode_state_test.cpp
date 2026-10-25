@@ -1,4 +1,4 @@
-#include "amd/amf_decode_state.h"
+#include "amd/amf_submit.h"
 
 #include <iostream>
 
