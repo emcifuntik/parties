@@ -267,7 +267,8 @@ struct NvdecCudaInteropState : std::enable_shared_from_this<NvdecCudaInteropStat
 
         slots.resize(count);
         for (auto& destination : slots) {
-            auto slot = std::make_unique<Slot>();
+            destination = std::make_unique<Slot>();
+            Slot* slot = destination.get();
             auto& decode_surface = slot->decode;
             auto& rgba = slot->presentation.rgba;
             CUresult result = CUDA_SUCCESS;
@@ -423,7 +424,6 @@ struct NvdecCudaInteropState : std::enable_shared_from_this<NvdecCudaInteropStat
                     return false;
                 }
             }
-            destination = std::move(slot);
         }
         width = new_width;
         height = new_height;
