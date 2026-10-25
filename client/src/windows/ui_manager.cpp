@@ -1,5 +1,6 @@
 #include <client/ui_manager.h>
 #include <client/rml_elements.h>
+#include <client/window_action.h>
 #include <parties/profiler.h>
 
 #include "RmlUi_RenderInterface_Extended.h"
@@ -9,7 +10,6 @@
 #ifndef PARTIES_RETAIL
 #include <RmlUi/Debugger.h>
 #endif
-#include <RmlUi/Core/StyleSheetSpecification.h>
 
 #include <parties/log.h>
 
@@ -46,7 +46,7 @@ public:
 }
 
 UiManager::UiManager() = default;
-UiManager::~UiManager() { shutdown(); }
+UiManager::~UiManager() { static_cast<void>(shutdown()); }
 
 bool UiManager::init(HWND hwnd) {
 	ZoneScopedN("UiManager::init");
@@ -76,8 +76,7 @@ bool UiManager::init(HWND hwnd) {
         return false;
     }
 
-    Rml::StyleSheetSpecification::RegisterProperty("window-action", "none", true)
-        .AddParser("keyword", "none, caption, close, minimize, maximize");
+    register_window_action_property();
 
     RECT rc;
     GetClientRect(hwnd, &rc);
@@ -115,19 +114,20 @@ bool UiManager::init(HWND hwnd) {
     return true;
 }
 
-void UiManager::shutdown() {
-    if (!initialised_) return;
+RmlShutdownProof UiManager::shutdown() {
+    if (!initialised_) return rml_not_running();
 
     text_input_editor_.reset();
     if (context_) {
         Rml::RemoveContext("main");
         context_ = nullptr;
     }
-    Rml::Shutdown();
+    const auto rml_gone = shutdown_rml();
 
     render_interface_.reset();
     system_interface_.reset();
     initialised_ = false;
+    return rml_gone;
 }
 
 Rml::ElementDocument* UiManager::load_document(const std::string& path) {

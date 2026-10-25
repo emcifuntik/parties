@@ -159,7 +159,7 @@ struct ContextWindowManager::Impl {
             if (self->ui_mutex && window->renderer && window->context) {
                 const int width = rect->right - rect->left;
                 const int height = rect->bottom - rect->top;
-                window->renderer->SetViewport(width, height, true);
+                window->renderer->SetViewport(width, height);
                 window->context->SetDimensions({width, height});
                 window->context->SetDensityIndependentPixelRatio(
                     static_cast<float>(HIWORD(w_param)) / 96.0f);
@@ -215,9 +215,7 @@ struct ContextWindowManager::Impl {
         active->text_input.reset();
     }
 
-    // Must run only after the application's global Rml::Shutdown. Until then,
-    // RmlUi's RenderManager owns resources referring to this render interface.
-    void destroy_surface_after_rml_shutdown() {
+    void destroy_surface() {
         if (!active) return;
         HWND hwnd = active->hwnd;
         active->model.reset();
@@ -262,7 +260,7 @@ struct ContextWindowManager::Impl {
             return false;
 
         active->last_content_height_px = desired_height;
-        active->renderer->SetViewport(width, desired_height, true);
+        active->renderer->SetViewport(width, desired_height);
         active->context->SetDimensions({width, desired_height});
         return true;
     }
@@ -318,7 +316,7 @@ struct ContextWindowManager::Impl {
                 SWP_NOACTIVATE | SWP_NOOWNERZORDER);
         }
 
-        active->renderer->SetViewport(width, height, true);
+        active->renderer->SetViewport(width, height);
         active->last_content_height_px = 0;
         active->text_input = std::make_unique<TextInputMethodEditor_Win32>();
         active->context_name = "context-window-" + std::to_string(next_context_id++);
@@ -359,7 +357,9 @@ struct ContextWindowManager::Impl {
 };
 
 ContextWindowManager::ContextWindowManager() : impl_(std::make_unique<Impl>()) {}
-ContextWindowManager::~ContextWindowManager() { shutdown(); }
+ContextWindowManager::~ContextWindowManager() {
+    if (impl_) impl_->destroy_surface();
+}
 
 bool ContextWindowManager::init(HWND owner, std::recursive_mutex* ui_mutex) {
     impl_->owner = owner;
@@ -368,7 +368,7 @@ bool ContextWindowManager::init(HWND owner, std::recursive_mutex* ui_mutex) {
     return impl_->initialised;
 }
 
-void ContextWindowManager::prepare_shutdown() {
+void ContextWindowManager::release_documents() {
     if (!impl_) return;
     if (impl_->ui_mutex) {
         std::lock_guard<std::recursive_mutex> lock(*impl_->ui_mutex);
@@ -381,9 +381,9 @@ void ContextWindowManager::prepare_shutdown() {
     impl_->initialised = false;
 }
 
-void ContextWindowManager::shutdown() {
+void ContextWindowManager::destroy_window(const RmlShutdownProof&) {
     if (!impl_) return;
-    impl_->destroy_surface_after_rml_shutdown();
+    impl_->destroy_surface();
     impl_->initialised = false;
 }
 

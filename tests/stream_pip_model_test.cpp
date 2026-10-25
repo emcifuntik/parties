@@ -39,13 +39,6 @@ public:
     void EnableScissorRegion(bool) override {}
     void SetScissorRegion(Rml::Rectanglei) override {}
 
-    uintptr_t GenerateYUVTexture(const uint8_t*, uint32_t, const uint8_t*, const uint8_t*, uint32_t,
-                                 uint32_t, uint32_t) override { return ++next_; }
-    void UpdateYUVTexture(uintptr_t, const uint8_t*, uint32_t, const uint8_t*, const uint8_t*, uint32_t,
-                          uint32_t, uint32_t) override {}
-    void ReleaseYUVTexture(uintptr_t) override {}
-    void RenderYUVGeometry(Rml::CompiledGeometryHandle, Rml::Vector2f, uintptr_t) override {}
-
     uintptr_t GenerateNV12Texture(const uint8_t*, uint32_t, const uint8_t*, uint32_t,
                                   uint32_t, uint32_t) override {
         ++nv12_generated;

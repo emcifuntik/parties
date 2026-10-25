@@ -48,9 +48,9 @@ std::array<uint8_t, 4> convert(ID3D12Device* device, ID3D12CommandQueue* queue,
 		uv[index * 2 + 1] = v[index];
 	}
 	const bool updated = layout == Dx12VideoConverter::Layout::I420
-		? converter.UpdateI420(*texture, list.Get(), 0, y.data(), width,
+		? converter.UpdateI420(*texture, list.Get(), Dx12FrameSlot::after_fence_wait(0), y.data(), width,
 			u.data(), v.data(), width / 2)
-		: converter.UpdateNV12(*texture, list.Get(), 0, y.data(), width,
+		: converter.UpdateNV12(*texture, list.Get(), Dx12FrameSlot::after_fence_wait(0), y.data(), width,
 			uv.data(), width);
 	if (!updated) return {};
 
@@ -133,7 +133,7 @@ bool upload_direct_nv12(ID3D12Device* device, ID3D12CommandQueue* queue,
 		uv[index] = 90;
 		uv[index + 1] = 240;
 	}
-	if (!converter.UpdateNV12(*texture, list.Get(), 0, y.data(), width,
+	if (!converter.UpdateNV12(*texture, list.Get(), Dx12FrameSlot::after_fence_wait(0), y.data(), width,
 		uv.data(), width))
 		return false;
 

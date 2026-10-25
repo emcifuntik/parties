@@ -2,6 +2,8 @@
 
 #include "file_watcher.h"
 
+#include <parties/enum_names.h>
+
 #include <RmlUi/Core/FileInterface.h>
 #include <RmlUi/Core/Context.h>
 #include <RmlUi/Core/DataModelHandle.h>
@@ -51,6 +53,28 @@ private:
 };
 
 enum class VarType { String = 0, Int, Float, Bool, StringArray, Event };
+
+}
+
+namespace parties {
+
+template <>
+inline constexpr auto enum_names_v<designer::VarType> = EnumNames<designer::VarType, 6>{{{
+	{designer::VarType::String, "string"},
+	{designer::VarType::Int, "int"},
+	{designer::VarType::Float, "float"},
+	{designer::VarType::Bool, "bool"},
+	{designer::VarType::StringArray, "string[]"},
+	{designer::VarType::Event, "event"},
+}}};
+
+}
+
+namespace designer {
+
+inline Rml::String VarTypeName(VarType type) {
+	return Rml::String(parties::enum_names_v<VarType>.name(type));
+}
 
 struct DesignerVar {
 	VarType type;
@@ -122,8 +146,10 @@ struct DesignerVar {
 
 struct VarListEntry {
 	Rml::String name;
-	Rml::String type_name;
+	VarType type = VarType::String;
 	Rml::String value;
+
+	Rml::String TypeName() { return VarTypeName(type); }
 };
 
 class DesignerApp {
@@ -231,7 +257,7 @@ private:
 	Rml::Vector<VarListEntry> mgr_var_list_;
 	Rml::String mgr_new_model_name_;
 	Rml::String mgr_new_var_name_;
-	Rml::String mgr_new_var_type_;
+	VarType mgr_new_var_type_ = VarType::String;
 	Rml::String mgr_edit_value_;
 	void SetupManagerDataModel();
 };

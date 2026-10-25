@@ -37,6 +37,7 @@ if(NOT APPLE)
     target_include_directories(parties_rmlui_dx12_backend
         PUBLIC
             "${PARTIES_RMLUI_DX12_BACKEND_DIR}"
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
             ${CMAKE_CURRENT_SOURCE_DIR}/src
             ${CMAKE_CURRENT_SOURCE_DIR}/src/dx12
     )

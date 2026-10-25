@@ -1,5 +1,6 @@
 #include <client/app.h>
 #include <client/auto_updater.h>
+#include <client/window_action.h>
 #include <client/win32_single_instance.h>
 #include <parties/version.h>
 #include <parties/process_services.h>
@@ -22,14 +23,6 @@
 #pragma comment(lib, "dwmapi.lib")
 
 using namespace parties::client;
-
-enum WindowAction {
-    WA_NONE     = 0,
-    WA_CAPTION  = 1,
-    WA_CLOSE    = 2,
-    WA_MINIMIZE = 3,
-    WA_MAXIMIZE = 4,
-};
 
 static constexpr int RESIZE_BORDER_PX = 8;
 static bool s_was_minimized = false;
@@ -115,14 +108,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             auto* elem = ctx->GetElementAtPoint(
                 Rml::Vector2f(static_cast<float>(pt.x), static_cast<float>(pt.y)));
             if (elem) {
-                const auto* prop = elem->GetProperty("window-action");
-                if (prop && prop->unit == Rml::Unit::KEYWORD) {
-                    switch (prop->value.Get<int>()) {
-                    case WA_CAPTION:  return HTCAPTION;
-                    case WA_CLOSE:    return HTCLOSE;
-                    case WA_MINIMIZE: return HTMINBUTTON;
-                    case WA_MAXIMIZE: return HTMAXBUTTON;
-                    }
+                switch (window_action_of(*elem)) {
+                case WindowAction::Caption:  return HTCAPTION;
+                case WindowAction::Close:    return HTCLOSE;
+                case WindowAction::Minimize: return HTMINBUTTON;
+                case WindowAction::Maximize: return HTMAXBUTTON;
+                case WindowAction::None:     break;
                 }
             }
         }
@@ -260,7 +251,9 @@ static constexpr std::optional<std::string_view> kSentryDsn = std::nullopt;
 #endif
 
 int main(int argc, char* argv[]) {
-    if (AutoUpdater::handle_update_args(argc, argv)) return 1;
+    if (AutoUpdater::finish_update_launch(parse_update_launch(argc, argv)) ==
+        UpdateLaunchResult::ExitWithFailure)
+        return 1;
 
     Win32SingleInstance instance;
     bool allow_multiple_instances = false;

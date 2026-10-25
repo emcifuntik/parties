@@ -459,52 +459,60 @@ void AutoUpdater::apply_and_restart() {
     ExitProcess(0);
 }
 
-bool AutoUpdater::handle_update_args(int argc, char** argv) {
-    std::string mode, target;
+UpdateLaunch parse_update_launch(int argc, char** argv) {
+    UpdateLaunch launch;
     for (int i = 1; i < argc; i++) {
         if (std::string(argv[i]) == "--update-cleanup" && i + 1 < argc) {
-            mode = "cleanup"; target = argv[++i];
+            launch = {UpdateLaunchMode::CleanupAfterRename, argv[++i]};
         } else if (std::string(argv[i]) == "--update-replace" && i + 1 < argc) {
-            mode = "replace"; target = argv[++i];
+            launch = {UpdateLaunchMode::LegacyReplace, argv[++i]};
         }
     }
-    if (mode.empty()) return false;
+    return launch;
+}
 
-    if (mode == "cleanup") {
-        std::filesystem::path old_file{target};
-        for (int attempt = 0; attempt < 10; attempt++) {
-            std::error_code ec;
-            if (std::filesystem::remove(old_file, ec)) break;
-            Sleep(500);
-        }
-        return false;
+UpdateLaunchResult AutoUpdater::finish_update_launch(const UpdateLaunch& launch) {
+    switch (launch.mode) {
+    case UpdateLaunchMode::Normal:
+        return UpdateLaunchResult::Continue;
+    case UpdateLaunchMode::CleanupAfterRename:
+        finish_cleanup_after_rename(launch.other_exe);
+        return UpdateLaunchResult::Continue;
+    case UpdateLaunchMode::LegacyReplace:
+        return run_legacy_replace_migration(launch.other_exe);
     }
+    return UpdateLaunchResult::Continue;
+}
 
-    if (mode == "replace") {
-        std::filesystem::path old_exe{target};
-        wchar_t self_buf[MAX_PATH];
-        GetModuleFileNameW(nullptr, self_buf, MAX_PATH);
-        std::filesystem::path self{self_buf};
-
-        for (int i = 0; i < 20; i++) {
-            std::error_code ec;
-            if (std::filesystem::remove(old_exe, ec)) break;
-            Sleep(500);
-        }
-
+void AutoUpdater::finish_cleanup_after_rename(const std::filesystem::path& old_exe) {
+    for (int attempt = 0; attempt < 10; attempt++) {
         std::error_code ec;
-        std::filesystem::copy_file(self, old_exe, std::filesystem::copy_options::overwrite_existing, ec);
-        if (ec) {
-            MessageBoxA(nullptr, ("Update failed: " + ec.message()).c_str(), "Parties Update", MB_OK | MB_ICONERROR);
-            return true;
-        }
+        if (std::filesystem::remove(old_exe, ec)) break;
+        Sleep(500);
+    }
+}
 
-        std::wstring args = L"--update-cleanup \"" + self.wstring() + L"\"";
-        ShellExecuteW(nullptr, L"open", old_exe.wstring().c_str(), args.c_str(), nullptr, SW_SHOWNORMAL);
-        ExitProcess(0);
+UpdateLaunchResult AutoUpdater::run_legacy_replace_migration(const std::filesystem::path& old_exe) {
+    wchar_t self_buf[MAX_PATH];
+    GetModuleFileNameW(nullptr, self_buf, MAX_PATH);
+    std::filesystem::path self{self_buf};
+
+    for (int i = 0; i < 20; i++) {
+        std::error_code ec;
+        if (std::filesystem::remove(old_exe, ec)) break;
+        Sleep(500);
     }
 
-    return false;
+    std::error_code ec;
+    std::filesystem::copy_file(self, old_exe, std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) {
+        MessageBoxA(nullptr, ("Update failed: " + ec.message()).c_str(), "Parties Update", MB_OK | MB_ICONERROR);
+        return UpdateLaunchResult::ExitWithFailure;
+    }
+
+    std::wstring args = L"--update-cleanup \"" + self.wstring() + L"\"";
+    ShellExecuteW(nullptr, L"open", old_exe.wstring().c_str(), args.c_str(), nullptr, SW_SHOWNORMAL);
+    ExitProcess(0);
 }
 
 void AutoUpdater::thread_func() {

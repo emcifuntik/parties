@@ -3,6 +3,7 @@
 #include "win32_pip_window.h"
 
 #include <client/pip_window_model.h>
+#include <client/rml_shutdown.h>
 
 #include <atomic>
 #include <functional>
@@ -20,8 +21,7 @@ namespace parties::client {
 class VideoElement;
 
 // The renderer must use the decoder's D3D12 device so native (AMF/NVDEC)
-// frames can be sampled. RmlUi retains a render manager per render interface
-// until Rml::Shutdown, so the renderer cannot be destroyed earlier.
+// frames can be sampled.
 class PipWindowHost {
 public:
     struct Actions {
@@ -47,11 +47,12 @@ public:
     ExtendedRenderInterface* renderer() const { return renderer_.get(); }
     void render(float volume);
 
-    void prepare_shutdown();
-    void shutdown();
+    void release_documents();
+    void destroy_window(const RmlShutdownProof&);
 
 private:
     bool ensure_surface();
+    void destroy_surface();
     void apply_pending_resize();
     void fit_window_to_video();
 

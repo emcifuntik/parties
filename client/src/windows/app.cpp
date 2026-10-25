@@ -502,10 +502,10 @@ void App::shutdown() {
     if (render_thread_.joinable())
         render_thread_.join();
 
-    context_windows_.prepare_shutdown();
+    context_windows_.release_documents();
     if (pip_host_) {
         std::lock_guard<std::recursive_mutex> lock(ui_mutex_);
-        pip_host_->prepare_shutdown();
+        pip_host_->release_documents();
     }
     // WGC activation is performed on a detached worker because Windows may
     // block indefinitely in its out-of-process GraphicsCapture RPC. Dropping
@@ -538,9 +538,9 @@ void App::shutdown() {
     capture_targets_.clear();
     stop_all_video_streams();
     core_.shutdown();
-    ui_.shutdown();
-    context_windows_.shutdown();
-    if (pip_host_) pip_host_->shutdown();
+    const auto rml_gone = ui_.shutdown();
+    context_windows_.destroy_window(rml_gone);
+    if (pip_host_) pip_host_->destroy_window(rml_gone);
 }
 
 void App::assign_hotkey(HotkeyAction action, std::optional<HotkeyBinding> binding) {
@@ -664,9 +664,9 @@ VideoFrameRouter::Surfaces App::video_surfaces() {
 
 void App::sync_video_router() {
     const auto cleared = video_router_.sync(core_.pip_.stream(), video_surfaces());
-    if (cleared.grid) ui_.renderer()->ReleaseRetiredResources();
+    if (cleared.grid) ui_.renderer()->ReleaseRetiredResourcesBetweenFrames();
     if (cleared.pip && pip_host_ && pip_host_->renderer())
-        pip_host_->renderer()->ReleaseRetiredResources();
+        pip_host_->renderer()->ReleaseRetiredResourcesBetweenFrames();
 }
 
 void App::deliver_video_frames(bool grid_visible) {
@@ -738,12 +738,11 @@ void App::deliver_video_frames(bool grid_visible) {
         VideoElement* ve = video_router_.target(up.sharer, surfaces);
         if (!ve) continue;
         if (up.native_resource)
-            ve->UpdateNativeNV12Frame(
-                up.native_resource, up.native_chroma_resource,
+            ve->UpdateNativeVideoFrame({up.native_resource, up.native_chroma_resource,
                 std::move(up.native_owner), up.native_ready_fence,
                 up.native_ready_value, up.native_resource_state, up.native_rgba, up.w, up.h,
                 up.native_texture_width, up.native_texture_height,
-                up.native_crop_x, up.native_crop_y);
+                up.native_crop_x, up.native_crop_y});
         else if (up.nv12)
             ve->UpdateNV12Frame(up.y, up.ys, up.u, up.uvs, up.w, up.h);
         else

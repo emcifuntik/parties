@@ -30,7 +30,7 @@ std::wstring widen(const std::string& utf8) {
 }
 
 PipWindowHost::PipWindowHost() = default;
-PipWindowHost::~PipWindowHost() { shutdown(); }
+PipWindowHost::~PipWindowHost() { destroy_surface(); }
 
 void PipWindowHost::init(std::recursive_mutex* ui_mutex, void* d3d12_device, Actions actions) {
     ui_mutex_ = ui_mutex;
@@ -98,7 +98,7 @@ bool PipWindowHost::ensure_surface() {
     GetClientRect(window_.hwnd(), &client);
     const int width = (std::max)(1, static_cast<int>(client.right));
     const int height = (std::max)(1, static_cast<int>(client.bottom));
-    renderer_->SetViewport(width, height, true);
+    renderer_->SetViewport(width, height);
     text_input_ = std::make_unique<TextInputMethodEditor_Win32>();
     context_ = Rml::CreateContext(kContextName, {width, height}, renderer_.get(), text_input_.get());
     if (!context_) {
@@ -117,7 +117,7 @@ bool PipWindowHost::ensure_surface() {
     if (!model_->init(context_) || !(document_ = context_->LoadDocument("ui/pip.rml"))) {
         LOG_ERROR("Picture-in-picture document failed to load");
         failed_ = true;
-        prepare_shutdown();
+        release_documents();
         return false;
     }
     document_->SetClass("platform-windows", true);
@@ -152,7 +152,7 @@ void PipWindowHost::apply_pending_resize() {
     const int width = pending_width_.load(std::memory_order_relaxed);
     const int height = pending_height_.load(std::memory_order_relaxed);
     if (width <= 0 || height <= 0) return;
-    renderer_->SetViewport(width, height, true);
+    renderer_->SetViewport(width, height);
     context_->SetDimensions({width, height});
     context_->SetDensityIndependentPixelRatio(pending_scale_.load(std::memory_order_relaxed));
 }
@@ -184,7 +184,7 @@ void PipWindowHost::render(float volume) {
     renderer_->EndFrame();
 }
 
-void PipWindowHost::prepare_shutdown() {
+void PipWindowHost::release_documents() {
     window_.hide();
     if (context_) {
         context_->UnloadAllDocuments();
@@ -198,8 +198,9 @@ void PipWindowHost::prepare_shutdown() {
     text_input_.reset();
 }
 
-void PipWindowHost::shutdown() {
-    // Rml::Shutdown has completed: no render manager refers to the renderer.
+void PipWindowHost::destroy_window(const RmlShutdownProof&) { destroy_surface(); }
+
+void PipWindowHost::destroy_surface() {
     renderer_.reset();
     window_.destroy();
 }

@@ -11,6 +11,7 @@
 #include <client/server_list_model.h>
 #include <client/video_element.h>
 #include <client/rml_binding.h>
+#include <client/window_action.h>
 
 #include <RmlUi/Core/Core.h>
 #include <RmlUi/Core/ComputedValues.h>
@@ -19,9 +20,12 @@
 #include <RmlUi/Core/Elements/ElementFormControlSelect.h>
 #include <RmlUi/Core/Event.h>
 #include <RmlUi/Core/Log.h>
-#include <RmlUi/Core/PropertyDefinition.h>
-#include <RmlUi/Core/StyleSheetSpecification.h>
 #include <RmlUi/Debugger.h>
+
+#include <rapidjson/document.h>
+#include <rapidjson/error/en.h>
+#include <rapidjson/filewritestream.h>
+#include <rapidjson/prettywriter.h>
 
 #include <dwmapi.h>
 #include <commdlg.h>
@@ -1492,8 +1496,7 @@ bool DesignerApp::Init(const std::string& initial_file) {
 		return false;
 	}
 
-	Rml::StyleSheetSpecification::RegisterProperty("window-action", "none", true)
-		.AddParser("keyword", "none, caption, close, minimize, maximize");
+	parties::client::register_window_action_property();
 
 	element_registry_ = std::make_unique<parties::rml::ElementRegistry>();
 	element_registry_->add<parties::client::GradientCircleElement>("gradient_circle");
@@ -1931,27 +1934,6 @@ void DesignerApp::LoadManagerUI() {
 	std::printf("[Designer] Warning: manager.rml not found, manager window will be empty\n");
 }
 
-static VarType ParseVarType(const Rml::String& s) {
-	if (s == "int")        return VarType::Int;
-	if (s == "float")      return VarType::Float;
-	if (s == "bool")       return VarType::Bool;
-	if (s == "string[]")   return VarType::StringArray;
-	if (s == "event")      return VarType::Event;
-	return VarType::String;
-}
-
-static Rml::String VarTypeName(VarType t) {
-	switch (t) {
-	case VarType::String:      return "string";
-	case VarType::Int:         return "int";
-	case VarType::Float:       return "float";
-	case VarType::Bool:        return "bool";
-	case VarType::StringArray: return "string[]";
-	case VarType::Event:       return "event";
-	}
-	return "string";
-}
-
 void DesignerApp::AddVariable(const Rml::String& model_name, const Rml::String& name, VarType type) {
 	if (model_name.empty() || name.empty()) return;
 
@@ -2063,7 +2045,7 @@ void DesignerApp::RefreshManagerVarList() {
 			if (var.type == VarType::Event) continue;
 			VarListEntry entry;
 			entry.name = model_name + "." + var_name;
-			entry.type_name = VarTypeName(var.type);
+			entry.type = var.type;
 			entry.value = var.GetAsString();
 			mgr_var_list_.push_back(entry);
 		}
@@ -2080,7 +2062,7 @@ void DesignerApp::SetupManagerDataModel() {
 
 	if (auto s = ctor.RegisterStruct<VarListEntry>()) {
 		s.RegisterMember("name", &VarListEntry::name);
-		s.RegisterMember("type_name", &VarListEntry::type_name);
+		s.RegisterMember("type_name", &VarListEntry::TypeName);
 		s.RegisterMember("value", &VarListEntry::value);
 	}
 	ctor.RegisterArray<Rml::Vector<VarListEntry>>();
@@ -2089,11 +2071,16 @@ void DesignerApp::SetupManagerDataModel() {
 
 	mgr_new_model_name_ = "lobby";
 	mgr_new_var_name_ = "";
-	mgr_new_var_type_ = "string";
+	mgr_new_var_type_ = VarType::String;
 	mgr_edit_value_ = "";
 	ctor.Bind("new_model", &mgr_new_model_name_);
 	ctor.Bind("new_name", &mgr_new_var_name_);
-	ctor.Bind("new_type", &mgr_new_var_type_);
+	ctor.BindFunc("new_type",
+		[this](Rml::Variant& value) { value = VarTypeName(mgr_new_var_type_); },
+		[this](const Rml::Variant& value) {
+			if (const auto type = parties::enum_names_v<VarType>.parse(value.Get<Rml::String>()))
+				mgr_new_var_type_ = *type;
+		});
 	ctor.Bind("edit_value", &mgr_edit_value_);
 
 	ctor.BindEventCallback("browse_document", [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
@@ -2106,7 +2093,7 @@ void DesignerApp::SetupManagerDataModel() {
 
 	ctor.BindEventCallback("add_var", [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
 		if (!mgr_new_var_name_.empty() && !mgr_new_model_name_.empty()) {
-			AddVariable(mgr_new_model_name_, mgr_new_var_name_, ParseVarType(mgr_new_var_type_));
+			AddVariable(mgr_new_model_name_, mgr_new_var_name_, mgr_new_var_type_);
 			mgr_new_var_name_ = "";
 			if (mgr_var_model_) {
 				mgr_var_model_.DirtyVariable("new_name");
@@ -2159,259 +2146,161 @@ void DesignerApp::SetupManagerDataModel() {
 	mgr_var_model_ = ctor.GetModelHandle();
 }
 
-static void JsonWriteString(FILE* f, const Rml::String& s) {
-	std::fputc('"', f);
-	for (char c : s) {
-		if (c == '"') std::fputs("\\\"", f);
-		else if (c == '\\') std::fputs("\\\\", f);
-		else if (c == '\n') std::fputs("\\n", f);
-		else std::fputc(c, f);
-	}
-	std::fputc('"', f);
-}
-
 bool DesignerApp::SaveBindVars(const std::string& path) {
-	FILE* f = std::fopen(path.c_str(), "w");
+	FILE* f = std::fopen(path.c_str(), "wb");
 	if (!f) {
 		std::printf("[Designer] Failed to save: %s\n", path.c_str());
 		return false;
 	}
 
-	std::fprintf(f, "{\n");
-	bool first_model = true;
+	char buffer[4096];
+	rapidjson::FileWriteStream stream(f, buffer, sizeof(buffer));
+	rapidjson::PrettyWriter<rapidjson::FileWriteStream> writer(stream);
+	writer.SetIndent(' ', 2);
+	writer.SetMaxDecimalPlaces(6);
+	const auto write_string = [&writer](const Rml::String& s) {
+		writer.String(s.c_str(), static_cast<rapidjson::SizeType>(s.size()));
+	};
+
+	writer.StartObject();
 	for (auto& [model_name, model] : data_models_) {
-		if (!first_model) std::fprintf(f, ",\n");
-		first_model = false;
-		std::fprintf(f, "  \"%s\": {\n", model_name.c_str());
-
-		bool first_var = true;
+		write_string(model_name);
+		writer.StartObject();
 		for (auto& [var_name, var] : model.vars) {
-			if (!first_var) std::fprintf(f, ",\n");
-			first_var = false;
-			std::fprintf(f, "    \"%s\": { \"type\": \"%s\"", var_name.c_str(), VarTypeName(var.type).c_str());
-
+			write_string(var_name);
+			writer.StartObject();
+			writer.Key("type");
+			write_string(VarTypeName(var.type));
 			switch (var.type) {
 			case VarType::String:
-				std::fprintf(f, ", \"value\": ");
-				JsonWriteString(f, var.GetAsString());
+				writer.Key("value");
+				write_string(var.GetAsString());
 				break;
 			case VarType::Int:
-				std::fprintf(f, ", \"value\": %s", var.GetAsString().c_str());
+				writer.Key("value");
+				writer.Int(var.val_int ? *var.val_int : 0);
 				break;
 			case VarType::Float:
-				std::fprintf(f, ", \"value\": %s", var.GetAsString().c_str());
+				writer.Key("value");
+				writer.Double(var.val_float ? *var.val_float : 0.0f);
 				break;
 			case VarType::Bool:
-				std::fprintf(f, ", \"value\": %s", var.val_bool && *var.val_bool ? "true" : "false");
+				writer.Key("value");
+				writer.Bool(var.val_bool && *var.val_bool);
 				break;
 			case VarType::StringArray:
-				std::fprintf(f, ", \"value\": [");
-				if (var.val_string_array) {
-					for (size_t i = 0; i < var.val_string_array->size(); i++) {
-						if (i > 0) std::fprintf(f, ", ");
-						JsonWriteString(f, (*var.val_string_array)[i]);
-					}
-				}
-				std::fprintf(f, "]");
+				writer.Key("value");
+				writer.StartArray();
+				if (var.val_string_array)
+					for (const auto& item : *var.val_string_array) write_string(item);
+				writer.EndArray();
 				break;
 			case VarType::Event:
 				break;
 			}
-			std::fprintf(f, " }");
+			writer.EndObject();
 		}
-		std::fprintf(f, "\n  }");
+		writer.EndObject();
 	}
-	std::fprintf(f, "\n}\n");
+	writer.EndObject();
+	stream.Put('\n');
+	stream.Flush();
 
-	std::fclose(f);
+	const bool written = writer.IsComplete() && !std::ferror(f);
+	if (std::fclose(f) != 0 || !written) {
+		std::printf("[Designer] Failed to save: %s\n", path.c_str());
+		return false;
+	}
 	std::printf("[Designer] Saved bind vars: %s\n", path.c_str());
 	return true;
 }
 
-struct JsonToken {
-	enum Type { String, Number, Bool, Null, ObjectOpen, ObjectClose, ArrayOpen, ArrayClose, Colon, Comma, End, Error } type;
-	std::string str;
-	double num = 0;
-	bool bval = false;
-};
-
-static const char* SkipWs(const char* p) {
-	while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
-	return p;
-}
-
-static JsonToken NextToken(const char*& p) {
-	p = SkipWs(p);
-	JsonToken t;
-	switch (*p) {
-	case '\0': t.type = JsonToken::End; return t;
-	case '{': t.type = JsonToken::ObjectOpen; p++; return t;
-	case '}': t.type = JsonToken::ObjectClose; p++; return t;
-	case '[': t.type = JsonToken::ArrayOpen; p++; return t;
-	case ']': t.type = JsonToken::ArrayClose; p++; return t;
-	case ':': t.type = JsonToken::Colon; p++; return t;
-	case ',': t.type = JsonToken::Comma; p++; return t;
-	case '"': {
-		p++;
-		t.type = JsonToken::String;
-		while (*p && *p != '"') {
-			if (*p == '\\' && *(p + 1)) {
-				p++;
-				if (*p == 'n') t.str += '\n';
-				else if (*p == 't') t.str += '\t';
-				else t.str += *p;
-			} else {
-				t.str += *p;
-			}
-			p++;
+static bool LoadBindVar(const rapidjson::Value& json, DesignerVar& var) {
+	const auto value = json.FindMember("value");
+	if (value == json.MemberEnd() || var.type == VarType::Event) return true;
+	const auto& v = value->value;
+	switch (var.type) {
+	case VarType::String:
+		if (!v.IsString()) return false;
+		*var.val_string = Rml::String(v.GetString(), v.GetStringLength());
+		return true;
+	case VarType::Int:
+		if (!v.IsNumber()) return false;
+		*var.val_int = v.IsInt() ? v.GetInt() : static_cast<int>(v.GetDouble());
+		return true;
+	case VarType::Float:
+		if (!v.IsNumber()) return false;
+		*var.val_float = static_cast<float>(v.GetDouble());
+		return true;
+	case VarType::Bool:
+		if (!v.IsBool()) return false;
+		*var.val_bool = v.GetBool();
+		return true;
+	case VarType::StringArray:
+		if (!v.IsArray()) return false;
+		for (const auto& item : v.GetArray()) {
+			if (!item.IsString()) return false;
+			var.val_string_array->emplace_back(item.GetString(), item.GetStringLength());
 		}
-		if (*p == '"') p++;
-		return t;
+		return true;
+	case VarType::Event:
+		return true;
 	}
-	case 't':
-		if (std::strncmp(p, "true", 4) == 0) { t.type = JsonToken::Bool; t.bval = true; p += 4; return t; }
-		break;
-	case 'f':
-		if (std::strncmp(p, "false", 5) == 0) { t.type = JsonToken::Bool; t.bval = false; p += 5; return t; }
-		break;
-	case 'n':
-		if (std::strncmp(p, "null", 4) == 0) { t.type = JsonToken::Null; p += 4; return t; }
-		break;
-	}
-	if (*p == '-' || (*p >= '0' && *p <= '9')) {
-		t.type = JsonToken::Number;
-		char* end;
-		t.num = std::strtod(p, &end);
-		p = end;
-		return t;
-	}
-	t.type = JsonToken::Error;
-	return t;
+	return false;
 }
 
 bool DesignerApp::LoadBindVars(const std::string& path) {
-	FILE* f = std::fopen(path.c_str(), "rb");
-	if (!f) {
+	std::ifstream file(path, std::ios::binary);
+	if (!file) {
 		std::printf("[Designer] Bind vars file not found: %s\n", path.c_str());
 		return false;
 	}
-	std::fseek(f, 0, SEEK_END);
-	long sz = std::ftell(f);
-	std::fseek(f, 0, SEEK_SET);
-	std::string json(sz, '\0');
-	std::fread(json.data(), 1, sz, f);
-	std::fclose(f);
+	const std::string json{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+	if (file.bad()) {
+		std::printf("[Designer] Failed to read bind vars: %s\n", path.c_str());
+		return false;
+	}
+
+	rapidjson::Document document;
+	document.Parse(json.data(), json.size());
+	if (document.HasParseError()) {
+		std::printf("[Designer] Invalid .vars JSON in %s at offset %zu: %s\n", path.c_str(),
+			document.GetErrorOffset(), rapidjson::GetParseError_En(document.GetParseError()));
+		return false;
+	}
+	const auto invalid = [&path](const char* what, const char* name) {
+		std::printf("[Designer] Invalid .vars file %s: %s '%s'\n", path.c_str(), what, name);
+		return false;
+	};
+	if (!document.IsObject()) return invalid("root is not an object", "");
+
+	std::map<Rml::String, ModelVars> loaded;
+	for (auto model_it = document.MemberBegin(); model_it != document.MemberEnd(); ++model_it) {
+		const char* model_name = model_it->name.GetString();
+		const auto& model_json = model_it->value;
+		if (!model_json.IsObject()) return invalid("model is not an object", model_name);
+		auto& model = loaded[model_name];
+		for (auto var_it = model_json.MemberBegin(); var_it != model_json.MemberEnd(); ++var_it) {
+			const char* var_name = var_it->name.GetString();
+			const auto& var_json = var_it->value;
+			if (!var_json.IsObject()) return invalid("variable is not an object", var_name);
+			const auto type_json = var_json.FindMember("type");
+			if (type_json == var_json.MemberEnd() || !type_json->value.IsString())
+				return invalid("variable has no type", var_name);
+			const auto type = parties::enum_names_v<VarType>.parse(type_json->value.GetString());
+			if (!type) return invalid("variable has an unknown type", var_name);
+			auto [entry, inserted] = model.vars.emplace(var_name, DesignerVar(*type));
+			if (inserted && !LoadBindVar(var_json, entry->second))
+				return invalid("variable value does not match its type", var_name);
+		}
+	}
 
 	for (auto& [name, model] : data_models_) {
 		if (model.handle && preview_context_)
 			preview_context_->RemoveDataModel(name);
 		model.handle = {};
 	}
-	data_models_.clear();
-
-	const char* p = json.c_str();
-	auto tok = NextToken(p);
-	if (tok.type != JsonToken::ObjectOpen) { std::printf("[Designer] Invalid .vars JSON\n"); return false; }
-
-	while (true) {
-		tok = NextToken(p);
-		if (tok.type == JsonToken::ObjectClose || tok.type == JsonToken::End) break;
-		if (tok.type == JsonToken::Comma) continue;
-		if (tok.type != JsonToken::String) break;
-		std::string model_name = tok.str;
-
-		tok = NextToken(p);
-		tok = NextToken(p);
-		if (tok.type != JsonToken::ObjectOpen) break;
-
-		while (true) {
-			tok = NextToken(p);
-			if (tok.type == JsonToken::ObjectClose) break;
-			if (tok.type == JsonToken::Comma) continue;
-			if (tok.type != JsonToken::String) break;
-			std::string var_name = tok.str;
-
-			tok = NextToken(p);
-			tok = NextToken(p);
-			if (tok.type != JsonToken::ObjectOpen) break;
-
-			std::string type_str;
-			std::string value_str;
-			bool has_value = false;
-			double num_val = 0;
-			bool bool_val = false;
-			bool is_num = false;
-			bool is_bool = false;
-			std::vector<std::string> array_val;
-			bool is_array = false;
-
-			while (true) {
-				tok = NextToken(p);
-				if (tok.type == JsonToken::ObjectClose) break;
-				if (tok.type == JsonToken::Comma) continue;
-				if (tok.type != JsonToken::String) break;
-				std::string key = tok.str;
-
-				tok = NextToken(p);
-
-				if (key == "type") {
-					tok = NextToken(p);
-					type_str = tok.str;
-				} else if (key == "value") {
-					tok = NextToken(p);
-					has_value = true;
-					if (tok.type == JsonToken::String) {
-						value_str = tok.str;
-					} else if (tok.type == JsonToken::Number) {
-						num_val = tok.num; is_num = true;
-					} else if (tok.type == JsonToken::Bool) {
-						bool_val = tok.bval; is_bool = true;
-					} else if (tok.type == JsonToken::ArrayOpen) {
-						is_array = true;
-						while (true) {
-							tok = NextToken(p);
-							if (tok.type == JsonToken::ArrayClose) break;
-							if (tok.type == JsonToken::Comma) continue;
-							if (tok.type == JsonToken::String) array_val.push_back(tok.str);
-						}
-					}
-				} else {
-					NextToken(p);
-				}
-			}
-
-			VarType type = ParseVarType(type_str);
-			auto& model = data_models_[model_name];
-			model.vars.emplace(var_name, DesignerVar(type));
-			auto& var = model.vars[var_name];
-
-			if (has_value) {
-				switch (type) {
-				case VarType::String:
-					if (var.val_string) *var.val_string = value_str;
-					break;
-				case VarType::Int:
-					if (var.val_int) *var.val_int = is_num ? static_cast<int>(num_val) : std::atoi(value_str.c_str());
-					break;
-				case VarType::Float:
-					if (var.val_float) *var.val_float = is_num ? static_cast<float>(num_val) : static_cast<float>(std::atof(value_str.c_str()));
-					break;
-				case VarType::Bool:
-					if (var.val_bool) *var.val_bool = is_bool ? bool_val : (value_str == "true");
-					break;
-				case VarType::StringArray:
-					if (var.val_string_array) {
-						var.val_string_array->clear();
-						for (auto& s : array_val)
-							var.val_string_array->push_back(s);
-					}
-					break;
-				case VarType::Event:
-					break;
-				}
-			}
-		}
-	}
+	data_models_ = std::move(loaded);
 
 	std::printf("[Designer] Loaded bind vars: %s (%zu models)\n", path.c_str(), data_models_.size());
 

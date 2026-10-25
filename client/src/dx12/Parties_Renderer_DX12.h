@@ -6,22 +6,24 @@
 #include <RmlUi_Renderer_DX12.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <array>
 #include <vector>
 
-class PartiesRenderInterface_DX12 final : public ExtendedRenderInterface {
+class PartiesRenderInterface_DX12 final : public ExtendedRenderInterface,
+	public I420TextureRenderer, public NativeVideoTextureRenderer {
 public:
 	PartiesRenderInterface_DX12(void* window_handle, const Backend::RmlRendererSettings& settings);
 	~PartiesRenderInterface_DX12() override;
 
 	explicit operator bool() const override;
-	void SetViewport(int viewport_width, int viewport_height, bool force = false) override;
+	void SetViewport(int viewport_width, int viewport_height) override;
 	void BeginFrame() override;
-	bool IsFrameActive() const override { return frame_active_; }
+	bool IsFrameActive() const override { return active_frame_.has_value(); }
 	void Clear() override;
 	void EndFrame() override;
-	void ReleaseRetiredResources() override;
+	void ReleaseRetiredResourcesBetweenFrames() override;
 	void CaptureNextFrame(std::string output_path);
 	bool LastCaptureSucceeded() const { return last_capture_succeeded_; }
 	bool IsViewportValid() const { return upstream_.IsViewportValid(); }
@@ -68,15 +70,12 @@ public:
 		Rml::Vector2f translation, Rml::TextureHandle texture) override;
 	void ReleaseShader(Rml::CompiledShaderHandle shader) override;
 
-	uintptr_t GenerateYUVTexture(const uint8_t* y_data, uint32_t y_stride,
-		const uint8_t* u_data, const uint8_t* v_data, uint32_t uv_stride,
-		uint32_t width, uint32_t height) override;
-	void UpdateYUVTexture(uintptr_t handle, const uint8_t* y_data, uint32_t y_stride,
-		const uint8_t* u_data, const uint8_t* v_data, uint32_t uv_stride,
-		uint32_t width, uint32_t height) override;
-	void ReleaseYUVTexture(uintptr_t handle) override;
-	void RenderYUVGeometry(Rml::CompiledGeometryHandle geometry,
-		Rml::Vector2f translation, uintptr_t yuv_handle) override;
+	I420TextureRenderer* I420Textures() override { return this; }
+	uintptr_t GenerateI420Texture(const I420Planes& planes) override;
+	void UpdateI420Texture(uintptr_t handle, const I420Planes& planes) override;
+	void ReleaseI420Texture(uintptr_t handle) override;
+	void RenderI420Geometry(Rml::CompiledGeometryHandle geometry,
+		Rml::Vector2f translation, uintptr_t handle) override;
 
 	uintptr_t GenerateNV12Texture(const uint8_t* y_data, uint32_t y_stride,
 		const uint8_t* uv_data, uint32_t uv_stride,
@@ -90,16 +89,9 @@ public:
 
 	bool CaptureScreen(int& width, int& height, int& num_components,
 		Rml::UniquePtr<Rml::byte[]>& data);
-	uintptr_t GenerateNativeNV12Texture(
-		void* d3d12_resource, void* d3d12_chroma_resource,
-		std::shared_ptr<void> owner,
-		void* ready_fence, uint64_t ready_value, uint32_t resource_state, bool rgba,
-		uint32_t width, uint32_t height) override;
-	bool UpdateNativeNV12Texture(
-		uintptr_t handle, void* d3d12_resource, void* d3d12_chroma_resource,
-		std::shared_ptr<void> owner,
-		void* ready_fence, uint64_t ready_value, uint32_t resource_state, bool rgba,
-		uint32_t width, uint32_t height) override;
+	NativeVideoTextureRenderer* NativeVideoTextures() override { return this; }
+	uintptr_t GenerateNativeVideoTexture(const NativeVideoFrame& frame) override;
+	bool UpdateNativeVideoTexture(uintptr_t handle, const NativeVideoFrame& frame) override;
 	RenderInterface_DX12& upstream() { return upstream_; }
 	const RenderInterface_DX12& upstream() const { return upstream_; }
 
@@ -122,10 +114,10 @@ private:
 	void CollectRetiredTextures(uint32_t completed_frame);
 	void CollectAllRetiredTextures();
 
-	static void ConvertI420ToRgba(std::vector<Rml::byte>& rgba,
-		const uint8_t* y_data, uint32_t y_stride,
-		const uint8_t* u_data, const uint8_t* v_data, uint32_t uv_stride,
-		uint32_t width, uint32_t height);
+	Rml::TextureHandle RegisterNativeVideoTexture(const NativeVideoFrame& frame);
+	static void AdoptNativeVideoFrame(TextureProxy& proxy, const NativeVideoFrame& frame);
+
+	static void ConvertI420ToRgba(std::vector<Rml::byte>& rgba, const I420Planes& planes);
 	static void ConvertNV12ToRgba(std::vector<Rml::byte>& rgba,
 		const uint8_t* y_data, uint32_t y_stride,
 		const uint8_t* uv_data, uint32_t uv_stride,
@@ -136,7 +128,7 @@ private:
 	void* window_handle_ = nullptr;
 	int viewport_width_ = 0;
 	int viewport_height_ = 0;
-	bool frame_active_ = false;
+	std::optional<Dx12FrameSlot> active_frame_;
 	bool last_capture_succeeded_ = false;
 	std::array<std::vector<RetiredTexture>, RMLUI_RENDER_BACKEND_FIELD_SWAPCHAIN_BACKBUFFER_COUNT>
 		retired_textures_;

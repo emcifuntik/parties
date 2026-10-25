@@ -70,7 +70,7 @@ int main(int argc, char**) {
 	first->SetViewport(320, 200);
 	if (!first->IsViewportValid()) return 8;
 	for (int pass = 0; pass < 256; ++pass) {
-		first->SetViewport(320, 200, true);
+		first->SetViewport(320, 200);
 		if (!first->IsViewportValid()) return 8;
 	}
 	first->SetViewport(321, 201);
@@ -98,9 +98,16 @@ int main(int argc, char**) {
 		&nv12_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&nv12))))
 		return 4;
 	auto owner = std::make_shared<int>(1);
-	const uintptr_t texture = first->GenerateNativeNV12Texture(
-		nv12.Get(), nullptr, owner, nullptr, 0,
-		D3D12_RESOURCE_STATE_COMMON, false, 64, 64);
+	const auto native_frame = [&](ID3D12Resource* resource) {
+		NativeVideoFrame frame;
+		frame.resource = resource;
+		frame.owner = owner;
+		frame.resource_state = D3D12_RESOURCE_STATE_COMMON;
+		frame.visible_width = 64;
+		frame.visible_height = 64;
+		return frame;
+	};
+	const uintptr_t texture = first->GenerateNativeVideoTexture(native_frame(nv12.Get()));
 	if (!texture) return 5;
 	first->ReleaseNV12Texture(texture);
 
@@ -108,9 +115,7 @@ int main(int argc, char**) {
 		first->BeginFrame();
 		first->Clear();
 		std::vector<uintptr_t> held;
-		while (auto handle = first->GenerateNativeNV12Texture(
-			nv12.Get(), nullptr, owner, nullptr, 0,
-			D3D12_RESOURCE_STATE_COMMON, false, 64, 64)) {
+		while (auto handle = first->GenerateNativeVideoTexture(native_frame(nv12.Get()))) {
 			held.push_back(handle);
 			if (held.size() > 10000) return 9;
 		}
@@ -146,11 +151,9 @@ int main(int argc, char**) {
 			for (size_t stream = 0; stream < streams.size(); ++stream) {
 				auto* resource = video_frames[stream * 4 + pass % 4].Get();
 				if (!streams[stream]) {
-					streams[stream] = first->GenerateNativeNV12Texture(resource, nullptr, owner,
-						nullptr, 0, D3D12_RESOURCE_STATE_COMMON, false, 64, 64);
+					streams[stream] = first->GenerateNativeVideoTexture(native_frame(resource));
 					if (!streams[stream]) return 17;
-				} else if (!first->UpdateNativeNV12Texture(streams[stream], resource, nullptr, owner,
-					nullptr, 0, D3D12_RESOURCE_STATE_COMMON, false, 64, 64)) return 18;
+				} else if (!first->UpdateNativeVideoTexture(streams[stream], native_frame(resource))) return 18;
 				first->RenderGeometry(geometry, {10.0f + 80.0f * stream, 10.0f}, streams[stream]);
 			}
 			first->EndFrame();
@@ -176,8 +179,7 @@ int main(int argc, char**) {
 			first->EndFrame();
 		}
 		if (FAILED(device->GetDeviceRemovedReason()) || !diagnostics.check()) return 22;
-		while (auto handle = first->GenerateNativeNV12Texture(nv12.Get(), nullptr, owner,
-			nullptr, 0, D3D12_RESOURCE_STATE_COMMON, false, 64, 64)) {
+		while (auto handle = first->GenerateNativeVideoTexture(native_frame(nv12.Get()))) {
 			held.push_back(handle);
 			if (held.size() > full_capacity) return 23;
 		}

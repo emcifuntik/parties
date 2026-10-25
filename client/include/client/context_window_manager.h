@@ -1,5 +1,6 @@
 #pragma once
 
+#include <client/rml_shutdown.h>
 #include <parties/permissions.h>
 
 #include <functional>
@@ -59,10 +60,8 @@ public:
     ContextWindowManager& operator=(const ContextWindowManager&) = delete;
 
     bool init(HWND owner, std::recursive_mutex* ui_mutex);
-    // Remove the popup context while RmlUi is still alive, retaining the
-    // renderer until the application's global Rml::Shutdown has completed.
-    void prepare_shutdown();
-    void shutdown();
+    void release_documents();
+    void destroy_window(const RmlShutdownProof&);
 
     void show_user(const UserRequest& request, UserCallbacks callbacks);
     void show_actions(const ActionRequest& request, std::function<void(int)> on_action);

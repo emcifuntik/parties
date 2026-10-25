@@ -1,10 +1,12 @@
 #pragma once
 
+#include <client/native_video_frame.h>
+
 #include <RmlUi/Core/Element.h>
 #include <RmlUi/Core/ElementInstancer.h>
 
 #include <cstdint>
-#include <memory>
+#include <optional>
 #include <vector>
 
 class ExtendedRenderInterface;
@@ -37,13 +39,7 @@ public:
         std::vector<uint8_t>& uv_data, uint32_t uv_stride,
         uint32_t width, uint32_t height);
 
-    void UpdateNativeNV12Frame(
-        void* d3d12_resource, void* d3d12_chroma_resource,
-        std::shared_ptr<void> owner,
-        void* ready_fence, uint64_t ready_value, uint32_t resource_state, bool rgba,
-        uint32_t width, uint32_t height,
-        uint32_t texture_width = 0, uint32_t texture_height = 0,
-        uint32_t crop_x = 0, uint32_t crop_y = 0);
+    void UpdateNativeVideoFrame(NativeVideoFrame frame);
 
     void UpdateFrame(std::vector<uint8_t>&& rgba_data, uint32_t width, uint32_t height);
 
@@ -97,14 +93,7 @@ private:
     bool nv12_dirty_ = false;
     std::vector<uint8_t> nv12_y_, nv12_uv_;
     uint32_t nv12_y_stride_ = 0, nv12_uv_stride_ = 0;
-    void* nv12_native_resource_ = nullptr;
-    void* nv12_native_chroma_resource_ = nullptr;
-    void* nv12_native_ready_fence_ = nullptr;
-    uint64_t nv12_native_ready_value_ = 0;
-    uint32_t nv12_native_resource_state_ = 0;
-    bool nv12_native_rgba_ = false;
-    std::shared_ptr<void> nv12_native_owner_;
-    bool nv12_native_mode_ = false;
+    std::optional<NativeVideoFrame> native_;
     bool nv12_texture_native_ = false;
 
     Rml::CompiledGeometryHandle video_geom_ = 0;

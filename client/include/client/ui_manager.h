@@ -1,5 +1,6 @@
 #pragma once
 
+#include <client/rml_shutdown.h>
 #include <client/rmlui_backend.h>
 
 #include <RmlUi/Core.h>
@@ -23,7 +24,7 @@ public:
     ~UiManager();
 
     bool init(HWND hwnd);
-    void shutdown();
+    RmlShutdownProof shutdown();
 
     Rml::ElementDocument* load_document(const std::string& path);
     void show_document(Rml::ElementDocument* doc);

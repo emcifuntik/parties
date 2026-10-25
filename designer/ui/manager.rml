@@ -30,13 +30,12 @@
 					<span class="var-col-type">{{ var.type_name }}</span>
 					<div class="var-col-value">
 						<input class="var-input" type="text"
-							data-if="var.type_name != 'bool' && var.type_name != 'event'"
+							data-if="var.type_name != 'bool'"
 							data-attr-value="var.value"
 							data-event-change="set_var(var.name, ev.value)" />
 						<span class="var-bool-toggle"
 							data-if="var.type_name == 'bool'"
 							data-event-click="toggle_var(var.name)">{{ var.value }}</span>
-						<span class="var-event-label" data-if="var.type_name == 'event'">(callback)</span>
 					</div>
 					<span class="var-col-actions">
 						<span class="remove-btn" data-event-click="remove_var(var.name)">x</span>
