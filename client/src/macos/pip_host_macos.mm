@@ -206,7 +206,7 @@ Rml::Input::KeyIdentifier pip_key(unsigned short key_code)
     if (!_model->init(_context) || !(_document = _context->LoadDocument("ui/pip.rml"))) {
         NSLog(@"[Parties] Picture-in-picture document failed to load");
         _failed = true;
-        [self prepareShutdown];
+        [self releaseDocuments];
         return NO;
     }
     _document->SetClass("platform-macos", true);
@@ -303,7 +303,7 @@ Rml::Input::KeyIdentifier pip_key(unsigned short key_code)
     [buffer commit];
 }
 
-- (void)prepareShutdown
+- (void)releaseDocuments
 {
     [_panel hide];
     _view.paused = YES;
@@ -320,9 +320,13 @@ Rml::Input::KeyIdentifier pip_key(unsigned short key_code)
     _model.reset();
 }
 
-- (void)shutdown
+- (void)destroyWindow:(const parties::client::RmlShutdownProof&)rmlGone
 {
-    // Rml::Shutdown has completed: no render manager refers to the renderer.
+    [self destroySurface];
+}
+
+- (void)destroySurface
+{
     _view.delegate = nil;
     _renderer.reset();
     [_panel release];
@@ -335,7 +339,7 @@ Rml::Input::KeyIdentifier pip_key(unsigned short key_code)
 
 - (void)dealloc
 {
-    [self shutdown];
+    [self destroySurface];
     [_device release];
     [super dealloc];
 }

@@ -2,7 +2,6 @@
 
 #include <client/app_core.h>
 
-#include <algorithm>
 #include <cmath>
 #include <utility>
 
@@ -16,14 +15,15 @@ static NSString* NSStringFromUTF8(const std::string& value)
     return result ?: @"";
 }
 
-static NSString* RoleName(int role)
+static NSString* RoleName(parties::Role role)
 {
     switch (role) {
-    case 0: return @"Owner";
-    case 1: return @"Administrator";
-    case 2: return @"Moderator";
-    default: return @"Member";
+    case parties::Role::Owner:     return @"Owner";
+    case parties::Role::Admin:     return @"Administrator";
+    case parties::Role::Moderator: return @"Moderator";
+    case parties::Role::User:      return @"Member";
     }
+    return @"Member";
 }
 
 static NSTextField* MakeLabel(NSString* text, NSFont* font, NSColor* color)
@@ -86,7 +86,7 @@ static NSTextField* MakeLabel(NSString* text, NSFont* font, NSColor* color)
 
 @implementation PartiesUserPopoverController {
     MacOSUserMenuCallbacks _callbacks;
-    NSPopover* _owningPopover;
+    __unsafe_unretained NSPopover* _owningPopover;
     NSSlider* _volumeSlider;
     NSTextField* _volumeValue;
     NSSlider* _musicSlider;
@@ -187,7 +187,7 @@ static NSTextField* MakeLabel(NSString* text, NSFont* font, NSColor* color)
         [roleLabel.widthAnchor constraintEqualToConstant:92.0].active = YES;
         _rolePopup = [[[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO] autorelease];
         [_rolePopup addItemsWithTitles:@[@"Owner", @"Administrator", @"Moderator", @"Member"]];
-        [_rolePopup selectItemAtIndex:std::clamp(request.role, 0, 3)];
+        [_rolePopup selectItemAtIndex:static_cast<NSInteger>(request.role)];
         _rolePopup.target = self;
         _rolePopup.action = @selector(roleChanged:);
         NSStackView* roleRow = [NSStackView stackViewWithViews:@[roleLabel, _rolePopup]];
@@ -268,8 +268,9 @@ static NSTextField* MakeLabel(NSString* text, NSFont* font, NSColor* color)
 
 - (void)roleChanged:(NSPopUpButton*)sender
 {
-    if (_callbacks.set_role)
-        _callbacks.set_role((int)sender.indexOfSelectedItem);
+    const auto role = parties::enum_names_v<parties::Role>.from_int((int)sender.indexOfSelectedItem);
+    if (role && _callbacks.set_role)
+        _callbacks.set_role(*role);
     [_owningPopover close];
 }
 
@@ -291,7 +292,7 @@ static NSTextField* MakeLabel(NSString* text, NSFont* font, NSColor* color)
 namespace parties::client {
 
 struct MacOSContextMenuController::State {
-    NSView* anchor_view = nil;
+    __unsafe_unretained NSView* anchor_view = nil;
     NSPoint anchor_point = NSZeroPoint;
     NSPopover* popover = nil;
     uint64_t generation = 0;

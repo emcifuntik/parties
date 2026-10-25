@@ -3,6 +3,7 @@
 #import <MetalKit/MetalKit.h>
 
 #include <client/pip_geometry.h>
+#include <client/rml_shutdown.h>
 
 #include <functional>
 #include <optional>
@@ -20,8 +21,6 @@ struct MacPipActions {
     std::function<void(const parties::client::PipRect&)> save_geometry;
 };
 
-// Kept until shutdown: RmlUi retains a render manager for every render
-// interface until Rml::Shutdown.
 @interface PartiesPipHost : NSObject <MTKViewDelegate>
 
 - (instancetype)initWithDevice:(id<MTLDevice>)device actions:(MacPipActions)actions;
@@ -32,7 +31,7 @@ struct MacPipActions {
 - (parties::client::VideoElement*)videoSurface;
 - (ExtendedRenderInterface*)renderer;
 
-- (void)prepareShutdown;
-- (void)shutdown;
+- (void)releaseDocuments;
+- (void)destroyWindow:(const parties::client::RmlShutdownProof&)rmlGone;
 
 @end

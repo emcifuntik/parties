@@ -15,8 +15,6 @@
 
 #include <RmlUi/Core/Core.h>
 #include <RmlUi/Core/Context.h>
-#include <RmlUi/Core/StyleSheetSpecification.h>
-#include <RmlUi/Core/PropertyDefinition.h>
 #include <RmlUi/Core/ElementDocument.h>
 #include <RmlUi/Core/Factory.h>
 #include <RmlUi/Core/Input.h>
@@ -42,8 +40,11 @@
 #include <client/pip_geometry.h>
 #include <client/gradient_circle_element.h>
 #include <client/custom_elements.h>
+#include <client/rml_shutdown.h>
+#include <client/share_settings.h>
 #include <client/ui_fixture.h>
 #include <client/ui_layout_audit.h>
+#include <client/window_action.h>
 
 #ifdef SENTRY_COCOA_ENABLED
 #import <Sentry/Sentry.h>
@@ -61,6 +62,9 @@ extern void macos_updater_check_in_background();
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <optional>
+#include <span>
+#include <utility>
 #include <vector>
 #include <cstring>
 #include <cstdio>
@@ -68,6 +72,21 @@ extern void macos_updater_check_in_background();
 using namespace parties;
 using namespace parties::client;
 using namespace parties::protocol;
+
+#ifdef SENTRY_COCOA_ENABLED
+static constexpr double kProductionTracesSampleRate  = 1.0;
+static constexpr double kDevelopmentTracesSampleRate = 1.0;
+#endif
+
+static MacVideoCodec mac_video_codec(ShareCodec codec)
+{
+    switch (codec) {
+    case ShareCodec::AV1:  return MacVideoCodec::AV1;
+    case ShareCodec::H265: return MacVideoCodec::H265;
+    case ShareCodec::H264: return MacVideoCodec::H264;
+    }
+    return MacVideoCodec::H265;
+}
 
 static std::string macos_ui_fixture_argument()
 {
@@ -355,8 +374,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     }
     _rmlInitialized = true;
 
-    Rml::StyleSheetSpecification::RegisterProperty("window-action", "none", true)
-        .AddParser("keyword", "none, caption, close, minimize, maximize");
+    register_window_action_property();
 
     parties::client::register_custom_elements(_elementRegistry);
 
@@ -444,7 +462,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
             if (bself->_core.model_.on_user_compress_changed)
                 bself->_core.model_.on_user_compress_changed(user_id, enabled, target);
         };
-        callbacks.set_role = [bself, user_id](int role) {
+        callbacks.set_role = [bself, user_id](Role role) {
             if (bself->_core.model_.on_set_user_role)
                 bself->_core.model_.on_set_user_role(user_id, role);
         };
@@ -534,9 +552,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
             });
     };
 
-    bridge.open_share_picker = [bself]() { [bself startNativeShare]; };
-    bridge.open_audio_share_picker = [bself]() { [bself startNativeAudioShare]; };
-
     bridge.stop_screen_share = [bself]() { [bself stopScreenShare]; };
     bridge.stop_audio_share = [bself]() { [bself stopAudioShare]; };
 
@@ -544,18 +559,21 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         bself->_needsKeyframe = true;
     };
 
-    bridge.stream_awaiting_keyframe = [bself](UserId id) {
-        return bself->_core.viewing_sharer_ == id && bself->_core.awaiting_keyframe_;
-    };
-
     bridge.clear_video_element = []() {};
 
-    bridge.show_pip = [bself](UserId, const std::string& title) {
-        [bself showPictureInPicture:title];
+    bridge.video = SingleDecoderVideo{};
+    bridge.share = NativeShareFlow{
+        .start_native_share       = [bself]() { [bself startNativeShare]; },
+        .start_native_audio_share = [bself]() { [bself startNativeAudioShare]; },
     };
-    bridge.hide_pip = [bself](UserId, PipCloseReason) {
-        [bself->_pipHost hide];
-        [bself syncVideoRouter];
+    bridge.pip = PictureInPicture{
+        .show = [bself](UserId, const std::string& title) {
+            [bself showPictureInPicture:title];
+        },
+        .hide = [bself](UserId, PipCloseReason) {
+            [bself->_pipHost hide];
+            [bself syncVideoRouter];
+        },
     };
     bridge.show_main_window = [bself]() {
         NSWindow* window = bself->_metalView.window;
@@ -601,8 +619,8 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
         [self installMacOSModelCallbacks];
 
-        _core.on_video_frame_received = [bself](uint32_t sender_id, const uint8_t* data, size_t len) {
-            [bself onVideoFrameData:sender_id data:data len:len];
+        _core.on_video_frame_received = [bself](UserId sender, ParsedVideoFrame&& frame) {
+            [bself onVideoFrame:sender frame:frame];
         };
 
         std::string hostname = NSProcessInfo.processInfo.hostName.UTF8String;
@@ -648,7 +666,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         request.user_id = 2;
         request.name = "IceTroll";
         request.channel_name = "General";
-        request.role = 1;
+        request.role = Role::Admin;
         request.can_manage_roles = true;
         request.can_kick = true;
         request.volume = 0.86f;
@@ -772,25 +790,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 {
     PartiesViewController* bself = self;
 
-    _core.model_.on_toggle_share = [bself]() {
-        if (bself->_sharing)
-            [bself stopScreenShare];
-        else
-            [bself startNativeShare];
-    };
-    _core.model_.on_toggle_audio_share = [bself]() {
-        if (bself->_core.model_.is_audio_sharing)
-            [bself stopAudioShare];
-        else
-            [bself startNativeAudioShare];
-    };
-
-    _core.model_.on_start_native_share = [bself]() {
-        [bself startNativeShare];
-    };
-
-    _core.model_.on_select_share_target = nullptr;
-
     _core.model_.on_watch_sharer = [bself](int id) {
         [bself watchSharer:static_cast<UserId>(id)];
     };
@@ -805,27 +804,16 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     };
 }
 
-- (void)onVideoFrameData:(uint32_t)sender_id data:(const uint8_t*)data len:(size_t)len
+- (void)onVideoFrame:(UserId)sender frame:(const ParsedVideoFrame&)frame
 {
-    if (len < 14) return;
-    if (sender_id != _core.viewing_sharer_ || !_decoder) return;
+    if (!_decoder || _core.admit_single_watch_frame(sender, frame.header()) != SingleWatchAdmit::Decode)
+        return;
 
-    uint8_t  flags = data[8];
-    uint16_t w, h;
-    std::memcpy(&w, data + 9,  2);
-    std::memcpy(&h, data + 11, 2);
-    uint8_t codec_id = data[13];
-
-    bool is_keyframe = (flags & VIDEO_FLAG_KEYFRAME) != 0;
-
-    if (_core.awaiting_keyframe_ && !is_keyframe) return;
-    _core.awaiting_keyframe_ = false;
-
+    const VideoFrameHeader& header = frame.header();
     if (!_decoder->on_decoded) {
-        auto codec = static_cast<VideoCodecId>(codec_id);
-        if (!_decoder->init(codec, w, h)) {
+        if (!_decoder->init(header.codec, header.width, header.height)) {
             std::fprintf(stderr, "[Video] Decoder init failed (codec=%u, %ux%u)\n",
-                         codec_id, w, h);
+                         static_cast<unsigned>(header.codec), header.width, header.height);
             _decoder.reset();
             return;
         }
@@ -838,7 +826,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         };
     }
 
-    _decoder->decode(data + 14, len - 14, is_keyframe);
+    _decoder->decode(frame.encoded().data(), frame.encoded().size(), header.keyframe);
 }
 
 - (void)onVideoDecoded:(CVPixelBufferRef)buf
@@ -851,7 +839,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
     if (!_doc) return;
     [self syncVideoRouter];
-    auto* el = _videoRouter.target(_core.viewing_sharer_.load(), [self videoSurfaces]);
+    auto* el = _videoRouter.target(_core.viewing_sharer(), [self videoSurfaces]);
     if (!el) return;
 
     CVPixelBufferLockBaseAddress(buf, kCVPixelBufferLock_ReadOnly);
@@ -881,11 +869,8 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     _nativePickerActive = true;
     PartiesViewController* bself = self;
 
-    static const uint32_t fps_table[] = { 15, 30, 60, 120 };
-    uint32_t capture_fps = fps_table[std::min(_core.model_.share_fps.get(), 3)];
-
-    static const float scale_factors[] = {1.0f, 0.75f, 0.5f, 0.25f};
-    float output_scale = scale_factors[std::max(0, std::min(_core.model_.share_scale.get(), 3))];
+    uint32_t capture_fps = frames_per_second(_core.model_.share_fps.get());
+    float output_scale = scale_factor(_core.model_.share_scale.get());
 
     _capturer->pick_and_start(capture_fps, output_scale, false, [bself](bool success) {
         NSLog(@"[ScreenShare] pick_and_start callback: success=%d", success);
@@ -903,7 +888,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     _encoder      = std::make_unique<VideoEncoderMac>();
     _encoderReady = false;
 
-    _core.reset_video_sender(static_cast<uint32_t>(_core.model_.share_bitrate * 1000000.0f));
+    _core.begin_video_share(static_cast<uint32_t>(_core.model_.share_bitrate * 1000000.0f));
 
     PartiesViewController* bself = self;
     _capturer->on_frame = [bself](CVPixelBufferRef buf, uint32_t w, uint32_t h) {
@@ -911,12 +896,8 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
         if (!bself->_encoderReady) {
             uint32_t bitrate = (uint32_t)(bself->_core.model_.share_bitrate * 1000000.0f);
-            static const uint32_t fps_table[] = { 15, 30, 60, 120 };
-            uint32_t fps = fps_table[std::min(bself->_core.model_.share_fps.get(), 3)];
-
-            MacVideoCodec mac_codec = (bself->_core.model_.share_codec == 0) ? MacVideoCodec::AV1
-                                    : (bself->_core.model_.share_codec == 2) ? MacVideoCodec::H264
-                                                                             : MacVideoCodec::H265;
+            uint32_t fps = frames_per_second(bself->_core.model_.share_fps.get());
+            MacVideoCodec mac_codec = mac_video_codec(bself->_core.model_.share_codec.get());
 
             uint32_t enc_w = w & ~1u;
             uint32_t enc_h = h & ~1u;
@@ -947,21 +928,15 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
                 auto r = bself->_core.send_video_frame(data, len, is_kf, fw, fh, wire_codec);
                 bself->_core.stream_frame_count_.fetch_add(1, std::memory_order_relaxed);
 
-                if (bself->_core.viewing_sharer_ == bself->_core.user_id_ && bself->_decoder) {
+                if (bself->_core.viewing_sharer() == bself->_core.user_id_ && bself->_decoder) {
                     VideoFrameHeader hdr;
                     hdr.frame_seq = r.frame_seq;
-                    hdr.timestamp = r.frame_seq;
-                    hdr.flags     = is_kf ? VIDEO_FLAG_KEYFRAME : 0;
+                    hdr.keyframe  = is_kf;
                     hdr.width     = fw;
                     hdr.height    = fh;
-                    hdr.codec     = static_cast<uint8_t>(wire_codec);
-
-                    std::vector<uint8_t> preview(VIDEO_FRAME_HEADER_SIZE + len);
-                    hdr.write(preview.data());
-                    std::memcpy(preview.data() + VIDEO_FRAME_HEADER_SIZE, data, len);
-                    [bself onVideoFrameData:bself->_core.user_id_
-                                       data:preview.data()
-                                        len:preview.size()];
+                    hdr.codec     = wire_codec;
+                    [bself onVideoFrame:bself->_core.user_id_
+                                  frame:ParsedVideoFrame::assemble(hdr, std::span<const uint8_t>(data, len))];
                 }
             };
 
@@ -975,13 +950,13 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
             });
         }
 
-        if (auto adapted = bself->_core.take_video_bitrate_update())
-            bself->_encoder->set_bitrate(*adapted);
+        if (auto adapted = bself->_core.video_encode_feedback().take_bitrate_update())
+            bself->_encoder->set_average_bitrate_bps(*adapted);
         bool forceKF = bself->_needsKeyframe;
         bself->_needsKeyframe = false;
-        if (bself->_core.take_video_keyframe_request()) forceKF = true;
+        if (bself->_core.video_encode_feedback().take_keyframe_request()) forceKF = true;
 
-        if (!bself->_core.video_admit_frame()) {
+        if (!bself->_core.video_accounting().admit_frame()) {
             if (forceKF) bself->_needsKeyframe = true;
             return;
         }
@@ -991,7 +966,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
     static constexpr int kAudioFrameSize = 960;
     static constexpr int kAudioChannels  = 2;
-    _streamAudioReady = _streamAudioEncoder.init_encoder(48000, kAudioChannels, 64000);
+    _streamAudioReady = _streamAudioEncoder.init_encoder(48000, kAudioChannels, 64000, std::nullopt);
     _audioBuf.resize(kAudioFrameSize * kAudioChannels, 0.0f);
     _audioPos = 0;
 
@@ -1013,13 +988,12 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
                 input_pos += copy;
 
                 if (bself->_audioPos >= samples_per_opus_frame) {
-                    int encoded = bself->_streamAudioEncoder.encode(
-                        bself->_audioBuf.data(), kAudioFrameSize,
-                        bself->_opusBuf, parties::audio::MAX_OPUS_PACKET);
-                    if (encoded > 0) {
-                        std::vector<uint8_t> pkt(1 + encoded);
+                    const auto encoded = bself->_streamAudioEncoder.encode(
+                        bself->_audioBuf.data(), kAudioFrameSize, std::span<uint8_t>(bself->_opusBuf));
+                    if (encoded) {
+                        std::vector<uint8_t> pkt(1 + *encoded);
                         pkt[0] = STREAM_AUDIO_PACKET_TYPE;
-                        std::memcpy(pkt.data() + 1, bself->_opusBuf, encoded);
+                        std::memcpy(pkt.data() + 1, bself->_opusBuf, *encoded);
                         bself->_core.net_.send_data(pkt.data(), pkt.size());
                     }
                     bself->_audioPos = 0;
@@ -1102,32 +1076,16 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
 - (void)watchSharer:(UserId)sharerId
 {
-    _core.viewing_sharer_   = sharerId;
-    _core.awaiting_keyframe_ = true;
     _decoder = std::make_unique<VideoDecoderIOS>();
-
-    [self sendPLI:sharerId];
-
-    uint32_t id32 = static_cast<uint32_t>(sharerId);
-    _core.net_.send_message(ControlMessageType::SCREEN_SHARE_VIEW,
-                             (const uint8_t*)&id32, sizeof(id32));
-
-    _core.set_single_watched(sharerId);
+    _core.begin_single_watch(sharerId);
     _streamRevealed = false;
 }
 
 - (void)stopWatching
 {
-    _core.viewing_sharer_   = 0;
     _decoder.reset();
-    _core.awaiting_keyframe_ = false;
     _streamRevealed = false;
-
-    uint32_t zero = 0;
-    _core.net_.send_message(ControlMessageType::SCREEN_SHARE_VIEW,
-                             (const uint8_t*)&zero, sizeof(zero));
-
-    _core.set_single_watched(0);
+    _core.end_single_watch();
 }
 
 - (void)showPictureInPicture:(const std::string&)title
@@ -1175,11 +1133,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     _videoRouter.sync(_core.pip_.stream(), [self videoSurfaces]);
 }
 
-- (void)sendPLI:(UserId)targetId
-{
-    _core.send_pli(targetId);
-}
-
 - (void)shutdown
 {
     [_logicTimer invalidate];
@@ -1216,18 +1169,15 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         _debuggerInitialized = false;
     }
 #endif
-    [_pipHost prepareShutdown];
+    [_pipHost releaseDocuments];
     if (_rmlContext) {
         Rml::RemoveContext(_rmlContext->GetName());
         _rmlContext = nullptr;
         _metalView.rmlContext = nullptr;
     }
-    if (_rmlInitialized) {
-        Rml::Shutdown();
-        _rmlInitialized = false;
-    }
-    // The PiP renderer may only go after Rml::Shutdown released its manager.
-    [_pipHost shutdown];
+    const auto rml_gone = _rmlInitialized ? shutdown_rml() : rml_not_running();
+    _rmlInitialized = false;
+    [_pipHost destroyWindow:rml_gone];
     [_pipHost release];
     _pipHost = nil;
     if (_backendInitialized) {
@@ -1244,7 +1194,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     NSWindow*              _window;
     PartiesViewController* _viewController;
     PartiesStatusItemController* _statusItemController;
-    bool                   _quicInitialized;
+    std::optional<parties::QuicLibrary> _quic;
     bool                   _previewMode;
 }
 
@@ -1256,13 +1206,14 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         options.dsn = @SENTRY_DSN_VALUE;
 #ifdef PARTIES_RETAIL
         options.environment = @"production";
+        options.tracesSampleRate = @(kProductionTracesSampleRate);
 #else
         options.environment = @"development";
+        options.tracesSampleRate = @(kDevelopmentTracesSampleRate);
 #endif
         options.enableCrashHandler = YES;
         options.enableAppHangTracking = YES;
         options.sendDefaultPii = YES;
-        options.tracesSampleRate = @1.0;
     }];
 #endif
 #endif
@@ -1270,11 +1221,10 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     const std::string fixture = macos_ui_fixture_argument();
     _previewMode = !fixture.empty() && IsUIFixtureScenario(fixture);
     if (!_previewMode) {
-        if (!parties::quic_init()) {
+        if (auto quic = parties::QuicLibrary::open())
+            _quic.emplace(std::move(*quic));
+        else
             NSLog(@"[Parties] Failed to initialize MsQuic");
-        } else {
-            _quicInitialized = true;
-        }
     }
 
     _viewController = [[PartiesViewController alloc] init];
@@ -1419,10 +1369,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     [_statusItemController release];
     _statusItemController = nil;
     [_viewController shutdown];
-    if (_quicInitialized) {
-        parties::quic_cleanup();
-        _quicInitialized = false;
-    }
+    _quic.reset();
 }
 
 @end

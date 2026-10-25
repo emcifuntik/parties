@@ -22,7 +22,7 @@ public:
 
     bool IsFrameActive() const override;
 
-    void SetViewport(int width, int height, bool force = false) override;
+    void SetViewport(int width, int height) override;
 
     void SetViewportTopOffset(int top);
 
@@ -75,14 +75,6 @@ public:
     void ReleaseNV12Texture(uintptr_t handle) override;
     void RenderNV12Geometry(Rml::CompiledGeometryHandle geometry,
         Rml::Vector2f translation, uintptr_t nv12_handle) override;
-
-    uintptr_t GenerateYUVTexture(
-        const uint8_t*, uint32_t, const uint8_t*, const uint8_t*, uint32_t,
-        uint32_t, uint32_t) override { return 0; }
-    void UpdateYUVTexture(uintptr_t, const uint8_t*, uint32_t,
-        const uint8_t*, const uint8_t*, uint32_t, uint32_t, uint32_t) override {}
-    void ReleaseYUVTexture(uintptr_t) override {}
-    void RenderYUVGeometry(Rml::CompiledGeometryHandle, Rml::Vector2f, uintptr_t) override {}
 
 private:
     struct Data;

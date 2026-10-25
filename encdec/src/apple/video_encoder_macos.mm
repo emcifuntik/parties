@@ -1,4 +1,5 @@
 #include <encdec/apple/video_encoder_macos.h>
+#include <encdec/rate_control.h>
 #include <parties/video_common.h>
 
 #import <Foundation/Foundation.h>
@@ -81,7 +82,6 @@ bool VideoEncoderMac::init(MacVideoCodec codec, uint32_t width, uint32_t height,
     width_  = width;
     height_ = height;
     fps_    = fps > 0 ? fps : 30;
-    pts_    = 0;
 
     CMVideoCodecType vt_codec;
     if (codec == MacVideoCodec::AV1) {
@@ -153,7 +153,7 @@ bool VideoEncoderMac::init(MacVideoCodec codec, uint32_t width, uint32_t height,
         return false;
     }
 
-    apply_rate_limits(bitrate_bps);
+    apply_rate_limits_locked(bitrate_bps);
 
     int32_t fps_val = (int32_t)fps;
     CFNumberRef fps_num = CFNumberCreate(nullptr, kCFNumberSInt32Type, &fps_val);
@@ -212,11 +212,11 @@ bool VideoEncoderMac::init(MacVideoCodec codec, uint32_t width, uint32_t height,
     return true;
 }
 
-void VideoEncoderMac::apply_rate_limits(uint32_t bitrate_bps)
+void VideoEncoderMac::apply_rate_limits_locked(uint32_t average_bps)
 {
-    if (!session_ || bitrate_bps == 0) return;
+    if (!session_ || average_bps == 0) return;
 
-    int32_t bps = (int32_t)bitrate_bps;
+    int32_t bps = (int32_t)average_bps;
     CFNumberRef bps_num = CFNumberCreate(nullptr, kCFNumberSInt32Type, &bps);
     VTSessionSetProperty(session_,
                          kVTCompressionPropertyKey_AverageBitRate,
@@ -224,7 +224,7 @@ void VideoEncoderMac::apply_rate_limits(uint32_t bitrate_bps)
     CFRelease(bps_num);
 
     const double  window_seconds = 0.5;
-    const SInt32  byte_limit     = (SInt32)(bitrate_bps * 1.5 / 8 * window_seconds);
+    const SInt32  byte_limit     = (SInt32)(parties::encdec::peak_bps_for(average_bps) / 8.0 * window_seconds);
     CFNumberRef limit_bytes = CFNumberCreate(nullptr, kCFNumberSInt32Type, &byte_limit);
     CFNumberRef limit_time  = CFNumberCreate(nullptr, kCFNumberDoubleType, &window_seconds);
     CFTypeRef limits[] = { limit_bytes, limit_time };
@@ -237,10 +237,10 @@ void VideoEncoderMac::apply_rate_limits(uint32_t bitrate_bps)
     CFRelease(limit_time);
 }
 
-void VideoEncoderMac::set_bitrate(uint32_t bitrate_bps)
+void VideoEncoderMac::set_average_bitrate_bps(uint32_t average_bps)
 {
     std::lock_guard lock(mutex_);
-    apply_rate_limits(bitrate_bps);
+    apply_rate_limits_locked(average_bps);
 }
 
 void VideoEncoderMac::shutdown()
@@ -260,7 +260,6 @@ void VideoEncoderMac::encode(CVPixelBufferRef pixel_buffer, bool force_keyframe)
 
     CMTime pts = CMClockGetTime(CMClockGetHostTimeClock());
     CMTime dur = fps_ > 0 ? CMTimeMake(1, (int32_t)fps_) : kCMTimeInvalid;
-    pts_++;
 
     CFMutableDictionaryRef frame_props = nullptr;
     if (force_keyframe) {

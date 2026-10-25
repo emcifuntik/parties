@@ -22,7 +22,7 @@ public:
 
     void shutdown();
 
-    void set_bitrate(uint32_t bitrate_bps);
+    void set_average_bitrate_bps(uint32_t average_bps);
 
     void encode(CVPixelBufferRef pixel_buffer, bool force_keyframe = false);
 
@@ -43,14 +43,13 @@ private:
 
     void handle_encoded_sample(CMSampleBufferRef sample);
 
-    void apply_rate_limits(uint32_t bitrate_bps);
+    void apply_rate_limits_locked(uint32_t average_bps);
 
     VTCompressionSessionRef session_ = nullptr;
     MacVideoCodec           codec_   = MacVideoCodec::H264;
     uint32_t                width_   = 0;
     uint32_t                height_  = 0;
     uint32_t                fps_     = 30;
-    int64_t                 pts_     = 0;
     std::mutex              mutex_;
 };
 

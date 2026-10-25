@@ -7,15 +7,60 @@
 
 #include <dav1d/dav1d.h>
 
+#include <array>
+#include <cstdint>
 #include <cstring>
 #include <cstdio>
+#include <utility>
+#include <vector>
 
 using parties::VideoCodecId;
 
-static uint32_t read_be32(const uint8_t* p)
+namespace {
+
+constexpr size_t kAvccLengthBytes = 4;
+
+namespace h264 {
+enum NalType : uint8_t { Sei = 6, Sps = 7, Pps = 8, Aud = 9 };
+constexpr uint8_t nal_type(uint8_t first_byte) { return first_byte & 0x1F; }
+}
+
+namespace hevc {
+enum NalType : uint8_t { Vps = 32, Sps = 33, Pps = 34, Aud = 35 };
+constexpr uint8_t nal_type(uint8_t first_byte) { return (first_byte >> 1) & 0x3F; }
+}
+
+namespace av1 {
+enum ObuType : uint8_t { SequenceHeader = 1 };
+
+struct ObuHeader {
+    bool    forbidden_bit;
+    uint8_t type;
+    bool    has_extension;
+    bool    has_size;
+};
+
+constexpr ObuHeader parse_obu_header(uint8_t byte)
 {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
-           ((uint32_t)p[2] <<  8) |  (uint32_t)p[3];
+    return {((byte >> 7) & 0x01) != 0,
+            static_cast<uint8_t>((byte >> 3) & 0x0F),
+            ((byte >> 2) & 0x01) != 0,
+            ((byte >> 1) & 0x01) != 0};
+}
+
+constexpr std::array<uint8_t, 4> av1c_record(uint8_t seq_profile)
+{
+    constexpr uint8_t kMarkerAndVersion1          = 0x81;
+    constexpr uint8_t kMaxLevelIdx                = 0x1F;
+    constexpr uint8_t kEightBit420NonMonochrome   = 0x0C;
+    constexpr uint8_t kNoInitialPresentationDelay = 0x00;
+    return {kMarkerAndVersion1, static_cast<uint8_t>((seq_profile << 5) | kMaxLevelIdx),
+            kEightBit420NonMonochrome, kNoInitialPresentationDelay};
+}
+}
+
+using NalTypeOf = uint8_t (*)(uint8_t first_byte);
+
 }
 
 static void write_be32(uint8_t* p, uint32_t v)
@@ -75,15 +120,12 @@ find_obu(const uint8_t* data, size_t len, uint8_t target_type)
     size_t i = 0;
     while (i < len) {
         const uint8_t* obu_start = data + i;
-        uint8_t header = data[i++];
-        if (header >> 7) continue;
-        uint8_t obu_type       = (header >> 3) & 0x0F;
-        uint8_t extension_flag = (header >> 2) & 0x01;
-        uint8_t has_size       = (header >> 1) & 0x01;
-        if (extension_flag) { if (i >= len) break; i++; }
+        const av1::ObuHeader header = av1::parse_obu_header(data[i++]);
+        if (header.forbidden_bit) continue;
+        if (header.has_extension) { if (i >= len) break; i++; }
 
         size_t payload_size = 0;
-        if (has_size) {
+        if (header.has_size) {
             for (int b = 0; b < 8 && i < len; b++) {
                 uint8_t leb = data[i++];
                 payload_size |= ((size_t)(leb & 0x7F)) << (b * 7);
@@ -93,7 +135,7 @@ find_obu(const uint8_t* data, size_t len, uint8_t target_type)
             payload_size = len - i;
         }
 
-        if (obu_type == target_type) {
+        if (header.type == target_type) {
             size_t total = (size_t)(data + i + payload_size - obu_start);
             size_t avail = len - (size_t)(obu_start - data);
             return { obu_start, total < avail ? total : avail };
@@ -106,7 +148,7 @@ find_obu(const uint8_t* data, size_t len, uint8_t target_type)
 
 bool VideoDecoderIOS::setup_av1(const uint8_t* data, size_t len)
 {
-    auto [seq_ptr, seq_len] = find_obu(data, len, 1);
+    auto [seq_ptr, seq_len] = find_obu(data, len, av1::SequenceHeader);
     if (!seq_ptr || seq_len == 0) {
         fprintf(stderr, "[VideoDecoderIOS] AV1 keyframe missing Sequence Header OBU\n");
         return false;
@@ -116,9 +158,9 @@ bool VideoDecoderIOS::setup_av1(const uint8_t* data, size_t len)
     uint8_t seq_profile = 0;
     {
         const uint8_t* p = seq_ptr;
-        uint8_t obu_hdr = *p++;
-        if ((obu_hdr >> 2) & 1) p++;
-        if ((obu_hdr >> 1) & 1) {
+        const av1::ObuHeader header = av1::parse_obu_header(*p++);
+        if (header.has_extension) p++;
+        if (header.has_size) {
             while (p < seq_ptr + seq_len && (*p & 0x80)) p++;
             if (p < seq_ptr + seq_len) p++;
         }
@@ -126,10 +168,10 @@ bool VideoDecoderIOS::setup_av1(const uint8_t* data, size_t len)
             seq_profile = (*p >> 5) & 0x07;
     }
 
-    const uint8_t av1c_hdr[4] = { 0x81, (uint8_t)((seq_profile << 5) | 0x1F), 0x0C, 0x00 };
+    const auto av1c_header = av1::av1c_record(seq_profile);
     std::vector<uint8_t> av1c;
-    av1c.reserve(4 + seq_len);
-    av1c.insert(av1c.end(), av1c_hdr, av1c_hdr + 4);
+    av1c.reserve(av1c_header.size() + seq_len);
+    av1c.insert(av1c.end(), av1c_header.begin(), av1c_header.end());
     av1c.insert(av1c.end(), seq_ptr, seq_ptr + seq_len);
 
     CFDataRef   av1c_data = CFDataCreate(nullptr, av1c.data(), (CFIndex)av1c.size());
@@ -205,7 +247,7 @@ try_dav1d:
 }
 
 static std::vector<std::pair<const uint8_t*, size_t>>
-find_nal_units(const uint8_t* data, size_t len, const std::vector<uint8_t>& types)
+find_nal_units(const uint8_t* data, size_t len, NalTypeOf nal_type_of, uint8_t wanted_type)
 {
     std::vector<std::pair<const uint8_t*, size_t>> result;
     size_t i = 0;
@@ -220,7 +262,7 @@ find_nal_units(const uint8_t* data, size_t len, const std::vector<uint8_t>& type
         size_t nal_start = i + sc_len;
         if (nal_start >= len) break;
 
-        uint8_t nal_type_byte = data[nal_start];
+        const uint8_t nal_type = nal_type_of(data[nal_start]);
 
         size_t nal_end = len;
         for (size_t j = nal_start + 1; j + 2 < len; ++j) {
@@ -232,12 +274,8 @@ find_nal_units(const uint8_t* data, size_t len, const std::vector<uint8_t>& type
             }
         }
 
-        for (uint8_t t : types) {
-            if (nal_type_byte == t) {
-                result.push_back({ data + nal_start, nal_end - nal_start });
-                break;
-            }
-        }
+        if (nal_type == wanted_type)
+            result.push_back({ data + nal_start, nal_end - nal_start });
         i = nal_end;
     }
     return result;
@@ -245,8 +283,8 @@ find_nal_units(const uint8_t* data, size_t len, const std::vector<uint8_t>& type
 
 bool VideoDecoderIOS::setup_h264(const uint8_t* data, size_t len)
 {
-    auto sps_units = find_nal_units(data, len, {0x67});
-    auto pps_units = find_nal_units(data, len, {0x68});
+    auto sps_units = find_nal_units(data, len, h264::nal_type, h264::Sps);
+    auto pps_units = find_nal_units(data, len, h264::nal_type, h264::Pps);
     if (sps_units.empty() || pps_units.empty()) {
         fprintf(stderr, "[VideoDecoderIOS] H264 keyframe missing SPS/PPS\n");
         return false;
@@ -260,7 +298,7 @@ bool VideoDecoderIOS::setup_h264(const uint8_t* data, size_t len)
         2,
         param_ptrs,
         param_sizes,
-        4,
+        static_cast<int>(kAvccLengthBytes),
         &fmt_desc_);
 
     if (status != noErr) {
@@ -273,9 +311,9 @@ bool VideoDecoderIOS::setup_h264(const uint8_t* data, size_t len)
 
 bool VideoDecoderIOS::setup_h265(const uint8_t* data, size_t len)
 {
-    auto vps_units = find_nal_units(data, len, {0x40});
-    auto sps_units = find_nal_units(data, len, {0x42});
-    auto pps_units = find_nal_units(data, len, {0x44});
+    auto vps_units = find_nal_units(data, len, hevc::nal_type, hevc::Vps);
+    auto sps_units = find_nal_units(data, len, hevc::nal_type, hevc::Sps);
+    auto pps_units = find_nal_units(data, len, hevc::nal_type, hevc::Pps);
     if (vps_units.empty() || sps_units.empty() || pps_units.empty()) {
         fprintf(stderr, "[VideoDecoderIOS] H265 keyframe missing VPS/SPS/PPS\n");
         return false;
@@ -291,7 +329,7 @@ bool VideoDecoderIOS::setup_h265(const uint8_t* data, size_t len)
     OSStatus status = CMVideoFormatDescriptionCreateFromHEVCParameterSets(
         kCFAllocatorDefault,
         3, param_data, param_size,
-        4,
+        static_cast<int>(kAvccLengthBytes),
         nullptr,
         &fmt_desc_);
 
@@ -352,12 +390,11 @@ void VideoDecoderIOS::annexb_to_avcc(const uint8_t* data, size_t len,
 {
     auto is_param_nal = [&](uint8_t first_byte) -> bool {
         if (codec == VideoCodecId::H264) {
-            uint8_t t = first_byte & 0x1F;
-            return (t == 7 || t == 8 || t == 6 || t == 9);
-        } else {
-            uint8_t t = (first_byte >> 1) & 0x3F;
-            return (t == 32 || t == 33 || t == 34 || t == 35);
+            const uint8_t t = h264::nal_type(first_byte);
+            return t == h264::Sps || t == h264::Pps || t == h264::Sei || t == h264::Aud;
         }
+        const uint8_t t = hevc::nal_type(first_byte);
+        return t == hevc::Vps || t == hevc::Sps || t == hevc::Pps || t == hevc::Aud;
     };
 
     size_t i = 0;
@@ -389,9 +426,9 @@ void VideoDecoderIOS::annexb_to_avcc(const uint8_t* data, size_t len,
 
         if (!is_param_nal(data[nal_start])) {
             size_t off = out.size();
-            out.resize(off + 4 + nal_len);
+            out.resize(off + kAvccLengthBytes + nal_len);
             write_be32(out.data() + off, (uint32_t)nal_len);
-            memcpy(out.data() + off + 4, data + nal_start, nal_len);
+            memcpy(out.data() + off + kAvccLengthBytes, data + nal_start, nal_len);
         }
 
         i = nal_end;
