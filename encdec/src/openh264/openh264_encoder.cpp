@@ -218,8 +218,10 @@ void OpenH264Encoder::set_average_bitrate_bps(uint32_t average_bps) {
     info.iBitrate = static_cast<int>(rate_control.average_bps);
     encoder_->SetOption(ENCODER_OPTION_BITRATE, &info);
 
-    float max_br = static_cast<float>(rate_control.peak_bps);
-    encoder_->SetOption(ENCODER_OPTION_MAX_BITRATE, &max_br);
+    SBitrateInfo max_info = {};
+    max_info.iLayer = SPATIAL_LAYER_ALL;
+    max_info.iBitrate = static_cast<int>(rate_control.peak_bps);
+    encoder_->SetOption(ENCODER_OPTION_MAX_BITRATE, &max_info);
 }
 
 EncoderInfo OpenH264Encoder::info() const {
