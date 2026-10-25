@@ -54,4 +54,4 @@ private:
     std::shared_ptr<AmfD3D11InteropState> interop_;
 };
 
-} // namespace parties::encdec::amd
+}

@@ -56,4 +56,4 @@ private:
     bool force_keyframe_ = false;
 };
 
-} // namespace parties::encdec::amd
+}

@@ -45,7 +45,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Load config
     std::string config_path = "server.toml";
     if (argc > 1) config_path = argv[1];
 
@@ -53,7 +52,6 @@ int main(int argc, char* argv[]) {
     LOG_INFO("Server name: {}", config.server_name);
     LOG_INFO("QUIC port: {}", config.port);
 
-    // Start server
     parties::server::Server server;
     if (!server.start(config)) {
         LOG_ERROR("Failed to start server");
@@ -62,13 +60,11 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Handle Ctrl+C
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 
     LOG_INFO("Server running. Press Ctrl+C to stop.");
 
-    // Main loop — Server::run() processes messages in a non-blocking fashion
     while (g_running) {
         server.run();
     }

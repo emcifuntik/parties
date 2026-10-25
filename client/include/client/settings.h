@@ -15,7 +15,7 @@ struct SavedServer {
     std::string name;
     std::string host;
     int         port = 7800;
-    std::string fingerprint;   // TOFU cert fingerprint
+    std::string fingerprint;
     std::string last_username;
     std::string password;
 };
@@ -34,7 +34,6 @@ public:
     bool open(const std::string& path);
     void close();
 
-    // --- Identity ---
     bool has_identity();
     bool save_identity(const std::string& seed_phrase,
                        const SecretKey& sk, const PublicKey& pk);
@@ -42,14 +41,12 @@ public:
     std::optional<Identity> load_identity();
     std::string get_fingerprint();
 
-    // --- TOFU certificate store ---
     enum class TofuResult { Trusted, Unknown, Mismatch };
     TofuResult check_fingerprint(const std::string& host, int port,
                                   const std::string& fingerprint);
     bool trust_fingerprint(const std::string& host, int port,
                            const std::string& fingerprint);
 
-    // --- Saved servers ---
     bool save_server(const std::string& name, const std::string& host, int port,
                      const std::string& fingerprint, const std::string& last_username,
                      const std::string& password = "");
@@ -57,13 +54,11 @@ public:
     bool update_server_username(int id, const std::string& username);
     bool delete_server(int id);
 
-    // --- Resumption tickets (0-RTT) ---
     bool save_resumption_ticket(const std::string& host, int port,
                                 const uint8_t* data, size_t len);
     std::vector<uint8_t> load_resumption_ticket(const std::string& host, int port);
     bool delete_resumption_ticket(const std::string& host, int port);
 
-    // --- Preferences ---
     bool set_pref(const std::string& key, const std::string& value);
     std::optional<std::string> get_pref(const std::string& key);
 
@@ -74,4 +69,4 @@ private:
     sqlite3* db_ = nullptr;
 };
 
-} // namespace parties::client
+}

@@ -21,4 +21,4 @@ inline bool ShouldCompleteIOSBackSwipe(float horizontal, float vertical,
     return horizontal >= distance || (horizontal >= 24.0f && velocity >= 650.0f);
 }
 
-} // namespace parties::client
+}

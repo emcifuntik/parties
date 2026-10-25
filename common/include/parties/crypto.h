@@ -7,54 +7,37 @@
 
 namespace parties {
 
-// Initialize/cleanup crypto globally (call once)
 bool crypto_init();
 void crypto_cleanup();
 
-// Generate cryptographically random bytes. Returns false if the CSPRNG failed
-// (the buffer must NOT be used in that case).
 bool random_bytes(uint8_t* out, size_t len);
 
-// Constant-time string equality (length + content). Use for secrets/passwords
-// so comparison time doesn't leak how much of the value matched.
 bool constant_time_equals(const std::string& a, const std::string& b);
 
-// Compute SHA-256 hash, return hex-with-colons string
 std::string sha256_hex(const uint8_t* data, size_t len);
 
-// Generate a self-signed RSA 4096 certificate + private key, write PEM files
 bool generate_self_signed_cert(const std::string& common_name,
                                const std::string& cert_path,
                                const std::string& key_path);
 
-// --- Seed phrase identity ---
-
-// Generate 12-word seed phrase from embedded BIP-39 wordlist
 std::string generate_seed_phrase();
 
-// Validate seed phrase: 12 words, all in wordlist
 bool validate_seed_phrase(const std::string& seed_phrase);
 
-// Derive Ed25519 keypair from seed phrase (SHA-256 → 32-byte seed → keypair)
 bool derive_keypair(const std::string& seed_phrase, SecretKey& sk, PublicKey& pk);
 
-// Derive Ed25519 public key from raw 32-byte secret key (no seed phrase)
 bool derive_pubkey(const SecretKey& sk, PublicKey& pk);
 
-// Hex encode/decode for 32-byte keys
 std::string secret_key_to_hex(const SecretKey& sk);
 bool secret_key_from_hex(const std::string& hex, SecretKey& sk);
 
-// Ed25519 sign
 bool ed25519_sign(const uint8_t* msg, size_t msg_len,
                   const SecretKey& sk, const PublicKey& pk,
                   Signature& sig_out);
 
-// Ed25519 verify
 bool ed25519_verify(const uint8_t* msg, size_t msg_len,
                     const Signature& sig, const PublicKey& pk);
 
-// Fingerprint: SHA-256 of public key, colon-separated hex
 Fingerprint public_key_fingerprint(const PublicKey& pk);
 
-} // namespace parties
+}

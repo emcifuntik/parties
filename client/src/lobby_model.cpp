@@ -8,8 +8,6 @@
 namespace parties::client {
 
 void LobbyModel::show_voice_channel(int channel_id) {
-    // Chat keeps the voice connection and subscriptions alive. A room route
-    // with active watches hides both the participant cards and the stream grid.
     const bool resume_streams = channel_id == current_channel.get() && watching_count.get() > 0;
     router.go(resume_streams ? DocumentRoute::Streams : DocumentRoute::Room);
 }
@@ -64,9 +62,7 @@ void LobbyModel::clear_channel_sharers() {
 }
 
 void LobbyModel::build(rml::Builder& b) {
-    // Register struct + array types.
     // Order matters: array types must be registered BEFORE structs that contain them as members.
-    // ChannelInfo has a Vector<ChannelUser> member, so register ChannelUser + its array first.
     b.register_struct<ChannelUser>([](auto& s) {
         s.member("name",        &ChannelUser::name)
          .member("id",          &ChannelUser::id)
@@ -117,7 +113,6 @@ void LobbyModel::build(rml::Builder& b) {
     });
     b.register_array<Rml::Vector<WatchedStream>>();
 
-    // Bind variables.
     b.bind("is_connected",      is_connected)
      .bind("ping_ms",           ping_ms)
      .bind("server_name",       server_name)
@@ -217,7 +212,6 @@ void LobbyModel::build(rml::Builder& b) {
      .bind("show_private_key",       show_private_key)
      .bind("identity_private_key",   identity_private_key);
 
-    // Event callbacks. Property assignments inside these lambdas auto-dirty.
     b.on("apply_update", [this] {
         if (on_apply_update) on_apply_update();
     });
@@ -463,7 +457,6 @@ void LobbyModel::build(rml::Builder& b) {
 
     b.on("stop_watching", [this] {
         if (on_stop_watching) on_stop_watching();
-        // The viewer's Room action returns to the voice page, preserving the call.
         mobile_show_content = true;
     });
 
@@ -499,7 +492,6 @@ void LobbyModel::build(rml::Builder& b) {
         if (on_toggle_stream_pip) on_toggle_stream_pip(id);
     });
 
-    // Admin event callbacks
     b.on("show_create_channel_form", [this] {
         show_create_channel = true;
         new_channel_name = "";
@@ -524,13 +516,11 @@ void LobbyModel::build(rml::Builder& b) {
     b.on_event("channel_mousedown", [this](Rml::Event& ev, const Rml::VariantList& args) {
         int button = ev.GetParameter<int>("button", 0);
         if (button == 0) {
-            // Left click → join channel
             if (!args.empty() && on_join_channel) {
                 on_join_channel(args[0].Get<int>());
                 mobile_show_content = true;
             }
         } else if (button == 1) {
-            // Right click → channel context menu
             if (args.size() >= 2 && on_show_channel_menu)
                 on_show_channel_menu(args[0].Get<int>(), std::string(args[1].Get<Rml::String>()));
         }
@@ -538,8 +528,8 @@ void LobbyModel::build(rml::Builder& b) {
 
     b.on_event("user_mousedown", [this](Rml::Event& ev, const Rml::VariantList& args) {
         int button = ev.GetParameter<int>("button", 0);
-        if (button != 1) return;  // right-click only
-        ev.StopPropagation();     // don't bubble to channel_mousedown
+        if (button != 1) return;
+        ev.StopPropagation();
         if (args.size() < 3) return;
         int uid = args[0].Get<int>();
         auto name = args[1].Get<Rml::String>();
@@ -548,7 +538,6 @@ void LobbyModel::build(rml::Builder& b) {
             on_show_user_menu(uid, std::string(name), role);
     });
 
-    // User context menu event callbacks
     b.on("close_user_menu", [this] {
         show_user_menu = false;
     });
@@ -586,7 +575,6 @@ void LobbyModel::build(rml::Builder& b) {
                                      menu_user_compress_target.get());
     });
 
-    // Identity backup/import event callbacks
     b.on("toggle_seed_phrase", [this] {
         if (on_show_seed_phrase) on_show_seed_phrase();
     });
@@ -616,4 +604,4 @@ void LobbyModel::build(rml::Builder& b) {
     });
 }
 
-} // namespace parties::client
+}

@@ -1,7 +1,3 @@
-/* Desktop platform
-   Windows/macOS density, placement and responsive integration for shared components. */
-
-/* One 48dp baseline for every connected desktop route. */
 .platform-desktop .server-header.ui-header,
 .platform-desktop .channel-header.ui-header,
 .platform-desktop .chat-header.ui-header,
@@ -164,14 +160,12 @@
     height: 36dp;
 }
 
-/* Responsive desktop */
 @media (max-width: 1100dp) {
     .platform-desktop .sidebar, .platform-desktop .settings-nav { width: 250dp; }
     .platform-desktop .voice-stage-card { width: 180dp; }
     .platform-desktop .channel-header .channel-hint { display: none; }
 }
 
-/* Keep onboarding usable when the desktop window is narrowed or shortened. */
 .platform-desktop .onboarding-main { min-width: 0dp; box-sizing: border-box; }
 .platform-desktop .onboarding-choice,
 .platform-desktop .onboarding-form,

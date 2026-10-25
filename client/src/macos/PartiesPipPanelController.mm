@@ -19,7 +19,7 @@ NSRect to_ns(const PipRect& rect)
     return NSMakeRect(rect.x, rect.y, rect.width, rect.height);
 }
 
-} // namespace
+}
 
 // Borderless windows cannot become key by default. The panel may, but only
 // when the content view asks for it (becomesKeyOnlyIfNeeded and an explicit
@@ -43,9 +43,6 @@ NSRect to_ns(const PipRect& rect)
     if (!self)
         return nil;
 
-    // Borderless: no title bar or chrome. Non-activating: clicking the
-    // overlay or dragging never activates the application; only the volume
-    // control makes the panel key, for its arrow keys.
     _panel = [[PartiesPipPanel alloc] initWithContentRect:NSMakeRect(0, 0, 384, 216)
                                         styleMask:NSWindowStyleMaskBorderless |
                                                   NSWindowStyleMaskNonactivatingPanel |
@@ -54,16 +51,14 @@ NSRect to_ns(const PipRect& rect)
                                             defer:NO];
     _panel.floatingPanel = YES;
     _panel.level = NSFloatingWindowLevel;
-    // Every Space, and over other applications' fullscreen Spaces.
     _panel.collectionBehavior = NSWindowCollectionBehaviorCanJoinAllSpaces |
                                 NSWindowCollectionBehaviorFullScreenAuxiliary |
                                 NSWindowCollectionBehaviorIgnoresCycle;
     _panel.hidesOnDeactivate = NO;
     _panel.becomesKeyOnlyIfNeeded = YES;
-    // Hiding the application (Cmd-H) or its main window must not take PiP away.
     _panel.canHide = NO;
     _panel.releasedWhenClosed = NO;
-    _panel.movableByWindowBackground = NO;   // the content view drags explicitly
+    _panel.movableByWindowBackground = NO;
     _panel.acceptsMouseMovedEvents = YES;
     _panel.hasShadow = YES;
     _panel.opaque = YES;
@@ -89,7 +84,6 @@ NSRect to_ns(const PipRect& rect)
 - (void)showWithFrame:(NSRect)frame
 {
     [_panel setFrame:frame display:YES];
-    // orderFrontRegardless shows the panel without activating the app.
     [_panel orderFrontRegardless];
 }
 
@@ -139,8 +133,6 @@ NSRect to_ns(const PipRect& rect)
     rect.y = area.y + 24;
     return to_ns(rect);
 }
-
-// ── NSWindowDelegate ──────────────────────────────────────────────────────────
 
 - (void)windowDidMove:(NSNotification*)notification
 {

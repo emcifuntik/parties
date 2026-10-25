@@ -27,8 +27,6 @@ public:
 
     bool held() const noexcept { return request_ != nullptr || legacy_; }
 
-    // False while held means the power request could not be created and the
-    // legacy fallback is carrying the inhibit.
     bool using_power_request() const noexcept { return request_ != nullptr; }
 
 private:
@@ -84,4 +82,4 @@ private:
     bool   legacy_  = false;
 };
 
-} // namespace parties::client
+}

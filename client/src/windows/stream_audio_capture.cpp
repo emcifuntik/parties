@@ -29,7 +29,6 @@ using Microsoft::WRL::FtmBase;
 
 namespace parties::client {
 
-// COM completion handler for ActivateAudioInterfaceAsync
 class ActivationHandler
     : public RuntimeClass<RuntimeClassFlags<ClassicCom>, IActivateAudioInterfaceCompletionHandler, FtmBase> {
 public:
@@ -107,7 +106,6 @@ bool StreamAudioCapture::init(uint32_t target_pid, OutputMode mode) {
     mono_buf_.resize(kFrameSize, 0.0f);
     capture_pos_ = 0;
 
-    // Build activation params for process loopback
     AUDIOCLIENT_ACTIVATION_PARAMS ac_params = {};
     ac_params.ActivationType = AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK;
 
@@ -170,7 +168,6 @@ bool StreamAudioCapture::init(uint32_t target_pid, OutputMode mode) {
     LOG_INFO("Requested format: {} Hz, {} ch, {} bits (float)",
                 fmt->nSamplesPerSec, fmt->nChannels, fmt->wBitsPerSample);
 
-    // Create event for buffer-ready notification
     state->audio_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (!state->audio_event) {
         LOG_ERROR("CreateEvent failed");
@@ -178,12 +175,12 @@ bool StreamAudioCapture::init(uint32_t target_pid, OutputMode mode) {
         return false;
     }
 
-    // Initialize in shared mode with automatic format conversion
+    constexpr REFERENCE_TIME buffer_duration_20ms = 200000;
     hr = state->audio_client->Initialize(
         AUDCLNT_SHAREMODE_SHARED,
         AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK |
             AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
-        200000,  // 20ms in 100ns units
+        buffer_duration_20ms,
         0,       // periodicity (must be 0 for shared mode)
         state->mix_format,
         nullptr);
@@ -282,9 +279,6 @@ void StreamAudioCapture::capture_thread_func() {
 
             bool is_silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
             if (flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) {
-                // Never splice the tail of the old WASAPI timeline onto the
-                // beginning of a new one. It creates a malformed 20 ms frame and
-                // is especially audible in the stateful music encoder.
                 capture_pos_ = 0;
             }
 
@@ -303,7 +297,6 @@ void StreamAudioCapture::capture_thread_func() {
                     }
                 }
 
-                // Protect both the direct stereo encoder and the VOICE2 downmix.
                 // std::clamp alone does not sanitize NaN (all comparisons are
                 // false), so finite validation must happen first.
                 left = std::isfinite(left) ? std::clamp(left, -1.0f, 1.0f) : 0.0f;
@@ -333,4 +326,4 @@ void StreamAudioCapture::capture_thread_func() {
     CoUninitialize();
 }
 
-} // namespace parties::client
+}

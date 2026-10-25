@@ -90,4 +90,4 @@ void OpusCodec::set_bitrate(int bps) {
     if (encoder_) opus_encoder_ctl(encoder_, OPUS_SET_BITRATE(bps));
 }
 
-} // namespace parties
+}

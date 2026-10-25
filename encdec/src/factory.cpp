@@ -22,11 +22,9 @@ std::unique_ptr<Encoder> create_encoder(
     uint32_t fps, uint32_t bitrate,
     VideoCodecId preferred_codec) {
 
-    // Even dimensions for NV12
     uint32_t enc_w = (width + 1) & ~1u;
     uint32_t enc_h = (height + 1) & ~1u;
 
-    // Try NVENC first
     {
         auto enc = std::make_unique<nvidia::NvencEncoder>();
         if (enc->init(device, enc_w, enc_h, fps, bitrate, preferred_codec)) {
@@ -37,7 +35,6 @@ std::unique_ptr<Encoder> create_encoder(
         }
     }
 
-    // Try AMF second
     {
         auto enc = std::make_unique<amd::AmfEncoder>();
         if (enc->init(device, enc_w, enc_h, fps, bitrate, preferred_codec)) {
@@ -48,7 +45,6 @@ std::unique_ptr<Encoder> create_encoder(
         }
     }
 
-    // Try MFT fallback
     {
         auto enc = std::make_unique<mft::MftEncoder>();
         if (enc->init(device, enc_w, enc_h, input_width, input_height,
@@ -60,7 +56,6 @@ std::unique_ptr<Encoder> create_encoder(
         }
     }
 
-    // Last resort: OpenH264 software encoder (H.264 only)
     {
         auto enc = std::make_unique<openh264::OpenH264Encoder>();
         if (enc->init(device, enc_w, enc_h, fps, bitrate)) {
@@ -80,7 +75,6 @@ std::unique_ptr<Decoder> create_decoder(
     uint32_t width, uint32_t height,
     ID3D12Device* render_device) {
 
-    // Try NVDEC first
     {
         auto dec = std::make_unique<nvidia::NvdecDecoder>();
         if (dec->init(codec, width, height, render_device)) {
@@ -90,7 +84,6 @@ std::unique_ptr<Decoder> create_decoder(
         }
     }
 
-    // Try AMF second
     {
         auto dec = std::make_unique<amd::AmfDecoder>();
         if (dec->init(codec, width, height, render_device)) {
@@ -100,7 +93,6 @@ std::unique_ptr<Decoder> create_decoder(
         }
     }
 
-    // Software fallback
     return create_software_decoder(codec, width, height);
 }
 
@@ -116,7 +108,6 @@ std::unique_ptr<Decoder> create_software_decoder(
             return dec;
         }
     } else if (codec == VideoCodecId::H265) {
-        // H.265: try MFT first, then libhevc software fallback
         {
             auto dec = std::make_unique<mft::MftDecoder>();
             if (dec->init(codec, width, height)) {
@@ -134,7 +125,6 @@ std::unique_ptr<Decoder> create_software_decoder(
             }
         }
     } else {
-        // H.264: try MFT first, then OpenH264
         {
             auto dec = std::make_unique<mft::MftDecoder>();
             if (dec->init(codec, width, height)) {
@@ -157,4 +147,4 @@ std::unique_ptr<Decoder> create_software_decoder(
     return nullptr;
 }
 
-} // namespace parties::encdec
+}

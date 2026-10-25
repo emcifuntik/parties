@@ -26,16 +26,12 @@ public:
     void start();
     void stop();
 
-    // Call from main thread each frame. Returns true if state changed.
     bool poll();
 
-    // Trigger download. Only valid in UpdateAvailable state.
     void download();
 
-    // Apply update: copy new exe beside current, launch it with --update-replace, exit.
     void apply_and_restart();
 
-    // Handle --update-replace and --update-cleanup args in main().
     static bool handle_update_args(int argc, char** argv);
 
     State state() const { return static_cast<State>(display_state_.load(std::memory_order_relaxed)); }
@@ -54,9 +50,8 @@ private:
                               std::atomic<int>& pct_out, std::atomic<bool>& cancel);
 
     std::thread thread_;
-    HANDLE wake_event_ = nullptr;  // manual-reset event for interruptible sleep
+    HANDLE wake_event_ = nullptr;
 
-    // All shared state is atomic — no mutex needed
     std::atomic<int>  state_{static_cast<int>(State::Idle)};
     std::atomic<bool> state_changed_{false};
     std::atomic<bool> stop_requested_{false};
@@ -64,15 +59,13 @@ private:
     std::atomic<int>  download_pct_{0};
     std::atomic<bool> download_cancel_{false};
 
-    // Written only by background thread, read by main thread only after state_changed_
-    std::string version_;         // latest remote version string
-    std::string download_url_;    // asset download URL
-    std::wstring download_path_;  // temp zip path after download
+    std::string version_;
+    std::string download_url_;
+    std::wstring download_path_;
 
-    // Main-thread snapshot (updated by poll())
     std::atomic<int> display_state_{static_cast<int>(State::Idle)};
     std::string display_version_;
     std::atomic<int> display_pct_{0};
 };
 
-} // namespace parties::client
+}

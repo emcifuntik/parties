@@ -57,7 +57,7 @@ Rml::ElementDocument* LoadIcon(Rml::Context* context, const char* colour) {
     if (document) document->Show();
     return document;
 }
-} // namespace
+}
 
 int main() {
     Diagnostics diagnostics;
@@ -70,8 +70,6 @@ int main() {
     main_context->Update();
     main_context->Render();
 
-    // Equal colours exercise cached geometry; different colours exercise the
-    // texture shared by separate geometry entries. Reopening also checks cleanup.
     bool passed = main_renderer.draws > 0;
     for (const char* colour : {"#ffffff", "#dce1ea", "#ffffff", "#dce1ea"}) {
         auto* pip_context = Rml::CreateContext("pip", {200, 100}, &pip_renderer);

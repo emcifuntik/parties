@@ -88,7 +88,7 @@ ComPtr<ID3D12Resource> create_texture(ID3D12Device* device, uint32_t width,
 		return {};
 	return result;
 }
-} // namespace
+}
 
 Dx12VideoConverter::Texture::~Texture() {
 	auto unmap = [](auto& planes) {
@@ -355,8 +355,6 @@ bool Dx12VideoConverter::UpdateNativeNV12(Texture& texture, ID3D12CommandQueue* 
 	if (ready_fence && ready_value && FAILED(queue->Wait(ready_fence, ready_value)))
 		return false;
 
-	// This descriptor group belongs to the back buffer which BeginFrame has
-	// already waited for, so replacing it cannot race an older command list.
 	CreatePlaneSrv(texture, frame_index, 0, source, DXGI_FORMAT_R8_UNORM, 0);
 	CreatePlaneSrv(texture, frame_index, 1, source, DXGI_FORMAT_R8G8_UNORM, 1);
 	texture.native_owners[frame_index] = std::move(owner);

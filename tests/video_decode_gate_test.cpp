@@ -16,7 +16,7 @@ bool expect(VideoDecodeDecision actual, VideoDecodeDecision expected, const char
     std::cerr << label << ": unexpected decision\n";
     return false;
 }
-} // namespace
+}
 
 int main() {
     VideoDecodeGate gate;
@@ -82,8 +82,6 @@ int main() {
         return 1;
     }
 
-    // Age rule: a warm decoder whose oldest queued frame has waited the full
-    // budget (and has no keyframe to jump to) must flush and re-request one.
     constexpr int64_t age = parties::client::kVideoDecodeBacklogMaxAgeUs;
     const int64_t oldest = 1'000'000;
     if (!parties::client::should_resync_stale_decode_backlog(
@@ -107,8 +105,6 @@ int main() {
         return 1;
     }
 
-    // Anti-flap: a decoder that is persistently slower than the stream may
-    // request a keyframe for the first two consecutive stale flushes only.
     if (!parties::client::should_request_keyframe_after_stale_flush(1) ||
         !parties::client::should_request_keyframe_after_stale_flush(2) ||
         parties::client::should_request_keyframe_after_stale_flush(3)) {
@@ -116,9 +112,6 @@ int main() {
         return 1;
     }
 
-    // The recovery keyframe that necessarily follows every flush (the gate
-    // drops deltas until one arrives) must not end the run, or the counter
-    // could never pass one and the ~1 Hz flush/PLI cycle would continue.
     constexpr int64_t recovery = parties::client::kVideoDecodeStaleFlushRecoveryUs;
     VideoDecodeStaleFlushTracker tracker;
     if (tracker.suppressed()) {
@@ -144,21 +137,16 @@ int main() {
         std::cerr << "third consecutive stale flush still requested a keyframe\n";
         return 1;
     }
-    // The sharer's periodic keyframe arrives while the gate waits for one: it
-    // resumes decoding but proves nothing about the decoder's speed.
     tracker.on_keyframe_decoded(4'900'000, true);
     if (!tracker.suppressed()) {
         std::cerr << "periodic recovery keyframe lifted the suppression\n";
         return 1;
     }
-    // An in-sequence keyframe landing before the recovery window has elapsed
-    // (e.g. another viewer's PLI shortly after we resumed) does not count.
     tracker.on_keyframe_decoded(4'900'000 + recovery - 1, false);
     if (!tracker.suppressed()) {
         std::cerr << "in-sequence keyframe before the recovery window lifted the suppression\n";
         return 1;
     }
-    // One clean recovery window of decoding ends the run: requests resume.
     tracker.on_keyframe_decoded(4'900'000 + recovery, false);
     if (tracker.suppressed() || tracker.stale_flushes_in_a_row != 0) {
         std::cerr << "keyframe decoded normally after a clean interval did not reset the counter\n";
@@ -168,8 +156,6 @@ int main() {
         std::cerr << "stale flush after a recovery did not request a keyframe\n";
         return 1;
     }
-    // A flush restarts the recovery clock: the next in-sequence keyframe must
-    // again wait for a full window after decoding resumes.
     tracker.on_keyframe_decoded(20'000'000, true);
     tracker.on_keyframe_decoded(20'000'000 + recovery - 1, false);
     if (tracker.stale_flushes_in_a_row != 1) {

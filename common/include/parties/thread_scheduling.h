@@ -2,8 +2,6 @@
 
 namespace parties {
 
-// Requests a process-local Windows timer resolution for this object's lifetime.
-// On other platforms the request is a successful no-op.
 class TimerResolutionGuard {
 public:
     explicit TimerResolutionGuard(unsigned int period_ms) noexcept;
@@ -19,8 +17,6 @@ private:
     bool active_ = false;
 };
 
-// Uses the highest dynamic Windows thread priority without entering the
-// realtime priority class. On other platforms this is a successful no-op.
 bool set_current_thread_highest_priority() noexcept;
 
-} // namespace parties
+}

@@ -30,7 +30,7 @@ bool Win32Tray::init(HWND hwnd, bool enabled, std::function<bool(bool)> save_mod
     icon_.uCallbackMessage = callback_message;
     icon_.hIcon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(1));
     if (!icon_.hIcon)
-        icon_.hIcon = LoadIconW(nullptr, MAKEINTRESOURCEW(32512));
+        icon_.hIcon = LoadIconW(nullptr, reinterpret_cast<LPCWSTR>(IDI_APPLICATION));
     lstrcpynW(icon_.szTip, L"Parties", ARRAYSIZE(icon_.szTip));
     return add_icon();
 }

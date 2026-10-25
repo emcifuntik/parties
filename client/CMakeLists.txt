@@ -19,16 +19,12 @@ if(APPLE AND TARGET rlottie::rlottie)
     endif()
 endif()
 
-
 find_path(SPEEXDSP_INCLUDE_DIRS "speex/speex_echo.h" REQUIRED)
 find_library(SPEEXDSP_LIBRARY speexdsp REQUIRED)
 
 if(NOT APPLE)
     find_path(AMD_AMF_INCLUDE_DIRS "AMF/core/D3D12AMF.h" REQUIRED)
 
-    # Keep the upstream DX12/Win32 backend implementation in-tree. It is based
-    # on our pinned RmlUi revision and is the deliberate extension boundary for
-    # native textures, planar video sampling, and shared-device lifetime.
     set(PARTIES_RMLUI_DX12_BACKEND_DIR
         "${CMAKE_CURRENT_SOURCE_DIR}/src/dx12/rmlui_backend")
 
@@ -52,7 +48,6 @@ if(NOT APPLE)
         PUBLIC NOMINMAX _WIN32_WINNT=0x0A00 WINVER=0x0A00
     )
 
-    # Generate .rc with version info and icon
     file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/res/logo.ico" ICON_PATH)
     set(RC_VERSION_MAJOR ${PARTIES_VERSION_MAJOR})
     set(RC_VERSION_MINOR ${PARTIES_VERSION_MINOR})
@@ -63,8 +58,6 @@ if(NOT APPLE)
     configure_file(res/app.manifest "${CMAKE_CURRENT_BINARY_DIR}/app.manifest" COPYONLY)
 endif()
 
-# ── Cross-platform sources ────────────────────────────────────────────────────
-# Platform-specific files live in CLIENT_PLATFORM_SOURCES below.
 set(CLIENT_COMMON_SOURCES
     src/application_audio.cpp
     src/context_window_model.cpp
@@ -92,23 +85,19 @@ set(CLIENT_COMMON_SOURCES
     src/net_client_msquic.cpp
 )
 
-# ── Platform-specific sources ─────────────────────────────────────────────────
 if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     set(CLIENT_PLATFORM_SOURCES
-        # Entry point & app (UIKit / Metal)
         src/ios/main.mm
         src/ios/AppDelegate.mm
         src/ios/app_ios.mm
         src/ios/StreamPictureInPicture.mm
 
-        # RmlUI Metal backend (renderer shared with macOS)
         src/metal/RmlUi_Renderer_Metal.mm
         src/ios/RmlUi_Backend_iOS_Metal.mm
         src/ios/RmlUi_Platform_iOS.mm
     )
 elseif(APPLE)
     set(CLIENT_PLATFORM_SOURCES
-        # Entry point & window (AppKit / Metal)
         src/macos/main.mm
         src/macos/app_macos.mm
         src/macos/context_menu_macos.mm
@@ -116,20 +105,16 @@ elseif(APPLE)
         src/macos/PartiesPipPanelController.mm
         src/macos/pip_host_macos.mm
 
-        # RmlUI Metal backend (shared with iOS)
         src/metal/RmlUi_Renderer_Metal.mm
         src/metal/RmlUi_Backend_macOS_Metal.mm
         src/macos/RmlUi_Platform_macOS.mm
 
-        # Screen capture — ScreenCaptureKit (macOS 12.3+)
         src/macos/screen_capture_macos.mm
 
-        # Auto-updater (Sparkle)
         src/macos/auto_updater_macos.mm
     )
 else()
     set(CLIENT_PLATFORM_SOURCES
-        # Platform specific
         src/windows/main.cpp
         src/windows/app.cpp
         src/windows/system_diagnostics.cpp
@@ -140,19 +125,13 @@ else()
         src/windows/win32_pip_window.cpp
         src/windows/win32_tray.cpp
 
-        # Parties application adapter over RmlUi's upstream Win32/DX12 backend
-
-        # Auto-updater (WinHTTP)
         src/windows/auto_updater.cpp
 
-        # Screen capture — DXGI
         src/windows/screen_capture.cpp
 
-        # Video — Media Foundation / hardware encoders
         src/windows/video_encoder.cpp
         src/windows/video_decoder.cpp
 
-        # Windows resource file
         "${CMAKE_CURRENT_BINARY_DIR}/app.rc"
     )
 endif()
@@ -188,7 +167,6 @@ else()
     )
 endif()
 
-# Disable CMake's auto-generated manifest — we embed our own via app.rc
 if(NOT APPLE)
     set_target_properties(parties_client PROPERTIES LINK_FLAGS "/MANIFEST:NO")
 endif()
@@ -202,7 +180,6 @@ if(PARTIES_ALLOC_TRACKER AND NOT APPLE)
     target_link_libraries(parties_client PRIVATE dbghelp)
 endif()
 
-# #embed dependencies — recompile when embedded files change
 file(GLOB EMBED_UI_RESOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/ui/*.rml
     ${CMAKE_CURRENT_SOURCE_DIR}/ui/*.rcss
@@ -230,12 +207,10 @@ target_include_directories(parties_client
         $<$<NOT:$<BOOL:${APPLE}>>:${AMD_AMF_INCLUDE_DIRS}>
 )
 
-# Retail: no console window on Windows
 if(NOT APPLE AND BUILD_IN_RETAIL)
     target_link_options(parties_client PRIVATE /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup)
 endif()
 
-# ── Apple bundle properties (shared + platform-specific) ─────────────────────
 if(APPLE)
     set_target_properties(parties_client PROPERTIES
         MACOSX_BUNDLE TRUE
@@ -267,9 +242,6 @@ if(APPLE)
             XCODE_ATTRIBUTE_SKIP_INSTALL "NO"
             XCODE_ATTRIBUTE_INSTALL_PATH "$(LOCAL_APPS_DIR)"
         )
-        # Keep local/CI compile checks usable without a provisioning profile.
-        # Supplying APPLE_DEVELOPMENT_TEAM opts back into automatic signing for
-        # device installation and archives.
         if(APPLE_DEVELOPMENT_TEAM STREQUAL "")
             set_target_properties(parties_client PROPERTIES
                 XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED "NO"
@@ -290,7 +262,6 @@ if(APPLE)
             MACOSX_BUNDLE_ICON_FILE "AppIcon"
             XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "org.parties.client"
         )
-        # Copy .icns into the app bundle Resources folder
         set(MACOS_ICON "${CMAKE_CURRENT_SOURCE_DIR}/res/AppIcon.icns")
         set_source_files_properties(${MACOS_ICON} PROPERTIES
             MACOSX_PACKAGE_LOCATION Resources)
@@ -311,7 +282,6 @@ target_link_libraries(parties_client
 )
 
 if(APPLE)
-    # Shared Apple frameworks
     target_link_libraries(parties_client
         PRIVATE
             "-framework Metal"
@@ -348,8 +318,6 @@ if(ENABLE_SENTRY AND NOT SENTRY_DSN_CLIENT STREQUAL "")
     target_compile_definitions(parties_client PRIVATE "SENTRY_DSN_VALUE=\"${SENTRY_DSN_CLIENT}\"")
 endif()
 
-# ── Sentry Cocoa SDK for Apple platforms ──────────────────────────────────────
-# Use sentry-cocoa xcframework on iOS and macOS instead of sentry-native.
 if(APPLE AND ENABLE_SENTRY)
     include(FetchContent)
     set(SENTRY_COCOA_VERSION "9.7.0")
@@ -373,7 +341,6 @@ if(APPLE AND ENABLE_SENTRY)
     )
 
     target_link_libraries(parties_client PRIVATE SentryCocoa)
-    # Use -F for framework-style imports: #import <Sentry/Sentry.h>
     target_compile_options(parties_client PRIVATE "-F${SENTRY_FW_DIR}")
     target_compile_definitions(parties_client PRIVATE SENTRY_COCOA_ENABLED)
 
@@ -402,7 +369,6 @@ if(APPLE AND ENABLE_SENTRY)
     target_link_libraries(parties_client PRIVATE "-lswiftCore")
 endif()
 
-# ── Sparkle auto-updater for macOS ───────────────────────────────────────────
 if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS" AND BUILD_IN_RETAIL)
     include(FetchContent)
     set(SPARKLE_VERSION "2.9.1")
@@ -416,7 +382,6 @@ if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS" AND BUILD_IN_RETAIL)
     target_link_libraries(parties_client PRIVATE "-F${sparkle_SOURCE_DIR}" "-framework Sparkle")
     target_compile_definitions(parties_client PRIVATE SPARKLE_ENABLED)
 
-    # Set rpath so the dynamic linker finds Sparkle.framework in the app bundle
     target_link_options(parties_client PRIVATE "LINKER:-rpath,@executable_path/../Frameworks")
 
     # Embed Sparkle.framework in the app bundle (ditto preserves symlinks, unlike cmake -E copy_directory)
@@ -427,7 +392,6 @@ if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS" AND BUILD_IN_RETAIL)
     )
 endif()
 
-# Copy client exe to additional test folders for multi-instance testing (Windows only)
 if(NOT APPLE)
     foreach(COPY_DIR client2 client3 client4)
         add_custom_command(TARGET parties_client POST_BUILD

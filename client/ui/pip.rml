@@ -6,10 +6,6 @@
     <link type="text/rcss" href="components.rcss" />
     <link type="text/rcss" href="pip.rcss" />
 </head>
-<!-- Desktop picture-in-picture surface. The host window has no chrome; the
-     overlay appears while the cursor is over the window or a control is in
-     use. Elements with class "pip-action" are clickable; the rest of the
-     window drags it. "pip-keyboard" controls take keyboard focus on click. -->
 <body class="pip-body" data-model="pip">
     <video_frame class="pip-video" id="pip-video" />
     <div class="pip-overlay" id="pip-overlay" data-class-visible="overlay_visible">

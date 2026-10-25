@@ -38,4 +38,4 @@ constexpr bool can_reuse_decoder(const NvdecSequenceState& state,
         state.decode_surfaces >= format.minimum_decode_surfaces;
 }
 
-} // namespace parties::encdec::nvidia::detail
+}

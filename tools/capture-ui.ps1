@@ -27,8 +27,6 @@ $lobbyScenarios = @(
     "settings-account", "share", "audio-share", "chat", "chat-segment-churn"
 )
 if ($Profile -eq "iphone-17-pro") {
-    # Sending a screen or application is unavailable on iOS, so those two
-    # desktop-only picker fixtures intentionally do not belong in this profile.
     $lobbyScenarios = $lobbyScenarios | Where-Object {
         $_ -ne "share" -and $_ -ne "audio-share"
     }

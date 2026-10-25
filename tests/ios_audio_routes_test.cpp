@@ -16,7 +16,6 @@ int main()
     check(routes.inputs.size() == 2 && routes.outputs.size() == 2, "built-in routes and system defaults");
     check(routes.selected_input == 1 && routes.selected_output == 1, "actual built-in selection");
 
-    // A connected headset must be offered even while the speaker is active.
     routes = BuildIOSAudioRoutes({mic, airpods}, mic, speaker);
     check(routes.inputs.size() == 3 && routes.outputs.size() == 3, "inactive AirPods visible for both directions");
     check(routes.outputs[2].uid == airpods.uid && routes.outputs[2].kind == IOSAudioRouteKind::Input,

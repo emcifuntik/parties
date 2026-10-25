@@ -15,8 +15,6 @@ using Microsoft::WRL::ComPtr;
 namespace parties::encdec::mft {
 
 MftEncoder::~MftEncoder() {
-    // No early-out on !initialized_: a failed init() may still owe MFShutdown
-    // and have partially constructed members; everything below is null-safe.
     encoder_running_ = false;
     queue_cv_.notify_all();
 
@@ -54,7 +52,6 @@ bool MftEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
     if (input_width == 0) input_width = width;
     if (input_height == 0) input_height = height;
 
-    // NV12 requires even dimensions
     width = (width + 1) & ~1u;
     height = (height + 1) & ~1u;
 
@@ -65,7 +62,6 @@ bool MftEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
     }
     mf_started_ = true;
 
-    // Create DXGI device manager
     hr = MFCreateDXGIDeviceManager(&dxgi_reset_token_, &dxgi_manager_);
     if (FAILED(hr)) {
         LOG_ERROR("MFCreateDXGIDeviceManager failed");
@@ -77,7 +73,6 @@ bool MftEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
         return false;
     }
 
-    // Try preferred codec first, then fall back to others
     struct CodecEntry { GUID subtype; VideoCodecId id; };
     CodecEntry all_codecs[] = {
         {MFVideoFormat_AV1,  VideoCodecId::AV1},
@@ -155,7 +150,6 @@ bool MftEncoder::try_create_encoder(const GUID& codec_subtype, VideoCodecId id) 
         return false;
     }
 
-    // Check async mode
     ComPtr<IMFAttributes> attrs;
     hr = encoder_->GetAttributes(&attrs);
 
@@ -186,7 +180,6 @@ bool MftEncoder::configure_encoder(uint32_t width, uint32_t height,
         case VideoCodecId::H264: subtype = MFVideoFormat_H264; break;
     }
 
-    // Set D3D11 device manager
     HRESULT hr = encoder_->ProcessMessage(
         MFT_MESSAGE_SET_D3D_MANAGER,
         reinterpret_cast<ULONG_PTR>(dxgi_manager_.Get()));
@@ -211,7 +204,6 @@ bool MftEncoder::configure_encoder(uint32_t width, uint32_t height,
         return false;
     }
 
-    // Input type: NV12
     ComPtr<IMFMediaType> input_type;
     MFCreateMediaType(&input_type);
     input_type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
@@ -226,7 +218,6 @@ bool MftEncoder::configure_encoder(uint32_t width, uint32_t height,
         return false;
     }
 
-    // Configure codec properties via ICodecAPI
     ComPtr<ICodecAPI> codec_api;
     if (SUCCEEDED(encoder_.As(&codec_api))) {
         VARIANT var;
@@ -251,8 +242,6 @@ bool MftEncoder::configure_encoder(uint32_t width, uint32_t height,
         var.ulVal = rate_control.peak_bitrate;
         codec_api->SetValue(&CODECAPI_AVEncCommonMaxBitRate, &var);
 
-        // VBV/HRD reservoir in bits: a few frame intervals, so a keyframe
-        // cannot become a multi-second burst on the link.
         VariantInit(&var);
         var.vt = VT_UI4;
         var.ulVal = rate_control.vbv_buffer_size;
@@ -296,7 +285,6 @@ bool MftEncoder::create_color_converter(uint32_t in_w, uint32_t in_h,
         MFT_MESSAGE_SET_D3D_MANAGER,
         reinterpret_cast<ULONG_PTR>(dxgi_manager_.Get()));
 
-    // Input: BGRA
     ComPtr<IMFMediaType> in_type;
     MFCreateMediaType(&in_type);
     in_type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
@@ -309,7 +297,6 @@ bool MftEncoder::create_color_converter(uint32_t in_w, uint32_t in_h,
         return false;
     }
 
-    // Output: NV12
     ComPtr<IMFMediaType> out_type;
     MFCreateMediaType(&out_type);
     out_type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
@@ -379,7 +366,6 @@ bool MftEncoder::encode(ID3D11Texture2D* bgra_texture, int64_t timestamp_100ns) 
 
     int64_t duration = 10'000'000LL / fps_;
 
-    // Wrap BGRA texture into MF sample
     ComPtr<IMFMediaBuffer> bgra_buffer;
     HRESULT hr = MFCreateDXGISurfaceBuffer(
         __uuidof(ID3D11Texture2D), bgra_texture, 0, FALSE, &bgra_buffer);
@@ -394,7 +380,6 @@ bool MftEncoder::encode(ID3D11Texture2D* bgra_texture, int64_t timestamp_100ns) 
     bgra_sample->SetSampleTime(timestamp_100ns);
     bgra_sample->SetSampleDuration(duration);
 
-    // BGRA → NV12 via Video Processor MFT
     hr = converter_->ProcessInput(0, bgra_sample.Get(), 0);
     if (FAILED(hr)) {
         LOG_ERROR("Converter ProcessInput failed: {:#010x}", hr);
@@ -421,7 +406,6 @@ bool MftEncoder::encode(ID3D11Texture2D* bgra_texture, int64_t timestamp_100ns) 
     nv12_sample->SetSampleTime(timestamp_100ns);
     nv12_sample->SetSampleDuration(duration);
 
-    // Feed NV12 to encoder
     if (async_mode_) {
         {
             std::lock_guard<std::mutex> lock(queue_mutex_);
@@ -535,4 +519,4 @@ EncoderInfo MftEncoder::info() const {
     return {Backend::MFT, codec_, width_, height_};
 }
 
-} // namespace parties::encdec::mft
+}

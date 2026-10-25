@@ -13,7 +13,6 @@ env:
   IMAGE_NAME: ${{ github.repository }}/parties-server
 
 jobs:
-  # ── Windows retail build ────────────────────────────────────────────────────
   windows:
     runs-on: windows-latest
     env:
@@ -129,7 +128,6 @@ jobs:
           name: release-windows-pdb
           path: pdb-staging/
 
-  # ── macOS retail build ──────────────────────────────────────────────────────
   macos:
     runs-on: macos-26
     steps:
@@ -174,7 +172,6 @@ jobs:
           rm -rf build-macos-release/client/parties_client.app/Contents/MacOS/*.dSYM
           mv build-macos-release/client/parties_client.app build-macos-release/client/Parties.app
 
-      # ── Code signing ──────────────────────────────────────────────────────
       - name: Import code signing certificate
         env:
           P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12 }}
@@ -195,7 +192,6 @@ jobs:
         run: |
           APP="build-macos-release/client/Parties.app"
 
-          # Find the Developer ID Application identity from the imported certificate
           IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)"/\1/')
           echo "Signing with: $IDENTITY"
 
@@ -213,7 +209,6 @@ jobs:
           codesign --force --options runtime --sign "$IDENTITY" \
             "$SPARKLE/Versions/B"
 
-          # Sign the main app bundle
           codesign --force --options runtime \
             --entitlements client/res/Parties.entitlements \
             --sign "$IDENTITY" \
@@ -221,7 +216,6 @@ jobs:
 
           codesign --verify --deep --strict "$APP"
 
-      # ── DMG creation ──────────────────────────────────────────────────────
       - name: Create DMG
         run: |
           npx --yes create-dmg \
@@ -231,7 +225,6 @@ jobs:
           # create-dmg names the file automatically; rename to our convention
           mv build-macos-release/*.dmg "parties-client-macos-${{ github.ref_name }}.dmg"
 
-      # ── Notarization ──────────────────────────────────────────────────────
       - name: Notarize DMG
         env:
           APPLE_ID: ${{ secrets.MACOS_APPLE_ID }}
@@ -245,7 +238,6 @@ jobs:
             --wait
           xcrun stapler staple "parties-client-macos-${{ github.ref_name }}.dmg"
 
-      # ── Sparkle update signature ──────────────────────────────────────────
       - name: Sign update for Sparkle
         env:
           SPARKLE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
@@ -264,8 +256,6 @@ jobs:
           # re-wrapped as sparkle:edSignature="$SIGNATURE" in the appcast, produces a
           # nested-attribute, non-well-formed XML feed that Sparkle cannot parse.
           SIGNATURE=$("$SIGN_TOOL" -p "parties-client-macos-${{ github.ref_name }}.dmg" --ed-key-file <(echo "$SPARKLE_KEY"))
-          # Defend against a future regression: a bare base64 signature never
-          # contains a quote, a space, or the literal "sparkle:".
           case "$SIGNATURE" in
             "")
               echo "::error::sign_update produced an empty signature"; exit 1 ;;
@@ -309,11 +299,8 @@ jobs:
           </rss>
           APPCAST_FOOTER
 
-          # Strip leading whitespace from heredoc indentation
           sed -i '' 's/^          //' appcast.xml
 
-          # Fail the release if the feed is not well-formed XML — catches any
-          # future signature/quoting regression before it ever reaches users.
           xmllint --noout appcast.xml
           echo "── appcast.xml ──"
           cat appcast.xml
@@ -373,7 +360,6 @@ jobs:
           name: release-appcast
           path: appcast.xml
 
-  # ── Linux Docker image ─────────────────────────────────────────────────────
   linux-docker:
     runs-on: ubuntu-24.04
     steps:
@@ -423,7 +409,6 @@ jobs:
           docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
           docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
 
-  # ── GitHub Release ──────────────────────────────────────────────────────────
   create-release:
     needs: [windows, macos, linux-docker]
     runs-on: ubuntu-latest

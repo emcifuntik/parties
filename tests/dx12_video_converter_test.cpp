@@ -205,7 +205,7 @@ bool upload_direct_nv12(ID3D12Device* device, ID3D12CommandQueue* queue,
 	}
 	return samples[0] == 81 && samples[1] == 90 && samples[2] == 240;
 }
-} // namespace
+}
 
 int main() {
 	ComPtr<ID3D12Device> device;

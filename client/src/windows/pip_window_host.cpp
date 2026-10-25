@@ -27,7 +27,7 @@ std::wstring widen(const std::string& utf8) {
     return wide;
 }
 
-} // namespace
+}
 
 PipWindowHost::PipWindowHost() = default;
 PipWindowHost::~PipWindowHost() { shutdown(); }
@@ -77,8 +77,8 @@ bool PipWindowHost::ensure_surface() {
     }
 
     Backend::RmlRendererSettings settings{};
-    settings.vsync = false;           // the main window's present paces the render thread
-    settings.msaa_sample_count = 1;   // video plus a few overlay controls: no geometry to smooth
+    settings.vsync = false;
+    settings.msaa_sample_count = 1;
     auto renderer = std::make_unique<PartiesRenderInterface_DX12>(window_.hwnd(), settings);
     if (!renderer || !*renderer) {
         LOG_ERROR("Picture-in-picture renderer creation failed");
@@ -90,7 +90,7 @@ bool PipWindowHost::ensure_surface() {
     if (d3d12_device_ && renderer->GetD3D12Device() != d3d12_device_) {
         LOG_ERROR("Picture-in-picture renderer is not on the decoder's D3D12 device");
         failed_ = true;
-        return false;   // no context used it yet, so it may be destroyed now
+        return false;
     }
     renderer_ = std::move(renderer);
 
@@ -131,7 +131,7 @@ bool PipWindowHost::show(const std::string& title) {
     if (!ensure_surface()) return false;
     model_->title = title;
     SetWindowTextW(window_.hwnd(), widen(title.empty() ? "Parties picture-in-picture" : title).c_str());
-    if (window_.visible()) return true;   // switching streams keeps the window where it is
+    if (window_.visible()) return true;
 
     const float scale = static_cast<float>(GetDpiForSystem()) / 96.0f;
     const auto remembered = actions_.load_geometry ? actions_.load_geometry() : std::nullopt;
@@ -165,8 +165,6 @@ void PipWindowHost::fit_window_to_video() {
     window_.set_aspect(aspect);
     const PipRect rect = window_.window_rect();
     if (rect.width <= 0.0) return;
-    // Keep the width the user chose; the owner thread applies it and keeps
-    // the window on its monitor.
     window_.request_size(static_cast<int>(std::lround(rect.width)),
                          static_cast<int>(std::lround(pip_height_for_width(rect.width, aspect))));
 }
@@ -174,8 +172,6 @@ void PipWindowHost::fit_window_to_video() {
 void PipWindowHost::render(float volume) {
     if (!context_ || !renderer_ || !window_.visible()) return;
     apply_pending_resize();
-    // Stay visible while a control is in use, e.g. a volume drag that left
-    // the window or keyboard adjustment after the cursor moved away.
     model_->overlay_visible = window_.cursor_inside() || window_.interacting();
     model_->volume = volume;
     fit_window_to_video();
@@ -208,4 +204,4 @@ void PipWindowHost::shutdown() {
     window_.destroy();
 }
 
-} // namespace parties::client
+}

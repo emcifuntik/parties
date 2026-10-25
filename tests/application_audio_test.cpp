@@ -27,14 +27,10 @@ int main() {
         }
     }
 
-    // Invalid buffers and lengths are deliberately ignored; capture teardown
-    // can race a final empty WASAPI packet without touching caller memory.
     parties::client::downmix_application_audio(nullptr, mono.data(), 5);
     parties::client::downmix_application_audio(stereo.data(), nullptr, 5);
     parties::client::downmix_application_audio(stereo.data(), mono.data(), 0);
 
-    // Device/format transitions can surface invalid samples in process
-    // loopback. They must never reach the stateful Opus encoder.
     const std::array<float, 8> invalid{
         std::numeric_limits<float>::quiet_NaN(), 0.5f,
         std::numeric_limits<float>::infinity(),

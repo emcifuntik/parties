@@ -9,7 +9,6 @@
 namespace parties {
 
 bool crash_reporter_is_crashpad_handler([[maybe_unused]] int argc, [[maybe_unused]] char* argv[]) {
-    // No-op: using inproc backend, no handler subprocess needed.
     return false;
 }
 
@@ -55,4 +54,4 @@ void crash_reporter_shutdown() {
 #endif
 }
 
-} // namespace parties
+}

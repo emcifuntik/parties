@@ -7,10 +7,6 @@
 
 namespace parties::client {
 
-// ═══════════════════════════════════════════════════════════════════════
-// Embedded UI resources via C++23 #embed
-// ═══════════════════════════════════════════════════════════════════════
-
 static constexpr unsigned char embed_lobby_rml[] = {
     #embed "../ui/lobby.rml"
 };
@@ -244,7 +240,7 @@ struct OpenFile {
     std::ifstream* fp = nullptr;
 };
 
-} // anonymous namespace
+}
 
 EmbeddedFileInterface::EmbeddedFileInterface() {
     entries_["ui/lobby.rml"] = { embed_lobby_rml, sizeof(embed_lobby_rml) };
@@ -385,4 +381,4 @@ size_t EmbeddedFileInterface::Tell(Rml::FileHandle file) {
     return f->pos;
 }
 
-} // namespace parties::client
+}

@@ -14,9 +14,6 @@ struct ContextWindowAction {
     bool separator = false;
 };
 
-// Data model shared by the native context-window host and RmlUI Designer.
-// Keeping it platform-neutral makes the exact production document available
-// to screenshot tests instead of maintaining a separate HTML-like mock.
 class ContextWindowModel final : public rml::Model {
 public:
     rml::Prop<bool> user_mode{false};
@@ -45,4 +42,4 @@ protected:
     void build(rml::Builder& builder) override;
 };
 
-} // namespace parties::client
+}

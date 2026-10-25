@@ -1,9 +1,5 @@
 #pragma once
 
-// RmlUI Designer — two-window application for live-previewing RmlUI documents.
-// Window 1: Preview (renders the target .rml document)
-// Window 2: Manager (file browser, asset folders, settings — also RmlUI)
-
 #include "file_watcher.h"
 
 #include <RmlUi/Core/FileInterface.h>
@@ -30,11 +26,7 @@ namespace parties::rml { class ElementRegistry; }
 
 namespace designer {
 
-// Load Inter fonts embedded in the binary (always available)
 void LoadEmbeddedFonts();
-
-// ── Filesystem-based Rml::FileInterface ──────────────────────────────────
-// Resolves paths against a list of search directories (asset folders).
 
 class FilesystemFileInterface : public Rml::FileInterface {
 public:
@@ -43,7 +35,6 @@ public:
 	void ClearSearchPaths();
 	const std::vector<std::string>& GetSearchPaths() const { return search_paths_; }
 
-	// Set the base directory (parent of the loaded .rml file)
 	void SetBaseDirectory(const std::string& dir) { base_dir_ = dir; }
 
 	Rml::FileHandle Open(const Rml::String& path) override;
@@ -59,16 +50,10 @@ private:
 	std::string base_dir_;
 };
 
-// ── Designer bind variables ───────────────────────────────────────────────
-// Dynamically typed variables that get bound to the preview context's data model.
-// Supports: string, int, float, bool, string array.
-// Heap-allocated so pointers stay stable when the map grows.
-
 enum class VarType { String = 0, Int, Float, Bool, StringArray, Event };
 
 struct DesignerVar {
 	VarType type;
-	// Heap-allocated value — stable pointer for RmlUi data binding
 	std::unique_ptr<Rml::String>               val_string;
 	std::unique_ptr<int>                        val_int;
 	std::unique_ptr<float>                      val_float;
@@ -85,20 +70,18 @@ struct DesignerVar {
 		case VarType::Float:       val_float = std::make_unique<float>(0.0f); break;
 		case VarType::Bool:        val_bool = std::make_unique<bool>(false); break;
 		case VarType::StringArray: val_string_array = std::make_unique<Rml::Vector<Rml::String>>(); break;
-		case VarType::Event:       break; // no storage needed
+		case VarType::Event:       break;
 		}
 	}
 
-	// Set value from a string representation
 	void SetFromString(const Rml::String& s) {
 		switch (type) {
-		case VarType::Event:       break; // no value
+		case VarType::Event:       break;
 		case VarType::String:      if (val_string) *val_string = s; break;
 		case VarType::Int:         if (val_int) *val_int = std::atoi(s.c_str()); break;
 		case VarType::Float:       if (val_float) *val_float = static_cast<float>(std::atof(s.c_str())); break;
 		case VarType::Bool:        if (val_bool) *val_bool = (s == "true" || s == "1"); break;
 		case VarType::StringArray: {
-			// Comma-separated values
 			if (!val_string_array) break;
 			val_string_array->clear();
 			size_t start = 0;
@@ -106,7 +89,6 @@ struct DesignerVar {
 				size_t end = s.find(',', start);
 				if (end == Rml::String::npos) end = s.size();
 				auto item = s.substr(start, end - start);
-				// Trim
 				while (!item.empty() && item.front() == ' ') item.erase(item.begin());
 				while (!item.empty() && item.back() == ' ') item.pop_back();
 				if (!item.empty()) val_string_array->push_back(item);
@@ -117,7 +99,6 @@ struct DesignerVar {
 		}
 	}
 
-	// Get value as display string
 	Rml::String GetAsString() const {
 		switch (type) {
 		case VarType::Event:       return "(event)";
@@ -139,14 +120,11 @@ struct DesignerVar {
 	}
 };
 
-// Row in the manager's variable list (for the manager data model)
 struct VarListEntry {
 	Rml::String name;
-	Rml::String type_name;   // "string", "int", "float", "bool", "string[]"
-	Rml::String value;       // display string
+	Rml::String type_name;
+	Rml::String value;
 };
-
-// ── DesignerApp ──────────────────────────────────────────────────────────
 
 class DesignerApp {
 public:
@@ -155,7 +133,7 @@ public:
 
 	bool Init(const std::string& initial_file = "");
 	void Shutdown();
-	int Run(); // Message loop, returns exit code
+	int Run();
 	int RunScreenshot(const std::string& output_path, int settle_frames = 240);
 	void SetPreviewSize(int width, int height);
 	void SetDensity(float density) { density_override_ = density; }
@@ -166,25 +144,21 @@ public:
 	void ConfigurePartiesFixture(std::string scenario);
 	bool LastDocumentLoadSucceeded() const { return last_document_load_succeeded_; }
 
-	// Actions (called by manager UI or externally)
 	void LoadDocument(const std::string& rml_path);
 	void AddAssetFolder(const std::string& dir);
 	void RemoveAssetFolder(const std::string& dir);
 	void ReloadPreview();
 	void ReloadFonts();
 
-	// Variable management
 	void AddVariable(const Rml::String& model_name, const Rml::String& name, VarType type);
 	void RemoveVariable(const Rml::String& model_name, const Rml::String& name);
 	void SetVariable(const Rml::String& model_name, const Rml::String& name, const Rml::String& value);
 	void RebuildPreviewDataModels();
 	void RefreshManagerVarList();
 
-	// Save/load bind variable configurations
 	bool SaveBindVars(const std::string& path);
 	bool LoadBindVars(const std::string& path);
 
-	// Accessors
 	const std::string& GetDocumentPath() const { return document_path_; }
 	const std::vector<std::string>& GetAssetFolders() const;
 	Rml::Context* GetManagerContext() const { return manager_context_; }
@@ -205,15 +179,12 @@ private:
 	void BrowseForDocument();
 	void BrowseForAssetFolder();
 
-	// Windows
 	HWND preview_hwnd_ = nullptr;
 	HWND manager_hwnd_ = nullptr;
 
-	// DX12 renderers (one per window)
 	std::unique_ptr<PartiesRenderInterface_DX12> preview_renderer_;
 	std::unique_ptr<PartiesRenderInterface_DX12> manager_renderer_;
 
-	// Shared interfaces
 	std::unique_ptr<SystemInterface_Win32> system_interface_;
 	std::unique_ptr<TextInputMethodEditor_Win32> text_input_editor_;
 	FilesystemFileInterface file_interface_;
@@ -222,14 +193,11 @@ private:
 	struct PartiesFixture;
 	std::unique_ptr<PartiesFixture> parties_fixture_;
 
-	// RmlUi contexts
 	Rml::Context* preview_context_ = nullptr;
 	Rml::Context* manager_context_ = nullptr;
 
-	// File watcher
 	FileWatcher file_watcher_;
 
-	// State
 	std::string document_path_;
 	float dpi_scale_ = 1.0f;
 	float density_override_ = 0.0f;
@@ -247,29 +215,25 @@ private:
 	std::string parties_fixture_scenario_;
 	std::string preview_theme_;
 
-	// Debounce: time of last file change, reload after 100ms
+	static constexpr DWORD reload_debounce_ms = 150;
 	DWORD last_change_tick_ = 0;
 	bool reload_pending_ = false;
 	bool font_reload_pending_ = false;
-	bool mgr_var_dirty_ = false; // deferred manager variable list refresh
+	bool mgr_var_dirty_ = false;
 
-	// ── Data model variables ─────────────────────────────────────────────
-	// Key: "model_name.var_name", maps to the actual variable storage.
-	// Multiple data model names supported (e.g. "lobby", "serverlist").
 	struct ModelVars {
-		std::map<Rml::String, DesignerVar> vars; // stable iterators
+		std::map<Rml::String, DesignerVar> vars;
 		Rml::DataModelHandle handle;
 	};
 	std::map<Rml::String, ModelVars> data_models_;
 
-	// Manager-side data model for the variable editor UI
 	Rml::DataModelHandle mgr_var_model_;
 	Rml::Vector<VarListEntry> mgr_var_list_;
 	Rml::String mgr_new_model_name_;
 	Rml::String mgr_new_var_name_;
-	Rml::String mgr_new_var_type_; // "string", "int", "float", "bool", "string[]"
-	Rml::String mgr_edit_value_;   // scratch for editing
+	Rml::String mgr_new_var_type_;
+	Rml::String mgr_edit_value_;
 	void SetupManagerDataModel();
 };
 
-} // namespace designer
+}

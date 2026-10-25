@@ -71,13 +71,10 @@ const char* cuda_error(const CudaApi& api, CUresult result) {
         return text;
     return "CUDA_ERROR_UNKNOWN";
 }
-} // namespace
+}
 
 struct NvdecCudaInteropState : std::enable_shared_from_this<NvdecCudaInteropState> {
     struct Slot {
-        // The opaque NVDEC backing is a native CUDA array. In particular, it is
-        // not a D3D12 NV12 texture imported into CUDA: the opaque decoder layout
-        // is driver-private and is not required to match any DXGI plane layout.
         ComPtr<ID3D12Resource> resource;
         ComPtr<ID3D12Resource> luma_resource;
         ComPtr<ID3D12Resource> chroma_resource;
@@ -94,7 +91,6 @@ struct NvdecCudaInteropState : std::enable_shared_from_this<NvdecCudaInteropStat
         CUmipmappedArray chroma_mipmapped_array = nullptr;
         CUarray chroma_array = nullptr;
         CUsurfObject surface = 0;
-        // Protects only the exported textures, never the private decode array.
         std::atomic<bool> in_use{false};
     };
 
@@ -492,9 +488,6 @@ NvdecDecoder::~NvdecDecoder() {
             cuda_.cuCtxPopCurrent(&dummy);
         }
         if (interop_) {
-            // Frame owners can outlive the decoder. The interop state keeps the
-            // CUDA context, shared resources, and imported fence alive until
-            // the last renderer-held surface is released.
             interop_->owns_context = true;
         } else {
             cuda_.cuCtxDestroy(cu_ctx_);
@@ -623,7 +616,7 @@ bool NvdecDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height,
     CUVIDPARSERPARAMS parser_params{};
     parser_params.CodecType = cuvid_codec;
     parser_params.ulMaxNumDecodeSurfaces = 10;
-    parser_params.ulMaxDisplayDelay = 0;  // No B-frames in our stream, display immediately
+    parser_params.ulMaxDisplayDelay = 0;
     parser_params.pUserData = this;
     parser_params.pfnSequenceCallback = handle_sequence;
     parser_params.pfnDecodePicture = handle_decode;
@@ -671,9 +664,6 @@ bool NvdecDecoder::decode(const uint8_t* data, size_t len, int64_t timestamp) {
     }
 
     CUVIDSOURCEDATAPACKET pkt{};
-    // Each decode() call carries exactly one access unit, so ENDOFPICTURE lets
-    // the parser emit the picture right away instead of waiting for the next
-    // packet to prove the picture is complete (one frame interval of latency).
     pkt.flags = CUVID_PKT_TIMESTAMP | CUVID_PKT_ENDOFPICTURE;
     pkt.payload_size = static_cast<unsigned long>(len);
     pkt.payload = data;
@@ -700,8 +690,6 @@ bool NvdecDecoder::decode(const uint8_t* data, size_t len, int64_t timestamp) {
         return false;
     }
 
-    // CUVID can return CUDA_SUCCESS even when a decode/display callback failed.
-    // Preserve that failure so the client resets the broken reference chain.
     if (callback_failed_) {
         LOG_ERROR("NVDEC parser callback failed; decoder requires a fresh keyframe");
         initialized_ = false;
@@ -814,8 +802,6 @@ int NvdecDecoder::on_sequence(CUVIDEOFORMAT* fmt) {
         return 1;
     }
 
-    // Compute the actual output dimensions (may differ from coded_width/height
-    // if the stream specifies a display/crop area).
     uint32_t target_w = fmt->coded_width;
     uint32_t target_h = fmt->coded_height;
     uint32_t crop_x = 0;
@@ -830,12 +816,6 @@ int NvdecDecoder::on_sequence(CUVIDEOFORMAT* fmt) {
         target_h = fmt->display_area.bottom - fmt->display_area.top;
     }
 
-    // Repeated sequence headers are normal, particularly for AV1 keyframes.
-    // The parser only requires at least min_num_decode_surfaces. Our optional
-    // headroom is not part of that contract and can be truncated by NVDEC's
-    // 32-surface registration limit. Requiring min + headroom here made reuse
-    // permanently impossible near that limit and rebuilt the decoder every
-    // frame, turning a sub-millisecond parse into a ~250 ms stall.
     const detail::NvdecSequenceState state{
         decoder_ != nullptr, width_, height_, native_texture_width_,
         native_texture_height_, native_crop_x_, native_crop_y_, bit_depth_,
@@ -881,8 +861,6 @@ int NvdecDecoder::on_sequence(CUVIDEOFORMAT* fmt) {
 
     bool is_10bit = fmt->bit_depth_luma_minus8 > 0;
     if (is_10bit) {
-        // DecodedFrame currently exposes byte NV12 and the CUDA conversion
-        // kernel is deliberately 8-bit. Never reinterpret P016 as NV12.
         LOG_ERROR("NVDEC 10-bit output is not supported by the current frame contract");
         native_interop_active_ = false;
         return 0;
@@ -926,11 +904,6 @@ int NvdecDecoder::on_sequence(CUVIDEOFORMAT* fmt) {
         }
     }
     if (opaque_api_available && opaque_slots_ready) {
-        // Opaque output bypasses NVDEC's post-processing/output stage and writes
-        // straight into the registered coded-size CUarrays. In particular, the
-        // decoder must not be asked to crop to display_area here: doing so makes
-        // its idea of the NV12 plane layout differ from the D3D12 resource whose
-        // plane offsets are derived from coded_width/coded_height.
         create_info.ulTargetWidth = fmt->coded_width;
         create_info.ulTargetHeight = fmt->coded_height;
         create_info.display_area = {};
@@ -971,8 +944,6 @@ int NvdecDecoder::on_sequence(CUVIDEOFORMAT* fmt) {
     }
 
     if (!decoder_) {
-        // The mapped legacy path still goes through NVDEC post-processing, so
-        // retain its visible-size crop/scaling behavior.
         create_info.ulTargetWidth = target_w;
         create_info.ulTargetHeight = target_h;
         create_info.display_area = {};
@@ -1039,9 +1010,6 @@ int NvdecDecoder::on_decode(CUVIDPICPARAMS* pic) {
 
     if (stop_token_.stop_requested()) return 0;
 
-    // Decode/reference arrays are private CUDA resources. The renderer owns
-    // separate exported plane copies, so it must never block reference decode.
-    // All decode and copy operations share interop_->stream and stay ordered.
     const auto submit_start = DiagnosticClock::now();
     CUresult res = opaque_output_active_
         ? cuvid_.cuvidDecodePictureAsync(decoder_, pic, interop_->stream)
@@ -1087,17 +1055,9 @@ int NvdecDecoder::on_display(CUVIDPARSERDISPINFO* disp_info) {
             return 0;
         }
         auto* source = interop_->slots[source_index].get();
-        // Export to any free presentation slot, independently of the decoder's
-        // reference-surface index. A hidden/stalled renderer may retain every
-        // exported texture: skip presentation in that case, but keep decoding
-        // so releasing a lease resumes live output without another keyframe.
         auto* slot = interop_->acquire_slot();
         if (!slot) return 1;
 
-        // SDK 13.1 opaque output is a private block-linear CUDA layout, not a
-        // portable DXGI multi-plane layout. Copy the two decoded planes with the
-        // GPU copy engine into ordinary R8/RG8 shared textures. RmlUI samples
-        // these as NV12 directly; there is still no RGB conversion or host copy.
         CUDA_MEMCPY2D luma_copy{};
         luma_copy.srcMemoryType = CU_MEMORYTYPE_ARRAY;
         luma_copy.srcArray = source->decoded_luma_array;
@@ -1190,8 +1150,6 @@ int NvdecDecoder::on_display(CUVIDPARSERDISPINFO* disp_info) {
             packet_diagnostics_.output_path = "mapped-rgba";
         auto* slot = interop_->acquire_slot();
         if (!slot) {
-            // The render queue still owns every ring slot. Dropping this frame
-            // keeps decode latency bounded instead of stalling the receive path.
             const auto unmap_start = DiagnosticClock::now();
             cuvid_.cuvidUnmapVideoFrame64(decoder_, dev_ptr);
             if (collect_packet_diagnostics_)
@@ -1336,4 +1294,4 @@ int NvdecDecoder::on_display(CUVIDPARSERDISPINFO* disp_info) {
     return 1;
 }
 
-} // namespace parties::encdec::nvidia
+}

@@ -30,4 +30,4 @@ const QUIC_API_TABLE* quic_api() {
     return g_quic_api;
 }
 
-} // namespace parties
+}

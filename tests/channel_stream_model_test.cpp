@@ -28,8 +28,6 @@ bool check_voice_navigation(Rml::Context* context, parties::client::LobbyModel& 
     model.add_channel_sharer(carol.id);
     model.on_join_channel = [&](int id) { model.show_voice_channel(id); };
 
-    // Exercise the sidebar event and the room/viewer visibility conditions used
-    // by lobby.rml. Chat retains the voice connection and its media subscriptions.
     auto* document = context->LoadDocumentFromMemory(R"RML(
 <rml><body class="ui-body" data-model="lobby">
 <button class="ui-control" id="voice" data-event-mousedown="channel_mousedown(2, 'Voice')">Voice</button>
@@ -89,7 +87,6 @@ bool check_voice_navigation(Rml::Context* context, parties::client::LobbyModel& 
     model.show_voice_channel(1);
     passed &= check(model.router.is(DocumentRoute::Room), "another channel reopened the old viewer");
 
-    // If every watched stream stops while chat is open, return to the room.
     model.router.go(DocumentRoute::Chat);
     model.watched = Rml::Vector<WatchedStream>{};
     model.watching_count = 0;
@@ -104,7 +101,7 @@ bool check_voice_navigation(Rml::Context* context, parties::client::LobbyModel& 
     model.remove_channel_sharer(carol.id);
     return passed;
 }
-} // namespace
+}
 
 int main() {
     using namespace parties::client;
@@ -139,7 +136,6 @@ int main() {
         passed &= check(!model.add_channel_sharer(11), "delayed old-channel start was accepted");
         passed &= check(model.add_channel_sharer(22) && model.sharers.get().front().name == "Bob", "new-channel replay failed");
 
-        // A stale sidebar badge must not make another channel's stream clickable.
         model.channels.silent()[0].users[0].streaming = true;
         int watched_id = 0;
         model.on_watch_sharer = [&](int id) { watched_id = id; };

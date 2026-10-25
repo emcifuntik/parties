@@ -12,10 +12,6 @@ constexpr uint16_t DEFAULT_PORT = 7800;
 // in AUTH_IDENTITY. The server rejects only on a MAJOR mismatch, so a minor
 // bump doesn't lock out older clients.
 constexpr uint8_t  PROTOCOL_VERSION_MAJOR = 1;
-// 1.1: +VOICE2 (secondary voice stream), additive.
-// 1.2: +per-frame unidirectional video streams (STREAM_TYPE_VIDEO_FRAME),
-//      SCREEN_SHARE_VIEWER, trailing protocol version in AUTH_RESPONSE,
-//      trailing replay flag in SCREEN_SHARE_STARTED. All additive.
 constexpr uint8_t  PROTOCOL_VERSION_MINOR = 2;
 constexpr uint16_t PROTOCOL_VERSION =
     (static_cast<uint16_t>(PROTOCOL_VERSION_MAJOR) << 8) | PROTOCOL_VERSION_MINOR;
@@ -71,8 +67,6 @@ enum class ControlMessageType : uint16_t {
     USER_VOICE_STATE      = 0x0106,
     USER_ROLE_CHANGED     = 0x0108,   // [user_id(4)][new_role(1)]
     KEEPALIVE_PONG        = 0x0107,
-    // 0x0109 was CHANNEL_KEY — removed (was dead crypto; media is protected by
-    // QUIC TLS hop-by-hop, the SFU is trusted). Do not reuse without a bump.
     SCREEN_SHARE_STARTED  = 0x010A,   // [sharer_id(4)][codec(1)][width(2)][height(2)][replay(1), optional since 1.2:
                                       //  1 = late-join replay of an already active share, 0/absent = live start]
     SCREEN_SHARE_STOPPED  = 0x010B,
@@ -91,8 +85,6 @@ enum class ControlMessageType : uint16_t {
 
     // Server -> Client admin responses
     ADMIN_RESULT          = 0x0301,
-
-    // ── Text chat ──────────────────────────────────────────────────────
 
     // Client -> Server
     CHAT_SEND             = 0x0401,  // [channel_id(4)][text(string)][attachment_count(1)][attachments...]
@@ -149,10 +141,8 @@ constexpr uint8_t STREAM_TYPE_VIDEO_FRAME   = 0x12;
 
 // Video control subtypes (VIDEO_CONTROL_TYPE datagrams / stream-1 packets)
 constexpr uint8_t VIDEO_CTL_PLI         = 0x01;
-constexpr uint8_t VIDEO_CTL_SHARE_START = 0x02;   // reserved, unused
-constexpr uint8_t VIDEO_CTL_SHARE_STOP  = 0x03;   // reserved, unused
-// 0x04 (NACK) and 0x05 (RECEIVER_REPORT) are reserved for a possible
-// datagram-based video path; not implemented. Do not reuse.
+constexpr uint8_t VIDEO_CTL_SHARE_START = 0x02;
+constexpr uint8_t VIDEO_CTL_SHARE_STOP  = 0x03;
 
 // Control-message wire notes for optional trailing fields (1.2+). Readers must
 // tolerate their absence (older peer) and ignore unknown trailing bytes.
@@ -160,4 +150,4 @@ constexpr uint8_t VIDEO_CTL_SHARE_STOP  = 0x03;   // reserved, unused
 //   The trailing u16 tells the client which protocol the server speaks; absent
 //   means PROTOCOL_VERSION_ASSUMED_LEGACY.
 
-} // namespace parties::protocol
+}

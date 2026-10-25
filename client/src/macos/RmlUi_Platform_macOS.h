@@ -2,13 +2,6 @@
 
 #include <RmlUi/Core/SystemInterface.h>
 
-/**
- * macOS system interface for RmlUi.
- *
- * Clipboard uses NSPasteboard.
- * Keyboard activation is a no-op — AppKit routes keyboard events through
- * the NSResponder chain automatically.
- */
 class SystemInterface_macOS : public Rml::SystemInterface {
 public:
     SystemInterface_macOS();

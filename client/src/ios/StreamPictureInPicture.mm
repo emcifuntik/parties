@@ -5,7 +5,6 @@
 
 #include <utility>
 
-// A view whose backing layer is the display layer, so it follows the frame.
 @interface PartiesStreamSurfaceView : UIView
 @end
 
@@ -15,7 +14,7 @@
 
 @implementation PartiesStreamPictureInPicture {
     PartiesStreamSurfaceView* _surface;
-    AVSampleBufferDisplayLayer* _layer;      // _surface.layer, not owned separately
+    AVSampleBufferDisplayLayer* _layer;
     AVPictureInPictureController* _controller;
     CMVideoFormatDescriptionRef _format;
     CAShapeLayer* _mask;
@@ -23,7 +22,7 @@
     std::function<void()> _onStopped;
     std::function<void(void (^)(BOOL))> _onRestore;
     BOOL _startRequested;
-    BOOL _active;          // between willStart and didStop
+    BOOL _active;
     BOOL _restoring;
 }
 
@@ -39,7 +38,7 @@
         return nil;
 
     _surface = [[PartiesStreamSurfaceView alloc] initWithFrame:CGRectZero];
-    _surface.userInteractionEnabled = NO;   // RmlUi keeps all touches
+    _surface.userInteractionEnabled = NO;
     _surface.hidden = YES;
     _surface.backgroundColor = UIColor.clearColor;
     _layer = (AVSampleBufferDisplayLayer*)_surface.layer;
@@ -52,10 +51,7 @@
     _controller = [[AVPictureInPictureController alloc] initWithContentSource:source];
     [source release];
     _controller.delegate = self;
-    // The watched stream is the user's primary content: leaving the app while
-    // it plays inline moves it into PiP.
     _controller.canStartPictureInPictureAutomaticallyFromInline = YES;
-    // A live stream cannot seek or skip.
     _controller.requiresLinearPlayback = YES;
     return self;
 }
@@ -74,7 +70,6 @@
             return;
     }
 
-    // Live video: show each frame as soon as it is enqueued, without a timebase.
     CMSampleTimingInfo timing{kCMTimeInvalid, CMClockGetTime(CMClockGetHostTimeClock()), kCMTimeInvalid};
     CMSampleBufferRef sample = nullptr;
     if (CMSampleBufferCreateReadyWithImageBuffer(kCFAllocatorDefault, pixelBuffer, _format,
@@ -92,7 +87,6 @@
     [_layer enqueueSampleBuffer:sample];
     CFRelease(sample);
 
-    // A PiP request made before the first frame starts once PiP is possible.
     if (_startRequested && !_active && _controller.isPictureInPicturePossible) {
         _startRequested = NO;
         [_controller startPictureInPicture];
@@ -110,15 +104,12 @@
     [CATransaction begin];
     [CATransaction setDisableActions:YES];
     _surface.frame = frame;
-    // While the system shows the layer in PiP the cell shows a placeholder.
     _surface.hidden = _active || CGRectIsEmpty(frame);
 
     const CGRect overlap = CGRectIntersection(frame, exclude);
     if (CGRectIsNull(exclude) || CGRectIsEmpty(overlap)) {
         _surface.layer.mask = nil;
     } else {
-        // The fullscreen call dock floats over the video: cut it out so the
-        // RmlUi controls underneath stay visible.
         if (!_mask) _mask = [[CAShapeLayer alloc] init];
         UIBezierPath* path = [UIBezierPath bezierPathWithRect:_surface.bounds];
         [path appendPath:[UIBezierPath bezierPathWithRect:
@@ -142,13 +133,12 @@
     if (_controller.isPictureInPicturePossible)
         [_controller startPictureInPicture];
     else
-        _startRequested = YES;   // retried when the next frame arrives
+        _startRequested = YES;
 }
 
 - (void)stop
 {
     _startRequested = NO;
-    // During a restore the system is already stopping PiP.
     if (_active && !_restoring)
         [_controller stopPictureInPicture];
 }
@@ -157,8 +147,6 @@
 {
     return _active;
 }
-
-// ── AVPictureInPictureControllerDelegate ──────────────────────────────────────
 
 - (void)pictureInPictureControllerWillStartPictureInPicture:(AVPictureInPictureController*)controller
 {
@@ -191,11 +179,8 @@
     if (_onStopped) _onStopped();
 }
 
-// ── AVPictureInPictureSampleBufferPlaybackDelegate (live content) ─────────────
-
 - (void)pictureInPictureController:(AVPictureInPictureController*)controller setPlaying:(BOOL)playing
 {
-    // A live stream cannot be paused; the system shows no pause control for it.
 }
 
 - (CMTimeRange)pictureInPictureControllerTimeRangeForPlayback:(AVPictureInPictureController*)controller

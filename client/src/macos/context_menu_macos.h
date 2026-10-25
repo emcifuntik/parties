@@ -29,8 +29,6 @@ struct MacOSUserMenuCallbacks {
     std::function<void()> kick;
 };
 
-// Presents native macOS context UI anchored to the last secondary click.
-// Simple actions use NSMenu, while the rich per-user controls use NSPopover.
 class MacOSContextMenuController {
 public:
     explicit MacOSContextMenuController(NSView* anchor_view);
@@ -52,4 +50,4 @@ private:
     std::shared_ptr<State> state_;
 };
 
-} // namespace parties::client
+}

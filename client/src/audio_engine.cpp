@@ -38,7 +38,6 @@ AudioEngine::~AudioEngine() {
 
 bool AudioEngine::init() {
 	ZoneScopedN("AudioEngine::init");
-    // Initialize miniaudio context (needed for device enumeration)
     const auto context_config = MakeAudioContextConfig();
     if (ma_context_init(nullptr, 0, &context_config, &context_) != MA_SUCCESS) {
         LOG_ERROR("Failed to initialize audio context");
@@ -46,7 +45,6 @@ bool AudioEngine::init() {
     }
     context_initialized_ = true;
 
-    // Enumerate devices
     ma_device_info* playback_infos = nullptr;
     ma_uint32 playback_count = 0;
     ma_device_info* capture_infos = nullptr;
@@ -74,7 +72,6 @@ bool AudioEngine::init() {
             default_playback_ = static_cast<int>(i);
     }
 
-    // Initialize RNNoise
     rnn_ = rnnoise_create(nullptr);
     if (!rnn_) {
         LOG_ERROR("Failed to create RNNoise state");
@@ -88,23 +85,20 @@ bool AudioEngine::init() {
         return false;
     }
 
-    // Initialize Opus encoder with in-band FEC for packet-loss resilience.
     if (!encoder_.init_encoder(audio::SAMPLE_RATE, audio::CHANNELS, audio::OPUS_BITRATE,
-                               /*inband_fec=*/true, audio::OPUS_EXPECTED_LOSS_PCT)) {
+                               true, audio::OPUS_EXPECTED_LOSS_PCT)) {
         LOG_ERROR("Failed to create Opus encoder");
         rnnoise_destroy(rnn_);
         rnn_ = nullptr;
         return false;
     }
 
-    // Secondary/auxiliary stream encoder (music profile, mono). Optional — if it
-    // fails we just don't offer a 2nd stream; the primary path is unaffected.
     secondary_buf_.assign(audio::OPUS_FRAME_SIZE, 0.0f);
     secondary_pos_ = 0;
     secondary_encoder_ready_ =
         secondary_encoder_.init_encoder(audio::SAMPLE_RATE, audio::CHANNELS,
                                         audio::SECONDARY_OPUS_BITRATE,
-                                        /*inband_fec=*/true, audio::OPUS_EXPECTED_LOSS_PCT,
+                                        true, audio::OPUS_EXPECTED_LOSS_PCT,
                                         OpusMode::Music);
     if (!secondary_encoder_ready_)
         LOG_WARN("Secondary audio encoder unavailable; 2nd stream disabled");
@@ -160,7 +154,6 @@ bool AudioEngine::init_devices() {
     // Separate capture and playback devices to avoid duplex resampling issues
     // (virtual surround headsets with different native sample rates cause artifacts in duplex mode)
 
-    // --- Capture device ---
     ma_device_config cap_config = ma_device_config_init(ma_device_type_capture);
     cap_config.capture.format = ma_format_f32;
     cap_config.capture.channels = audio::CHANNELS;
@@ -179,7 +172,6 @@ bool AudioEngine::init_devices() {
     }
     capture_initialized_ = true;
 
-    // --- Playback device (stereo: voice mono→upmix + stream stereo) ---
     ma_device_config play_config = ma_device_config_init(ma_device_type_playback);
     play_config.playback.format = ma_format_f32;
     play_config.playback.channels = 2;
@@ -333,14 +325,14 @@ bool AudioEngine::set_playback_device(int index) {
     return reconfigure_devices(selected_capture_, index);
 }
 
-void AudioEngine::capture_callback(ma_device* device, void* /*output*/,
+void AudioEngine::capture_callback(ma_device* device, void*,
                                     const void* input, ma_uint32 frame_count) {
     auto* engine = static_cast<AudioEngine*>(device->pUserData);
     engine->process_capture(static_cast<const float*>(input), frame_count);
 }
 
 void AudioEngine::playback_callback(ma_device* device, void* output,
-                                     const void* /*input*/, ma_uint32 frame_count) {
+                                     const void*, ma_uint32 frame_count) {
     auto* engine = static_cast<AudioEngine*>(device->pUserData);
     engine->process_playback(static_cast<float*>(output), frame_count);
 
@@ -364,8 +356,6 @@ void AudioEngine::process_capture(const float* input, ma_uint32 frame_count) {
         if (capture_pos_ >= static_cast<size_t>(audio::FRAME_SIZE)) {
             echo_canceller_.process_capture(capture_buf_.data(), audio::FRAME_SIZE);
 
-            // Keep AEC timing and adaptation alive while muted, but never run
-            // the transmit pipeline or retain microphone samples.
             if (muted_.load(std::memory_order_relaxed) || !on_encoded_frame) {
                 transmitting_.store(false, std::memory_order_relaxed);
                 capture_pos_ = 0;
@@ -375,7 +365,6 @@ void AudioEngine::process_capture(const float* input, ma_uint32 frame_count) {
             float processed[audio::FRAME_SIZE];
 
             if (denoise_enabled_) {
-                // RNNoise: scale to int16 range, denoise, scale back
                 float rnn_in[audio::FRAME_SIZE];
                 float rnn_out[audio::FRAME_SIZE];
                 for (int i = 0; i < audio::FRAME_SIZE; i++)
@@ -386,19 +375,16 @@ void AudioEngine::process_capture(const float* input, ma_uint32 frame_count) {
                 for (int i = 0; i < audio::FRAME_SIZE; i++)
                     processed[i] = rnn_out[i] / 32768.0f;
             } else {
-                // Pass through raw audio
                 std::memcpy(processed, capture_buf_.data(),
                            audio::FRAME_SIZE * sizeof(float));
             }
 
-            // Compute RMS for voice level meter
             float sum = 0.0f;
             for (int i = 0; i < audio::FRAME_SIZE; i++)
                 sum += processed[i] * processed[i];
             float rms = std::sqrt(sum / audio::FRAME_SIZE);
             voice_level_ = rms;
 
-            // VAD check (threshold is in perceptual/dB-normalized space)
             if (vad_enabled_) {
                 float threshold = audio::perceptual_to_rms(vad_threshold_.load());
                 if (rms >= threshold) {
@@ -406,7 +392,6 @@ void AudioEngine::process_capture(const float* input, ma_uint32 frame_count) {
                 } else if (vad_hold_frames_ > 0) {
                     vad_hold_frames_--;
                 } else {
-                    // Below threshold and hold expired — don't encode
                     transmitting_ = false;
                     capture_pos_ = 0;
                     continue;
@@ -414,12 +399,10 @@ void AudioEngine::process_capture(const float* input, ma_uint32 frame_count) {
             }
             transmitting_ = true;
 
-            // Append to encode buffer
             for (int i = 0; i < audio::FRAME_SIZE; i++)
                 encode_buf_[encode_pos_ + i] = processed[i];
             encode_pos_ += audio::FRAME_SIZE;
 
-            // When we have 2 RNNoise frames (960 samples = 20ms), Opus encode
             if (encode_pos_ >= static_cast<size_t>(audio::OPUS_FRAME_SIZE)) {
                 int encoded = encoder_.encode(encode_buf_, audio::OPUS_FRAME_SIZE,
                                                opus_buf_, audio::MAX_OPUS_PACKET);
@@ -435,13 +418,10 @@ void AudioEngine::process_capture(const float* input, ma_uint32 frame_count) {
 
 void AudioEngine::process_playback(float* output, ma_uint32 frame_count) {
 	ZoneScopedN("AudioEngine::process_playback");
-    // Output is stereo interleaved (2 floats per frame)
     const ma_uint32 total_samples = frame_count * 2;
     std::memset(output, 0, total_samples * sizeof(float));
 
-    // Mix voice audio into mono temp buffer, then upmix to stereo
     if (!deafened_ && mixer_) {
-        // VoiceMixer outputs mono
         float mono_buf[4096];
         ma_uint32 remaining = frame_count;
         ma_uint32 offset = 0;
@@ -450,7 +430,6 @@ void AudioEngine::process_playback(float* output, ma_uint32 frame_count) {
             std::memset(mono_buf, 0, chunk * sizeof(float));
             mixer_->mix_output(mono_buf, static_cast<int>(chunk));
 
-            // Voice normalization (per-chunk)
             if (normalize_enabled_) {
                 float sum = 0.0f;
                 for (ma_uint32 i = 0; i < chunk; i++)
@@ -459,7 +438,7 @@ void AudioEngine::process_playback(float* output, ma_uint32 frame_count) {
 
                 if (rms > 0.001f) {
                     float slider = normalize_target_.load();
-                    float target = slider * slider * slider; // Power curve for perceptual linearity
+                    float target = slider * slider * slider;
                     float desired_gain = target / rms;
                     desired_gain = std::clamp(desired_gain, 0.1f, 10.0f);
                     float alpha = 0.05f;
@@ -473,7 +452,6 @@ void AudioEngine::process_playback(float* output, ma_uint32 frame_count) {
                 }
             }
 
-            // Upmix mono to stereo (duplicate to both channels)
             for (ma_uint32 i = 0; i < chunk; i++) {
                 output[(offset + i) * 2 + 0] = mono_buf[i];
                 output[(offset + i) * 2 + 1] = mono_buf[i];
@@ -483,9 +461,6 @@ void AudioEngine::process_playback(float* output, ma_uint32 frame_count) {
         }
     }
 
-    // Mix the secondary/auxiliary voice stream (karaoke/join sounds/plugin audio).
-    // It is mono like the primary mix, but gets NO voice normalization or makeup
-    // gain — the aux VoiceMixer already applies its own (no-makeup) master volume.
     if (!deafened_ && aux_mixer_) {
         float mono_buf[4096];
         ma_uint32 remaining = frame_count;
@@ -503,18 +478,13 @@ void AudioEngine::process_playback(float* output, ma_uint32 frame_count) {
         }
     }
 
-    // Mix stream audio (already stereo, adds to existing output)
     if (stream_player_)
         stream_player_->mix_output(output, static_cast<int>(frame_count));
 
-    // Final hard limiter across the summed output. Each source self-clamps its own
-    // contribution to [-1,1], but primary voice + secondary (VOICE2) + screen-share
-    // audio are summed on top of each other and can exceed full scale together —
-    // clamp once at the end so loud overlap doesn't wrap/clip at the device.
     for (ma_uint32 i = 0; i < total_samples; i++) {
         if (output[i] > 1.0f) output[i] = 1.0f;
         else if (output[i] < -1.0f) output[i] = -1.0f;
     }
 }
 
-} // namespace parties::client
+}

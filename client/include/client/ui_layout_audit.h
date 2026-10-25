@@ -9,8 +9,6 @@
 
 namespace parties::client {
 
-// Measure rendered content, including anonymous text boxes. Checking computed
-// 'align-items' alone misses later selectors that change the formatting context.
 inline bool AuditUIControlLayout(Rml::ElementDocument* document, const char* scenario)
 {
     const float dp = document->GetContext()->GetDensityIndependentPixelRatio();
@@ -69,7 +67,7 @@ inline bool AuditUIControlLayout(Rml::ElementDocument* document, const char* sce
                 std::fprintf(stderr, "[UI audit] FAIL %s: control has no laid-out label: %s\n",
                     scenario, control->GetClassNames().c_str());
             }
-            continue; // CSS-drawn icons have no text or SVG.
+            continue;
         }
         ++checked;
         const auto delta = (minimum + maximum - size) * 0.5f - origin;
@@ -188,4 +186,4 @@ inline bool AuditUIControlLayout(Rml::ElementDocument* document, const char* sce
     return failures == 0;
 }
 
-} // namespace parties::client
+}

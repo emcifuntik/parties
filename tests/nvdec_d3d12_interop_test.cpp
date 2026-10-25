@@ -24,8 +24,6 @@ namespace {
 constexpr uint32_t width = 1920;
 constexpr uint32_t height = 1080;
 
-// The default crosses a recurring keyframe boundary. CTest also invokes this
-// executable with one frame to validate the initial surface independently.
 constexpr uint32_t default_frame_count = 31;
 
 struct EncodedFrame {
@@ -42,8 +40,6 @@ bool wait_for_fence(ID3D12Fence* fence, uint64_t value) {
     CloseHandle(event);
     return completed;
 }
-// Read a small exported plane region while retaining its lease. Decoding into
-// private reference arrays must not change any texture still owned by the UI.
 std::vector<uint8_t> snapshot_plane(ID3D12Device* device, ID3D12Resource* resource,
                                     ID3D12Fence* ready, uint64_t ready_value) {
     if (!resource) return {};
@@ -101,7 +97,7 @@ std::vector<uint8_t> snapshot_plane(ID3D12Device* device, ID3D12Resource* resour
     readback->Unmap(0, &written);
     return result;
 }
-} // namespace
+}
 
 int main(int argc, char** argv) {
     const bool retain_surfaces = argc > 2 && std::strcmp(argv[2], "retain") == 0;
@@ -189,7 +185,6 @@ int main(int argc, char** argv) {
     std::shared_ptr<void> decoded_owner;
     uint32_t decoded_frames = 0;
     bool decoded_rgba = false;
-    // Model a minimized renderer retaining its textures while decode continues.
     std::vector<std::shared_ptr<void>> retained_owners;
     bool retaining = retain_surfaces;
     uint32_t frames_at_release = 0;

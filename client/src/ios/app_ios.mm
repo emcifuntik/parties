@@ -1,9 +1,3 @@
-// iOS application — UIKit shell driving AppCore.
-//
-// Mirrors the role of app_macos.mm using UIKit instead of AppKit.
-// MTKView hosts the Metal-backed RmlUI context; AppCore handles all
-// networking, auth, audio, and model logic.
-
 #import "AppDelegate.h"
 
 #import <UIKit/UIKit.h>
@@ -11,11 +5,9 @@
 #import <QuartzCore/QuartzCore.h>
 #import <AVFoundation/AVFoundation.h>
 
-// RmlUi Metal backend
 #import "RmlUi_Backend_iOS_Metal.h"
 #import "StreamPictureInPicture.h"
 
-// RmlUi core
 #include <RmlUi/Core/Core.h>
 #include <RmlUi/Core/Context.h>
 #include <RmlUi/Core/ComputedValues.h>
@@ -29,7 +21,6 @@
 #include <RmlUi/Debugger.h>
 #endif
 
-// Parties shared code
 #include <parties/protocol.h>
 #include <parties/types.h>
 #include <parties/audio_common.h>
@@ -307,9 +298,7 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
 }
 #endif
 
-} // namespace
-
-// ── Keyboard proxy (UIKeyInput → RmlUi key events) ──────────────────────────
+}
 
 @interface RmlKeyInput : UIView <UIKeyInput>
 @property (nonatomic, assign) Rml::Context* rmlContext;
@@ -339,12 +328,9 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
 - (UITextSpellCheckingType)spellCheckingType     { return UITextSpellCheckingTypeNo; }
 @end
 
-// ── PartiesViewController ────────────────────────────────────────────────────
-
 #import "PartiesViewController.h"
 
 @implementation PartiesViewController {
-    // Metal / RmlUi
     MTKView*                _view;
     id<MTLCommandQueue>     _commandQueue;
     Rml::Context*           _rmlContext;
@@ -364,14 +350,11 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     // Embedded file interface (must outlive RmlUi)
     EmbeddedFileInterface   _fileInterface;
 
-    // Custom element instancers
     parties::rml::ElementRegistry _elementRegistry;
 
     UIScreenEdgePanGestureRecognizer* _backGesture;
     bool _backPending;
 
-    // Touch scrolling. The weak observer becomes null if data binding removes
-    // the target while momentum is still active.
     Rml::ObserverPtr<Rml::Element> _scrollTarget;
     Rml::ObserverPtr<Rml::Element> _scrollCandidateX;
     Rml::ObserverPtr<Rml::Element> _scrollCandidateY;
@@ -379,49 +362,37 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     CGPoint                 _touchStart;
     CGPoint                 _touchLast;
     BOOL                    _isScrolling;
-    BOOL                    _isDraggingWidget;  // touched a slider — inhibit scroll
-    float                   _scrollVelocity; // physical pixels per second
+    BOOL                    _isDraggingWidget;
+    float                   _scrollVelocity;
     BOOL                    _momentumActive;
     double                  _lastMoveTime;
     double                  _lastFrameTime;
 
-    // Keyboard proxy
     RmlKeyInput*            _keyInput;
 
-    // Edit menu (paste/copy) — shown on long-press in focused input
     UIEditMenuInteraction*  _editMenuInteraction API_AVAILABLE(ios(16.0));
 
-    // Safe area
     UIEdgeInsets            _safeInsets;
     int                     _viewportTopPx;
     int                     _viewportHeightPx;
     CGFloat                 _keyboardInsetPt;
 
-    // AppCore — all shared logic
     AppCore                 _core;
     SoundPlayer             _soundPlayer;
     IOSAudioRoutes          _iosAudioRoutes;
 
-    // Video decoder (receive screen shares)
     std::unique_ptr<VideoDecoderIOS> _decoder;
     bool                    _streamRevealed;
-    // Inline + system PiP surface of the watched stream (null when PiP is not
-    // supported; frames then go to the grid's video element).
     PartiesStreamPictureInPicture* _streamPip;
-    // Keeps AppCore ticking in the background, where the view stops drawing
-    // but PiP and stream audio continue.
     NSTimer*                _backgroundTick;
-    bool                    _streamAudioSession;   // session currently set up for a watched stream
+    bool                    _streamAudioSession;
     uint32_t                _streamWidth;
     uint32_t                _streamHeight;
     bool                    _streamFullscreen;
 
-    // FPS counter
     uint32_t _fpsFrameCount;
     std::chrono::steady_clock::time_point _fpsLastUpdate;
 }
-
-// ── View setup ───────────────────────────────────────────────────────────────
 
 - (void)loadView
 {
@@ -429,7 +400,7 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     _view = [[MTKView alloc] initWithFrame:UIScreen.mainScreen.bounds device:device];
     _view.colorPixelFormat        = MTLPixelFormatBGRA8Unorm;
     _view.depthStencilPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
-    _view.clearColor              = MTLClearColorMake(10.0 / 255.0, 12.0 / 255.0, 17.0 / 255.0, 1.0); // Canvas before the document loads.
+    _view.clearColor              = MTLClearColorMake(10.0 / 255.0, 12.0 / 255.0, 17.0 / 255.0, 1.0);
     _view.clearStencil            = 0;
     _view.delegate                = self;
     _view.preferredFramesPerSecond = UIScreen.mainScreen.maximumFramesPerSecond;
@@ -455,7 +426,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     }
 #endif
 
-    // ── Audio session — keep audio alive while locked / in background ────
     if (!_previewMode) {
         AVAudioSession* session = [AVAudioSession sharedInstance];
         NSError* err = nil;
@@ -475,7 +445,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
         }];
     }
 
-    // ── Metal + RmlUi ────────────────────────────────────────────────────
     _commandQueue = [_view.device newCommandQueue];
     if (!_commandQueue || !Backend::Initialize(_view.device, _view)) {
         NSLog(@"[Parties] Failed to initialize the Metal renderer");
@@ -496,7 +465,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     }
     _rmlInitialized = true;
 
-    // Register window-action as no-op to suppress warnings (used on Windows for caption hit-testing)
     Rml::StyleSheetSpecification::RegisterProperty("window-action", "none", true)
         .AddParser("keyword", "none, caption, close, minimize, maximize");
 
@@ -517,13 +485,10 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     _rmlContext->SetDensityIndependentPixelRatio((float)_dpRatio);
     _rmlContext->ActivateTheme("ios", true);
 
-    // Keyboard proxy.
     _keyInput = [[RmlKeyInput alloc] initWithFrame:CGRectMake(0, -2, 1, 1)];
     _keyInput.rmlContext = _rmlContext;
     [_view addSubview:_keyInput];
 
-    // RmlUI pages do not use UINavigationController, so UIKit needs an
-    // explicit edge recognizer to provide the standard back gesture.
     _backGesture = [[UIScreenEdgePanGestureRecognizer alloc]
         initWithTarget:self action:@selector(handlePageBackGesture:)];
     _backGesture.edges = UIRectEdgeLeft;
@@ -533,7 +498,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     _backGesture.cancelsTouchesInView = YES;
     [_view addGestureRecognizer:_backGesture];
 
-    // Edit menu (paste/copy) — long-press shows system edit menu over focused input.
     if (@available(iOS 16.0, *)) {
         _editMenuInteraction = [[UIEditMenuInteraction alloc] initWithDelegate:self];
         [_view addInteraction:_editMenuInteraction];
@@ -550,7 +514,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
         addObserver:self selector:@selector(keyboardWillHide:)
         name:UIKeyboardWillHideNotification object:nil];
 
-    // Fonts — loaded via embedded file interface
     Rml::LoadFontFace("ui/fonts/Inter-Regular.ttf");
     Rml::LoadFontFace("ui/fonts/Inter-Medium.ttf");
     Rml::LoadFontFace("ui/fonts/Inter-Bold.ttf");
@@ -570,16 +533,13 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     [_view addGestureRecognizer:dbgTap];
 #endif
 
-    // ── Sound player ─────────────────────────────────────────────────────
     if (!_previewMode)
         _soundPlayer.init();
 
-    // ── Settings path ────────────────────────────────────────────────────
     NSString* docs = [NSSearchPathForDirectoriesInDomains(
         NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
     NSString* dbPath = [docs stringByAppendingPathComponent:@"parties.db"];
 
-    // ── Build PlatformBridge ─────────────────────────────────────────────
     PartiesViewController* bself = self;
 
     PlatformBridge bridge;
@@ -622,15 +582,11 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
         [bself presentViewController:menu animated:YES completion:nil];
     };
 
-    bridge.open_share_picker = nullptr;  // iOS: receive-only, no screen share send
+    bridge.open_share_picker = nullptr;
 
-    // System picture-in-picture. AppCore owns the state; the AVKit controller
-    // presents it and reports system-initiated starts, stops and restores.
     if (!_previewMode && [PartiesStreamPictureInPicture isSupported]) {
         _streamPip = [[PartiesStreamPictureInPicture alloc] initWithHostView:self.view];
         [_streamPip setOnStarted:[bself]() {
-            // Started by the system (app went to the background) or by the
-            // PiP button; open_pip is a no-op if AppCore already opened it.
             const UserId stream = bself->_core.viewing_sharer_.load();
             if (stream != 0 && bself->_core.pip_.stream() != stream)
                 bself->_core.open_pip(stream);
@@ -640,14 +596,12 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
                 bself->_core.close_pip(PipCloseReason::UserClosed);
         }];
         [_streamPip setOnRestore:[bself](void (^completion)(BOOL)) {
-            // System restore button: back to the Streams route on this stream.
             bself->_core.return_from_pip();
             bself->_rmlContext->Update();
             [bself updateStreamSurface];
             completion(YES);
         }];
         bridge.show_pip = [bself](UserId, const std::string&) {
-            // AppCore left fullscreen in the model; drop the iOS landscape lock.
             [bself exitStreamFullscreen];
             [bself->_streamPip start];
         };
@@ -661,39 +615,25 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     }
 
     bridge.on_authenticated = [bself]() {
-        bself->_core.net_.open_av_streams();
-        // AppCore fills its desktop device cache after this callback returns.
         dispatch_async(dispatch_get_main_queue(), ^{ [bself refreshIOSAudioRoutes]; });
     };
 
-    bridge.stop_screen_share = nullptr;  // iOS doesn't send screen shares
+    bridge.stop_screen_share = nullptr;
 
     bridge.request_keyframe = nullptr;
 
-    // Single hardware decoder: the watched stream is still waiting for a
-    // keyframe while awaiting_keyframe_ holds. AppCore::tick() re-sends a PLI
-    // every VIDEO_PLI_RETRY_MS while this returns true.
     bridge.stream_awaiting_keyframe = [bself](UserId id) {
         return bself->_core.viewing_sharer_ == id && bself->_core.awaiting_keyframe_;
     };
 
-    // Viewer is a data-for grid of per-sharer cells ("screen-share-<id>"); cells
-    // are torn down by the binding when they leave model_.watched.
     bridge.clear_video_element = []() {};
 
     bridge.set_keep_awake = [](bool keep_awake) {
         [UIApplication sharedApplication].idleTimerDisabled = keep_awake ? YES : NO;
     };
 
-    // iOS manages its single hardware decoder directly in
-    // watchSharer:/stopWatching:. The multi-stream bridge callbacks remain
-    // unset so AppCore uses its single-select watching path.
-
 #ifndef NDEBUG
     if (_previewMode) {
-        // Simulator-only visual harness. It uses the production document,
-        // models, UIKit shell and Metal backend, while avoiding network/audio
-        // startup so screenshots are deterministic and appear immediately.
         if (!_core.server_model_.init(_rmlContext) ||
             !_core.model_.init(_rmlContext) ||
             !_core.chat_model_.init(_rmlContext)) {
@@ -707,7 +647,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
             _core.model_.show_rename_channel = true;
             _core.model_.new_rename_channel_name = "general";
         }
-        // Use the shared view-state transitions without live network resources.
         _core.model_.on_stop_watching = [bself]() { bself->_core.set_single_watched(0); };
         _core.model_.on_join_channel = [bself](int id) {
             bself->_core.model_.current_channel = id;
@@ -723,14 +662,12 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     } else
 #endif
     {
-        // ── Init QUIC ─────────────────────────────────────────────────────
         if (!parties::quic_init()) {
             NSLog(@"[Parties] MsQuic init failed");
             return;
         }
         _quicInitialized = true;
 
-        // ── Init AppCore ─────────────────────────────────────────────────
         if (!_core.init(std::string(dbPath.UTF8String), std::move(bridge), _rmlContext)) {
             NSLog(@"[Parties] AppCore init failed");
             return;
@@ -758,7 +695,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
         _core.refresh_server_list();
     }
 
-    // ── UI document ──────────────────────────────────────────────────────
     _doc = _rmlContext->LoadDocument("ui/lobby.rml");
     if (_doc) {
         _doc->SetClass("platform-ios", true);
@@ -766,8 +702,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
         [self updateViewportSize];
 #ifndef NDEBUG
         if (_previewMode) {
-            // Exercise the production Metal video element with the same frames
-            // as the desktop harness, including the iOS fullscreen transition.
             ApplyUIFixtureDocument(_doc, _previewScenario == "stream-fullscreen"
                 ? "stream-single" : _previewScenario);
             if (_previewScenario == "stream-single" || _previewScenario == "stream-fullscreen" ||
@@ -785,29 +719,23 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     }
 }
 
-// ── iOS-specific model callback overrides ────────────────────────────────────
-
 - (void)installIOSModelCallbacks
 {
     PartiesViewController* bself = self;
 
-    // iOS routes must use AVAudioSession rather than desktop device indices.
     _core.model_.on_select_capture = [bself](int index) { [bself selectIOSAudioRoute:index input:YES]; };
     _core.model_.on_select_playback = [bself](int index) { [bself selectIOSAudioRoute:index input:NO]; };
 
-    // iOS: no screen share sending — disable toggle
     _core.model_.on_toggle_share = nullptr;
     _core.model_.on_start_native_share = nullptr;
     _core.model_.on_select_share_target = nullptr;
 
-    // Override watch/stop watching to manage the local VideoDecoderIOS
     _core.model_.on_watch_sharer = [bself](int id) {
         [bself watchSharer:static_cast<UserId>(id)];
     };
     _core.model_.on_select_sharer = [bself](int id) {
         [bself watchSharer:static_cast<UserId>(id)];
     };
-    // Single hardware decoder: a chip toggle just switches to that single stream.
     _core.model_.on_toggle_watch = [bself](int id) {
         [bself watchSharer:static_cast<UserId>(id)];
     };
@@ -815,7 +743,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
         [bself stopWatching];
     };
 
-    // iOS: single tap toggles fullscreen + landscape rotation
     _core.model_.on_stream_tap_fullscreen = [bself]() {
         [bself toggleStreamFullscreen];
     };
@@ -851,7 +778,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
 
 - (void)audioRouteDidChange:(NSNotification*)notification
 {
-    // RemoteIO follows the route. Publish its ports only on the UI thread.
     dispatch_async(dispatch_get_main_queue(), ^{ [self refreshIOSAudioRoutes]; });
 }
 
@@ -862,7 +788,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
         [self refreshIOSAudioRoutes];
         return;
     }
-    // Model-driven select updates also emit changes; they must not reroute audio.
     if (index == (input ? _iosAudioRoutes.selected_input : _iosAudioRoutes.selected_output)) return;
     const auto choice = choices[index];
     if (choice.kind == IOSAudioRouteKind::CurrentOutput) return;
@@ -877,7 +802,7 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
         }
         if (!preferred) {
             [self refreshIOSAudioRoutes];
-            return; // The headset disconnected while the menu was open.
+            return;
         }
     }
     NSError* error = nil;
@@ -889,11 +814,8 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     [self refreshIOSAudioRoutes];
 }
 
-// ── Video frame routing (VideoToolbox decoder) ───────────────────────────────
-
 - (void)onVideoFrameData:(uint32_t)sender_id data:(const uint8_t*)data len:(size_t)len
 {
-    // data = [fn(4)][ts(4)][flags(1)][w(2)][h(2)][codec(1)][encoded(N)]
     if (len < 14) return;
     if (sender_id != _core.viewing_sharer_ || !_decoder) return;
 
@@ -907,7 +829,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     if (_core.awaiting_keyframe_ && !is_keyframe) return;
     _core.awaiting_keyframe_ = false;
 
-    // Lazy decoder init on first frame
     if (!_decoder->on_decoded) {
         auto codec = static_cast<VideoCodecId>(codec_id);
         if (!_decoder->init(codec, w, h)) {
@@ -929,7 +850,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
 
 - (void)onVideoDecoded:(CVPixelBufferRef)buf
 {
-    // Reveal video area on first frame (deferred from watch_sharer)
     if (!_streamRevealed) {
         _streamRevealed = true;
         _core.model_.dirty("viewing_sharer_id");
@@ -941,16 +861,12 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     _streamWidth  = w;
     _streamHeight = h;
 
-    // One destination per frame. With PiP support the stream's only surface
-    // is the sample-buffer layer: inline over its grid cell, or in system PiP.
-    // The decoded buffer is enqueued as is; the layer retains it.
     if (_streamPip) {
         [_streamPip enqueuePixelBuffer:buf];
         return;
     }
 
     if (!_doc) return;
-    // Route to this sharer's grid cell (single-select on iOS).
     VideoElement* el = find_stream_grid_video(_doc->GetElementById("stream-grid"),
                                               _core.viewing_sharer_.load());
     if (!el) return;
@@ -969,12 +885,10 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
 
 - (void)watchSharer:(UserId)uid
 {
-    // The surface must not show the previous stream's last frame.
     if (uid != _core.viewing_sharer_.load()) [_streamPip flush];
     _core.viewing_sharer_   = uid;
     _core.awaiting_keyframe_ = true;
     _decoder = std::make_unique<VideoDecoderIOS>();
-    // on_decoded is wired lazily in onVideoFrameData on first frame
 
     _core.send_pli(uid);
 
@@ -982,31 +896,20 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     _core.net_.send_message(ControlMessageType::SCREEN_SHARE_VIEW,
                             (const uint8_t*)&id32, sizeof(id32));
 
-    // Populate the viewer grid model with this single stream.
     _core.set_single_watched(uid);
     _streamRevealed = false;
-    // Don't dirty yet — onVideoDecoded dirties on first frame to avoid black flash
 }
 
-// ── Picture-in-picture surface (iOS) ──────────────────────────────────────────
-
-// Keeps the inline sample-buffer surface exactly over the watched stream's
-// <video_frame>. The element stays in the layout (it receives the taps); the
-// layer only draws the picture. Hidden while the cell is hidden: another
-// route, the PiP placeholder, or no watched stream.
 - (void)updateStreamSurface
 {
     if (!_streamPip) return;
     Rml::Element* grid = _doc ? _doc->GetElementById("stream-grid") : nullptr;
     VideoElement* cell = find_stream_grid_video(grid, _core.viewing_sharer_.load());
     if (!cell || !cell->IsVisible(true)) {
-        // Between the PiP request and willStart the cell already shows the
-        // placeholder; the source layer stays where it was until AVKit owns it.
         const bool pip_starting = cell && _core.pip_.is_open() && ![_streamPip isActive];
         if (!pip_starting) [_streamPip hideInline];
         return;
     }
-    // RmlUi physical pixels start _viewportTopPx below the top of the view.
     auto toPoints = [&](Rml::Element* element, Rml::BoxArea area) {
         const Rml::Vector2f offset = element->GetAbsoluteOffset(area);
         const Rml::Vector2f size = element->GetBox().GetSize(area);
@@ -1020,15 +923,12 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
 }
 
 // Automatic picture-in-picture requires the app to own playback: a mixable
-// session never qualifies. While a stream is watched the session drops
-// MixWithOthers (other apps' audio pauses, as with any video player) and
-// returns to the mixable voice-chat configuration afterwards.
+// session never qualifies.
 - (void)syncStreamAudioSession
 {
     if (!_streamPip || !_coreInitialized) return;
     const bool watching = _core.model_.watching_count.get() > 0;
     if (watching == _streamAudioSession) return;
-    // No watched stream: release every buffer the surface still holds.
     if (!watching) [_streamPip flush];
     AVAudioSessionCategoryOptions options = AVAudioSessionCategoryOptionDefaultToSpeaker |
                                             AVAudioSessionCategoryOptionAllowBluetoothHFP |
@@ -1040,14 +940,11 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
                                            error:&error];
     if (error) {
         NSLog(@"[Parties] Audio session update for streams failed: %@", error);
-        return;   // retried on the next tick
+        return;
     }
     _streamAudioSession = watching;
 }
 
-// In the background the Metal view stops drawing, which also stops the
-// AppCore tick it drives. Network messages, reorder-buffer delivery of
-// per-frame video streams and PiP state changes must continue for PiP.
 - (void)backgroundTick:(NSTimer*)timer
 {
     if (!_coreInitialized ||
@@ -1063,7 +960,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     _core.model_.stream_fullscreen = _streamFullscreen;
 
     if (_streamFullscreen && _streamWidth > _streamHeight) {
-        // Landscape video → rotate to landscape
         [self setNeedsUpdateOfSupportedInterfaceOrientations];
         auto scene = self.view.window.windowScene;
         if (scene) {
@@ -1075,7 +971,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
                 }];
         }
     } else if (!_streamFullscreen) {
-        // Exit fullscreen → back to portrait
         [self setNeedsUpdateOfSupportedInterfaceOrientations];
         auto scene = self.view.window.windowScene;
         if (scene) {
@@ -1089,8 +984,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     }
 }
 
-// Leaves stream fullscreen and its landscape lock. AppCore clears the shared
-// model flag on its own paths (PiP), so the local flag follows here too.
 - (void)exitStreamFullscreen
 {
     if (!_streamFullscreen) return;
@@ -1123,8 +1016,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
 
     _core.set_single_watched(0);
 }
-
-// ── Layout / orientation ──────────────────────────────────────────────────────
 
 - (void)updateViewportSize
 {
@@ -1173,8 +1064,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     ApplyIOSSafeArea(_doc, _safeInsets.left, _safeInsets.right, _safeInsets.bottom, _keyboardInsetPt);
 }
 
-// ── Keyboard avoidance ───────────────────────────────────────────────────────
-
 - (void)keyboardWillShow:(NSNotification*)note
 {
     CGRect kbScreen = [note.userInfo[UIKeyboardFrameEndUserInfoKey] CGRectValue];
@@ -1212,8 +1101,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
         return UIInterfaceOrientationMaskLandscapeRight | UIInterfaceOrientationMaskLandscapeLeft;
     return UIInterfaceOrientationMaskPortrait;
 }
-
-// ── Teardown ─────────────────────────────────────────────────────────────────
 
 - (void)viewDidDisappear:(BOOL)animated
 {
@@ -1272,8 +1159,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
 }
 #endif
 
-// ── MTKViewDelegate ──────────────────────────────────────────────────────────
-
 - (void)mtkView:(MTKView*)view drawableSizeWillChange:(CGSize)size
 {
     if (!_backendInitialized) return;
@@ -1284,11 +1169,9 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
 {
     if (!_backendInitialized || !_rmlContext || !_commandQueue) return;
 
-    // Tick shared logic (network, audio levels, FPS counter, etc.)
     if (_coreInitialized)
         _core.tick();
 
-    // Update FPS + ping in titlebar (once per second)
     _fpsFrameCount++;
     auto now_fps = std::chrono::steady_clock::now();
     float elapsed_fps = std::chrono::duration<float>(now_fps - _fpsLastUpdate).count();
@@ -1313,7 +1196,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
 
     id<MTLCommandBuffer> cmd = [_commandQueue commandBuffer];
 
-    // Scroll momentum.
     if (_momentumActive) {
         double now = CACurrentMediaTime();
         float  dt  = (float)(now - _lastFrameTime);
@@ -1347,13 +1229,11 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     }
 
 #ifndef NDEBUG
-    // Focus after data binding has created and laid out the live input element.
     if (_previewMode && _previewScenario == "chat-keyboard" && _previewFrameCount == 20) {
         if (auto* composer = _doc->QuerySelector("input.compose-input")) composer->Focus();
     }
 #endif
 
-    // Keyboard show/hide based on focused element.
     if (_keyInput) {
         Rml::Element* focused = _rmlContext->GetFocusElement();
         BOOL want = (focused && focused->GetTagName() == "input");
@@ -1361,7 +1241,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
         if (!want &&  _keyInput.isFirstResponder) [_keyInput resignFirstResponder];
     }
 
-    // Sync viewport to actual drawable.
     {
         id<MTLTexture> colorTex = pass.colorAttachments[0].texture;
         if (colorTex)
@@ -1399,7 +1278,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     [cmd commit];
 }
 
-// Back navigation follows the visible page's action, preserving voice state.
 - (BOOL)canSwipeBackFromPage
 {
     return FindIOSBackTarget(_doc, _core.model_.is_connected.get(),
@@ -1454,8 +1332,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
 #endif
 }
 
-// ── Touch input ──────────────────────────────────────────────────────────────
-
 - (Rml::Vector2f)physFromPt:(CGPoint)p
 {
     return { (float)(p.x * _dpRatio),
@@ -1464,7 +1340,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
 
 - (BOOL)hitTestSlider:(Rml::Vector2f)pt
 {
-    // Walk up from the hovered element — if any ancestor is a sliderbar, we're on a slider.
     Rml::Element* el = _rmlContext->GetHoverElement();
     while (el) {
         const Rml::String& tag = el->GetTagName();
@@ -1511,7 +1386,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     _lastMoveTime   = CACurrentMediaTime();
     Rml::Vector2f pt = [self physFromPt:_touchStart];
     _rmlContext->ProcessMouseMove((int)pt.x, (int)pt.y, 0);
-    // Check if we hit a slider before pressing — if so, lock out scrolling.
     _isDraggingWidget = [self hitTestSlider:pt];
     if (!_isDraggingWidget) {
         Rml::Element* hovered = _rmlContext->GetHoverElement();
@@ -1520,9 +1394,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
         if (Rml::Element* target = [self scrollableAncestorOf:hovered horizontal:NO])
             _scrollCandidateY = target->GetObserverPtr();
     }
-    // Only press immediately for drag-based widgets (sliders).
-    // For everything else, defer until touchesEnded to avoid
-    // toggling checkboxes when the user intends to scroll.
     if (_isDraggingWidget) {
         _rmlContext->ProcessMouseButtonDown(0, 0);
     }
@@ -1560,8 +1431,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     _rmlContext->ProcessMouseMove((int)pt.x, (int)pt.y, 0);
 
     if (_isScrolling) {
-        // Follow the finger one-to-one. Desktop wheel ticks quantize this drag
-        // and are the source of the non-native, detached iOS scroll feel.
         const bool horizontal = _scrollAxis == IOSScrollAxis::Horizontal;
         const float deltaPt = horizontal ? dxPt : dyPt;
         if (Rml::Element* target = _scrollTarget.get()) {
@@ -1592,7 +1461,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     _rmlContext->ProcessMouseMove((int)pt.x, (int)pt.y, 0);
 
     // A coalesced input sequence can reach touch-up without a move sample.
-    // Recognize an intentional edge drag there too, before it becomes a tap.
     const float totalX = (float)(cur.x - _touchStart.x);
     const float totalY = (float)(cur.y - _touchStart.y);
     if (_backPending && !_isDraggingWidget && !_isScrolling &&
@@ -1605,18 +1473,13 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     if (!_isDraggingWidget && std::max(std::abs(totalX), std::abs(totalY)) > 10.0f)
         _isScrolling = YES;
 
-    // A finger held still before release must not resume an old velocity
-    // sample. UIPanGestureRecognizer behaves the same way and avoids the
-    // surprising glide that desktop-style emulations often produce.
     if (_isScrolling && CACurrentMediaTime() - _lastMoveTime > 0.10)
         _scrollVelocity = 0.0f;
 
     if (!_isScrolling) {
         if (_isDraggingWidget) {
-            // Slider drag — button was pressed in touchesBegan, just release.
             _rmlContext->ProcessMouseButtonUp(0, 0);
         } else {
-            // Tap — send down+up together now that we know it's not a scroll.
             _rmlContext->ProcessMouseButtonDown(0, 0);
             _rmlContext->ProcessMouseButtonUp(0, 0);
         }
@@ -1659,8 +1522,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     }
 }
 
-// ── Edit menu (paste / copy / select all) ────────────────────────────────────
-
 - (BOOL)isInputFocused {
     if (!_rmlContext) return NO;
     Rml::Element* focused = _rmlContext->GetFocusElement();
@@ -1684,7 +1545,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
 
 - (void)copy:(id)sender {
     if (!_rmlContext) return;
-    // Select all then copy via Ctrl+C (RmlUi uses Ctrl for clipboard shortcuts)
     _rmlContext->ProcessKeyDown(Rml::Input::KI_A, Rml::Input::KM_CTRL);
     _rmlContext->ProcessKeyUp(Rml::Input::KI_A, Rml::Input::KM_CTRL);
     _rmlContext->ProcessKeyDown(Rml::Input::KI_C, Rml::Input::KM_CTRL);
@@ -1697,7 +1557,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     _rmlContext->ProcessKeyUp(Rml::Input::KI_A, Rml::Input::KM_CTRL);
 }
 
-// Hardware keyboard shortcuts (Cmd+V, Cmd+C, Cmd+A)
 - (NSArray<UIKeyCommand*>*)keyCommands {
     return @[
         [UIKeyCommand keyCommandWithInput:@"v" modifierFlags:UIKeyModifierCommand action:@selector(paste:)],
@@ -1706,7 +1565,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     ];
 }
 
-// Long-press → show system edit menu at touch point
 - (void)handleLongPress:(UILongPressGestureRecognizer*)gesture {
     if (gesture.state != UIGestureRecognizerStateBegan) return;
     if ([self isInputFocused]) {
@@ -1719,8 +1577,6 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
         return;
     }
 
-    // Long-press outside an input maps to a secondary click. This gives touch
-    // users the same saved-server context menu as macOS and Windows.
     if (_rmlContext) {
         CGPoint point = [gesture locationInView:_view];
         Rml::Vector2f physical = [self physFromPt:point];
@@ -1730,13 +1586,12 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     }
 }
 
-// UIEditMenuInteractionDelegate
 - (UIMenu*)editMenuInteraction:(UIEditMenuInteraction*)interaction
           menuForConfiguration:(UIEditMenuConfiguration*)configuration
           suggestedActions:(NSArray<UIMenuElement*>*)suggestedActions
     API_AVAILABLE(ios(16.0))
 {
-    return nil;  // nil = use default system menu (Paste, Copy, Select All)
+    return nil;
 }
 
 @end

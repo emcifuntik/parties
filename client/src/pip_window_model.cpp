@@ -11,8 +11,8 @@ namespace parties::client {
 
 namespace {
 
-constexpr float kKeyStep = 0.01f;    // arrows: the slider's own step
-constexpr float kPageStep = 0.10f;   // Page Up / Page Down
+constexpr float kKeyStep = 0.01f;
+constexpr float kPageStep = 0.10f;
 
 bool has_class_in_ancestors(Rml::Element* element, const char* name) {
     for (; element; element = element->GetParentNode())
@@ -20,7 +20,7 @@ bool has_class_in_ancestors(Rml::Element* element, const char* name) {
     return false;
 }
 
-} // namespace
+}
 
 bool PipWindowModel::is_action(Rml::Element* element) {
     return has_class_in_ancestors(element, "pip-action");
@@ -58,8 +58,6 @@ void PipWindowModel::build(rml::Builder& builder) {
         request_volume(value);
     });
     builder.on_event("pip_volume_key", [this](Rml::Event& event, const Rml::VariantList&) {
-        // Left/Right are handled by the slider itself; add the vertical
-        // arrows and the usual large-step keys.
         using namespace Rml::Input;
         const auto key = static_cast<KeyIdentifier>(event.GetParameter<int>("key_identifier", KI_UNKNOWN));
         const float current = volume.get();
@@ -73,7 +71,6 @@ void PipWindowModel::build(rml::Builder& builder) {
         case KI_END:   target = kMaxVolume; break;
         default: return;
         }
-        // Snap to the slider's step so both controls show the same value.
         target = std::round(target / kKeyStep) * kKeyStep;
         event.StopPropagation();
         if (std::clamp(target, 0.0f, kMaxVolume) != current) request_volume(target);
@@ -83,4 +80,4 @@ void PipWindowModel::build(rml::Builder& builder) {
     });
 }
 
-} // namespace parties::client
+}

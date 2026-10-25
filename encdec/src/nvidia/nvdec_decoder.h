@@ -109,4 +109,4 @@ private:
     PacketDiagnostics packet_diagnostics_{};
 };
 
-} // namespace parties::encdec::nvidia
+}

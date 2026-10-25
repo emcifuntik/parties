@@ -8,7 +8,6 @@
 
 namespace parties::server {
 
-// Helper: get env var or empty string
 static std::string env(const char* name) {
 #ifdef _MSC_VER
     char* buf = nullptr;
@@ -28,7 +27,6 @@ static std::string env(const char* name) {
 Config Config::load(const std::string& toml_path) {
     Config cfg;
 
-    // ── Load TOML file (if present) ──
     std::ifstream test(toml_path);
     if (!test.good()) {
         LOG_WARN("{} not found, using defaults", toml_path);
@@ -93,7 +91,6 @@ Config Config::load(const std::string& toml_path) {
         }
     }
 
-    // ── Environment variable overrides (highest priority) ──
     auto e = env("PARTIES_SERVER_NAME");
     if (!e.empty()) cfg.server_name = e;
 
@@ -118,7 +115,6 @@ Config Config::load(const std::string& toml_path) {
     e = env("PARTIES_DB_PATH");
     if (!e.empty()) cfg.db_path = e;
 
-    // Comma-separated list of Ed25519 fingerprints
     e = env("PARTIES_ROOT_FINGERPRINTS");
     if (!e.empty()) {
         cfg.root_fingerprints.clear();
@@ -141,4 +137,4 @@ Config Config::load(const std::string& toml_path) {
     return cfg;
 }
 
-} // namespace parties::server
+}

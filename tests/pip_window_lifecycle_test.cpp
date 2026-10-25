@@ -1,8 +1,3 @@
-// Win32 picture-in-picture window lifecycle: an unowned, topmost, never
-// activating tool window that survives a minimized or hidden main window,
-// drags and resizes with the stream's aspect ratio, reopens on a visible
-// monitor, and is resized and destroyed on its owner thread.
-
 #include "win32_pip_window.h"
 
 #include <atomic>
@@ -61,13 +56,12 @@ LRESULT CALLBACK main_window_proc(HWND hwnd, UINT message, WPARAM w_param, LPARA
     return DefWindowProcW(hwnd, message, w_param, l_param);
 }
 
-} // namespace
+}
 
 int main() {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     const DWORD owner_thread = GetCurrentThreadId();
 
-    // Stand-in for the application's main window.
     WNDCLASSEXW main_class{};
     main_class.cbSize = sizeof(main_class);
     main_class.hInstance = GetModuleHandleW(nullptr);
@@ -106,8 +100,6 @@ int main() {
     HWND hwnd = window->hwnd();
     check(hwnd && !IsWindowVisible(hwnd) && !window->visible(), "window was not created hidden");
 
-    // Window kind: borderless popup, topmost tool window, never activates,
-    // and not owned by any window (owned windows hide with a minimized owner).
     const LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
     const LONG_PTR ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
     check((style & WS_POPUP) && !(style & WS_CAPTION) && !(style & WS_THICKFRAME),
@@ -116,8 +108,6 @@ int main() {
         "window is not a topmost, non-activating tool window");
     check(GetWindow(hwnd, GW_OWNER) == nullptr, "window has an owner");
 
-    // A remembered rect from a monitor that no longer exists opens fully on a
-    // visible monitor, at the stream's aspect ratio.
     const auto areas = Win32PipWindow::visible_work_areas();
     check(!areas.empty(), "no work areas reported");
     const PipRect stranded{-200000, -200000, 480, 270};
@@ -128,8 +118,6 @@ int main() {
     check(GetActiveWindow() != hwnd && GetForegroundWindow() != hwnd, "showing PiP activated it");
     check(resize_thread.load() == owner_thread && resized_width.load() > 0, "client size was not reported");
 
-    // A remembered rect that is fully visible is used exactly; none at all
-    // opens in the bottom-right corner of the primary work area.
     const PipRect primary = areas.front();
     const PipRect kept{primary.x + 40, primary.y + 40, 400, 225};
     check(Win32PipWindow::placement(kept, 16.0 / 9.0, areas, 1.0f) == kept,
@@ -139,7 +127,6 @@ int main() {
           fresh.y + fresh.height <= primary.y + primary.height &&
           fresh.x > primary.x + primary.width / 2, "first placement is not bottom-right");
 
-    // It stays up while the main window is minimized or hidden to the tray.
     ShowWindow(main_window, SW_MINIMIZE);
     pump_until([] { return false; }, std::chrono::milliseconds(50));
     check(IsWindowVisible(hwnd), "PiP hid with the minimized main window");
@@ -147,7 +134,6 @@ int main() {
     pump_until([] { return false; }, std::chrono::milliseconds(50));
     check(IsWindowVisible(hwnd), "PiP hid with the hidden main window");
 
-    // Hit testing: edges resize, actions click, everything else drags.
     RECT client{};
     GetClientRect(hwnd, &client);
     check(hit(hwnd, 1, client.bottom / 2) == HTLEFT, "left edge does not resize");
@@ -161,7 +147,6 @@ int main() {
                        MAKELPARAM(HTCAPTION, WM_LBUTTONDOWN)) == MA_NOACTIVATE,
         "clicking PiP activates it");
 
-    // Interactive resizing keeps the stream's aspect ratio from every edge.
     window->set_aspect(16.0 / 9.0);
     RECT sizing{100, 100, 500, 150};
     SendMessageW(hwnd, WM_SIZING, WMSZ_RIGHT, reinterpret_cast<LPARAM>(&sizing));
@@ -178,14 +163,11 @@ int main() {
     Win32PipWindow::apply_aspect_to_sizing(tiny, WMSZ_RIGHT, 16.0 / 9.0, 192);
     check(tiny.right == 192 && tiny.bottom == 108, "resize went below the minimum size");
 
-    // The end of a user move/resize reports the rect to remember.
     SendMessageW(hwnd, WM_EXITSIZEMOVE, 0, 0);
     const PipRect current = window->window_rect();
     check(geometry_reports.load() == 1 && reported_geometry == current,
         "end of move did not report the window rect");
 
-    // The render thread resizes without blocking; the owner thread applies it
-    // and keeps the window on its monitor.
     std::atomic<bool> requested{false};
     std::thread render_thread([&] { requested = window->request_size(320, 180); });
     pump_until([&] { return requested.load(); }, std::chrono::milliseconds(500));
@@ -196,14 +178,11 @@ int main() {
           resize_thread.load() == owner_thread, "cross-thread resize was not applied on the owner thread");
     check(on_visible_monitor(hwnd) && IsWindowVisible(hwnd), "resize moved PiP off its monitor or hid it");
 
-    // Close and reopen reuse the same window.
     window->hide();
     check(!window->visible() && !IsWindowVisible(hwnd) && !window->cursor_inside(), "hide left PiP visible");
     window->show(window->window_rect());
     check(window->hwnd() == hwnd && IsWindowVisible(hwnd), "reopen did not reuse the window");
 
-    // Teardown from the render thread is posted to the owner thread, and the
-    // object may be gone before the message is dispatched.
     std::thread teardown([&] { window->destroy(); });
     teardown.join();
     window.reset();

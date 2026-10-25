@@ -1,9 +1,5 @@
 #pragma once
 
-// File system watcher using ReadDirectoryChangesW (Windows).
-// Watches directories recursively for RML, RCSS, font, image, SVG, and Lottie JSON changes.
-// Call poll() from the message loop — it invokes the callback on the caller's thread.
-
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -29,7 +25,6 @@ public:
 
 	void SetCallback(Callback cb) { callback_ = std::move(cb); }
 
-	// Non-blocking: checks for pending notifications, invokes callback.
 	void Poll();
 
 private:
@@ -48,4 +43,4 @@ private:
 	Callback callback_;
 };
 
-} // namespace designer
+}

@@ -26,11 +26,9 @@ bool expect(SleepInhibitAction actual, SleepInhibitAction expected, const char* 
 
 constexpr int64_t kRefresh = IdleSleepInhibitor::refresh_interval_ms;
 
-} // namespace
+}
 
 int main() {
-    // Outside a call nothing is ever asserted, so the platform is never touched
-    // and the machine keeps its normal idle behaviour.
     {
         IdleSleepInhibitor inhibitor;
         for (int64_t t = 0; t < 5 * kRefresh; t += 1000) {
@@ -43,9 +41,6 @@ int main() {
         }
     }
 
-    // Joining a channel asserts once; the ticks that follow are silent until the
-    // refresh falls due. A 60 fps client ticks ~1800 times per refresh interval,
-    // so anything else would be a per-frame syscall.
     {
         IdleSleepInhibitor inhibitor;
         if (!expect(inhibitor.update(true, 0), SleepInhibitAction::Acquire,
@@ -64,8 +59,6 @@ int main() {
                     "immediately after refresh")) return 1;
     }
 
-    // A late tick refreshes from when it actually ran, not from when the refresh
-    // was scheduled — a stalled frame must not make the next one land early.
     {
         IdleSleepInhibitor inhibitor;
         inhibitor.update(true, 0);
@@ -77,8 +70,6 @@ int main() {
                     "rescheduled refresh")) return 1;
     }
 
-    // Leaving releases exactly once, so the display idle timers restart and the
-    // release is not repeated on every subsequent tick.
     {
         IdleSleepInhibitor inhibitor;
         inhibitor.update(true, 0);
@@ -94,9 +85,6 @@ int main() {
         }
     }
 
-    // Rejoining inside the old refresh window must re-assert immediately: the
-    // previous request is gone, and waiting out the remainder of the interval
-    // would leave the display unprotected at the start of the new call.
     {
         IdleSleepInhibitor inhibitor;
         inhibitor.update(true, 0);
@@ -113,7 +101,7 @@ int main() {
     // which is already large. The schedule must depend on elapsed time only.
     {
         IdleSleepInhibitor inhibitor;
-        const int64_t boot = 4'000'000'000LL;   // ~46 days of uptime, in ms
+        const int64_t boot = 4'000'000'000LL;
         if (!expect(inhibitor.update(true, boot), SleepInhibitAction::Acquire,
                     "join at a large epoch")) return 1;
         if (!expect(inhibitor.update(true, boot + kRefresh - 1), SleepInhibitAction::None,

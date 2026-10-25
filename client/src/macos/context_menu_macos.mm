@@ -86,7 +86,7 @@ static NSTextField* MakeLabel(NSString* text, NSFont* font, NSColor* color)
 
 @implementation PartiesUserPopoverController {
     MacOSUserMenuCallbacks _callbacks;
-    NSPopover* _owningPopover; // Assign: the popover retains this controller.
+    NSPopover* _owningPopover;
     NSSlider* _volumeSlider;
     NSTextField* _volumeValue;
     NSSlider* _musicSlider;
@@ -205,9 +205,6 @@ static NSTextField* MakeLabel(NSString* text, NSFont* font, NSColor* color)
         [content addArrangedSubview:kick];
     }
 
-    // Size the popover to the actual arranged content. A fixed container was
-    // substantially taller than the base controls and left a large empty band
-    // above the identity block whenever role/kick actions were unavailable.
     const CGFloat height = std::ceil(content.fittingSize.height);
     root.frame = NSMakeRect(0, 0, width, height);
     content.frame = root.bounds;
@@ -294,7 +291,7 @@ static NSTextField* MakeLabel(NSString* text, NSFont* font, NSColor* color)
 namespace parties::client {
 
 struct MacOSContextMenuController::State {
-    NSView* anchor_view = nil; // Assign: owned by the view controller.
+    NSView* anchor_view = nil;
     NSPoint anchor_point = NSZeroPoint;
     NSPopover* popover = nil;
     uint64_t generation = 0;
@@ -430,4 +427,4 @@ void MacOSContextMenuController::Close()
     state_->ClosePopover();
 }
 
-} // namespace parties::client
+}

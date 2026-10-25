@@ -3,8 +3,6 @@
 #include "RmlUi_RenderInterface_Extended.h"
 #include "Dx12VideoConverter.h"
 
-// This is the renderer shipped by the pinned mikke89/RmlUi revision. The
-// include directory is supplied by the rmlui vcpkg port's Backends bundle.
 #include <RmlUi_Renderer_DX12.h>
 
 #include <memory>
@@ -12,10 +10,6 @@
 #include <array>
 #include <vector>
 
-// Parties only adapts its application-specific streaming operations to the
-// upstream renderer. Device creation, swap chain management, command recording,
-// clipping, layers, filters, shaders, and presentation all remain owned by
-// RmlUi's built-in Win32/DX12 implementation.
 class PartiesRenderInterface_DX12 final : public ExtendedRenderInterface {
 public:
 	PartiesRenderInterface_DX12(void* window_handle, const Backend::RmlRendererSettings& settings);
@@ -126,6 +120,7 @@ private:
 	void RetireTexture(Rml::TextureHandle upstream_handle, std::shared_ptr<void> owner,
 		uint32_t last_use_frame);
 	void CollectRetiredTextures(uint32_t completed_frame);
+	void CollectAllRetiredTextures();
 
 	static void ConvertI420ToRgba(std::vector<Rml::byte>& rgba,
 		const uint8_t* y_data, uint32_t y_stride,

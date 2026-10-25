@@ -1,5 +1,3 @@
-/* RmlUI Designer — Manager window styles (flexbox layout) */
-
 body {
 	font-family: Inter;
 	font-size: 14dp;
@@ -19,8 +17,6 @@ h1, h2, h3 { display: block; }
 p { display: block; }
 span { display: inline; }
 
-/* ── Scrollable content area ─────────────────────────────────────────── */
-
 .content {
 	display: flex;
 	flex-direction: column;
@@ -29,8 +25,6 @@ span { display: inline; }
 	padding: 16dp;
 	drag: none;
 }
-
-/* ── Header ──────────────────────────────────────────────────────────── */
 
 h1 {
 	font-size: 20dp;
@@ -54,8 +48,6 @@ h2 {
 	margin-bottom: 6dp;
 }
 
-/* ── Section ─────────────────────────────────────────────────────────── */
-
 .section {
 	display: flex;
 	flex-direction: column;
@@ -63,7 +55,6 @@ h2 {
 	flex-shrink: 0;
 }
 
-/* Bind Variables section grows to fill space */
 .section-grow {
 	display: flex;
 	flex-direction: column;
@@ -71,8 +62,6 @@ h2 {
 	flex-grow: 1;
 	min-height: 120dp;
 }
-
-/* ── Variable list (scrollable table) ────────────────────────────────── */
 
 .var-list {
 	display: flex;
@@ -211,8 +200,6 @@ h2 {
 	text-align: center;
 }
 
-/* ── Add variable form ───────────────────────────────────────────────── */
-
 .add-var-form {
 	display: flex;
 	flex-direction: column;
@@ -307,8 +294,6 @@ select {
 	background-color: #3A6FA0;
 }
 
-/* ── Button row ───────────────────────────────────────────────────────── */
-
 .btn-row {
 	display: flex;
 	flex-direction: row;
@@ -316,14 +301,10 @@ select {
 	margin-top: 4dp;
 }
 
-/* ── Info text ────────────────────────────────────────────────────────── */
-
 .info-text {
 	color: #777777;
 	font-size: 12dp;
 }
-
-/* ── Shortcuts ────────────────────────────────────────────────────────── */
 
 .shortcut-list {
 	display: flex;
@@ -348,8 +329,6 @@ select {
 	font-weight: bold;
 	text-align: right;
 }
-
-/* ── Scrollbars ──────────────────────────────────────────────────────── */
 
 scrollbarvertical {
 	width: 8dp;
@@ -400,8 +379,6 @@ scrollbarhorizontal sliderarrowinc {
 	width: 0;
 	height: 0;
 }
-
-/* ── Status bar (pinned to bottom) ───────────────────────────────────── */
 
 .status-bar {
 	display: flex;

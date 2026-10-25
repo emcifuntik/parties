@@ -26,7 +26,7 @@ std::unordered_map<Rml::Context*, ExtendedRenderInterface*>& context_renderers()
     return renderers;
 }
 
-} // namespace
+}
 
 void VideoElement::RegisterContextRenderInterface(Rml::Context* context,
                                                   ExtendedRenderInterface* renderer) {
@@ -51,8 +51,6 @@ ExtendedRenderInterface* VideoElement::ResolveRenderInterface() {
         render_interface_ = static_cast<ExtendedRenderInterface*>(Rml::GetRenderInterface());
     return render_interface_;
 }
-
-// ── VideoElement ────────────────────────────────────────────────────
 
 VideoElement::VideoElement(const Rml::String& tag)
     : Rml::Element(tag) {}
@@ -108,7 +106,6 @@ void VideoElement::UpdateYUVFrame(
     nv12_native_owner_.reset();
     SetTextureCrop(width, height, 0, 0, width, height);
 
-    // Store plane data — uploaded to GPU in OnRender (must happen on render thread)
     uint32_t half_h = height / 2;
 
     yuv_y_.resize(static_cast<size_t>(y_stride) * height);
@@ -221,8 +218,6 @@ void VideoElement::UpdateNV12Frame(
     nv12_native_owner_.reset();
     SetTextureCrop(width, height, 0, 0, width, height);
 
-    // Swap instead of move — caller gets our old buffer back,
-    // which cycles through the swap chain and avoids malloc every frame.
     nv12_y_.swap(y_data);
     nv12_uv_.swap(uv_data);
     nv12_y_stride_ = y_stride;
@@ -353,7 +348,6 @@ void VideoElement::Clear() {
 }
 
 void VideoElement::ReleaseResources() {
-    // Resources exist only after a render resolved the interface.
     auto* ri = render_interface_;
     if (!ri) return;
 
@@ -403,7 +397,6 @@ void VideoElement::RebuildGeometry() {
         video_geom_ = 0;
     }
 
-    // Compute aspect-ratio-preserving rect within element content box
     Rml::Vector2f size = GetBox().GetSize(Rml::BoxArea::Content);
     float elem_w = size.x, elem_h = size.y;
     if (elem_w <= 0 || elem_h <= 0) return;
@@ -423,7 +416,6 @@ void VideoElement::RebuildGeometry() {
     float ox = (elem_w - rw) * 0.5f;
     float oy = (elem_h - rh) * 0.5f;
 
-    // Build a textured quad (2 triangles)
     Rml::Vertex vertices[4];
     for (auto& v : vertices)
         v.colour = Rml::ColourbPremultiplied(255, 255, 255, 255);
@@ -450,7 +442,6 @@ void VideoElement::RebuildGeometry() {
 
 void VideoElement::OnResize() {
     Rml::Element::OnResize();
-    // Invalidate geometry so it gets rebuilt with new dimensions
     Rml::Vector2f size = GetBox().GetSize(Rml::BoxArea::Content);
     if (size.x != geom_w_ || size.y != geom_h_) {
         if (video_geom_ && render_interface_) {
@@ -468,7 +459,6 @@ void VideoElement::OnRender() {
     if (!ext_ri) return;
     Rml::RenderInterface* ri = ext_ri;
 
-    // Rebuild geometry if element size changed
     Rml::Vector2f size = GetBox().GetSize(Rml::BoxArea::Content);
     if (!video_geom_ || size.x != geom_w_ || size.y != geom_h_ || geometry_uv_dirty_)
         RebuildGeometry();
@@ -477,7 +467,6 @@ void VideoElement::OnRender() {
     Rml::Vector2f offset = GetAbsoluteOffset(Rml::BoxArea::Content);
 
     if (nv12_mode_) {
-        // NV12 path: Y + interleaved UV, native hardware decoder format
         if (nv12_dirty_ && (nv12_native_mode_ || !nv12_y_.empty())) {
             const bool compatible = nv12_texture_ &&
                 nv12_tex_w_ == frame_width_ && nv12_tex_h_ == frame_height_ &&
@@ -527,7 +516,6 @@ void VideoElement::OnRender() {
         if (nv12_texture_)
             ext_ri->RenderNV12Geometry(video_geom_, offset, nv12_texture_);
     } else if (yuv_mode_) {
-        // I420 path: 3 separate R8 textures
         if (yuv_dirty_ && !yuv_y_.empty()) {
             if (yuv_texture_ && yuv_tex_w_ == frame_width_ && yuv_tex_h_ == frame_height_) {
                 ext_ri->UpdateYUVTexture(yuv_texture_,
@@ -549,7 +537,6 @@ void VideoElement::OnRender() {
         if (yuv_texture_)
             ext_ri->RenderYUVGeometry(video_geom_, offset, yuv_texture_);
     } else {
-        // RGBA path (fallback)
         if (frame_data_.empty()) return;
 
         if (texture_dirty_) {
@@ -574,4 +561,4 @@ void VideoElement::OnRender() {
     }
 }
 
-} // namespace parties::client
+}

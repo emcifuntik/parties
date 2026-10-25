@@ -1,8 +1,3 @@
-// macOS VideoToolbox encoder.
-//
-// Produces Annex-B H264 or H265 frames.  Keyframes include SPS/PPS/VPS
-// in the same output buffer so the server and receiver can parse them.
-
 #include <encdec/apple/video_encoder_macos.h>
 #include <parties/video_common.h>
 
@@ -14,11 +9,6 @@
 
 namespace parties::client {
 
-// ── Annex-B helpers ───────────────────────────────────────────────────────────
-
-// Convert a CMSampleBuffer to the wire format.
-// H264/H265: AVCC/HVCC → Annex-B with parameter sets prepended on keyframes.
-// AV1: raw OBU output from VideoToolbox, passed through as-is.
 static std::vector<uint8_t> sample_to_wire(CMSampleBufferRef sample,
                                             bool              is_keyframe,
                                             MacVideoCodec     codec)
@@ -28,18 +18,15 @@ static std::vector<uint8_t> sample_to_wire(CMSampleBufferRef sample,
 
     size_t total = CMBlockBufferGetDataLength(block);
 
-    // AV1: VideoToolbox outputs raw OBUs — no length-prefix conversion needed
     if (codec == MacVideoCodec::AV1) {
         std::vector<uint8_t> out(total);
         CMBlockBufferCopyDataBytes(block, 0, total, out.data());
         return out;
     }
 
-    // H264/H265: convert AVCC/HVCC (4-byte length prefix) → Annex-B
     std::vector<uint8_t> out;
     CMFormatDescriptionRef fmt = CMSampleBufferGetFormatDescription(sample);
 
-    // Prepend parameter sets on keyframes
     if (is_keyframe && fmt) {
         if (codec == MacVideoCodec::H264) {
             size_t idx = 0;
@@ -64,7 +51,6 @@ static std::vector<uint8_t> sample_to_wire(CMSampleBufferRef sample,
         }
     }
 
-    // NAL units: 4-byte length prefix → Annex-B start code
     size_t offset = 0;
     while (offset + 4 <= total) {
         uint8_t len_bytes[4];
@@ -84,8 +70,6 @@ static std::vector<uint8_t> sample_to_wire(CMSampleBufferRef sample,
     return out;
 }
 
-// ── VideoEncoderMac ───────────────────────────────────────────────────────────
-
 VideoEncoderMac::VideoEncoderMac()  = default;
 VideoEncoderMac::~VideoEncoderMac() { shutdown(); }
 
@@ -104,25 +88,22 @@ bool VideoEncoderMac::init(MacVideoCodec codec, uint32_t width, uint32_t height,
         if (@available(macOS 14.0, *))
             vt_codec = kCMVideoCodecType_AV1;
         else
-            vt_codec = kCMVideoCodecType_HEVC; // fallback on older macOS
+            vt_codec = kCMVideoCodecType_HEVC;
     } else if (codec == MacVideoCodec::H265) {
         vt_codec = kCMVideoCodecType_HEVC;
     } else {
         vt_codec = kCMVideoCodecType_H264;
     }
 
-    // Encoder properties
     CFMutableDictionaryRef props =
         CFDictionaryCreateMutable(nullptr, 0,
                                   &kCFTypeDictionaryKeyCallBacks,
                                   &kCFTypeDictionaryValueCallBacks);
 
-    // Hardware-accelerated on Apple Silicon
     CFDictionarySetValue(props,
                          kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder,
                          kCFBooleanTrue);
 
-    // Pixel buffer format — BGRA is what ScreenCaptureKit delivers
     int32_t fmt_val = kCVPixelFormatType_32BGRA;
     CFNumberRef fmt_num = CFNumberCreate(nullptr, kCFNumberSInt32Type, &fmt_val);
 
@@ -146,12 +127,6 @@ bool VideoEncoderMac::init(MacVideoCodec codec, uint32_t width, uint32_t height,
         this,
         &session_);
 
-    // Apple Silicon (through M4) has no AV1 hardware encoder and VideoToolbox
-    // ships no software one, so an AV1 compression session fails with
-    // kVTCouldNotFindVideoEncoderErr (-12908). Fall back to HEVC, which every
-    // Apple Silicon GPU encodes in hardware. codec_ is updated so the emitted
-    // NAL parsing (handle_encoded_sample) and the wire codec (actual_codec(),
-    // read by the caller) match what we actually produce.
     if (status != noErr && codec == MacVideoCodec::AV1) {
         fprintf(stderr, "[VideoEncoderMac] AV1 encode unavailable (%d); falling back to HEVC\n",
                 (int)status);
@@ -178,10 +153,8 @@ bool VideoEncoderMac::init(MacVideoCodec codec, uint32_t width, uint32_t height,
         return false;
     }
 
-    // Bitrate — average target + hard data-rate window (shared with set_bitrate)
     apply_rate_limits(bitrate_bps);
 
-    // Frame rate
     int32_t fps_val = (int32_t)fps;
     CFNumberRef fps_num = CFNumberCreate(nullptr, kCFNumberSInt32Type, &fps_val);
     VTSessionSetProperty(session_,
@@ -189,9 +162,6 @@ bool VideoEncoderMac::init(MacVideoCodec codec, uint32_t width, uint32_t height,
                          fps_num);
     CFRelease(fps_num);
 
-    // Periodic keyframes at the shared VIDEO_KEYFRAME_INTERVAL_MS cadence, the
-    // same GOP length the Windows encoders use, so late joiners never wait
-    // longer than that for a sync point.
     int32_t kf_interval = (int32_t)(fps_ * (parties::VIDEO_KEYFRAME_INTERVAL_MS / 1000));
     CFNumberRef kf_num = CFNumberCreate(nullptr, kCFNumberSInt32Type, &kf_interval);
     VTSessionSetProperty(session_,
@@ -199,13 +169,10 @@ bool VideoEncoderMac::init(MacVideoCodec codec, uint32_t width, uint32_t height,
                          kf_num);
     CFRelease(kf_num);
 
-    // Real-time encoding
     VTSessionSetProperty(session_,
                          kVTCompressionPropertyKey_RealTime,
                          kCFBooleanTrue);
 
-    // Do not let the encoder hold frames back for lookahead: every submitted
-    // frame is emitted as soon as it is encoded (one-in, one-out).
     int32_t max_frame_delay = 0;
     CFNumberRef delay_num = CFNumberCreate(nullptr, kCFNumberSInt32Type, &max_frame_delay);
     VTSessionSetProperty(session_,
@@ -213,13 +180,10 @@ bool VideoEncoderMac::init(MacVideoCodec codec, uint32_t width, uint32_t height,
                          delay_num);
     CFRelease(delay_num);
 
-    // Profile / level (H264: High, H265: Main)
     if (codec == MacVideoCodec::H264) {
         VTSessionSetProperty(session_,
                              kVTCompressionPropertyKey_ProfileLevel,
                              kVTProfileLevel_H264_High_AutoLevel);
-        // High profile supports CABAC — set it explicitly for ~10% better
-        // compression efficiency than CAVLC at the same bitrate.
         VTSessionSetProperty(session_,
                              kVTCompressionPropertyKey_H264EntropyMode,
                              kVTH264EntropyMode_CABAC);
@@ -229,17 +193,10 @@ bool VideoEncoderMac::init(MacVideoCodec codec, uint32_t width, uint32_t height,
                              kVTProfileLevel_HEVC_Main_AutoLevel);
     }
 
-    // Low-latency: no B-frames / reordering. RealTime already implies this,
-    // but set it explicitly so the decoder never waits on out-of-order frames.
     VTSessionSetProperty(session_,
                          kVTCompressionPropertyKey_AllowFrameReordering,
                          kCFBooleanFalse);
 
-    // Colour signalling (BT.709). The source is sRGB BGRA; without tagging the
-    // bitstream the decoder guesses the matrix/range and colours come out
-    // washed or over-saturated — a big part of the "looks bad" report. We tag
-    // 709 (the HD standard) so VideoToolbox uses the 709 RGB→YCbCr matrix on
-    // encode and the receiver inverts it correctly.
     VTSessionSetProperty(session_, kVTCompressionPropertyKey_ColorPrimaries,
                          kCVImageBufferColorPrimaries_ITU_R_709_2);
     VTSessionSetProperty(session_, kVTCompressionPropertyKey_TransferFunction,
@@ -259,7 +216,6 @@ void VideoEncoderMac::apply_rate_limits(uint32_t bitrate_bps)
 {
     if (!session_ || bitrate_bps == 0) return;
 
-    // Average target
     int32_t bps = (int32_t)bitrate_bps;
     CFNumberRef bps_num = CFNumberCreate(nullptr, kCFNumberSInt32Type, &bps);
     VTSessionSetProperty(session_,
@@ -267,13 +223,6 @@ void VideoEncoderMac::apply_rate_limits(uint32_t bitrate_bps)
                          bps_num);
     CFRelease(bps_num);
 
-    // Hard data rate limit: 1.5x the target (the stream peak) over a 0.5 s
-    // window. Without this, AverageBitRate is just a soft hint that VT freely
-    // exceeds. The window is real-time only because we feed real host-clock
-    // PTS (see encode()). A short window at peak keeps a keyframe from turning
-    // into a multi-second burst on a link close to the average, which every
-    // viewer experiences as a stall followed by catch-up. The window length
-    // must be a double-typed CFNumber (seconds); an integer 0 would disable it.
     const double  window_seconds = 0.5;
     const SInt32  byte_limit     = (SInt32)(bitrate_bps * 1.5 / 8 * window_seconds);
     CFNumberRef limit_bytes = CFNumberCreate(nullptr, kCFNumberSInt32Type, &byte_limit);
@@ -309,15 +258,9 @@ void VideoEncoderMac::encode(CVPixelBufferRef pixel_buffer, bool force_keyframe)
     std::lock_guard lock(mutex_);
     if (!session_ || !pixel_buffer) return;
 
-    // Real-time presentation timestamp from the host clock. The previous scheme
-    // (pts_++ at a 1000-tick timebase) advanced PTS by exactly 1 ms per frame,
-    // telling VideoToolbox the stream ran at ~1000 fps regardless of the real
-    // rate. That mismatch with ExpectedFrameRate corrupted rate-control pacing
-    // and made the DataRateLimits window meaningless. Host-clock PTS gives VT
-    // accurate inter-frame timing so it allocates bits per real second.
     CMTime pts = CMClockGetTime(CMClockGetHostTimeClock());
     CMTime dur = fps_ > 0 ? CMTimeMake(1, (int32_t)fps_) : kCMTimeInvalid;
-    pts_++;  // retained only for diagnostics
+    pts_++;
 
     CFMutableDictionaryRef frame_props = nullptr;
     if (force_keyframe) {
@@ -339,12 +282,10 @@ void VideoEncoderMac::encode(CVPixelBufferRef pixel_buffer, bool force_keyframe)
     if (frame_props) CFRelease(frame_props);
 }
 
-// ── VT callback ───────────────────────────────────────────────────────────────
-
 void VideoEncoderMac::compress_callback(void*             refcon,
-                                         void*             /*frameRefcon*/,
+                                         void*,
                                          OSStatus          status,
-                                         VTEncodeInfoFlags /*flags*/,
+                                         VTEncodeInfoFlags,
                                          CMSampleBufferRef sample)
 {
     if (status != noErr || !sample) return;
@@ -355,7 +296,6 @@ void VideoEncoderMac::handle_encoded_sample(CMSampleBufferRef sample)
 {
     if (!on_encoded) return;
 
-    // Check if this is a keyframe.
     CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sample, false);
     bool is_keyframe = true;
     if (attachments && CFArrayGetCount(attachments) > 0) {
@@ -372,4 +312,4 @@ void VideoEncoderMac::handle_encoded_sample(CMSampleBufferRef sample)
         on_encoded(wire.data(), wire.size(), is_keyframe);
 }
 
-} // namespace parties::client
+}

@@ -1,6 +1,3 @@
-// Offline, deterministic tests for parties::VideoFrameReorderBuffer (viewer-side
-// reordering of frames that complete out of order on per-frame QUIC streams).
-
 #include <parties/video_frame_reorder.h>
 
 #include <cstdint>
@@ -25,7 +22,6 @@ bool fail(const char* msg) {
     return false;
 }
 
-// Test harness: records delivered frame_seqs and reported gaps.
 struct Sink {
     std::vector<uint32_t> delivered;
     std::vector<uint32_t> lost;
@@ -97,7 +93,6 @@ bool test_hold_then_fill() {
     if (!same(s.delivered, {10})) return fail("hold: newer frames delivered over a gap");
     if (b.held_frames() != 2 || b.held_bytes() != 2 * (VIDEO_FRAME_HEADER_SIZE + 100))
         return fail("hold: held accounting");
-    // The timer has not expired yet.
     b.poll(T0 + 100 * MS, s.deliver_fn(), s.lost_fn());
     if (!same(s.delivered, {10}) || !s.lost.empty()) return fail("hold: poll gave up too early");
     feed(b, s, 11, false, T0 + 120 * MS);
@@ -119,13 +114,11 @@ bool test_hold_then_timeout() {
     if (!same(s.lost, {11}) || !b.needs_keyframe()) return fail("timeout: recovery not requested");
     if (!same(s.delivered, {10}) || b.last_delivered() != 10)
         return fail("timeout: broken deltas advanced the decode baseline");
-    // A late delta cannot repair a reference chain already declared lost.
     feed(b, s, 11, false, T0 + 170 * MS);
     if (!same(s.delivered, {10})) return fail("timeout: late delta resumed decoding");
     feed(b, s, 11, true, T0 + 180 * MS);
     if (!same(s.delivered, {10, 11, 12, 13}) || b.needs_keyframe())
         return fail("timeout: late keyframe did not recover buffered successors");
-    // Filling a later gap partially must not restart its timer.
     feed(b, s, 16, false, T0 + 300 * MS);
     feed(b, s, 15, false, T0 + 400 * MS);
     b.poll(T0 + 449 * MS, s.deliver_fn(), s.lost_fn());
@@ -174,21 +167,17 @@ bool test_keyframe_over_gap() {
     feed(b, s, 10, true, T0);
     feed(b, s, 12, false, T0 + 10 * MS);
     feed(b, s, 13, false, T0 + 20 * MS);
-    feed(b, s, 21, false, T0 + 30 * MS);     // behind a second gap, newer than the keyframe
-    feed(b, s, 20, true, T0 + 40 * MS);      // keyframe over the gap 11
-    // The keyframe re-anchors the decoder by itself: no loss report (which
-    // would only trigger a pointless PLI).
+    feed(b, s, 21, false, T0 + 30 * MS);
+    feed(b, s, 20, true, T0 + 40 * MS);
     if (!s.lost.empty()) return fail("keyframe: a gap closed by a keyframe must not be reported");
     if (!same(s.delivered, {10, 20, 21})) return fail("keyframe: not delivered immediately with its successors");
     if (b.held_frames() != 0 || b.held_bytes() != 0) return fail("keyframe: older held frames not discarded");
-    // A late pre-keyframe frame is stale.
     feed(b, s, 11, false, T0 + 50 * MS);
     feed(b, s, 13, false, T0 + 50 * MS);
     if (!same(s.delivered, {10, 20, 21})) return fail("keyframe: stale frame delivered");
     if (b.last_delivered() != 21) return fail("keyframe: baseline");
-    // A later gap that has to be resumed at a delta frame is still reported.
     feed(b, s, 23, false, T0 + 60 * MS);
-    b.poll(T0 + 210 * MS, s.deliver_fn(), s.lost_fn());   // 150 ms after 23 arrived
+    b.poll(T0 + 210 * MS, s.deliver_fn(), s.lost_fn());
     if (!same(s.lost, {22})) return fail("keyframe: later delta-frame gap not reported");
     if (!same(s.delivered, {10, 20, 21}) || !b.needs_keyframe())
         return fail("keyframe: later gap forwarded a broken delta");
@@ -230,7 +219,6 @@ bool test_startup_reordering() {
     if (!same(s.delivered, {10, 11, 12}) || !s.lost.empty() || b.held_bytes() != 0)
         return fail("startup: delayed first keyframe and successors not delivered in order");
 
-    // The first observed frame can be after the u32 wrap.
     b.reset();
     s = Sink{};
     feed(b, s, 0, false, T0);
@@ -265,17 +253,15 @@ bool test_u32_wrap() {
     Sink s;
     const uint32_t max = std::numeric_limits<uint32_t>::max();
     feed(b, s, max - 1, true, T0);
-    feed(b, s, 1, false, T0 + 10 * MS);       // held (gap: max, 0)
+    feed(b, s, 1, false, T0 + 10 * MS);
     feed(b, s, max, false, T0 + 20 * MS);
     if (!same(s.delivered, {max - 1, max})) return fail("wrap: pre-wrap frame");
     feed(b, s, 0, false, T0 + 30 * MS);
     if (!same(s.delivered, {max - 1, max, 0, 1})) return fail("wrap: 0xFFFFFFFF -> 0 not treated as consecutive");
     if (!s.lost.empty() || b.held_frames() != 0) return fail("wrap: state");
-    // Frames from before the wrap are stale, not a counter reset.
     feed(b, s, max - 100, false, T0 + 40 * MS);
     if (!same(s.delivered, {max - 1, max, 0, 1})) return fail("wrap: pre-wrap frame delivered after wrap");
     if (b.last_delivered() != 1) return fail("wrap: baseline reset by a stale pre-wrap frame");
-    // A stale frame far before the wrap (beyond jump_reset_threshold) is still stale.
     feed(b, s, max - 5000, false, T0 + 40 * MS);
     if (b.last_delivered() != 1 || !same(s.delivered, {max - 1, max, 0, 1}))
         return fail("wrap: far pre-wrap frame treated as a restart");
@@ -289,12 +275,12 @@ bool test_duplicates_and_old() {
     Sink s;
     feed(b, s, 10, true, T0);
     feed(b, s, 11, false, T0 + 10 * MS);
-    feed(b, s, 11, false, T0 + 11 * MS);     // duplicate of the last delivered
-    feed(b, s, 10, true, T0 + 12 * MS);      // old keyframe
-    feed(b, s, 9, false, T0 + 12 * MS);      // older
+    feed(b, s, 11, false, T0 + 11 * MS);
+    feed(b, s, 10, true, T0 + 12 * MS);
+    feed(b, s, 9, false, T0 + 12 * MS);
     if (!same(s.delivered, {10, 11})) return fail("duplicates: old or duplicate frame delivered");
     feed(b, s, 13, false, T0 + 20 * MS);
-    feed(b, s, 13, false, T0 + 21 * MS);     // duplicate of a held frame
+    feed(b, s, 13, false, T0 + 21 * MS);
     if (b.held_frames() != 1 || b.held_bytes() != VIDEO_FRAME_HEADER_SIZE + 100)
         return fail("duplicates: duplicate held frame stored twice");
     feed(b, s, 12, false, T0 + 30 * MS);
@@ -350,9 +336,8 @@ bool test_reset() {
     feed(b, s, 12, false, T0 + 1 * MS);
     b.reset();
     if (b.has_baseline() || b.held_frames() != 0 || b.held_bytes() != 0) return fail("reset: state");
-    feed(b, s, 3, true, T0 + 2 * MS);   // new share keyframe
+    feed(b, s, 3, true, T0 + 2 * MS);
     if (!same(s.delivered, {10, 3}) || !s.lost.empty()) return fail("reset: first frame after reset");
-    // The old held frame is now a "newer with gap" frame; it is held, not delivered.
     feed(b, s, 12, false, T0 + 3 * MS);
     if (!same(s.delivered, {10, 3}) || b.held_frames() != 1) return fail("reset: stale frame handling");
     return true;
@@ -362,8 +347,6 @@ bool test_delayed_recovery_keyframes() {
     VideoFrameReorderBuffer b;
     Sink s;
     feed(b, s, 100, true, T0);
-    // A large recovery keyframe completes after more than eight small deltas.
-    // Repeating this pattern used to advance past every recovery point forever.
     for (uint32_t round = 0; round < 20; ++round) {
         const uint32_t key = 101 + round * 20;
         const int64_t now = T0 + round * 500 * MS;
@@ -405,7 +388,7 @@ bool test_recovery_wrap_and_independent_viewers() {
     return true;
 }
 
-} // namespace
+}
 
 int main() {
     if (!test_delayed_recovery_keyframes()) return 1;

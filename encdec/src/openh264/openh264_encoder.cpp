@@ -46,7 +46,7 @@ bool OpenH264Encoder::init(ID3D11Device* device, uint32_t width, uint32_t height
     params.iRCMode = RC_BITRATE_MODE;
     params.fMaxFrameRate = static_cast<float>(fps);
     params.bEnableFrameSkip = false;
-    params.iMultipleThreadIdc = 0;  // auto
+    params.iMultipleThreadIdc = 0;
     params.uiIntraPeriod = fps * (parties::VIDEO_KEYFRAME_INTERVAL_MS / 1000);
     params.iNumRefFrame = 1;
     params.bEnableDenoise = false;
@@ -72,10 +72,8 @@ bool OpenH264Encoder::init(ID3D11Device* device, uint32_t width, uint32_t height
         return false;
     }
 
-    // Allocate I420 buffer for BGRA→I420 conversion
     i420_buffer_.resize(static_cast<size_t>(width) * height * 3 / 2);
 
-    // Create staging texture for GPU→CPU readback
     D3D11_TEXTURE2D_DESC desc = {};
     desc.Width = width;
     desc.Height = height;
@@ -102,20 +100,17 @@ bool OpenH264Encoder::encode(ID3D11Texture2D* bgra_texture, int64_t timestamp_10
     ZoneScopedN("OpenH264Encoder::encode");
     if (!encoder_) return false;
 
-    // Force keyframe if requested
     if (force_keyframe_) {
         force_keyframe_ = false;
         encoder_->ForceIntraFrame(true);
     }
 
-    // GPU → CPU readback
     context_->CopyResource(staging_.Get(), bgra_texture);
 
     D3D11_MAPPED_SUBRESOURCE mapped = {};
     HRESULT hr = context_->Map(staging_.Get(), 0, D3D11_MAP_READ, 0, &mapped);
     if (FAILED(hr)) return false;
 
-    // BGRA → I420 conversion (BT.601)
     {
         ZoneScopedN("BGRA_to_I420");
         const uint8_t* bgra = static_cast<const uint8_t*>(mapped.pData);
@@ -134,18 +129,15 @@ bool OpenH264Encoder::encode(ID3D11Texture2D* bgra_texture, int64_t timestamp_10
                 uint8_t g = row[x * 4 + 1];
                 uint8_t r = row[x * 4 + 2];
 
-                // Y = 0.299*R + 0.587*G + 0.114*B (fixed-point: >>8)
                 y_row[x] = static_cast<uint8_t>((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
             }
 
-            // Subsample U/V every 2x2 block
             if ((y & 1) == 0) {
                 uint32_t uv_y = y / 2;
                 uint8_t* u_row = u_plane + uv_y * (width_ / 2);
                 uint8_t* v_row = v_plane + uv_y * (width_ / 2);
 
                 for (uint32_t x = 0; x < width_; x += 2) {
-                    // Average 2x2 block (top-left pixel as approximation for speed)
                     uint8_t b = row[x * 4 + 0];
                     uint8_t g = row[x * 4 + 1];
                     uint8_t r = row[x * 4 + 2];
@@ -159,12 +151,11 @@ bool OpenH264Encoder::encode(ID3D11Texture2D* bgra_texture, int64_t timestamp_10
 
     context_->Unmap(staging_.Get(), 0);
 
-    // Encode
     SSourcePicture pic = {};
     pic.iColorFormat = videoFormatI420;
     pic.iPicWidth = static_cast<int>(width_);
     pic.iPicHeight = static_cast<int>(height_);
-    pic.uiTimeStamp = timestamp_100ns / 10000;  // 100ns → ms
+    pic.uiTimeStamp = timestamp_100ns / 10000;
     pic.iStride[0] = static_cast<int>(width_);
     pic.iStride[1] = static_cast<int>(width_ / 2);
     pic.iStride[2] = static_cast<int>(width_ / 2);
@@ -180,14 +171,12 @@ bool OpenH264Encoder::encode(ID3D11Texture2D* bgra_texture, int64_t timestamp_10
     }
 
     if (bs_info.eFrameType == videoFrameTypeSkip)
-        return true;  // No output this frame
+        return true;
 
-    // Collect all NAL layers into a single buffer and fire callback
     if (on_encoded) {
         bool keyframe = (bs_info.eFrameType == videoFrameTypeIDR ||
                          bs_info.eFrameType == videoFrameTypeI);
 
-        // Concatenate all layer NALs
         std::vector<uint8_t> output;
         for (int i = 0; i < bs_info.iLayerNum; i++) {
             const SLayerBSInfo& layer = bs_info.sLayerInfo[i];
@@ -228,4 +217,4 @@ EncoderInfo OpenH264Encoder::info() const {
     return {Backend::OpenH264, VideoCodecId::H264, width_, height_};
 }
 
-} // namespace parties::encdec::openh264
+}

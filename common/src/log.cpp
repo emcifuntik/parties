@@ -80,10 +80,9 @@ void remember_log_path(const std::filesystem::path& path) {
     g_log_path = (ec ? path : absolute).string();
 }
 
-} // namespace
+}
 
 #ifdef __APPLE__
-// os_log sink for macOS — maps spdlog levels to os_log levels
 class oslog_sink : public spdlog::sinks::base_sink<std::mutex> {
 public:
     oslog_sink() : log_(os_log_create("org.parties", "default")) {}
@@ -121,9 +120,6 @@ private:
 void log_init(LogTarget target) {
     std::vector<spdlog::sink_ptr> sinks;
 
-    // Production client logs must survive after the console/debugger is gone.
-    // Keep enough history for intermittent driver stalls without allowing logs
-    // to grow without bounds.
     try {
         std::filesystem::path file_path;
         if (target == LogTarget::Client) {
@@ -151,7 +147,6 @@ void log_init(LogTarget target) {
 
     if (target == LogTarget::Client) {
 #ifdef _WIN32
-        // Always log to OutputDebugString (visible in debugger / DebugView)
         sinks.push_back(std::make_shared<spdlog::sinks::msvc_sink_mt>());
 #ifndef PARTIES_RETAIL
         sinks.push_back(std::make_shared<spdlog::sinks::stdout_color_sink_mt>());
@@ -205,4 +200,4 @@ void log_shutdown() {
     spdlog::shutdown();
 }
 
-} // namespace parties
+}

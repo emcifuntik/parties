@@ -60,7 +60,7 @@ Rml::String role_name(int role) {
     }
 }
 
-} // namespace
+}
 
 struct ContextWindowManager::Impl {
     struct ActiveWindow {
@@ -99,9 +99,6 @@ struct ContextWindowManager::Impl {
         // not dereference the manager here: shutdown may already be finishing.
         if (OwnerThreadWindowDestroy::handle_message(hwnd, message))
             return 0;
-        // This must be handled before taking ui_mutex. The message is posted by
-        // the render thread specifically so no thread waits for the HWND owner
-        // while holding the RmlUi lock.
         if (OwnerThreadWindowResize::handle_message(hwnd, message, w_param, l_param))
             return 0;
 
@@ -187,7 +184,7 @@ struct ContextWindowManager::Impl {
         wc.style = CS_HREDRAW | CS_VREDRAW;
         wc.lpfnWndProc = &Impl::wnd_proc;
         wc.hInstance = GetModuleHandleW(nullptr);
-        wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
+        wc.hCursor = LoadCursorW(nullptr, reinterpret_cast<LPCWSTR>(IDC_ARROW));
         wc.lpszClassName = kClassName;
         if (RegisterClassExW(&wc)) return true;
         return GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
@@ -264,9 +261,6 @@ struct ContextWindowManager::Impl {
             return false;
 
         active->last_content_height_px = desired_height;
-        // The render thread owns both the popup renderer and its RmlUi context.
-        // Resize those immediately; the HWND placement itself is applied later
-        // by its owner thread through the posted message above.
         active->renderer->SetViewport(width, desired_height, true);
         active->context->SetDimensions({width, desired_height});
         return true;
@@ -302,13 +296,10 @@ struct ContextWindowManager::Impl {
                 return false;
             }
 
-            DWORD corner = 3; // DWMWCP_ROUND
-            DwmSetWindowAttribute(active->hwnd, 33, &corner, sizeof(corner));
-            // DWMWA_BORDER_COLOR: 0xFFFFFFFE is DWMWA_COLOR_NONE. 0xFFFFFFFF
-            // asks DWM for its default native border, which doubled the custom
-            // RmlUI outline around the rounded popup.
-            constexpr COLORREF no_border = 0xFFFFFFFEu;
-            DwmSetWindowAttribute(active->hwnd, 34, &no_border, sizeof(no_border));
+            const DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
+            DwmSetWindowAttribute(active->hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
+            const COLORREF no_border = DWMWA_COLOR_NONE;
+            DwmSetWindowAttribute(active->hwnd, DWMWA_BORDER_COLOR, &no_border, sizeof(no_border));
             apply_rounded_region(active->hwnd, width, height);
 
             active->renderer = make_renderer(active->hwnd);
@@ -482,4 +473,4 @@ bool ContextWindowManager::is_open() const {
     return impl_ && impl_->active && impl_->active->open.load(std::memory_order_acquire);
 }
 
-} // namespace parties::client
+}

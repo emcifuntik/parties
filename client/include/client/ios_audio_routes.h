@@ -57,4 +57,4 @@ inline IOSAudioRoutes BuildIOSAudioRoutes(const std::vector<IOSAudioPort>& avail
     return result;
 }
 
-} // namespace parties::client
+}

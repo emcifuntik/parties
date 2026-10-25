@@ -8,10 +8,6 @@
 #include <d3d12.h>
 #include <wrl/client.h>
 
-// Application video conversion which deliberately lives outside RmlUi's
-// renderer. RmlUi owns the graphics backend; this helper uploads CPU planes for
-// direct NV12 presentation and retains the compute conversion only for formats
-// which cannot yet be sampled by the final RmlUi draw.
 class Dx12VideoConverter {
 public:
 	static constexpr uint32_t frame_count = RMLUI_RENDER_BACKEND_FIELD_SWAPCHAIN_BACKBUFFER_COUNT;

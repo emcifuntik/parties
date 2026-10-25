@@ -4,8 +4,6 @@
 
 namespace parties::encdec::amd {
 
-// AMF does not take ownership of an input when its queue/surface pool is full.
-// Keep the exact buffer alive and submit it again after polling output.
 enum class AmfSubmitDisposition {
     Accepted,
     RetrySameInput,
@@ -31,4 +29,4 @@ constexpr AmfSubmitDisposition classify_amf_submit_result(AMF_RESULT result) {
     }
 }
 
-} // namespace parties::encdec::amd
+}

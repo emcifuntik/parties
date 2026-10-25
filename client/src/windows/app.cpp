@@ -1,5 +1,3 @@
-// Windows platform application — wraps AppCore and handles Win32 / D3D11 specifics.
-
 #include <client/app.h>
 #include <client/app_core.h>
 #include <d3dcompiler.h>
@@ -70,7 +68,6 @@ static std::string vk_to_name(int vk) {
     }
 }
 
-// Modifier bitmask: 1=Ctrl  2=Shift  4=Alt
 static bool is_modifier_vk(int vk) {
     return vk == VK_SHIFT   || vk == VK_CONTROL  || vk == VK_MENU    ||
            vk == VK_LSHIFT  || vk == VK_RSHIFT   ||
@@ -86,7 +83,6 @@ static int current_mods() {
     return m;
 }
 
-// key2=0 means no second key; modifiers prefix; key2 (if set) shown before main key
 static std::string combo_name(int key, int key2, int mods) {
     std::string name;
     if (mods & 1) name += "Ctrl+";
@@ -96,11 +92,6 @@ static std::string combo_name(int key, int key2, int mods) {
     name += vk_to_name(key);
     return name;
 }
-
-
-// ═══════════════════════════════════════════════════════════════════════
-// App — Windows platform wrapper around AppCore
-// ═══════════════════════════════════════════════════════════════════════
 
 // Put UTF-8 text on the clipboard as CF_UNICODETEXT (CF_TEXT would mangle any
 // non-ASCII — emoji, accents — which chat messages routinely contain).
@@ -123,7 +114,6 @@ static void set_clipboard_text(HWND hwnd, const std::string& utf8) {
     CloseClipboard();
 }
 
-// Walk up to the enclosing <selectable_text> element, if any.
 static SelectableTextElement* find_selectable(Rml::Element* el) {
     while (el) {
         if (el->GetTagName() == "selectable_text")
@@ -149,9 +139,9 @@ bool App::handle_chat_input(unsigned int msg, WPARAM wParam, LPARAM lParam) {
             chat_drag_start_ = pt;
             chat_drag_moved_ = false;
         } else {
-            sel.clear();  // click elsewhere drops the selection
+            sel.clear();
         }
-        return false;  // let RmlUi also handle (hover, links, context menu)
+        return false;
     }
     case WM_MOUSEMOVE: {
         if (!(wParam & MK_LBUTTON) || !sel.dragging()) return false;
@@ -169,13 +159,12 @@ bool App::handle_chat_input(unsigned int msg, WPARAM wParam, LPARAM lParam) {
     case WM_LBUTTONUP: {
         if (sel.dragging()) {
             sel.end_drag();
-            if (!chat_drag_moved_) sel.clear();  // a plain click deselects
+            if (!chat_drag_moved_) sel.clear();
         }
         return false;
     }
     case WM_KEYDOWN: {
         if (wParam == 'C' && (GetKeyState(VK_CONTROL) & 0x8000) && sel.has_selection()) {
-            // Don't steal Ctrl+C from a focused text field (e.g. the compose box).
             Rml::Element* focus = ctx->GetFocusElement();
             if (focus) {
                 const Rml::String& tag = focus->GetTagName();
@@ -183,7 +172,7 @@ bool App::handle_chat_input(unsigned int msg, WPARAM wParam, LPARAM lParam) {
             }
             std::string text = sel.selected_text();
             if (!text.empty()) set_clipboard_text(hwnd_, text);
-            return true;  // consumed
+            return true;
         }
         return false;
     }
@@ -209,7 +198,6 @@ void App::on_window_visibility_changed(bool visible) {
 bool App::init(HWND hwnd) {
     hwnd_ = hwnd;
 
-    // Build PlatformBridge — all callbacks capture hwnd_ and App members
     PlatformBridge bridge;
 
     bridge.copy_to_clipboard = [this](const std::string& text) {
@@ -312,7 +300,6 @@ bool App::init(HWND hwnd) {
         constexpr int ID_PIN    = 2;
         constexpr int ID_DELETE = 3;
 
-        // Snapshot the message text before creating the transient RmlUI HWND.
         std::string text;
         for (const auto& m : core_.chat_model_.messages.get()) {
             if (m.id == msg_id) { text = std::string(m.text); break; }
@@ -339,21 +326,17 @@ bool App::init(HWND hwnd) {
     bridge.open_share_picker = [this]() { show_share_picker(false); };
     bridge.open_audio_share_picker = [this]() { show_share_picker(true); };
 
-    bridge.on_authenticated = nullptr; // Windows needs no special post-auth step
+    bridge.on_authenticated = nullptr;
 
     bridge.stop_screen_share = [this]() { stop_screen_share(); };
     bridge.stop_audio_share = [this]() { stop_application_audio_share(); };
 
     bridge.request_keyframe = [this]() {
         if (encoder_) encoder_->force_keyframe();
-        // Wake the encode thread to re-encode last frame (handles static screens
-        // where capture stops delivering frames)
         if (sharing_screen_ && encode_running_.load(std::memory_order_relaxed)) {
             std::lock_guard<std::mutex> lock(encode_mutex_);
             if (encode_ready_slot_ < 0 && encode_active_slot_ < 0) {
-                // Re-submit the last written slot
                 int last = encode_write_slot_;
-                // Find the most recently used slot that isn't the current write slot
                 for (int i = 0; i < ENCODE_SLOTS; i++) {
                     if (i != encode_write_slot_) { last = i; break; }
                 }
@@ -365,19 +348,6 @@ bool App::init(HWND hwnd) {
         }
     };
 
-    // Main thread (AppCore::tick PLI retry). Same lock order as
-    // enqueue_decode_work: streams_mutex_ then the stream's queue_mutex.
-    // Deliberately false in two cases even though the gate may be waiting:
-    //  - the self-preview stream: a PLI would travel to the server and back
-    //    only to force our own encoder's keyframe for every viewer. The encoder
-    //    emits keyframes on its own interval and other viewers' PLIs already
-    //    force them, so the preview resynchronizes by itself;
-    //  - while the stale-flush suppression is active (stale_flushes_in_a_row
-    //    >= 3, i.e. the decoder is too slow for the stream): the decode thread
-    //    stopped requesting keyframes on purpose and waits for the sharer's
-    //    periodic one, so the retry must not re-issue PLIs behind its back.
-    //    The suppression ends when a keyframe is decoded normally again
-    //    (VideoDecodeStaleFlushTracker), after which retries resume.
     bridge.stream_awaiting_keyframe = [this](UserId id) -> bool {
         std::lock_guard<std::mutex> slock(streams_mutex_);
         auto it = video_streams_.find(id);
@@ -389,9 +359,6 @@ bool App::init(HWND hwnd) {
         return s->decode_gate.awaiting_keyframe();
     };
 
-    // Grid cells are created/destroyed by the data-for binding over model_.watched,
-    // and each stream's decoder is torn down by stop_video_stream, so there is no
-    // single element to clear here — make it a safe no-op on Windows.
     bridge.clear_video_element = []() {};
 
     bridge.start_video_stream = [this](UserId id) { start_video_stream(id); };
@@ -401,12 +368,8 @@ bool App::init(HWND hwnd) {
         call_power_request_.set(keep_awake);
     };
 
-    // Picture-in-picture: AppCore decides, the PiP window presents. The window
-    // is created lazily on the message thread inside show().
     pip_host_ = std::make_unique<PipWindowHost>();
     bridge.show_pip = [this](UserId, const std::string& title) {
-        // AppCore is mid-transition here; a failure is reported back to it
-        // from the next tick instead of re-entering the controller.
         if (!pip_host_->show(title)) pip_open_failed_ = true;
     };
     bridge.hide_pip = [this](UserId, PipCloseReason) { pip_host_->hide(); };
@@ -415,7 +378,6 @@ bool App::init(HWND hwnd) {
         SetForegroundWindow(hwnd_);
     };
 
-    // Initialize UI
     if (!ui_.init(hwnd)) return false;
     decode_d3d12_device_ = static_cast<ID3D12Device*>(ui_.renderer()->GetD3D12Device());
     {
@@ -438,12 +400,9 @@ bool App::init(HWND hwnd) {
         return false;
     }
 
-    // Init AppCore (wires audio, net callbacks, model callbacks)
     if (!core_.init("parties_client.db", std::move(bridge), ui_.context()))
         return false;
 
-    // Feed the chat text selection the ordered message list (id + raw text) so
-    // copy and cross-message ordering survive scrolling / element recycling.
     ChatSelection::instance().get_messages = [this]() {
         std::vector<std::pair<int64_t, std::string>> out;
         for (const auto& m : core_.chat_model_.messages.get())
@@ -451,12 +410,10 @@ bool App::init(HWND hwnd) {
         return out;
     };
 
-    // Wire video frame reception to local on_video_frame_received
     core_.on_video_frame_received = [this](uint32_t sender_id, const uint8_t* data, size_t len) {
         on_video_frame_received(sender_id, data, len);
     };
 
-    // Windows-only: select share target from DXGI list
     core_.model_.on_select_share_target = [this](int index) {
         if (core_.model_.router.is(DocumentRoute::SharePicker))
             core_.model_.router.back();
@@ -466,14 +423,11 @@ bool App::init(HWND hwnd) {
         else
             start_screen_share(index);
     };
-    // Override on_cancel_share to also clear capture targets
     core_.model_.on_cancel_share = [this]() {
         if (core_.model_.router.is(DocumentRoute::SharePicker))
             core_.model_.router.back();
         cancel_share_thumbnails();
         capture_targets_.clear();
-        // Audio-only selection uses a temporary enumerator. Never tear down an
-        // active screen capture when its picker is cancelled.
         if (core_.model_.share_picker_mode == 0 && capture_) {
             capture_->shutdown();
             capture_.reset();
@@ -482,17 +436,12 @@ bool App::init(HWND hwnd) {
 
     core_.model_.on_share_bitrate_changed = [this](float mbps) {
         core_.settings_.set_pref("video.share_bitrate", std::to_string(mbps));
-        // The slider only raises/lowers the sender's ceiling. The encoder is
-        // reconfigured from the encode thread via take_video_bitrate_update().
         uint32_t bps = static_cast<uint32_t>(mbps * 1'000'000.0f);
         bps = (std::max)(bps, VIDEO_MIN_BITRATE);
         bps = (std::min)(bps, VIDEO_MAX_BITRATE);
         core_.set_video_target_bitrate(bps);
     };
 
-    // Load identity and the cross-platform global display name. The computer
-    // name is used only as the first-run fallback; subsequent launches read the
-    // user-edited value from preferences.
     char computer_name[MAX_COMPUTERNAME_LENGTH + 1] = {};
     DWORD computer_name_len = MAX_COMPUTERNAME_LENGTH + 1;
     std::string username_hint = "User";
@@ -500,7 +449,6 @@ bool App::init(HWND hwnd) {
         username_hint.assign(computer_name, computer_name_len);
     core_.load_or_generate_identity(username_hint);
 
-    // Load saved prefs into model/audio
     core_.load_saved_prefs();
 
     const bool tray_enabled = core_.settings_.get_pref("window.tray_mode").value_or("1") != "0";
@@ -514,7 +462,6 @@ bool App::init(HWND hwnd) {
         LOG_WARN("Tray icon unavailable; closing the window will exit until it is available");
     }
 
-    // Load Win32-specific prefs (hotkeys)
     {
         auto pref = [&](const char* key) -> std::string {
             auto v = core_.settings_.get_pref(key);
@@ -540,10 +487,8 @@ bool App::init(HWND hwnd) {
                     "audio.deafen_key", "audio.deafen_key2", "audio.deafen_mods");
     }
 
-    // Sound player (separate device, always running)
     sound_player_.init();
 
-    // Register custom elements before loading document
     register_custom_elements(element_registry_);
 
     doc_ = ui_.load_document("ui/lobby.rml");
@@ -555,15 +500,12 @@ bool App::init(HWND hwnd) {
 
     core_.refresh_server_list();
 
-    // Set initial identity state on model
     if (core_.has_identity_) {
         core_.server_model_.has_identity = true;
         core_.server_model_.fingerprint  = Rml::String(
             parties::public_key_fingerprint(core_.public_key_));
     }
 
-    // Start the render thread last: the document is loaded and models are
-    // initialized, so it is safe for it to begin touching the RmlUi context.
     render_running_.store(true, std::memory_order_release);
     render_thread_ = std::thread([this] { render_loop(); });
 
@@ -572,9 +514,6 @@ bool App::init(HWND hwnd) {
 
 void App::shutdown() {
     tray_.shutdown();
-    // The thumbnail worker owns a D3D11/WinRT capture session. Stop it while the
-    // main graphics runtime is still fully alive so its resources are released
-    // from the worker body, not during OS thread teardown after rendering stops.
     cancel_share_thumbnails();
     if (share_thumbnail_thread_.joinable()) {
         share_thumbnail_thread_.request_stop();
@@ -582,8 +521,6 @@ void App::shutdown() {
         share_thumbnail_thread_.join();
     }
 
-    // Nothing can enqueue preview textures now. Stop rendering before tearing
-    // down the RmlUi context and the remaining application resources.
     render_running_.store(false, std::memory_order_release);
     if (render_thread_.joinable())
         render_thread_.join();
@@ -630,10 +567,6 @@ void App::shutdown() {
 }
 
 void App::poll_hotkeys() {
-    // Keybind capture — peak-combo approach:
-    //   1. Track the maximum simultaneous keys pressed (including Ctrl/Shift/Alt).
-    //   2. Finalize only when ALL keys are released after at least one input.
-    //   This lets the user press G+M together and have both recorded.
     bool any_binding = core_.model_.ptt_binding || core_.model_.mute_binding || core_.model_.deafen_binding;
     if (any_binding) {
         if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) {
@@ -641,7 +574,6 @@ void App::poll_hotkeys() {
             capture_peak_key_ = capture_peak_key2_ = capture_peak_mods_ = 0;
             capture_had_input_ = false;
         } else {
-            // Collect currently pressed non-modifier keys (up to 2)
             int pressed[2] = {0, 0};
             int count = 0;
             for (int vk = 1; vk < 256 && count < 2; vk++) {
@@ -651,7 +583,6 @@ void App::poll_hotkeys() {
             int mods = current_mods();
 
             if (count > 0) {
-                // Update peak: prefer the combination with more regular keys
                 int peak_count = (capture_peak_key2_ != 0) ? 2 : (capture_peak_key_ != 0 ? 1 : 0);
                 if (count > peak_count) {
                     capture_peak_key2_ = (count >= 2) ? pressed[0] : 0;
@@ -660,7 +591,6 @@ void App::poll_hotkeys() {
                 }
                 capture_had_input_ = true;
             } else if (capture_had_input_ && capture_peak_key_ != 0) {
-                // All keys released — finalize
                 auto finalize = [&](int& key, int& key2, int& out_mods, Rml::String& name,
                                     bool& binding,
                                     const char* pk, const char* pk2, const char* pm,
@@ -698,15 +628,12 @@ void App::poll_hotkeys() {
         }
     }
 
-    // Returns true when the full hotkey combo (key + optional key2 + mods) is held
     auto combo_held = [](int key, int key2, int mods) -> bool {
         if (!(GetAsyncKeyState(key) & 0x8000)) return false;
         if (key2 != 0 && !(GetAsyncKeyState(key2) & 0x8000)) return false;
         return current_mods() == mods;
     };
 
-    // PTT polling — only controls audio mute, does not touch model_.is_muted
-    // PTT is blocked when manually muted or deafened
     if (core_.model_.ptt_enabled && core_.model_.ptt_key != 0 && core_.current_channel_ != 0) {
         bool blocked = core_.model_.is_muted || core_.model_.is_deafened;
         bool held = combo_held(core_.model_.ptt_key, core_.model_.ptt_key2, core_.model_.ptt_mods);
@@ -729,7 +656,6 @@ void App::poll_hotkeys() {
         }
     }
 
-    // Mute toggle hotkey (edge-triggered)
     if (core_.model_.mute_key != 0 && core_.current_channel_ != 0) {
         bool held = combo_held(core_.model_.mute_key, core_.model_.mute_key2, core_.model_.mute_mods);
         if (held && !mute_key_held_) {
@@ -738,7 +664,6 @@ void App::poll_hotkeys() {
         mute_key_held_ = held;
     }
 
-    // Deafen toggle hotkey (edge-triggered)
     if (core_.model_.deafen_key != 0 && core_.current_channel_ != 0) {
         bool held = combo_held(core_.model_.deafen_key, core_.model_.deafen_key2, core_.model_.deafen_mods);
         if (held && !deafen_key_held_) {
@@ -748,19 +673,11 @@ void App::poll_hotkeys() {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Render thread — owns the GPU swap chain, per-frame rendering and decoded-video
-// delivery. Runs independently of the Win32 message loop so the picture keeps
-// updating even while the OS modal move/resize loop parks the message thread.
-// ─────────────────────────────────────────────────────────────────────────────
-
 void App::render_loop() {
     TracySetThreadName("Render");
     if (!parties::set_current_thread_highest_priority())
         LOG_WARN("Failed to set the render thread to highest priority");
     while (render_running_.load(std::memory_order_acquire)) {
-        // Apply deferred resize / DPI on the render thread (it owns the GPU swap
-        // chain and the RmlUi context dimensions).
         if (resize_pending_.exchange(false, std::memory_order_acquire)) {
             int w = pending_w_.load(std::memory_order_relaxed);
             int h = pending_h_.load(std::memory_order_relaxed);
@@ -773,23 +690,18 @@ void App::render_loop() {
             ui_.on_dpi_change(scale);
         }
         if (ui_.is_render_suspended()) {
-            // Hidden to the tray or minimized: only picture-in-picture is on
-            // screen, and it must keep playing.
             if (pip_host_ && pip_host_->visible()) {
                 render_pip_only();
             } else {
-                // PiP may have just closed (overlay, stream end, leaving):
-                // release its surface and leases now, not when the main
-                // window comes back. A no-op when nothing changed.
                 {
                     std::lock_guard<std::recursive_mutex> lock(ui_mutex_);
                     sync_video_router();
                 }
-                Sleep(16);      // nothing to draw — don't spin
+                Sleep(16);
             }
             continue;
         }
-        render_frame();         // self-paced by vsync (BeginFrame wait + present)
+        render_frame();
     }
 }
 
@@ -802,18 +714,12 @@ VideoFrameRouter::Surfaces App::video_surfaces() {
 
 void App::sync_video_router() {
     const auto cleared = video_router_.sync(core_.pip_.stream(), video_surfaces());
-    // A cleared surface retired its textures (and any AMF/NVDEC lease) into
-    // its renderer's back-buffer buckets. Those buckets are only collected
-    // when that renderer presents, which a hidden main window or a closed PiP
-    // window will not do; a decoder waiting on the lease would stall.
     if (cleared.grid) ui_.renderer()->ReleaseRetiredResources();
     if (cleared.pip && pip_host_ && pip_host_->renderer())
         pip_host_->renderer()->ReleaseRetiredResources();
 }
 
 void App::deliver_video_frames(bool grid_visible) {
-    // Swap planes out under the locks, then upload after releasing them so the
-    // QUIC receive thread isn't blocked on streams_mutex_ during GPU work.
     if (!doc_) return;
     ZoneScopedN("App::deliver_video_frames");
     struct PendingUpload {
@@ -875,8 +781,6 @@ void App::deliver_video_frames(bool grid_visible) {
         }
     }
     if (uploads.empty()) return;
-    // Exactly one destination per frame: the PiP surface for the PiP stream,
-    // the stream's grid cell for every other stream.
     const auto surfaces = video_surfaces();
     for (auto& up : uploads) {
         if ((!up.native_resource && up.y.empty()) || up.w == 0 || up.h == 0) continue;
@@ -905,8 +809,6 @@ void App::render_pip_only() {
         deliver_video_frames(false);
         pip_host_->render(core_.model_.stream_volume.get());
     }
-    // The main swap chain is idle, so nothing else paces this thread; wait
-    // for the next compositor frame instead.
     if (FAILED(DwmFlush())) Sleep(16);
 }
 
@@ -921,15 +823,13 @@ void App::render_frame() {
 
     const auto frame_start = std::chrono::steady_clock::now();
 
-    // Surface changes free retired textures with a GPU wait, which must not
-    // happen while a frame is being recorded: apply them before BeginFrame.
     {
         std::lock_guard<std::recursive_mutex> lock(ui_mutex_);
         sync_video_router();
     }
 
-    if (!ui_.render_begin()) {  // BeginFrame: GPU/vsync wait — no context, no lock
-        Sleep(16);              // Invalid/lost renderer: avoid a busy retry loop.
+    if (!ui_.render_begin()) {
+        Sleep(16);
         return;
     }
     const auto begin_complete = std::chrono::steady_clock::now();
@@ -938,9 +838,6 @@ void App::render_frame() {
 
         deliver_video_frames(true);
 
-        // Update voice level meter
-
-        // Update FPS + ping in titlebar (once per second)
         fps_frame_count_++;
         auto now_fps = std::chrono::steady_clock::now();
         float elapsed_fps = std::chrono::duration<float>(now_fps - fps_last_update_).count();
@@ -970,9 +867,6 @@ void App::render_frame() {
 
         ui_.update();
 
-        // Target cards are data-bound and only exist after the model update.
-        // Upload at most two previews per frame so texture creation never turns
-        // into a single large GPU/driver stall on machines with many windows.
         if (doc_ && core_.model_.router.is(DocumentRoute::SharePicker)) {
             std::vector<ShareThumbnail> ready;
             {
@@ -1007,7 +901,7 @@ void App::render_frame() {
         ui_.render_body();
     }
     const auto body_complete = std::chrono::steady_clock::now();
-    ui_.render_end();           // EndFrame: present (+ DwmFlush) — no context, no lock
+    ui_.render_end();
     const auto present_complete = std::chrono::steady_clock::now();
     {
         std::lock_guard<std::recursive_mutex> lock(ui_mutex_);
@@ -1039,11 +933,6 @@ void App::render_frame() {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Message-thread logic tick (network, hotkeys, fullscreen). Paused while the OS
-// modal move/resize loop runs — harmless, since rendering is on its own thread.
-// ─────────────────────────────────────────────────────────────────────────────
-
 void App::tick_message_thread() {
     ZoneScopedN("App::tick_message_thread");
 
@@ -1057,11 +946,8 @@ void App::tick_message_thread() {
         stop_screen_share();
     }
 
-    // Tick shared logic (network messages, speaking state, model updates, etc.)
     core_.tick();
 
-    // The PiP window could not be created during the last open: return the
-    // stream to the grid so the state matches what is on screen.
     if (pip_open_failed_) {
         pip_open_failed_ = false;
         core_.close_pip(PipCloseReason::UserClosed);
@@ -1069,12 +955,9 @@ void App::tick_message_thread() {
 
     poll_hotkeys();
 
-    // ESC exits fullscreen stream view
     if (core_.model_.stream_fullscreen && (GetAsyncKeyState(VK_ESCAPE) & 1))
         core_.model_.stream_fullscreen = false;
 
-    // Sync OS window fullscreen state with the model. set_fullscreen performs
-    // window ops (SetWindowPos) and must run on the message thread.
     if (ui_.is_fullscreen() != core_.model_.stream_fullscreen)
         ui_.set_fullscreen(core_.model_.stream_fullscreen);
 }
@@ -1090,10 +973,6 @@ void App::defer_dpi(float scale) {
     pending_dpi_.store(scale, std::memory_order_relaxed);
     dpi_pending_.store(true, std::memory_order_release);
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Screen sharing (Windows / DXGI specific)
-// ─────────────────────────────────────────────────────────────────────────────
 
 void App::show_share_picker(bool audio_only) {
     ZoneScopedN("App::show_share_picker");
@@ -1213,8 +1092,6 @@ void App::share_thumbnail_worker(std::stop_token stop_token) {
                     break;
             }
 
-            // The cards are 250x118dp. 320x180 retains enough detail for high
-            // DPI without uploading full-size window surfaces.
             auto thumbnail = thumbnail_session.capture(targets[index], 320, 180);
             if (!thumbnail)
                 continue;
@@ -1295,7 +1172,6 @@ void App::stop_application_audio_share() {
 void App::init_scale_pipeline(ID3D11Device* device) {
     if (scale_pipeline_ready_) return;
 
-    // Minimal fullscreen triangle VS (no vertex buffer needed)
     const char* vs_src = R"(
         void main(uint id : SV_VertexID, out float4 pos : SV_Position, out float2 uv : TEXCOORD) {
             uv = float2((id << 1) & 2, id & 2);
@@ -1429,8 +1305,6 @@ void App::finish_screen_share_start(uint32_t target_process_id) {
     core_.settings_.set_pref("video.share_codec",   std::to_string(core_.model_.share_codec.get()));
     core_.settings_.set_pref("video.share_scale",   std::to_string(core_.model_.share_scale.get()));
 
-    // Share start: reset the frame counter and seed the congestion controller
-    // with the user's target bitrate (same clamp the encode thread applies).
     {
         uint32_t bitrate_bps = static_cast<uint32_t>(core_.model_.share_bitrate * 1'000'000.0f);
         bitrate_bps = (std::max)(bitrate_bps, VIDEO_MIN_BITRATE);
@@ -1448,7 +1322,6 @@ void App::finish_screen_share_start(uint32_t target_process_id) {
 
     core_.stream_frame_count_.store(0, std::memory_order_relaxed);
 
-    // Encode thread: the encoder hands over each finished access unit here.
     auto on_encoded_cb = [this](const uint8_t* data, size_t len, bool keyframe) {
         if (!sharing_screen_ || !encoder_) return;
         core_.stream_frame_count_.fetch_add(1, std::memory_order_relaxed);
@@ -1457,15 +1330,10 @@ void App::finish_screen_share_start(uint32_t target_process_id) {
         const uint16_t h = static_cast<uint16_t>(encoder_->height());
         const VideoCodecId codec = encoder_->codec();
 
-        // AppCore builds the header, stamps frame_seq, picks the transport and
-        // accounts the bytes in the send controller. Safe when disconnected
-        // (returns sent=false) — the self-preview below never depends on it.
         const auto r = core_.send_video_frame(data, len, keyframe, w, h, codec);
         if (keyframe)
             LOG_INFO("keyframe fn={} size={} sent={}", r.frame_seq, len, r.sent ? 1 : 0);
 
-        // Local self-preview feed: if we're watching our own share, decode our
-        // encoder output locally into that stream's grid cell.
         if (core_.is_watching(core_.user_id_)) {
             std::vector<uint8_t> copy(data, data + len);
             enqueue_decode_work(core_.user_id_, std::move(copy),
@@ -1493,11 +1361,6 @@ void App::finish_screen_share_start(uint32_t target_process_id) {
         texture->GetDesc(&desc);
         if (desc.Width < 64 || desc.Height < 64) return;
 
-        // Frame-rate limiter (phase accumulator). The deadline advances by one
-        // interval per admitted frame, so jitter in capture delivery doesn't
-        // bleed the effective rate below the target. If capture stalled long
-        // enough to leave the deadline more than one interval in the past,
-        // re-anchor it instead of bursting to catch up.
         LARGE_INTEGER now;
         QueryPerformanceCounter(&now);
         if (now.QuadPart < next_capture_qpc_) return;
@@ -1505,17 +1368,11 @@ void App::finish_screen_share_start(uint32_t target_process_id) {
         if (next_capture_qpc_ < now.QuadPart - capture_interval_qpc_)
             next_capture_qpc_ = now.QuadPart + capture_interval_qpc_;
 
-        // Congestion admission (atomics only): skip this frame when the bytes
-        // still queued/in flight toward the server would add more than the
-        // controller's queueing budget on top of the RTT. Skipping before any
-        // GPU work costs nothing; frame_seq is stamped after encode, so the
-        // reference chain stays intact and no keyframe is needed.
         if (!core_.video_admit_frame()) return;
 
         uint32_t cap_w = (desc.Width  + 1) & ~1u;
         uint32_t cap_h = (desc.Height + 1) & ~1u;
 
-        // Apply scale factor
         constexpr float scale_factors[] = {1.0f, 0.75f, 0.5f, 0.25f};
         int scale_idx = (std::max)(0, (std::min)(core_.model_.share_scale.get(), 3));
         float sf = scale_factors[scale_idx];
@@ -1554,7 +1411,6 @@ void App::finish_screen_share_start(uint32_t target_process_id) {
             encode_tex_w_ = tex_w; encode_tex_h_ = tex_h;
             encode_write_slot_ = 0; encode_ready_slot_ = -1;
 
-            // Recreate full-res source texture + SRV for scale blit
             if (needs_scale) {
                 scale_src_tex_.Reset(); scale_src_srv_.Reset();
                 D3D11_TEXTURE2D_DESC src_desc{};
@@ -1591,7 +1447,6 @@ void App::finish_screen_share_start(uint32_t target_process_id) {
                 source_srv = scale_src_srv_.Get();
             }
 
-            // Blit with bilinear downscale
             D3D11_VIEWPORT vp = { 0, 0, (float)tex_w, (float)tex_h, 0, 1 };
             ctx->RSSetViewports(1, &vp);
             ctx->OMSetRenderTargets(1, encode_rtvs_[ws].GetAddressOf(), nullptr);
@@ -1603,7 +1458,6 @@ void App::finish_screen_share_start(uint32_t target_process_id) {
             ctx->IASetInputLayout(nullptr);
             ctx->Draw(3, 0);
 
-            // Unbind
             ID3D11ShaderResourceView* null_srv = nullptr;
             ID3D11RenderTargetView* null_rtv = nullptr;
             ctx->PSSetShaderResources(0, 1, &null_srv);
@@ -1658,13 +1512,10 @@ void App::stop_screen_share() {
     if (!sharing_screen_) return;
     sharing_screen_ = false;
 
-    // If we were self-previewing our own share, drop just that stream.
     if (core_.is_watching(core_.user_id_))
         core_.remove_watch(core_.user_id_);
 
     if (stream_audio_capture_) { stream_audio_capture_->stop(); stream_audio_capture_.reset(); }
-    // Stop callbacks before joining, while preserving the device and textures
-    // used by the encode thread until that thread has fully exited.
     if (capture_) capture_->stop_frame_delivery();
 
     if (encode_thread_.joinable()) {
@@ -1683,9 +1534,6 @@ void App::stop_screen_share() {
 
     if (encoder_) { encoder_->shutdown(); encoder_.reset(); }
     if (capture_) ScreenCapture::shutdown_async(std::move(capture_));
-    // video_frame_number_ is deliberately NOT reset here: it is owned by
-    // AppCore::send_video_frame and reset only in reset_video_sender (next
-    // share start) and on_disconnect_cleanup.
 
     core_.model_.is_sharing = false;
 
@@ -1695,7 +1543,6 @@ void App::stop_screen_share() {
 
 void App::on_video_frame_received(uint32_t sender_id, const uint8_t* data, size_t len) {
     ZoneScopedN("App::on_video_frame_received");
-    // data = [fn(4)][ts(4)][flags(1)][w(2)][h(2)][codec(1)][encoded(N)]
     if (len < 14) return;
 
     uint8_t flags = data[8];
@@ -1717,23 +1564,15 @@ void App::on_video_frame_received(uint32_t sender_id, const uint8_t* data, size_
                         codec, width, height, is_keyframe);
 }
 
-// Monotonic microseconds shared by the decode backlog age rule and the
-// stale-flush recovery clock (DecodeWork::arrival_us uses the same origin).
 static int64_t steady_now_us() {
     return std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-// The stale-flush run must be able to end after one clean sharer keyframe
-// interval: the recovery window may not exceed it.
 static_assert(kVideoDecodeStaleFlushRecoveryUs <=
                   static_cast<int64_t>(VIDEO_KEYFRAME_INTERVAL_MS) * 1000,
               "kVideoDecodeStaleFlushRecoveryUs must fit in VIDEO_KEYFRAME_INTERVAL_MS");
 
-// Push one encoded frame into a watched stream's decode queue. Holds
-// streams_mutex_ across the whole find+push so the stream can't be destroyed
-// concurrently by stop_video_stream. A stream waits for its first keyframe
-// before queueing anything (decoders need a sequence header to start).
 void App::enqueue_decode_work(UserId sharer_id, std::vector<uint8_t>&& encoded,
                               int64_t timestamp, VideoCodecId codec,
                               uint16_t width, uint16_t height, bool is_keyframe) {
@@ -1747,9 +1586,6 @@ void App::enqueue_decode_work(UserId sharer_id, std::vector<uint8_t>&& encoded,
         if (!s->running.load(std::memory_order_relaxed)) return;
 
         std::lock_guard<std::mutex> qlock(s->queue_mutex);
-        // A keyframe the gate was waiting for is the recovery point after a
-        // flush / discontinuity / stream start; only an in-sequence keyframe
-        // can prove the decoder keeps up (VideoDecodeStaleFlushTracker).
         const bool recovery_keyframe = is_keyframe && s->decode_gate.awaiting_keyframe();
         const auto decision = s->decode_gate.on_frame(
             static_cast<uint32_t>(timestamp), is_keyframe);
@@ -1773,8 +1609,6 @@ void App::enqueue_decode_work(UserId sharer_id, std::vector<uint8_t>&& encoded,
     }
     if (request_keyframe) {
         if (self_preview) {
-            // Never PLI our own share: the encoder's next keyframe (its own
-            // interval, or another viewer's PLI) resynchronizes the preview.
             LOG_WARN("Self-preview video frame discontinuity; waiting for the encoder's next keyframe");
         } else {
             LOG_WARN("Video frame discontinuity from user {}; requesting a keyframe", sharer_id);
@@ -1782,10 +1616,6 @@ void App::enqueue_decode_work(UserId sharer_id, std::vector<uint8_t>&& encoded,
         }
     }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Encode thread
-// ─────────────────────────────────────────────────────────────────────────────
 
 void App::encode_loop() {
     ZoneScopedN("App::encode_loop");
@@ -1816,9 +1646,6 @@ void App::encode_loop() {
                                                                 : VideoCodecId::AV1;
             encoder_.reset(); encode_registered_ = false;
             auto enc = std::make_unique<VideoEncoder>();
-            // Prefer the controller's adapted bitrate so a congestion-driven
-            // decrease survives an encoder re-create (resolution change); fall
-            // back to the user's slider value before the controller is seeded.
             uint32_t bitrate_bps = core_.video_sender_.bitrate_bps();
             if (bitrate_bps == 0)
                 bitrate_bps = static_cast<uint32_t>(core_.model_.share_bitrate * 1'000'000.0f);
@@ -1832,8 +1659,6 @@ void App::encode_loop() {
             }
             enc->on_encoded = encode_on_encoded_;
             encoder_ = std::move(enc);
-            // video_frame_number_ is NOT reset here: viewers' reorder buffers
-            // would see a backward jump. AppCore owns the counter.
 
             if (sharing_screen_) {
                 BinaryWriter upd;
@@ -1856,9 +1681,6 @@ void App::encode_loop() {
             }
         }
 
-        // Encoder reconfiguration reaches the encoder only from this thread:
-        // the adapted/slider bitrate published by the send controller, and a
-        // forced keyframe after a send failure (viewers lost a reference).
         if (auto b = core_.take_video_bitrate_update()) {
             uint32_t bitrate_bps = (std::max)(*b, VIDEO_MIN_BITRATE);
             bitrate_bps = (std::min)(bitrate_bps, VIDEO_MAX_BITRATE);
@@ -1885,18 +1707,12 @@ void App::encode_loop() {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Decode thread
-// ─────────────────────────────────────────────────────────────────────────────
-
 void App::start_video_stream(UserId sharer_id) {
     std::lock_guard<std::mutex> lock(streams_mutex_);
-    if (video_streams_.count(sharer_id)) return;   // already watching
+    if (video_streams_.count(sharer_id)) return;
     auto s = std::make_unique<VideoStream>();
     s->sharer_id = sharer_id;
     s->element_id = "screen-share-" + std::to_string(sharer_id);
-    // Main thread, while authenticated: user_id_ is stable for the stream's
-    // whole life, so decide once here instead of reading it off-thread later.
     s->self_preview = (sharer_id == core_.user_id_);
     s->running.store(true, std::memory_order_relaxed);
     VideoStream* ptr = s.get();
@@ -1905,9 +1721,6 @@ void App::start_video_stream(UserId sharer_id) {
 }
 
 void App::stop_video_stream(UserId sharer_id) {
-    // Extract+erase under the lock (so the receive thread can't be mid-enqueue on
-    // it), then stop+join its thread OUTSIDE the lock so we never block the
-    // receive thread on a thread join.
     std::unique_ptr<VideoStream> s;
     {
         std::lock_guard<std::mutex> lock(streams_mutex_);
@@ -1918,8 +1731,6 @@ void App::stop_video_stream(UserId sharer_id) {
     }
     stop_stream_thread(s.get());
     if (s->decoder) { s->decoder->shutdown(); s->decoder.reset(); }
-    // s destroyed here — its grid cell is removed by the data-for binding when
-    // app_core drops this sharer from model_.watched.
 }
 
 void App::stop_all_video_streams() {
@@ -1935,19 +1746,11 @@ void App::stop_all_video_streams() {
     }
 }
 
-// Signal a decode thread to exit and join it. The running=false store MUST happen
-// under queue_mutex: decode_loop waits on queue_cv with a predicate that reads
-// running, so mutating running outside that mutex opens a lost-wakeup window
-// (notify fires in the gap between the waiter's predicate check and it parking on
-// the condvar) that would hang the join forever.
 void App::stop_stream_thread(VideoStream* s) {
     {
         std::lock_guard<std::mutex> lock(s->queue_mutex);
         s->running.store(false, std::memory_order_relaxed);
     }
-    // NVDEC may be waiting for a surface lease that can only be retired by the
-    // render thread. This function is called while the message thread owns the
-    // UI mutex, so a plain join would prevent that renderer progress forever.
     s->decode_stop.request_stop();
     s->queue_cv.notify_all();
     if (s->thread.joinable()) s->thread.join();
@@ -1955,13 +1758,7 @@ void App::stop_stream_thread(VideoStream* s) {
 
 void App::on_video_decoded(VideoStream* s, const encdec::DecodedFrame& frame) {
     ZoneScopedN("on_decoded::copy_planes");
-    // The decoder is warm from its first delivered frame on, whether or not
-    // that frame reaches the screen: the backlog rules may now treat a
-    // growing queue as the decoder falling behind rather than warming up.
     s->decoded_since_init = true;
-    // Batch catch-up: this frame was decoded only to keep the reference chain
-    // (a newer one follows in the same batch), so skip the plane copy / native
-    // publish. render_frame would discard it anyway.
     if (s->suppress_output) return;
     uint32_t w = frame.width, h = frame.height;
 
@@ -2022,8 +1819,6 @@ void App::on_video_decoded(VideoStream* s, const encdec::DecodedFrame& frame) {
     }
 }
 
-// Non-destructive keyframe scan of a (small) decode batch. std::queue has no
-// iteration, so rotate every element once and restore the original order.
 template <typename Work>
 static bool queue_contains_keyframe(std::queue<Work>& frames) {
     bool found = false;
@@ -2042,17 +1837,6 @@ void App::decode_loop(VideoStream* s) {
     if (!parties::set_current_thread_highest_priority())
         LOG_WARN("Failed to set a video decode thread to highest priority");
 
-    // Whole-batch flush that keeps the warm decoder (hard limit or age rule).
-    // Every flush clears the queue and re-arms the gate, but only the first
-    // kVideoDecodeStaleFlushPliLimit consecutive ones request a keyframe: a
-    // decoder that is persistently slower than the stream would otherwise
-    // force the sharer to emit a keyframe per flush (~1 Hz), spiking its
-    // bitrate and — through the server backlog gate — dropping frames for
-    // viewers that keep up. On the third flush this logs once and the stream
-    // waits for the sharer's periodic keyframe until a keyframe is decoded
-    // normally again (VideoDecodeStaleFlushTracker resets the counter). The
-    // self-preview never requests: our encoder emits keyframes on its own
-    // interval and other viewers' PLIs already force them.
     auto resync_warm_decoder_at_keyframe = [this, s](const char* reason) {
         bool request_keyframe = false;
         uint32_t flushes = 0;
@@ -2072,7 +1856,7 @@ void App::decode_loop(VideoStream* s) {
                          s->sharer_id);
             return;
         }
-        if (!request_keyframe) return;   // suppression active, already logged once
+        if (!request_keyframe) return;
         if (s->self_preview) {
             LOG_WARN("Resynchronizing self-preview video decoder after {}; keeping warm decoder, "
                      "waiting for the encoder's next keyframe", reason);
@@ -2094,12 +1878,8 @@ void App::decode_loop(VideoStream* s) {
             s->decoder->shutdown();
             s->decoder.reset();
         }
-        // The next batch re-creates the decoder; until it delivers a frame the
-        // backlog rules treat it as cold again.
         s->decoded_since_init = false;
         if (s->self_preview) {
-            // Same rule as the flush paths: a self-PLI would only force our own
-            // encoder's keyframe for every viewer; its own interval suffices.
             LOG_WARN("Resetting self-preview video decoder after {}; waiting for the encoder's next keyframe",
                      reason);
             return;
@@ -2121,8 +1901,6 @@ void App::decode_loop(VideoStream* s) {
             batch.swap(s->queue);
         }
 
-        // Whether the retained batch still holds a keyframe (known from the
-        // trim when it runs; otherwise scanned below for the age rule).
         bool batch_has_keyframe = false;
         bool batch_keyframe_known = false;
 
@@ -2142,13 +1920,6 @@ void App::decode_loop(VideoStream* s) {
                          original_size);
             }
 
-            // This is a sustained overload rather than the normal one-time 4K
-            // NVDEC warm-up. With no keyframe in the retained chain there is no
-            // safe prefix to drop, so request a new random-access point. Keep the
-            // decoder and its expensive CUDA/D3D12 surface pool alive.
-            // decoder_ready is "has delivered a frame since its last (re)init",
-            // not "exists": a decoder still working on its first keyframe is
-            // warming up, and its backlog is the normal warm-up.
             if (should_resync_decode_backlog(
                     batch.size(), trim.found_keyframe, s->decoded_since_init)) {
                 while (!batch.empty()) batch.pop();
@@ -2157,13 +1928,6 @@ void App::decode_loop(VideoStream* s) {
             }
         }
 
-        // Age rule: independent of queue length, a warm decoder whose oldest
-        // retained frame has already waited kVideoDecodeBacklogMaxAgeUs is
-        // showing a stale picture. With no keyframe queued to jump to, drop the
-        // backlog and ask for a new random-access point (send_pli rate-limits,
-        // resync_warm_decoder_at_keyframe stops asking after two consecutive
-        // flushes). A decoder that has not delivered a frame since its last
-        // (re)init is cold, not behind, and is exempt.
         if (!batch.empty() && s->decoded_since_init) {
             const int64_t now_us = steady_now_us();
             const int64_t oldest_us = batch.front().arrival_us;
@@ -2175,10 +1939,6 @@ void App::decode_loop(VideoStream* s) {
                 if (should_resync_stale_decode_backlog(oldest_us, now_us,
                                                        batch_has_keyframe,
                                                        s->decoded_since_init)) {
-                    // Decode thread is the tracker's only writer, so this
-                    // read needs no lock. Once suppressed, the flush is the
-                    // expected steady state of a too-slow decoder: keep the
-                    // per-flush line out of the warn log.
                     if (s->stale_flushes.suppressed())
                         LOG_DEBUG("Decode backlog for user {} is stale ({} frames, oldest {} ms old)",
                                   s->sharer_id, batch.size(), (now_us - oldest_us) / 1000);
@@ -2205,7 +1965,7 @@ void App::decode_loop(VideoStream* s) {
                 s->decoder->height() != work.height) {
                 if (s->decoder) s->decoder->shutdown();
                 s->decoder = std::make_unique<VideoDecoder>();
-                s->decoded_since_init = false;   // cold until on_video_decoded
+                s->decoded_since_init = false;
                 if (s->hardware_decode_disabled)
                     s->decoder->disable_hardware();
                 if (!s->decoder->init(work.codec, work.width, work.height,
@@ -2219,8 +1979,6 @@ void App::decode_loop(VideoStream* s) {
                 LOG_INFO("Decoder reinitialized: {}",  s->decoder->backend_name());
                 s->decoder->on_decoded = [this, s](const DecodedFrame& f) { on_video_decoded(s, f); };
             }
-            // Only the last frame of the batch can reach the screen; decode the
-            // earlier ones for the reference chain but skip their plane copies.
             s->suppress_output = batch.size() > 1;
             const bool decoded = s->decoder->decode(work.data.data(), work.data.size(),
                                                     work.timestamp);
@@ -2236,10 +1994,6 @@ void App::decode_loop(VideoStream* s) {
                 break;
             }
             if (work.keyframe) {
-                // A keyframe decoded normally may end a run of stale flushes
-                // (the tracker ignores recovery keyframes and requires the
-                // decoder to have kept up since it resumed). Written under
-                // queue_mutex because the main thread reads the tracker.
                 std::lock_guard<std::mutex> lock(s->queue_mutex);
                 s->stale_flushes.on_keyframe_decoded(steady_now_us(), work.recovery_keyframe);
             }
@@ -2248,4 +2002,4 @@ void App::decode_loop(VideoStream* s) {
     }
 }
 
-} // namespace parties::client
+}

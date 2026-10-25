@@ -20,7 +20,6 @@ namespace {
 
 constexpr const char* kContextName = "picture-in-picture";
 
-// The keys the overlay's volume control uses (see PipWindowModel).
 Rml::Input::KeyIdentifier pip_key(unsigned short key_code)
 {
     switch (key_code) {
@@ -36,7 +35,7 @@ Rml::Input::KeyIdentifier pip_key(unsigned short key_code)
     }
 }
 
-} // namespace
+}
 
 // The PiP surface. Overlay actions receive clicks; everywhere else the mouse
 // drags the panel. The panel is non-activating, so the first click counts.
@@ -45,7 +44,6 @@ Rml::Input::KeyIdentifier pip_key(unsigned short key_code)
 @interface PartiesPipView : MTKView
 @property (nonatomic, assign) Rml::Context* rmlContext;
 @property (nonatomic, assign) PipWindowModel* pipModel;
-// True between a press on an overlay action and its release.
 @property (nonatomic, readonly) BOOL pointerActive;
 @end
 
@@ -85,7 +83,6 @@ Rml::Input::KeyIdentifier pip_key(unsigned short key_code)
         _rmlContext->ProcessMouseButtonDown(0, 0);
         return;
     }
-    // Everything that is not an action moves the panel.
     [self.window performWindowDragWithEvent:event];
 }
 
@@ -169,7 +166,7 @@ Rml::Input::KeyIdentifier pip_key(unsigned short key_code)
     _renderer = std::make_unique<RenderInterface_Metal>(_device, _view);
     if (!_commandQueue || !*_renderer) {
         NSLog(@"[Parties] Picture-in-picture renderer creation failed");
-        _renderer.reset();   // no context used it yet
+        _renderer.reset();
         _failed = true;
         return NO;
     }
@@ -177,7 +174,6 @@ Rml::Input::KeyIdentifier pip_key(unsigned short key_code)
     _panel = [[PartiesPipPanelController alloc] initWithContentView:_view];
     PartiesPipHost* host = self;
     [_panel setGeometryChanged:[host](NSRect frame) {
-        // A drag can report several moves; persist only the last one.
         const uint64_t generation = ++host->_saveGeneration;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
@@ -226,7 +222,7 @@ Rml::Input::KeyIdentifier pip_key(unsigned short key_code)
     if (![self ensureSurface]) return NO;
     _model->title = title;
     _panel.panel.title = [NSString stringWithUTF8String:title.c_str()] ?: @"Parties picture-in-picture";
-    if (_panel.isVisible) return YES;   // switching streams keeps the panel where it is
+    if (_panel.isVisible) return YES;
 
     const double aspect = _fittedAspect > 0 ? _fittedAspect : parties::client::kPipDefaultAspect;
     NSRect frame;
@@ -280,8 +276,6 @@ Rml::Input::KeyIdentifier pip_key(unsigned short key_code)
                    display:YES];
 }
 
-// ── MTKViewDelegate ───────────────────────────────────────────────────────────
-
 - (void)mtkView:(MTKView*)view drawableSizeWillChange:(CGSize)size
 {
     if (!_renderer || !_context) return;
@@ -294,8 +288,6 @@ Rml::Input::KeyIdentifier pip_key(unsigned short key_code)
 - (void)drawInMTKView:(MTKView*)view
 {
     if (!_renderer || !_context || !_panel.isVisible) return;
-    // Stay visible while a control is in use: a volume drag that left the
-    // panel, or keyboard adjustment while the panel is key.
     _model->overlay_visible = [_panel cursorInside] || _view.pointerActive || _panel.panel.keyWindow;
     if (_actions.volume) _model->volume = _actions.volume();
     [self fitPanelToVideo];
@@ -310,8 +302,6 @@ Rml::Input::KeyIdentifier pip_key(unsigned short key_code)
     [buffer presentDrawable:view.currentDrawable];
     [buffer commit];
 }
-
-// ── Teardown ──────────────────────────────────────────────────────────────────
 
 - (void)prepareShutdown
 {

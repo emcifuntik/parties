@@ -93,7 +93,7 @@ D3D12_RESOURCE_BARRIER transition_resource(ID3D12Resource* resource,
 	barrier.Transition.StateAfter = after;
 	return barrier;
 }
-} // namespace
+}
 
 struct PartiesRenderInterface_DX12::GeometryProxy {
 	Rml::CompiledGeometryHandle upstream = 0;
@@ -134,20 +134,12 @@ PartiesRenderInterface_DX12::operator bool() const { return static_cast<bool>(up
 
 void PartiesRenderInterface_DX12::SetViewport(int width, int height, bool force) {
 	if (width <= 0 || height <= 0) return;
-	// Restoring an unchanged window does not require a synthetic one-pixel
-	// ResizeBuffers cycle. DWM surface refresh is handled by the window layer;
-	// resizing twice here can exhaust or invalidate transient driver resources.
 	(void)force;
 	const bool resize_pending = viewport_width_ != width || viewport_height_ != height ||
 		!upstream_.IsViewportValid();
 	if (upstream_.SetViewport(width, height)) {
-		// A real resize flushes the GPU before replacing the swapchain buffers.
-		// ResizeBuffers also resets the frame index, so repeated resizing can
-		// otherwise keep retired video descriptors in a bucket that EndFrame
-		// never revisits. Every bucket is safe to release after that flush.
 		if (resize_pending) {
-			for (uint32_t frame = 0; frame < retired_textures_.size(); ++frame)
-				CollectRetiredTextures(frame);
+			CollectAllRetiredTextures();
 		}
 		viewport_width_ = width;
 		viewport_height_ = height;
@@ -171,11 +163,8 @@ void PartiesRenderInterface_DX12::EndFrame() {
 
 void PartiesRenderInterface_DX12::ReleaseRetiredResources() {
 	if (!upstream_ || frame_active_) return;
-	// Every retired texture was last sampled by an already submitted frame;
-	// once the queue is idle all buckets are safe, not only the current one.
 	upstream_.WaitIdle();
-	for (uint32_t frame = 0; frame < retired_textures_.size(); ++frame)
-		CollectRetiredTextures(frame);
+	CollectAllRetiredTextures();
 }
 
 void PartiesRenderInterface_DX12::CaptureNextFrame(std::string output_path) {
@@ -338,6 +327,11 @@ void PartiesRenderInterface_DX12::CollectRetiredTextures(uint32_t completed_fram
 	retired.clear();
 }
 
+void PartiesRenderInterface_DX12::CollectAllRetiredTextures() {
+	for (uint32_t frame = 0; frame < retired_textures_.size(); ++frame)
+		CollectRetiredTextures(frame);
+}
+
 void PartiesRenderInterface_DX12::ReplaceTexture(TextureProxy& proxy,
 	Rml::Span<const Rml::byte> data, Rml::Vector2i dimensions) {
 	Rml::TextureHandle replacement = upstream_.GenerateTextureCommitted(data, dimensions);
@@ -409,7 +403,7 @@ inline void yuv_to_rgba(uint8_t* destination, int y, int u, int v) {
 	destination[2] = clamp_channel((298 * c + 516 * d + 128) >> 8);
 	destination[3] = 255;
 }
-} // namespace
+}
 
 void PartiesRenderInterface_DX12::ConvertI420ToRgba(std::vector<Rml::byte>& rgba,
 	const uint8_t* y_data, uint32_t y_stride, const uint8_t* u_data, const uint8_t* v_data,

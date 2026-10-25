@@ -38,4 +38,4 @@ private:
     bool force_keyframe_ = false;
 };
 
-} // namespace parties::encdec::openh264
+}

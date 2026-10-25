@@ -19,7 +19,7 @@ bool Check(bool condition, const char* message) {
     return condition;
 }
 
-} // namespace
+}
 
 int main() {
     DocumentRouter router;

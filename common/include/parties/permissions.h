@@ -41,4 +41,4 @@ bool has_permission(Role role, Permission perm,
                     const std::optional<uint32_t>& channel_override = std::nullopt);
 bool can_moderate(Role actor, Role target);
 
-} // namespace parties
+}

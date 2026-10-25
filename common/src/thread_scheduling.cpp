@@ -34,4 +34,4 @@ bool set_current_thread_highest_priority() noexcept {
 #endif
 }
 
-} // namespace parties
+}

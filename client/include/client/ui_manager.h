@@ -10,7 +10,6 @@
 #include <functional>
 #include <unordered_map>
 
-// Forward declarations — avoid pulling windows.h into header
 typedef struct HWND__* HWND;
 class ExtendedRenderInterface;
 class SystemInterface_Win32;
@@ -48,7 +47,6 @@ public:
     void bind_event(const std::string& element_id, const std::string& event_type,
                     EventCallback callback);
 
-    // Window controls
     void minimize_window();
     void toggle_maximize();
     void close_window();
@@ -56,7 +54,6 @@ public:
     void set_fullscreen(bool fs);
     bool is_fullscreen() const { return fullscreen_; }
 
-    // Accessors for WndProc in main.cpp
     TextInputMethodEditor_Win32& text_input_editor();
     ExtendedRenderInterface* renderer() { return render_interface_.get(); }
     float dpi_scale() const { return dpi_scale_; }
@@ -75,7 +72,6 @@ private:
     HWND hwnd_ = nullptr;
     float dpi_scale_ = 1.0f;
     bool initialised_ = false;
-    // Written by the Win32 message thread and read by the render thread.
     std::atomic<bool> minimized_{false};
     std::atomic<bool> hidden_{false};
     // Render-thread-only snapshot: once BeginFrame succeeds, the frame must be
@@ -84,8 +80,8 @@ private:
     bool fullscreen_ = false;
     long saved_style_ = 0;
     long saved_ex_style_ = 0;
-    int saved_rect_[4]{};  // left, top, right, bottom before fullscreen
+    int saved_rect_[4]{};
     class EventListenerInstancer;
 };
 
-} // namespace parties::client
+}

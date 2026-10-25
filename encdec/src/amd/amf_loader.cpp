@@ -38,7 +38,7 @@ public:
 
 PartiesAmfTraceWriter g_trace_writer;
 
-} // namespace
+}
 
 bool load_amf(amf::AMFFactory*& factory) {
     static std::once_flag load_once;
@@ -91,4 +91,4 @@ bool load_amf(amf::AMFFactory*& factory) {
     return ok;
 }
 
-} // namespace parties::encdec::amd
+}

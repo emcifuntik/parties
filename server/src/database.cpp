@@ -20,7 +20,6 @@ bool Database::open(const std::string& path) {
         return false;
     }
 
-    // Enable WAL and foreign keys
     exec("PRAGMA journal_mode=WAL;");
     exec("PRAGMA foreign_keys=ON;");
 
@@ -148,8 +147,6 @@ bool Database::create_schema() {
 
     return exec(schema);
 }
-
-// --- Users ---
 
 bool Database::create_user(const PublicKey& pubkey, const std::string& display_name,
                            const std::string& fingerprint, Role role) {
@@ -299,8 +296,6 @@ bool Database::delete_user(UserId id) {
     return ok;
 }
 
-// --- Channels ---
-
 bool Database::create_channel(const std::string& name, int max_users, int sort_order) {
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "INSERT INTO channels (name, max_users, sort_order) VALUES (?, ?, ?)";
@@ -389,8 +384,6 @@ bool Database::rename_channel(ChannelId id, const std::string& new_name) {
     return ok;
 }
 
-// --- Channel permissions ---
-
 bool Database::set_channel_permission(ChannelId channel_id, Role role, uint32_t permissions) {
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "INSERT OR REPLACE INTO channel_permissions (channel_id, role, permission) "
@@ -429,8 +422,6 @@ std::optional<uint32_t> Database::get_channel_permission(ChannelId channel_id, R
     return perm;
 }
 
-// --- Server metadata ---
-
 bool Database::set_meta(const std::string& key, const std::string& value) {
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "INSERT OR REPLACE INTO server_meta (key, value) VALUES (?, ?)";
@@ -464,8 +455,6 @@ std::optional<std::string> Database::get_meta(const std::string& key) {
     sqlite3_finalize(stmt);
     return val;
 }
-
-// --- Text channels ---
 
 bool Database::create_text_channel(const std::string& name, int sort_order) {
     sqlite3_stmt* stmt = nullptr;
@@ -538,8 +527,6 @@ bool Database::delete_text_channel(uint32_t id) {
     return ok;
 }
 
-// --- Messages ---
-
 uint64_t Database::insert_message(uint32_t channel_id, uint32_t sender_id,
                                    const std::string& sender_name, const std::string& text,
                                    uint64_t timestamp) {
@@ -609,7 +596,6 @@ std::vector<MessageRow> Database::get_messages(uint32_t channel_id, uint64_t bef
 
     sqlite3_finalize(stmt);
 
-    // Results come newest-first from DB; reverse so oldest is first
     std::reverse(result.begin(), result.end());
     return result;
 }
@@ -731,8 +717,6 @@ std::vector<MessageRow> Database::search_messages(uint32_t channel_id, const std
     return result;
 }
 
-// --- File attachments ---
-
 uint64_t Database::insert_attachment(uint64_t message_id, const std::string& file_name,
                                       int64_t file_size, const std::string& mime_type,
                                       const std::string& disk_path) {
@@ -827,8 +811,6 @@ std::vector<AttachmentRow> Database::get_attachments_for_message(uint64_t messag
     return result;
 }
 
-// --- Retention ---
-
 int Database::purge_old_messages(int days) {
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "UPDATE messages SET deleted = 1 "
@@ -845,7 +827,6 @@ int Database::purge_old_messages(int days) {
 }
 
 int Database::purge_old_files(int days, const std::string& storage_path) {
-    // Get files to delete
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "SELECT id, disk_path FROM file_attachments "
                       "WHERE created_at < datetime('now', '-' || ? || ' days')";
@@ -926,8 +907,6 @@ int Database::purge_oldest_files(int64_t max_size, const std::string& storage_pa
     return count;
 }
 
-// --- Admin ---
-
 bool Database::has_any_users() {
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "SELECT COUNT(*) FROM users";
@@ -943,4 +922,4 @@ bool Database::has_any_users() {
     return has_users;
 }
 
-} // namespace parties::server
+}

@@ -77,7 +77,7 @@ std::vector<uint8_t> MockStreamFrame(int variant)
     return pixels;
 }
 
-} // namespace
+}
 
 bool IsUIFixtureScenario(const std::string& scenario)
 {
@@ -348,4 +348,4 @@ void ApplyUIFixtureDocument(Rml::ElementDocument* document, const std::string& s
     }
 }
 
-} // namespace parties::client
+}

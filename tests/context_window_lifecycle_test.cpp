@@ -29,7 +29,7 @@ LRESULT CALLBACK test_window_proc(HWND hwnd, UINT message, WPARAM w_param, LPARA
     return DefWindowProcW(hwnd, message, w_param, l_param);
 }
 
-} // namespace
+}
 
 int main() {
     const DWORD owner_thread = GetCurrentThreadId();

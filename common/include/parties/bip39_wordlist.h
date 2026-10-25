@@ -1,8 +1,5 @@
 #pragma once
 
-// BIP-39 English wordlist (2048 words)
-// Generated from seed_words.txt
-
 #include <array>
 #include <string_view>
 
@@ -267,4 +264,4 @@ inline constexpr std::array<std::string_view, 2048> bip39_wordlist = {{
     "yellow", "you", "young", "youth", "zebra", "zero", "zone", "zoo"
 }};
 
-} // namespace parties
+}

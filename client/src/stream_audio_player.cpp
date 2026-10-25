@@ -23,7 +23,7 @@ bool StreamAudioPlayer::init() {
     decoder_initialized_ = true;
 
     pcm_buf_.resize(kFrameSize * kChannels, 0.0f);
-    pcm_pos_ = kFrameSize * kChannels;  // Force decode on first read
+    pcm_pos_ = kFrameSize * kChannels;
 
     return true;
 }
@@ -64,11 +64,10 @@ void StreamAudioPlayer::mix_output(float* output, int frame_count) {
     int written = 0;
 
     while (written < frame_count) {
-        // If current buffer exhausted, decode next frame
         if (pcm_pos_ >= static_cast<size_t>(kFrameSize * kChannels)) {
             std::lock_guard<std::mutex> lock(mutex_);
             if (!decode_frame(pcm_buf_.data(), kFrameSize)) {
-                break;  // No audio available
+                break;
             }
             pcm_pos_ = 0;
         }
@@ -90,8 +89,6 @@ void StreamAudioPlayer::mix_output(float* output, int frame_count) {
 }
 
 bool StreamAudioPlayer::decode_frame(float* pcm_out, int frame_size) {
-    // Must be called with mutex_ held
-
     if (!primed_ && packet_queue_.size() < kPreBuffer)
         return false;
 
@@ -106,16 +103,14 @@ bool StreamAudioPlayer::decode_frame(float* pcm_out, int frame_size) {
         return decoded > 0;
     }
 
-    // No packet — try PLC
     consecutive_empty_++;
     if (consecutive_empty_ <= kPlcMaxFrames) {
         int decoded = decoder_.decode(nullptr, 0, pcm_out, frame_size);
         return decoded > 0;
     }
 
-    // Too many PLC frames — reset
     primed_ = false;
     return false;
 }
 
-} // namespace parties::client
+}

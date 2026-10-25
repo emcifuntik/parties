@@ -29,7 +29,7 @@ BOOL CALLBACK collect_monitor(HMONITOR monitor, HDC, LPRECT, LPARAM data) {
     return TRUE;
 }
 
-} // namespace
+}
 
 Win32PipWindow::~Win32PipWindow() {
     destroy();
@@ -43,7 +43,7 @@ bool Win32PipWindow::create(Callbacks callbacks) {
     window_class.cbSize = sizeof(window_class);
     window_class.lpfnWndProc = &Win32PipWindow::window_proc;
     window_class.hInstance = GetModuleHandleW(nullptr);
-    window_class.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512) /*IDC_ARROW*/);
+    window_class.hCursor = LoadCursorW(nullptr, reinterpret_cast<LPCWSTR>(IDC_ARROW));
     window_class.lpszClassName = kClassName;
     if (!RegisterClassExW(&window_class) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
         return false;
@@ -54,7 +54,7 @@ bool Win32PipWindow::create(Callbacks callbacks) {
     HWND created = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
         kClassName, L"Parties picture-in-picture", WS_POPUP,
         0, 0, 384, 216, nullptr, nullptr, window_class.hInstance, this);
-    hwnd_ = created;   // also set during WM_NCCREATE for creation messages
+    hwnd_ = created;
     return hwnd_ != nullptr;
 }
 
@@ -79,8 +79,6 @@ void Win32PipWindow::destroy() {
     visible_.store(false, std::memory_order_release);
     HWND hwnd = hwnd_;
     hwnd_ = nullptr;
-    // Detach first: a cross-thread destroy is only posted, and messages
-    // dispatched before it must not reach this (possibly destroyed) object.
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
     OwnerThreadWindowDestroy::destroy(hwnd);
 }
@@ -129,7 +127,6 @@ void Win32PipWindow::apply_aspect_to_sizing(RECT& rect, WPARAM edge, double aspe
     int width = (std::max)(static_cast<int>(rect.right - rect.left), min_width);
     int height = static_cast<int>(rect.bottom - rect.top);
     if (edge == WMSZ_TOP || edge == WMSZ_BOTTOM) {
-        // Height-driven: the dragged edge sets the height.
         height = (std::max)(height, static_cast<int>(std::lround(min_width / aspect)));
         width = static_cast<int>(std::lround(height * aspect));
     } else {
@@ -157,8 +154,6 @@ void Win32PipWindow::report_size() {
 }
 
 LRESULT CALLBACK Win32PipWindow::window_proc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_param) {
-    // Posted teardown and cross-thread resize run before touching the object:
-    // it may already be gone when the destroy message is dispatched.
     if (OwnerThreadWindowDestroy::handle_message(hwnd, message))
         return 0;
     if (OwnerThreadWindowResize::handle_message(hwnd, message, w_param, l_param))
@@ -206,7 +201,7 @@ LRESULT Win32PipWindow::handle(UINT message, WPARAM w_param, LPARAM l_param) {
     case WM_MOUSEACTIVATE:
         return MA_NOACTIVATE;
     case WM_NCLBUTTONDBLCLK:
-        return 0;   // no maximize/restore on the drag surface
+        return 0;
     case WM_SIZING: {
         const int min_width = static_cast<int>(std::lround(PipSizeLimits{}.min_width * scale()));
         apply_aspect_to_sizing(*reinterpret_cast<RECT*>(l_param), w_param, aspect(), min_width);
@@ -227,7 +222,7 @@ LRESULT Win32PipWindow::handle(UINT message, WPARAM w_param, LPARAM l_param) {
         if (callbacks_.on_geometry_changed) callbacks_.on_geometry_changed(window_rect());
         return 0;
     case WM_CLOSE:
-        return 0;   // PiP closes through its overlay or the main window only
+        return 0;
     case WM_ERASEBKGND:
         return 1;
     case WM_PAINT: {
@@ -237,8 +232,6 @@ LRESULT Win32PipWindow::handle(UINT message, WPARAM w_param, LPARAM l_param) {
         return 0;
     }
     case WM_NCMOUSEMOVE: {
-        // The drag surface reports non-client moves; forward them as client
-        // moves so overlay hover state follows the cursor off a button.
         if (callbacks_.on_input) {
             POINT point{GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param)};
             ScreenToClient(hwnd_, &point);
@@ -254,8 +247,6 @@ LRESULT Win32PipWindow::handle(UINT message, WPARAM w_param, LPARAM l_param) {
         if (callbacks_.takes_keyboard_at && callbacks_.takes_keyboard_at(x, y))
             SetForegroundWindow(hwnd_);
         const bool consumed = callbacks_.on_input && callbacks_.on_input(message, w_param, l_param);
-        // The hosted UI captures the mouse for the press so a slider drag
-        // keeps receiving moves outside the window.
         pointer_captured_.store(GetCapture() == hwnd_, std::memory_order_release);
         if (consumed) return 0;
         break;
@@ -269,8 +260,6 @@ LRESULT Win32PipWindow::handle(UINT message, WPARAM w_param, LPARAM l_param) {
         break;
     }
     case WM_CAPTURECHANGED:
-        // Capture taken away mid-drag (another window, a system gesture): end
-        // the press so the hosted UI does not keep dragging without a button.
         if (pointer_captured_.exchange(false, std::memory_order_acq_rel) && !releasing_capture_ &&
             reinterpret_cast<HWND>(l_param) != hwnd_ && callbacks_.on_input) {
             POINT point{};
@@ -286,7 +275,6 @@ LRESULT Win32PipWindow::handle(UINT message, WPARAM w_param, LPARAM l_param) {
         break;
     case WM_KEYDOWN:
     case WM_KEYUP:
-        // Only reaches the window after a keyboard control activated it.
         if (callbacks_.on_input && callbacks_.on_input(message, w_param, l_param))
             return 0;
         break;
@@ -303,4 +291,4 @@ LRESULT Win32PipWindow::handle(UINT message, WPARAM w_param, LPARAM l_param) {
     return DefWindowProcW(hwnd_, message, w_param, l_param);
 }
 
-} // namespace parties::client
+}

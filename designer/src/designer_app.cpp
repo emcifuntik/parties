@@ -133,11 +133,7 @@ private:
 	int* data_binding_warning_count_ = nullptr;
 };
 
-} // namespace
-
-// ══════════════════════════════════════════════════════════════════════════
-// FilesystemFileInterface
-// ══════════════════════════════════════════════════════════════════════════
+}
 
 void FilesystemFileInterface::AddSearchPath(const std::string& dir) {
 	for (auto& p : search_paths_)
@@ -154,25 +150,21 @@ void FilesystemFileInterface::RemoveSearchPath(const std::string& dir) {
 void FilesystemFileInterface::ClearSearchPaths() { search_paths_.clear(); }
 
 std::string FilesystemFileInterface::Resolve(const std::string& path) {
-	// Absolute path
 	if (fs::path(path).is_absolute() && fs::exists(path))
 		return path;
 
-	// Relative to base directory (parent of .rml file)
 	if (!base_dir_.empty()) {
 		auto candidate = fs::path(base_dir_) / path;
 		if (fs::exists(candidate))
 			return candidate.string();
 	}
 
-	// Search paths
 	for (auto& sp : search_paths_) {
 		auto candidate = fs::path(sp) / path;
 		if (fs::exists(candidate))
 			return candidate.string();
 	}
 
-	// Last resort: try as-is (may be relative to CWD)
 	if (fs::exists(path))
 		return path;
 
@@ -213,10 +205,6 @@ size_t FilesystemFileInterface::Length(Rml::FileHandle file) {
 	std::fseek(f, cur, SEEK_SET);
 	return static_cast<size_t>(len);
 }
-
-// ══════════════════════════════════════════════════════════════════════════
-// DesignerApp
-// ══════════════════════════════════════════════════════════════════════════
 
 const std::vector<std::string>& DesignerApp::GetAssetFolders() const {
 	return file_interface_.GetSearchPaths();
@@ -412,8 +400,6 @@ struct DesignerApp::PartiesFixture {
 
 		chat.text_channels = Rml::Vector<parties::client::TextChannel>{
 			{1, "general", false}, {2, "clips-and-links", true}, {3, "off-topic", false}};
-		// Keep chat selected in the settings fixture to reproduce the historical
-		// overlap bug. The document router must still render settings exclusively.
 		chat.active_channel = (scenario == "chat" || scenario == "chat-segment-churn" ||
 			scenario == "settings") ? 1 : 0;
 		chat.active_channel_name = "general";
@@ -625,14 +611,10 @@ struct DesignerApp::PartiesFixture {
 				if (card->IsClassSet("streaming")) streaming_card = card;
 				else if (!ordinary_card) ordinary_card = card;
 			}
-			// A normal member card must be inert, while the streaming member card
-			// must issue exactly one watch request through the real data event.
 			if (ordinary_card) ordinary_card->DispatchEvent("click", Rml::Dictionary{});
 			if (streaming_card) streaming_card->DispatchEvent("click", Rml::Dictionary{});
 		}
 		if (scenario == "settings" || scenario == "settings-select-open") {
-			// Exercise the data-bound custom element after document creation. This
-			// reproduces the real route transition instead of mutating its C++ object.
 			lobby.voice_level = 0.48f;
 			lobby.vad_threshold = 0.36f;
 			lobby.ptt_enabled = true;
@@ -698,9 +680,6 @@ struct DesignerApp::PartiesFixture {
 			return valid;
 		}
 
-		// Every connected top-level route uses the channel sidebar. Settings owns
-		// its dedicated navigation, while disconnected flows have no sidebar. The
-		// legacy server rail must not exist in any document fixture.
 		const bool expects_channel_sidebar = scenario == "room" || scenario == "chat" ||
 			scenario == "chat-segment-churn" ||
 			scenario == "member" || scenario == "share" || scenario == "audio-share" ||
@@ -843,7 +822,6 @@ struct DesignerApp::PartiesFixture {
 					music_icons.size(), music_badges.size(), mobile ? 1 : 0);
 				return false;
 			}
-			// iOS shows room members in the sidebar instead of the desktop stage.
 			if (mobile)
 				return cards.empty() && (!audio_share || !audio_share->IsVisible(true));
 			bool packed_grid = cards.size() == 7;
@@ -1250,9 +1228,6 @@ struct DesignerApp::PartiesFixture {
 				: 999.0f;
 			float stream_slider_click_offset = 999.0f;
 			if (slider && track && bar) {
-				// Exercise the real range hit-test at a point away from the current
-				// value. The visual thumb centre must land under the pointer; this
-				// catches stale input coordinates and CSS margin regressions.
 				const Rml::Vector2f track_offset = track->GetAbsoluteOffset(Rml::BoxArea::Border);
 				const Rml::Vector2f track_size = track->GetBox().GetSize(Rml::BoxArea::Border);
 				const int click_x = static_cast<int>(std::lround(track_offset.x + track_size.x * 0.72f));
@@ -1339,8 +1314,6 @@ void DesignerApp::ConfigurePartiesFixture(std::string scenario) {
 	parties_fixture_scenario_ = std::move(scenario);
 }
 
-// ── Window procedures ────────────────────────────────────────────────────
-
 LRESULT CALLBACK DesignerApp::PreviewWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 	auto* app = reinterpret_cast<DesignerApp*>(GetPropW(hwnd, L"DesignerApp"));
 
@@ -1397,7 +1370,6 @@ LRESULT CALLBACK DesignerApp::PreviewWndProc(HWND hwnd, UINT msg, WPARAM wp, LPA
 		break;
 	}
 
-	// Forward to RmlUi
 	if (app && app->preview_context_ && app->text_input_editor_) {
 		RmlWin32::WindowProcedure(app->preview_context_, *app->text_input_editor_, hwnd, msg, wp, lp);
 	}
@@ -1409,7 +1381,6 @@ LRESULT CALLBACK DesignerApp::ManagerWndProc(HWND hwnd, UINT msg, WPARAM wp, LPA
 
 	switch (msg) {
 	case WM_CLOSE:
-		// Don't quit — just hide the manager. Preview close quits.
 		ShowWindow(hwnd, SW_HIDE);
 		return 0;
 
@@ -1426,14 +1397,11 @@ LRESULT CALLBACK DesignerApp::ManagerWndProc(HWND hwnd, UINT msg, WPARAM wp, LPA
 		return 0;
 	}
 
-	// Forward to RmlUi
 	if (app && app->manager_context_ && app->text_input_editor_) {
 		RmlWin32::WindowProcedure(app->manager_context_, *app->text_input_editor_, hwnd, msg, wp, lp);
 	}
 	return DefWindowProcW(hwnd, msg, wp, lp);
 }
-
-// ── Window creation ──────────────────────────────────────────────────────
 
 bool DesignerApp::CreatePreviewWindow() {
 	WNDCLASSEXW wc{};
@@ -1480,16 +1448,12 @@ bool DesignerApp::CreateManagerWindow() {
 	return true;
 }
 
-// ── Init / Shutdown ──────────────────────────────────────────────────────
-
 bool DesignerApp::Init(const std::string& initial_file) {
-	// Create both windows first (renderers need HWND)
 	if (!CreatePreviewWindow() || !CreateManagerWindow()) {
 		std::printf("[Designer] Failed to create windows\n");
 		return false;
 	}
 
-	// System interface (shared)
 	system_interface_ = std::make_unique<DesignerSystemInterface>(
 		&rml_error_count_, &rml_data_binding_warning_count_);
 	system_interface_->SetWindow(preview_hwnd_);
@@ -1497,7 +1461,6 @@ bool DesignerApp::Init(const std::string& initial_file) {
 	Rml::SetSystemInterface(system_interface_.get());
 	Rml::SetFileInterface(&file_interface_);
 
-	// Create DX12 renderers (one per window)
 	Backend::RmlRendererSettings settings{};
 	settings.vsync = true;
 	settings.msaa_sample_count = 4;
@@ -1528,23 +1491,17 @@ bool DesignerApp::Init(const std::string& initial_file) {
 		return false;
 	}
 
-	// Match the production Windows backend so the same RCSS parses without
-	// platform-only warnings and titlebar hit-test declarations remain visible.
 	Rml::StyleSheetSpecification::RegisterProperty("window-action", "none", true)
 		.AddParser("keyword", "none, caption, close, minimize, maximize");
 
-	// Register the custom elements needed for faithful Parties previews. Video
-	// frames intentionally remain empty surfaces unless a fixture supplies pixels.
 	element_registry_ = std::make_unique<parties::rml::ElementRegistry>();
 	element_registry_->add<parties::client::GradientCircleElement>("gradient_circle");
 	element_registry_->add<parties::client::LevelMeterElement>("level_meter");
 	element_registry_->add<parties::client::VideoElement>("video_frame");
 
-	// DPI
 	UINT dpi = GetDpiForWindow(preview_hwnd_);
 	dpi_scale_ = density_override_ > 0.0f ? density_override_ : static_cast<float>(dpi) / 96.0f;
 
-	// Create preview context (uses preview_renderer_)
 	{
 		RECT rc;
 		GetClientRect(preview_hwnd_, &rc);
@@ -1560,7 +1517,6 @@ bool DesignerApp::Init(const std::string& initial_file) {
 			preview_context_->ActivateTheme(preview_theme_, true);
 	}
 
-	// Create manager context (uses manager_renderer_)
 	Rml::SetRenderInterface(manager_renderer_.get());
 	{
 		RECT rc;
@@ -1575,21 +1531,16 @@ bool DesignerApp::Init(const std::string& initial_file) {
 		manager_context_->SetDensityIndependentPixelRatio(dpi_scale_);
 	}
 
-	// Text input editor (shared — IME only works on focused window)
 	text_input_editor_ = std::make_unique<TextInputMethodEditor_Win32>();
 
-	// Set up the manager's data model (for variable editor UI)
 	SetupManagerDataModel();
 
-	// File watcher callback
 	file_watcher_.SetCallback([this](const std::string& path) {
 		OnFileChanged(path);
 	});
 
-	// Load embedded Inter fonts (always available for manager UI)
 	LoadEmbeddedFonts();
 
-	// If an initial file was given, set up its parent as base dir + asset folder
 	if (!initial_file.empty()) {
 		fs::path abs = fs::absolute(initial_file);
 		if (abs.has_parent_path()) {
@@ -1599,17 +1550,13 @@ bool DesignerApp::Init(const std::string& initial_file) {
 		}
 	}
 
-	// Also load fonts from asset folders (for the preview document)
 	RegisterFontsFromAssetFolders();
 
-	// Load manager UI
 	LoadManagerUI();
 
-	// Show windows
 	ShowWindow(preview_hwnd_, SW_SHOWNOACTIVATE);
 	ShowWindow(manager_hwnd_, manager_visible_ ? SW_SHOWNOACTIVATE : SW_HIDE);
 
-	// Load initial document
 	if (!initial_file.empty()) {
 		LoadDocument(initial_file);
 	}
@@ -1625,7 +1572,6 @@ void DesignerApp::Shutdown() {
 		debugger_initialized_ = false;
 	}
 
-	// Clear data model handles before destroying contexts
 	for (auto& [name, model] : data_models_)
 		model.handle = {};
 	mgr_var_model_ = {};
@@ -1664,8 +1610,6 @@ void DesignerApp::Shutdown() {
 	UnregisterClassW(L"RmlDesignerManager", GetModuleHandleW(nullptr));
 }
 
-// ── Message loop ─────────────────────────────────────────────────────────
-
 int DesignerApp::Run() {
 	MSG msg{};
 	bool running = true;
@@ -1681,11 +1625,9 @@ int DesignerApp::Run() {
 		}
 		if (!running) break;
 
-		// File watcher
 		file_watcher_.Poll();
 
-		// Debounced reload
-		if (reload_pending_ && (GetTickCount() - last_change_tick_) >= 150) {
+		if (reload_pending_ && (GetTickCount() - last_change_tick_) >= reload_debounce_ms) {
 			reload_pending_ = false;
 			if (font_reload_pending_) {
 				font_reload_pending_ = false;
@@ -1694,13 +1636,11 @@ int DesignerApp::Run() {
 			ReloadPreview();
 		}
 
-		// Update + render both windows
 		UpdatePreview();
 		RenderPreview();
 		UpdateManager();
 		RenderManager();
 
-		// If both minimized, throttle
 		if (preview_minimized_ && manager_minimized_)
 			Sleep(16);
 	}
@@ -1735,10 +1675,6 @@ int DesignerApp::RunScreenshot(const std::string& output_path, int settle_frames
 			TranslateMessage(&message);
 			DispatchMessageW(&message);
 		}
-		// The share picker is the renderer's geometry-churn stress case: moving
-		// between cards flips :hover on a large rounded background, its border and
-		// descendant text. Exercise that path on every screenshot run so the DX12
-		// geometry allocator cannot silently regress to per-primitive resources.
 		if (parties_fixture_scenario_ == "share" && frame > 0) {
 			constexpr float hover_points[][2] = {
 				{0.10f, 0.28f}, {0.30f, 0.28f}, {0.49f, 0.28f},
@@ -1796,8 +1732,6 @@ int DesignerApp::RunScreenshot(const std::string& output_path, int settle_frames
 		fixture_layout_valid && screenshot_content_valid ? 0 : 1;
 }
 
-// ── Update / Render ──────────────────────────────────────────────────────
-
 void DesignerApp::UpdatePreview() {
 	if (!preview_context_ || preview_minimized_) return;
 	preview_context_->Update();
@@ -1816,7 +1750,6 @@ void DesignerApp::RenderPreview() {
 void DesignerApp::UpdateManager() {
 	if (!manager_context_ || manager_minimized_) return;
 	if (!IsWindowVisible(manager_hwnd_)) return;
-	// Process deferred variable list refresh (set by toggle/set callbacks)
 	if (mgr_var_dirty_) {
 		mgr_var_dirty_ = false;
 		if (mgr_var_model_)
@@ -1836,8 +1769,6 @@ void DesignerApp::RenderManager() {
 	manager_renderer_->EndFrame();
 }
 
-// ── Document loading ─────────────────────────────────────────────────────
-
 void DesignerApp::LoadDocument(const std::string& rml_path) {
 	if (debugger_initialized_) {
 		Rml::Debugger::Shutdown();
@@ -1846,26 +1777,21 @@ void DesignerApp::LoadDocument(const std::string& rml_path) {
 	last_document_load_succeeded_ = false;
 	rml_error_count_ = 0;
 	rml_data_binding_warning_count_ = 0;
-	// Resolve to absolute path so .vars lookup and base dir work regardless of CWD
 	fs::path abs_path = fs::absolute(rml_path);
 	document_path_ = abs_path.string();
 
-	// Set base directory for relative path resolution
 	if (abs_path.has_parent_path())
 		file_interface_.SetBaseDirectory(abs_path.parent_path().string());
 
-	// Update window title
 	std::string title = "RmlUI Designer - " + abs_path.filename().string();
 	SetWindowTextA(preview_hwnd_, title.c_str());
 
-	// Auto-load .vars file if it exists alongside the .rml
 	{
 		auto vars_path = fs::path(abs_path).replace_extension(".vars");
 		if (auto_load_bind_vars_ && fs::exists(vars_path))
 			LoadBindVars(vars_path.string());
 	}
 
-	// Load
 	if (preview_context_) {
 		Rml::SetRenderInterface(preview_renderer_.get());
 		preview_context_->UnloadAllDocuments();
@@ -1881,15 +1807,11 @@ void DesignerApp::LoadDocument(const std::string& rml_path) {
 				}
 			}
 		} else {
-			// Rebuild scalar data models before loading (the .rml may reference them).
 			RebuildPreviewDataModels();
 		}
 
 		auto* doc = preview_context_->LoadDocument(document_path_);
 		if (doc) {
-			// Match the production platform classes so the shared desktop design
-			// system is exercised by Windows screenshot fixtures. Theme-driven iOS
-			// previews remain isolated from desktop component density.
 			if (preview_theme_ == "ios") {
 				doc->SetClass("platform-ios", true);
 			} else {
@@ -1920,25 +1842,18 @@ void DesignerApp::ReloadPreview() {
 }
 
 void DesignerApp::ReloadFonts() {
-	// Full re-init cycle for font changes
-	// Save state
 	auto doc_path = document_path_;
 	auto asset_folders = file_interface_.GetSearchPaths();
 	auto base_dir = file_interface_.GetSearchPaths().empty() ? "" : file_interface_.GetSearchPaths()[0];
 
-	// Unload everything
 	if (preview_context_) preview_context_->UnloadAllDocuments();
 	if (manager_context_) manager_context_->UnloadAllDocuments();
 
-	// Re-register fonts
 	RegisterFontsFromAssetFolders();
 
-	// Reload
 	LoadManagerUI();
 	if (!doc_path.empty()) LoadDocument(doc_path);
 }
-
-// ── Asset folders ────────────────────────────────────────────────────────
 
 void DesignerApp::AddAssetFolder(const std::string& dir) {
 	std::string abs_dir = fs::absolute(dir).string();
@@ -1954,20 +1869,15 @@ void DesignerApp::RemoveAssetFolder(const std::string& dir) {
 	std::printf("[Designer] Removed asset folder: %s\n", dir.c_str());
 }
 
-// ── File change handling ─────────────────────────────────────────────────
-
 void DesignerApp::OnFileChanged(const std::string& path) {
 	last_change_tick_ = GetTickCount();
 	reload_pending_ = true;
 
-	// Check if it's a font file
 	auto ext = fs::path(path).extension().string();
 	for (auto& c : ext) c = static_cast<char>(std::tolower(c));
 	if (ext == ".ttf" || ext == ".otf")
 		font_reload_pending_ = true;
 }
-
-// ── Font registration ────────────────────────────────────────────────────
 
 void DesignerApp::RegisterFontsFromAssetFolders() {
 	for (auto& dir : file_interface_.GetSearchPaths()) {
@@ -1983,37 +1893,28 @@ void DesignerApp::RegisterFontsFromAssetFolders() {
 				}
 			}
 		} catch (const std::exception&) {
-			// Directory may not exist
 		}
 	}
 }
-
-// ── Manager UI ───────────────────────────────────────────────────────────
 
 void DesignerApp::LoadManagerUI() {
 	if (!manager_context_) return;
 	manager_context_->UnloadAllDocuments();
 
-	// Try loading manager.rml from the designer/ui/ directory
-	// Look relative to the executable
 	char exe_path[MAX_PATH]{};
 	GetModuleFileNameA(nullptr, exe_path, MAX_PATH);
 	fs::path exe_dir = fs::path(exe_path).parent_path();
 
-	// Try several locations for the manager UI
 	std::vector<std::string> candidates = {
 		(exe_dir / "designer" / "ui" / "manager.rml").string(),
 		(exe_dir.parent_path() / "designer" / "ui" / "manager.rml").string(),
 		(exe_dir.parent_path().parent_path() / "designer" / "ui" / "manager.rml").string(),
-		// Source tree (for development)
 	};
 
-	// Also try relative to CWD
 	candidates.push_back("designer/ui/manager.rml");
 
 	for (auto& candidate : candidates) {
 		if (fs::exists(candidate)) {
-			// Temporarily add the manager UI directory to search paths
 			auto mgr_dir = fs::path(candidate).parent_path().string();
 			file_interface_.AddSearchPath(mgr_dir);
 
@@ -2028,8 +1929,6 @@ void DesignerApp::LoadManagerUI() {
 
 	std::printf("[Designer] Warning: manager.rml not found, manager window will be empty\n");
 }
-
-// ── Data model variable management ───────────────────────────────────
 
 static VarType ParseVarType(const Rml::String& s) {
 	if (s == "int")        return VarType::Int;
@@ -2056,7 +1955,7 @@ void DesignerApp::AddVariable(const Rml::String& model_name, const Rml::String& 
 	if (model_name.empty() || name.empty()) return;
 
 	auto& model = data_models_[model_name];
-	if (model.vars.count(name)) return; // already exists
+	if (model.vars.count(name)) return;
 
 	model.vars.emplace(name, DesignerVar(type));
 	std::printf("[Designer] Added variable: %s.%s (%s)\n",
@@ -2084,16 +1983,13 @@ void DesignerApp::SetVariable(const Rml::String& model_name, const Rml::String& 
 	auto vit = mit->second.vars.find(name);
 	if (vit == mit->second.vars.end()) return;
 
-	// Events are no-op callbacks, not settable variables
 	if (vit->second.type == VarType::Event) return;
 
 	vit->second.SetFromString(value);
 
-	// Dirty the preview variable so RmlUi re-evaluates bindings
 	if (mit->second.handle)
 		mit->second.handle.DirtyVariable(name);
 
-	// Update just the display value in the manager list (avoid full data-for rebuild)
 	Rml::String full_name = model_name + "." + name;
 	for (auto& entry : mgr_var_list_) {
 		if (entry.name == full_name) {
@@ -2108,7 +2004,6 @@ void DesignerApp::SetVariable(const Rml::String& model_name, const Rml::String& 
 void DesignerApp::RebuildPreviewDataModels() {
 	if (!preview_context_) return;
 
-	// Remove existing data models
 	for (auto& [model_name, model] : data_models_) {
 		if (model.handle) {
 			preview_context_->RemoveDataModel(model_name);
@@ -2116,15 +2011,12 @@ void DesignerApp::RebuildPreviewDataModels() {
 		}
 	}
 
-	// Recreate each model
 	for (auto& [model_name, model] : data_models_) {
 		auto ctor = preview_context_->CreateDataModel(model_name);
 		if (!ctor) {
 			std::printf("[Designer] Failed to create data model: %s\n", model_name.c_str());
 			continue;
 		}
-		// Designer preview models are runtime-named and type-erased, so they use
-		// the Builder facade with bind_raw / on (not the compile-time Property path).
 		parties::rml::Builder b(ctor, nullptr);
 
 		// Register array types first (required before binding arrays)
@@ -2135,7 +2027,6 @@ void DesignerApp::RebuildPreviewDataModels() {
 		if (has_string_array)
 			b.register_array<Rml::Vector<Rml::String>>();
 
-		// Bind each variable
 		for (auto& [var_name, var] : model.vars) {
 			switch (var.type) {
 			case VarType::String:
@@ -2168,7 +2059,6 @@ void DesignerApp::RefreshManagerVarList() {
 	mgr_var_list_.clear();
 	for (auto& [model_name, model] : data_models_) {
 		for (auto& [var_name, var] : model.vars) {
-			// Skip events — they're no-op stubs, not user-editable
 			if (var.type == VarType::Event) continue;
 			VarListEntry entry;
 			entry.name = model_name + "." + var_name;
@@ -2187,7 +2077,6 @@ void DesignerApp::SetupManagerDataModel() {
 	auto ctor = manager_context_->CreateDataModel("designer");
 	if (!ctor) return;
 
-	// Register VarListEntry struct
 	if (auto s = ctor.RegisterStruct<VarListEntry>()) {
 		s.RegisterMember("name", &VarListEntry::name);
 		s.RegisterMember("type_name", &VarListEntry::type_name);
@@ -2195,10 +2084,8 @@ void DesignerApp::SetupManagerDataModel() {
 	}
 	ctor.RegisterArray<Rml::Vector<VarListEntry>>();
 
-	// Bind the variable list
 	ctor.Bind("variables", &mgr_var_list_);
 
-	// Bind input fields for adding new variables
 	mgr_new_model_name_ = "lobby";
 	mgr_new_var_name_ = "";
 	mgr_new_var_type_ = "string";
@@ -2208,17 +2095,14 @@ void DesignerApp::SetupManagerDataModel() {
 	ctor.Bind("new_type", &mgr_new_var_type_);
 	ctor.Bind("edit_value", &mgr_edit_value_);
 
-	// Event: open document file dialog
 	ctor.BindEventCallback("browse_document", [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
 		BrowseForDocument();
 	});
 
-	// Event: add asset folder dialog
 	ctor.BindEventCallback("browse_folder", [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
 		BrowseForAssetFolder();
 	});
 
-	// Event: add variable
 	ctor.BindEventCallback("add_var", [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList&) {
 		if (!mgr_new_var_name_.empty() && !mgr_new_model_name_.empty()) {
 			AddVariable(mgr_new_model_name_, mgr_new_var_name_, ParseVarType(mgr_new_var_type_));
@@ -2229,7 +2113,6 @@ void DesignerApp::SetupManagerDataModel() {
 		}
 	});
 
-	// Event: toggle bool variable (takes "model.name" as argument)
 	ctor.BindEventCallback("toggle_var", [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList& args) {
 		if (args.empty()) return;
 		Rml::String full_name = args[0].Get<Rml::String>();
@@ -2243,23 +2126,18 @@ void DesignerApp::SetupManagerDataModel() {
 		if (vit == mit->second.vars.end() || vit->second.type != VarType::Bool) return;
 		if (vit->second.val_bool) {
 			*vit->second.val_bool = !*vit->second.val_bool;
-			// Dirty the preview variable — preview updates instantly
 			if (mit->second.handle)
 				mit->second.handle.DirtyVariable(var_name);
-			// Update manager list entry in-place
 			for (auto& entry : mgr_var_list_) {
 				if (entry.name == full_name) {
 					entry.value = *vit->second.val_bool ? "true" : "false";
 					break;
 				}
 			}
-			// Defer the manager UI refresh to next frame so it doesn't
-			// block the current frame's preview render
 			mgr_var_dirty_ = true;
 		}
 	});
 
-	// Event: remove variable (takes "model.name" as argument)
 	ctor.BindEventCallback("remove_var", [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList& args) {
 		if (args.empty()) return;
 		Rml::String full_name = args[0].Get<Rml::String>();
@@ -2268,7 +2146,6 @@ void DesignerApp::SetupManagerDataModel() {
 		RemoveVariable(full_name.substr(0, dot), full_name.substr(dot + 1));
 	});
 
-	// Event: set variable value (takes "model.name", "value")
 	ctor.BindEventCallback("set_var", [this](Rml::DataModelHandle, Rml::Event&, const Rml::VariantList& args) {
 		if (args.size() < 2) return;
 		Rml::String full_name = args[0].Get<Rml::String>();
@@ -2281,19 +2158,6 @@ void DesignerApp::SetupManagerDataModel() {
 	mgr_var_model_ = ctor.GetModelHandle();
 }
 
-// ── Save/Load bind variables ─────────────────────────────────────────
-
-// JSON format (.vars):
-// {
-//   "lobby": {
-//     "is_connected": { "type": "bool", "value": true },
-//     "server_name": { "type": "string", "value": "Dev Server" },
-//     "on_toggle_mute": { "type": "event" },
-//     "items": { "type": "string[]", "value": ["a", "b"] }
-//   }
-// }
-
-// Minimal JSON writer — no dependency needed
 static void JsonWriteString(FILE* f, const Rml::String& s) {
 	std::fputc('"', f);
 	for (char c : s) {
@@ -2350,7 +2214,7 @@ bool DesignerApp::SaveBindVars(const std::string& path) {
 				std::fprintf(f, "]");
 				break;
 			case VarType::Event:
-				break; // no value field
+				break;
 			}
 			std::fprintf(f, " }");
 		}
@@ -2363,7 +2227,6 @@ bool DesignerApp::SaveBindVars(const std::string& path) {
 	return true;
 }
 
-// Minimal JSON reader — just enough for our format
 struct JsonToken {
 	enum Type { String, Number, Bool, Null, ObjectOpen, ObjectClose, ArrayOpen, ArrayClose, Colon, Comma, End, Error } type;
 	std::string str;
@@ -2414,7 +2277,6 @@ static JsonToken NextToken(const char*& p) {
 		if (std::strncmp(p, "null", 4) == 0) { t.type = JsonToken::Null; p += 4; return t; }
 		break;
 	}
-	// Number
 	if (*p == '-' || (*p >= '0' && *p <= '9')) {
 		t.type = JsonToken::Number;
 		char* end;
@@ -2427,7 +2289,6 @@ static JsonToken NextToken(const char*& p) {
 }
 
 bool DesignerApp::LoadBindVars(const std::string& path) {
-	// Read entire file
 	FILE* f = std::fopen(path.c_str(), "rb");
 	if (!f) {
 		std::printf("[Designer] Bind vars file not found: %s\n", path.c_str());
@@ -2440,7 +2301,6 @@ bool DesignerApp::LoadBindVars(const std::string& path) {
 	std::fread(json.data(), 1, sz, f);
 	std::fclose(f);
 
-	// Clear existing
 	for (auto& [name, model] : data_models_) {
 		if (model.handle && preview_context_)
 			preview_context_->RemoveDataModel(name);
@@ -2448,7 +2308,6 @@ bool DesignerApp::LoadBindVars(const std::string& path) {
 	}
 	data_models_.clear();
 
-	// Parse: { "model": { "var": { "type": "...", "value": ... }, ... }, ... }
 	const char* p = json.c_str();
 	auto tok = NextToken(p);
 	if (tok.type != JsonToken::ObjectOpen) { std::printf("[Designer] Invalid .vars JSON\n"); return false; }
@@ -2460,8 +2319,8 @@ bool DesignerApp::LoadBindVars(const std::string& path) {
 		if (tok.type != JsonToken::String) break;
 		std::string model_name = tok.str;
 
-		tok = NextToken(p); // :
-		tok = NextToken(p); // {
+		tok = NextToken(p);
+		tok = NextToken(p);
 		if (tok.type != JsonToken::ObjectOpen) break;
 
 		while (true) {
@@ -2471,11 +2330,10 @@ bool DesignerApp::LoadBindVars(const std::string& path) {
 			if (tok.type != JsonToken::String) break;
 			std::string var_name = tok.str;
 
-			tok = NextToken(p); // :
-			tok = NextToken(p); // {
+			tok = NextToken(p);
+			tok = NextToken(p);
 			if (tok.type != JsonToken::ObjectOpen) break;
 
-			// Parse var object: { "type": "...", "value": ... }
 			std::string type_str;
 			std::string value_str;
 			bool has_value = false;
@@ -2493,7 +2351,7 @@ bool DesignerApp::LoadBindVars(const std::string& path) {
 				if (tok.type != JsonToken::String) break;
 				std::string key = tok.str;
 
-				tok = NextToken(p); // :
+				tok = NextToken(p);
 
 				if (key == "type") {
 					tok = NextToken(p);
@@ -2517,7 +2375,6 @@ bool DesignerApp::LoadBindVars(const std::string& path) {
 						}
 					}
 				} else {
-					// skip unknown key value
 					NextToken(p);
 				}
 			}
@@ -2557,12 +2414,9 @@ bool DesignerApp::LoadBindVars(const std::string& path) {
 
 	std::printf("[Designer] Loaded bind vars: %s (%zu models)\n", path.c_str(), data_models_.size());
 
-	// Don't rebuild here — caller (LoadDocument) will rebuild once before loading.
 	RefreshManagerVarList();
 	return true;
 }
-
-// ── File dialogs ─────────────────────────────────────────────────────────
 
 void DesignerApp::BrowseForDocument() {
 	wchar_t filename[MAX_PATH] = L"";
@@ -2605,4 +2459,4 @@ void DesignerApp::BrowseForAssetFolder() {
 	}
 }
 
-} // namespace designer
+}

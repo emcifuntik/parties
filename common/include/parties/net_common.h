@@ -8,4 +8,4 @@ namespace parties {
 bool net_init();
 void net_cleanup();
 
-} // namespace parties
+}

@@ -27,8 +27,6 @@ bool StreamPipController::open(UserId id, const std::unordered_set<UserId>& watc
 
     set_stream(id);
     if (presenter_.show) presenter_.show(id, title_for(id));
-    // Switching: the previous stream returns to its grid cell, the new one
-    // leaves its cell. Both surfaces start empty.
     if (presenter_.stream_moved) {
         if (previous != 0) presenter_.stream_moved(previous);
         presenter_.stream_moved(id);
@@ -58,4 +56,4 @@ void StreamPipController::reconcile(const std::unordered_set<UserId>& watched) {
         close(PipCloseReason::StreamUnwatched);
 }
 
-} // namespace parties::client
+}

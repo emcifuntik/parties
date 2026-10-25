@@ -128,10 +128,6 @@ bool NvencEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
     encode_config_.gopLength = fps * (VIDEO_KEYFRAME_INTERVAL_MS / 1000);
     encode_config_.frameIntervalP = 1;
 
-    // Output sequence headers with every keyframe so decoders can join mid-stream.
-    // idrPeriod is set explicitly (instead of relying on the "equal to gopLength
-    // when unset" default) so every GOP boundary is a true IDR/key frame that a
-    // late-joining viewer can start from.
     if (codec_ == VideoCodecId::AV1) {
         encode_config_.encodeCodecConfig.av1Config.repeatSeqHdr = 1;
         encode_config_.encodeCodecConfig.av1Config.idrPeriod = encode_config_.gopLength;
@@ -382,8 +378,6 @@ void NvencEncoder::force_keyframe() {
 void NvencEncoder::set_bitrate(uint32_t bitrate) {
     if (!initialized_) return;
 
-    // The send controller already coalesces automatic updates. Honor even a
-    // small final step to its floor/ceiling, and explicit user changes.
     const auto rate_control = make_stream_vbr_rate_control(bitrate, fps_);
     if (bitrate == encode_config_.rcParams.averageBitRate) return;
     const auto previous_rate_control = encode_config_.rcParams;
@@ -413,4 +407,4 @@ EncoderInfo NvencEncoder::info() const {
     return {Backend::NVENC, codec_, width_, height_};
 }
 
-} // namespace parties::encdec::nvidia
+}

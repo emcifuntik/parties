@@ -32,7 +32,6 @@ if(WIN32)
     target_link_libraries(parties_integration_test PRIVATE ncrypt.lib crypt32.lib)
 endif()
 
-# ── Voice packet-loss resilience (offline, deterministic) ─────────────────────
 find_package(Opus CONFIG REQUIRED)
 
 add_executable(parties_voice_loss_test
@@ -51,7 +50,6 @@ target_link_libraries(parties_voice_loss_test
         Opus::opus
 )
 
-# ── Secondary/auxiliary audio stream (offline, deterministic) ─────────────────
 add_executable(parties_aux_stream_test
     aux_stream_test.cpp
     ../client/src/voice_mixer.cpp
@@ -68,7 +66,6 @@ target_link_libraries(parties_aux_stream_test
         Opus::opus
 )
 
-# ── RmlUi client tests (offline, deterministic) ─────────────────────────────
 if(BUILD_CLIENT)
     add_executable(parties_ios_back_gesture_test ios_back_gesture_test.cpp)
     target_include_directories(parties_ios_back_gesture_test PRIVATE ../client/include)
@@ -109,7 +106,6 @@ if(BUILD_CLIENT)
         PARTIES_UI_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../client/ui")
     add_test(NAME parties_svg_multiwindow COMMAND parties_svg_multiwindow_test)
 
-    # Shared picture-in-picture state, frame routing and texture retirement.
     add_executable(parties_stream_pip_model_test
         stream_pip_model_test.cpp
         ../client/src/lobby_model.cpp
@@ -160,7 +156,6 @@ target_include_directories(parties_idle_sleep_inhibitor_test PRIVATE ../client/i
 add_executable(parties_video_rate_control_test video_rate_control_test.cpp)
 target_include_directories(parties_video_rate_control_test PRIVATE ../encdec/include)
 
-# ── Screen-share transport policy (offline, deterministic) ───────────────────
 add_executable(parties_video_send_controller_test
     video_send_controller_test.cpp
     ../common/src/video_send_controller.cpp
@@ -304,7 +299,6 @@ add_test(NAME parties_video_rate_control COMMAND parties_video_rate_control_test
 add_test(NAME parties_video_send_controller COMMAND parties_video_send_controller_test)
 add_test(NAME parties_video_frame_reorder COMMAND parties_video_frame_reorder_test)
 add_test(NAME parties_video_backlog COMMAND parties_video_backlog_test)
-# Server + two headless clients over real MsQuic on a loopback port.
 add_test(NAME parties_integration COMMAND parties_integration_test)
 set_tests_properties(parties_integration PROPERTIES TIMEOUT 120)
 add_test(NAME parties_application_audio_downmix COMMAND parties_application_audio_test)

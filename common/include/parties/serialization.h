@@ -44,4 +44,4 @@ private:
     bool error_ = false;
 };
 
-} // namespace parties
+}

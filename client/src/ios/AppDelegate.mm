@@ -25,7 +25,6 @@
         options.enableWatchdogTerminationTracking = YES;
         options.sendDefaultPii = YES;
 
-        // Tracing — lower in production
         options.tracesSampleRate = @1.0;
     }];
 #endif

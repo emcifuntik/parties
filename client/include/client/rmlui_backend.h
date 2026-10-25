@@ -8,8 +8,6 @@
 
 namespace parties::client {
 
-// Embedded file interface — reads UI resources embedded via C++23 #embed.
-// Falls back to the filesystem for paths not found (e.g. system fonts).
 class EmbeddedFileInterface : public Rml::FileInterface {
 public:
     EmbeddedFileInterface();
@@ -31,4 +29,4 @@ private:
     std::unordered_map<std::string, Entry> entries_;
 };
 
-} // namespace parties::client
+}

@@ -5,7 +5,6 @@
 
 namespace parties::client {
 
-// Custom RmlUi element that renders a voice level meter without geometry recompilation.
 // Compiles VB/IB once, then updates vertex positions via Map/Unmap when level changes.
 // This avoids CreateCommittedResource churn that causes high GPU Copy engine usage.
 class LevelMeterElement : public Rml::Element {
@@ -13,8 +12,8 @@ public:
     explicit LevelMeterElement(const Rml::String& tag);
     ~LevelMeterElement() override;
 
-    void SetLevel(float level);       // 0.0 - 1.0
-    void SetThreshold(float thresh);  // 0.0 - 1.0
+    void SetLevel(float level);
+    void SetThreshold(float thresh);
     float GetLevel() const { return level_; }
     float GetThreshold() const { return threshold_; }
 
@@ -37,4 +36,4 @@ private:
     bool dirty_ = true;
 };
 
-} // namespace parties::client
+}

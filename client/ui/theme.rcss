@@ -1,7 +1,3 @@
-/* Parties theme
-   Color, spacing, radius and density tokens shared by every platform. */
-
-/* Shared visual tokens. Platform modules override density, never color semantics. */
 body {
     --color-canvas: #0A0C11;
     --color-shell: #0D1118;

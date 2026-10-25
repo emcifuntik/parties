@@ -19,23 +19,14 @@ namespace parties::client {
 
 class VideoElement;
 
-// Windows picture-in-picture presenter: the Win32PipWindow shell plus its own
-// DX12 renderer, RmlUi context, ui/pip.rml document and PipWindowModel.
-//
 // The renderer must use the decoder's D3D12 device so native (AMF/NVDEC)
-// frames can be sampled; open fails otherwise. Like ContextWindowManager, the
-// HWND, renderer and context are created on first use and kept until
-// shutdown: RmlUi retains a render manager per render interface until
-// Rml::Shutdown, so the renderer cannot be destroyed earlier.
-//
-// Threads: show/hide and the window procedure run on the message thread with
-// the UI mutex held; video_surface/render on the render thread with the UI
-// mutex held.
+// frames can be sampled. RmlUi retains a render manager per render interface
+// until Rml::Shutdown, so the renderer cannot be destroyed earlier.
 class PipWindowHost {
 public:
     struct Actions {
         std::function<void()> return_to_main;
-        std::function<void(float)> set_volume;   // stream playback volume
+        std::function<void(float)> set_volume;
         std::function<void()> close;
         std::function<std::optional<PipRect>()> load_geometry;
         std::function<void(const PipRect&)> save_geometry;
@@ -48,21 +39,15 @@ public:
 
     void init(std::recursive_mutex* ui_mutex, void* d3d12_device, Actions actions);
 
-    // Message thread. False if the window/renderer could not be created.
     bool show(const std::string& title);
     void hide();
     bool visible() const { return window_.visible(); }
 
-    // Render thread. The PiP video surface (null before the first show).
     VideoElement* video_surface() const { return video_; }
     ExtendedRenderInterface* renderer() const { return renderer_.get(); }
-    // Render one PiP frame if the window is visible, mirroring the current
-    // stream playback volume into the overlay.
     void render(float volume);
 
-    // Before Rml::Shutdown: unload the document and remove the context.
     void prepare_shutdown();
-    // After Rml::Shutdown: release the renderer and destroy the HWND.
     void shutdown();
 
 private:
@@ -83,12 +68,11 @@ private:
     VideoElement* video_ = nullptr;
     bool failed_ = false;
 
-    // Written by the window procedure, applied by the render thread.
     std::atomic<bool> resize_pending_{false};
     std::atomic<int> pending_width_{0};
     std::atomic<int> pending_height_{0};
     std::atomic<float> pending_scale_{1.0f};
-    double fitted_aspect_ = 0.0;   // render thread
+    double fitted_aspect_ = 0.0;
 };
 
-} // namespace parties::client
+}

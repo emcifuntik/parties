@@ -11,7 +11,6 @@
 
 namespace parties::client {
 
-// ── UTF-8 helpers (codepoint <-> byte) ───────────────────────────────────────
 namespace {
 
 bool is_cont(unsigned char c) { return (c & 0xC0) == 0x80; }
@@ -22,7 +21,6 @@ int cp_count(const std::string& s) {
     return n;
 }
 
-// Byte index of the cp-th codepoint (clamped to size()).
 size_t byte_of_cp(const std::string& s, int cp) {
     if (cp <= 0) return 0;
     int seen = 0;
@@ -43,7 +41,6 @@ std::string substr_cp(const std::string& s, int start_cp, int end_cp) {
 }
 
 Rml::ColourbPremultiplied selection_colour() {
-    // Accent blue at ~38% alpha, premultiplied.
     constexpr uint8_t r = 0x5B, g = 0x8C, b = 0xFF, a = 97;
     return Rml::ColourbPremultiplied(
         static_cast<uint8_t>(r * a / 255),
@@ -51,9 +48,7 @@ Rml::ColourbPremultiplied selection_colour() {
         static_cast<uint8_t>(b * a / 255), a);
 }
 
-} // namespace
-
-// ── ChatSelection ────────────────────────────────────────────────────────────
+}
 
 ChatSelection& ChatSelection::instance() {
     static ChatSelection s;
@@ -68,7 +63,6 @@ void ChatSelection::begin(Point p) {
     anchor_ = focus_ = p;
     active_ = true;
     dragging_ = true;
-    // Snapshot message order/text so copy + ordering survive scroll/recycle.
     snapshot_ = get_messages ? get_messages() : std::vector<std::pair<int64_t, std::string>>{};
     snap_index_.clear();
     for (int i = 0; i < static_cast<int>(snapshot_.size()); ++i)
@@ -95,7 +89,6 @@ bool ChatSelection::has_selection() const {
 int ChatSelection::index_of(int64_t id) const {
     auto si = snap_index_.find(id);
     if (si != snap_index_.end()) return si->second;
-    // Fallback: order by registered content_y (stable within a frame).
     auto it = msgs_.find(id);
     if (it == msgs_.end()) return 0;
     int idx = 0;
@@ -158,17 +151,15 @@ std::string ChatSelection::selected_text() const {
             const int idx = index_of(id);
             if (idx < il || idx > ih) continue;
             if (id == lo.msg_id || id == hi.msg_id) {
-                // Boundary: slice the (visible) display text by display offset.
                 const std::string& disp = text_of(id);
                 int a = (id == lo.msg_id) ? lo.offset : 0;
                 int b = (id == hi.msg_id) ? hi.offset : cp_count(disp);
                 append(substr_cp(disp, a, b));
             } else {
-                append(raw);  // interior: whole message
+                append(raw);
             }
         }
     } else {
-        // No model callback: copy only the (registered) boundary messages.
         const std::string& dl = text_of(lo.msg_id);
         if (lo.msg_id == hi.msg_id) {
             out = substr_cp(dl, lo.offset, hi.offset);
@@ -179,8 +170,6 @@ std::string ChatSelection::selected_text() const {
     }
     return out;
 }
-
-// ── SelectableTextElement ────────────────────────────────────────────────────
 
 SelectableTextElement::SelectableTextElement(const Rml::String& tag) : Rml::Element(tag) {}
 
@@ -198,13 +187,13 @@ void SelectableTextElement::OnAttributeChange(const Rml::ElementAttributes& chan
     auto it = changed.find("msgid");
     if (it != changed.end()) {
         msg_id_ = static_cast<int64_t>(it->second.Get<double>(0.0));
-        cached_w_ = -1.0f;   // force relayout for the new message
+        cached_w_ = -1.0f;
     }
 }
 
 void SelectableTextElement::OnResize() {
     Rml::Element::OnResize();
-    cached_w_ = -1.0f;   // re-wrap next render
+    cached_w_ = -1.0f;
 }
 
 void SelectableTextElement::CollectRuns(Rml::Element* el, std::vector<Rml::ElementText*>& out) const {
@@ -216,7 +205,7 @@ void SelectableTextElement::CollectRuns(Rml::Element* el, std::vector<Rml::Eleme
             if (auto* t = rmlui_dynamic_cast<Rml::ElementText*>(c))
                 out.push_back(t);
         } else {
-            CollectRuns(c, out);   // descend into segment spans (URL messages)
+            CollectRuns(c, out);
         }
     }
 }
@@ -234,13 +223,9 @@ void SelectableTextElement::RebuildLines() {
     const Rml::Vector2f self_origin = GetAbsoluteOffset(Rml::BoxArea::Content);
     const float box_h = GetBox().GetSize(Rml::BoxArea::Content).y;
 
-    // Flatten every (run, wrapped line) into a fragment at a content-local position.
     struct Frag { Rml::ElementText* run; std::string text; float x; float y; int cp_len; };
     std::vector<Frag> frags;
     for (auto* run : runs) {
-        // Line positions are relative to the run's PARENT box (the selectable_text
-        // itself for a plain message — giving a zero offset, like phase 1 — or the
-        // segment span for a URL message). The text node's own offset is unreliable.
         Rml::Element* parent = run->GetParentNode() ? run->GetParentNode() : this;
         const Rml::Vector2f run_local = parent->GetAbsoluteOffset(Rml::BoxArea::Content) - self_origin;
         for (const auto& gl : run->GetLines()) {
@@ -251,10 +236,6 @@ void SelectableTextElement::RebuildLines() {
     }
     if (frags.empty()) return;
 
-    // Group fragments into VISUAL lines by their Y coordinate (a URL message's
-    // line is several runs at the same Y, laid out left-to-right). A new line
-    // starts when Y jumps — never use a line-height threshold here, since most
-    // segment runs are single-line and wouldn't reveal the spacing.
     std::sort(frags.begin(), frags.end(), [](const Frag& a, const Frag& b) {
         if (std::abs(a.y - b.y) > 1.0f) return a.y < b.y;
         return a.x < b.x;
@@ -270,17 +251,16 @@ void SelectableTextElement::RebuildLines() {
         for (; j < frags.size() && std::abs(frags[j].y - line_y) <= kYEps; ++j) {
             Frag& f = frags[j];
             line.frags.push_back({ f.run, f.text, cp, f.cp_len, f.x });
-            display_ += f.text;          // runs on one line are contiguous (no join)
+            display_ += f.text;
             cp += f.cp_len;
         }
         line.cp_end = cp;
         lines_.push_back(std::move(line));
         i = j;
-        if (i < frags.size()) { display_ += ' '; ++cp; }  // join space between wrapped lines
+        if (i < frags.size()) { display_ += ' '; ++cp; }
     }
     display_len_ = cp;
 
-    // Uniform line height from the spacing between the first two visual lines.
     float line_h = box_h;
     if (lines_.size() >= 2) line_h = lines_[1].y_top - lines_[0].y_top;
     if (line_h <= 0) line_h = box_h;
@@ -318,14 +298,12 @@ bool SelectableTextElement::HitTest(Rml::Vector2f point, ChatSelection::Point& o
     const float localY = point.y - origin.y;
     const float localX = point.x - origin.x;
 
-    // Pick the line by Y (clamp above/below).
     size_t li = 0;
     for (size_t i = 0; i < lines_.size(); ++i) {
         if (localY >= lines_[i].y_top) li = i;
     }
     const VisLine& line = lines_[li];
 
-    // Find the nearest codepoint boundary by X across the line's fragments.
     int chosen = line.cp_start;
     float prev = line.frags.empty() ? 0.0f : line.frags.front().x_start;
     for (int cp = line.cp_start + 1; cp <= line.cp_end; ++cp) {
@@ -352,18 +330,16 @@ void SelectableTextElement::OnRender() {
     int start = 0, end = 0;
     if (!sel.range_for(msg_id_, start, end)) return;
 
-    // Build highlight quads (content-local; translated by `origin` at render).
     std::vector<Rml::Vertex> verts;
     std::vector<int> idx;
     const Rml::ColourbPremultiplied col = selection_colour();
     const float content_w = GetBox().GetSize(Rml::BoxArea::Content).x;
 
     for (const VisLine& line : lines_) {
-        // Skip lines the selection doesn't touch.
         if (end <= line.cp_start || start >= line.cp_end) continue;
         const int s = std::max(start, line.cp_start);
         const int e = std::min(end, line.cp_end);
-        const bool continues_past = end > line.cp_end;   // runs onto the next line
+        const bool continues_past = end > line.cp_end;
 
         float x0 = GlobalCharX(line, s);
         float x1 = continues_past ? content_w : GlobalCharX(line, e);
@@ -389,4 +365,4 @@ void SelectableTextElement::OnRender() {
         ri->RenderGeometry(hl_geom_, origin, 0);
 }
 
-} // namespace parties::client
+}

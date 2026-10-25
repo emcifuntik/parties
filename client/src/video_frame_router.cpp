@@ -35,8 +35,6 @@ VideoFrameRouter::Cleared VideoFrameRouter::sync(UserId pip_stream, const Surfac
     }
     if (pip_stream == pip_stream_) return cleared;
 
-    // The PiP surface never shows a previous stream's last frame: on switch or
-    // close it starts empty until the next frame of its stream arrives.
     if (surfaces.pip) {
         surfaces.pip->Clear();
         cleared.pip = true;
@@ -51,4 +49,4 @@ VideoElement* VideoFrameRouter::target(UserId stream, const Surfaces& surfaces) 
     return find_stream_grid_video(surfaces.grid, stream);
 }
 
-} // namespace parties::client
+}

@@ -20,4 +20,4 @@ private:
     ISVCDecoder* decoder_ = nullptr;
 };
 
-} // namespace parties::encdec::openh264
+}

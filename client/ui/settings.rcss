@@ -1,7 +1,3 @@
-/* Settings pages and their screen-specific controls. */
-
-/* ── Settings overlay ─────────────────────────────── */
-
 .settings-overlay {
     display: flex;
     flex-direction: column;
@@ -23,7 +19,6 @@
     color: #F0F2F8;
 }
 
-/* Settings and modals */
 .share-picker-overlay {
     padding: 28dp 34dp;
     background-color: #0A0C11;
@@ -257,7 +252,6 @@ select.settings-device-select selectbox option:checked {
 .settings-test-output svg { display: block; image-color: #9AA3B0; }
 .settings-test-output:hover { border-color: #5EEAD466; color: #EEF1F6; }
 
-/* Shared range component for notification, music, PTT, stream volume and stream-quality settings. */
 input.settings-wide-slider { display: block; width: 100%; height: 16dp; margin-top: 8dp; }
 input.settings-wide-slider slidertrack { height: 5dp; margin-top: 5dp; background-color: #0C0F15; border-radius: 4dp; }
 input.settings-wide-slider sliderprogress { height: 5dp; background-color: #5EEAD4; border-radius: 4dp; }

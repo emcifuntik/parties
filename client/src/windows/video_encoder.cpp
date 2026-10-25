@@ -71,4 +71,4 @@ const char* VideoEncoder::backend_name() const {
     return "none";
 }
 
-} // namespace parties::client
+}

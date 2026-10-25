@@ -21,8 +21,7 @@ bool has_permission(Role role, Permission perm,
 }
 
 bool can_moderate(Role actor, Role target) {
-    // Can only moderate users with strictly lower rank (higher numeric value)
     return static_cast<uint8_t>(actor) < static_cast<uint8_t>(target);
 }
 
-} // namespace parties
+}

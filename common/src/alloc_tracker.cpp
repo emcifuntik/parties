@@ -1,14 +1,7 @@
-// ═══════════════════════════════════════════════════════════════════════════
-// Heap allocation tracker — see alloc_tracker.h for the overview.
-//
 // This TU must be compiled INTO THE EXECUTABLE (it is listed in the client's
 // source list, not in parties_common): the MSVC/lld linker only prefers our
 // operator new/delete over the CRT's when the defining object file is an
 // explicit input, not pulled from a library on demand.
-//
-// Internals allocate exclusively with malloc/free — never new — so the
-// overrides cannot recurse into themselves.
-// ═══════════════════════════════════════════════════════════════════════════
 
 #ifdef PARTIES_ALLOC_TRACKER
 
@@ -35,32 +28,25 @@
 namespace parties::alloctrack {
 namespace {
 
-// ── Allocation header ────────────────────────────────────────────────────────
-// Prepended to every tracked block. 32 bytes keeps malloc's 16-byte user
-// alignment intact. magic is XOR-mixed with the user pointer so a stale or
-// foreign header can't match by accident.
-
 constexpr std::uint64_t MAGIC = 0xA110C8ED'BEEFCAFEull;
 constexpr std::size_t HEADER_SIZE = 32;
 
 struct AllocHeader {
-    std::uint64_t magic;     // MAGIC ^ (uintptr of user pointer)
-    std::uint64_t size;      // exact requested size
-    std::uint32_t stack_id;  // 1-based index into stack table, 0 = none
-    std::uint32_t flags;     // FLAG_*
-    std::uint64_t reserved;  // pad to 32
+    std::uint64_t magic;
+    std::uint64_t size;
+    std::uint32_t stack_id;
+    std::uint32_t flags;
+    std::uint64_t reserved;
 };
 static_assert(sizeof(AllocHeader) == HEADER_SIZE);
 
-constexpr std::uint32_t FLAG_ALIGNED = 1; // block from _aligned_offset_malloc
+constexpr std::uint32_t FLAG_ALIGNED = 1;
 
-// ── Size buckets (powers of two) ─────────────────────────────────────────────
-
-constexpr int BUCKET_COUNT = 24; // bucket i covers (2^(i+3), 2^(i+4)]: 16B .. >64MB
+constexpr int BUCKET_COUNT = 24;
 constexpr int bucket_for(std::size_t size) {
-    int w = static_cast<int>(std::bit_width(size | 1)); // 1..64
-    int b = w - 5;                                      // ≤16B → bucket 0
-    if (size > (std::size_t{1} << (w - 1))) b += 1;     // not exact power of two
+    int w = static_cast<int>(std::bit_width(size | 1));
+    int b = w - 5;
+    if (size > (std::size_t{1} << (w - 1))) b += 1;
     return b < 0 ? 0 : (b >= BUCKET_COUNT ? BUCKET_COUNT - 1 : b);
 }
 
@@ -69,45 +55,40 @@ struct BucketStats {
     std::atomic<std::int64_t> live_count;
     std::atomic<std::uint64_t> total_allocs;
 };
-BucketStats g_buckets[BUCKET_COUNT]; // zero-init in BSS, valid before main()
+BucketStats g_buckets[BUCKET_COUNT];
 
 std::atomic<std::int64_t> g_live_bytes;
 std::atomic<std::int64_t> g_live_count;
 std::atomic<std::uint64_t> g_total_allocs;
-std::atomic<std::uint64_t> g_foreign_frees; // deletes of blocks we didn't allocate
-
-// ── Call-stack table ─────────────────────────────────────────────────────────
-// Fixed-size open-addressing hash table in static storage; entries are
-// claimed once with a CAS and never removed. ~8 MB — debug tooling budget.
+std::atomic<std::uint64_t> g_foreign_frees;
 
 constexpr int MAX_FRAMES = 12;
-constexpr int SKIP_FRAMES = 2;        // capture helper + operator new itself
-constexpr std::uint32_t STACK_TABLE_SIZE = 32768; // power of two
+constexpr int SKIP_FRAMES = 2;
+constexpr std::uint32_t STACK_TABLE_SIZE = 32768;
 
 struct StackEntry {
-    std::atomic<std::uint64_t> key;   // stack hash, 0 = empty
-    std::atomic<std::uint32_t> ready; // frames[] fully written
+    std::atomic<std::uint64_t> key;
+    std::atomic<std::uint32_t> ready;
     void* frames[MAX_FRAMES];
     std::uint32_t frame_count;
-    const char* tag;                  // PARTIES_MEM_SCOPE comment, may be null
+    const char* tag;
     std::atomic<std::int64_t> live_bytes;
     std::atomic<std::int64_t> live_count;
     std::atomic<std::uint64_t> total_allocs;
-    std::int64_t report_prev_live;    // only touched by the report thread
+    std::int64_t report_prev_live;
 };
 StackEntry g_stacks[STACK_TABLE_SIZE];
 std::atomic<std::uint32_t> g_stack_table_full;
 
 thread_local const char* t_tag = nullptr;
 
-// Returns 1-based stack id, 0 if capture failed or the table is full.
 std::uint32_t capture_stack() {
     void* frames[MAX_FRAMES];
     USHORT n = RtlCaptureStackBackTrace(SKIP_FRAMES, MAX_FRAMES, frames, nullptr);
     if (n == 0)
         return 0;
 
-    std::uint64_t h = 0xcbf29ce484222325ull; // FNV-1a over the frame pointers
+    std::uint64_t h = 0xcbf29ce484222325ull;
     for (USHORT i = 0; i < n; ++i) {
         h ^= reinterpret_cast<std::uint64_t>(frames[i]);
         h *= 0x100000001b3ull;
@@ -129,15 +110,13 @@ std::uint32_t capture_stack() {
                 e.ready.store(1, std::memory_order_release);
                 return idx + 1;
             }
-            if (expected == h) // lost the race to the same stack
+            if (expected == h)
                 return idx + 1;
         }
     }
     g_stack_table_full.fetch_add(1, std::memory_order_relaxed);
     return 0;
 }
-
-// ── Core alloc/free ──────────────────────────────────────────────────────────
 
 void record_alloc(void* user, std::size_t size, std::uint32_t flags) {
     auto* h = reinterpret_cast<AllocHeader*>(static_cast<char*>(user) - HEADER_SIZE);
@@ -177,7 +156,6 @@ void* tracked_alloc(std::size_t size) {
 void* tracked_alloc_aligned(std::size_t size, std::size_t align) {
     if (align <= 16)
         return tracked_alloc(size);
-    // User block aligned to `align`, header in the 32 bytes right before it.
     void* user = _aligned_offset_malloc(size + HEADER_SIZE, align, HEADER_SIZE);
     if (!user)
         return nullptr;
@@ -191,9 +169,6 @@ void tracked_free(void* user) {
         return;
     auto* h = reinterpret_cast<AllocHeader*>(static_cast<char*>(user) - HEADER_SIZE);
     if (h->magic != (MAGIC ^ reinterpret_cast<std::uint64_t>(user))) {
-        // Not ours: allocated before these overrides were linked in (shouldn't
-        // happen — they're active from process start) or handed across a
-        // module boundary. Pass through.
         g_foreign_frees.fetch_add(1, std::memory_order_relaxed);
         std::free(user);
         return;
@@ -213,14 +188,12 @@ void tracked_free(void* user) {
         e.live_count.fetch_sub(1, std::memory_order_relaxed);
     }
 
-    h->magic = 0; // poison against double-free re-matching
+    h->magic = 0;
     if (h->flags & FLAG_ALIGNED)
         _aligned_free(static_cast<char*>(user) - HEADER_SIZE);
     else
         std::free(static_cast<char*>(user) - HEADER_SIZE);
 }
-
-// ── Reporting ────────────────────────────────────────────────────────────────
 
 std::int64_t g_prev_total_live;
 std::int64_t g_prev_bucket_live[BUCKET_COUNT];
@@ -268,7 +241,7 @@ void format_bytes(std::int64_t v, char* out, std::size_t out_size) {
         std::snprintf(out, out_size, "%s%lld B", sign, static_cast<long long>(v < 0 ? -v : v));
 }
 
-std::mutex g_report_mutex; // dump_report is not reentrant (DbgHelp, prev-snapshots)
+std::mutex g_report_mutex;
 
 void do_dump_report(const char* reason) {
     std::lock_guard<std::mutex> lock(g_report_mutex);
@@ -297,7 +270,6 @@ void do_dump_report(const char* reason) {
                  buf1, live_n, g_foreign_frees.load(std::memory_order_relaxed));
     }
 
-    // Per-bucket: only buckets with movement or significant live volume.
     for (int i = 0; i < BUCKET_COUNT; ++i) {
         const std::int64_t blive = g_buckets[i].live_bytes.load(std::memory_order_relaxed);
         const std::int64_t bn = g_buckets[i].live_count.load(std::memory_order_relaxed);
@@ -315,7 +287,6 @@ void do_dump_report(const char* reason) {
                  hi, buf1, bn, buf2, balloc_delta);
     }
 
-    // Top stacks by live-byte growth since last report — the leak shows here.
     struct Grower { std::uint32_t idx; std::int64_t delta; std::int64_t live; };
     Grower top[15]{};
     int top_n = 0;
@@ -328,7 +299,6 @@ void do_dump_report(const char* reason) {
         e.report_prev_live = elive;
         if (edelta <= 0)
             continue;
-        // insertion sort into the small top array
         int pos = top_n < 15 ? top_n : 14;
         if (top_n < 15) ++top_n;
         else if (top[14].delta >= edelta) continue;
@@ -360,14 +330,12 @@ void do_dump_report(const char* reason) {
     LOG_INFO("[alloctrack] ===== end report =====");
 }
 
-// ── Report thread ────────────────────────────────────────────────────────────
-
 std::thread* g_report_thread;
 std::mutex g_thread_mutex;
 std::condition_variable g_thread_cv;
 bool g_thread_stop = false;
 
-} // namespace
+}
 
 void start_reporting(unsigned interval_seconds) {
     std::lock_guard<std::mutex> lock(g_thread_mutex);
@@ -414,11 +382,7 @@ std::uint64_t live_bytes() {
 TagScope::TagScope(const char* tag) noexcept : prev_(t_tag) { t_tag = tag; }
 TagScope::~TagScope() noexcept { t_tag = prev_; }
 
-} // namespace parties::alloctrack
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Global operator new/delete overrides — active from process start.
-// ═══════════════════════════════════════════════════════════════════════════
+}
 
 namespace {
 
@@ -444,7 +408,7 @@ void* alloc_aligned_or_handler(std::size_t size, std::align_val_t al) {
     }
 }
 
-} // namespace
+}
 
 void* operator new(std::size_t size) { return alloc_or_handler(size); }
 void* operator new[](std::size_t size) { return alloc_or_handler(size); }
@@ -476,4 +440,4 @@ void operator delete[](void* p, std::size_t, std::align_val_t) noexcept { partie
 void operator delete(void* p, std::align_val_t, const std::nothrow_t&) noexcept { parties::alloctrack::tracked_free(p); }
 void operator delete[](void* p, std::align_val_t, const std::nothrow_t&) noexcept { parties::alloctrack::tracked_free(p); }
 
-#endif // PARTIES_ALLOC_TRACKER
+#endif

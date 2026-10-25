@@ -12,22 +12,17 @@ enum class VideoCodecId : uint8_t {
     H264 = 0x03,
 };
 
-// Video frame flags (bitfield)
 constexpr uint8_t VIDEO_FLAG_KEYFRAME = 0x01;
 
-// Bitrate limits (bits per second)
-constexpr uint32_t VIDEO_MAX_BITRATE       = 20'000'000;  // 20 Mbps
-constexpr uint32_t VIDEO_DEFAULT_BITRATE   = 2'000'000;   // 2 Mbps
-constexpr uint32_t VIDEO_MIN_BITRATE       =   200'000;   // 200 kbps (UI floor)
-// Floor for automatic congestion adaptation. Below this a 1080p screen share
-// is unreadable, so the sender drops frames instead of going lower.
-constexpr uint32_t VIDEO_ADAPT_MIN_BITRATE =   800'000;   // 800 kbps
+constexpr uint32_t VIDEO_MAX_BITRATE       = 20'000'000;
+constexpr uint32_t VIDEO_DEFAULT_BITRATE   = 2'000'000;
+constexpr uint32_t VIDEO_MIN_BITRATE       =   200'000;
+constexpr uint32_t VIDEO_ADAPT_MIN_BITRATE =   800'000;
 
-// Timing
-constexpr uint32_t VIDEO_KEYFRAME_INTERVAL_MS = 5000;  // Max 5 seconds between keyframes
-constexpr uint32_t VIDEO_PLI_COOLDOWN_MS      =  500;  // Min time between PLI sends per target
-constexpr uint32_t VIDEO_PLI_RETRY_MS         =  500;  // Re-send PLI while still waiting for a keyframe
-constexpr uint32_t VIDEO_KEYFRAME_REQUEST_COOLDOWN_MS = 500;  // Min time between forced keyframes on the sharer
+constexpr uint32_t VIDEO_KEYFRAME_INTERVAL_MS = 5000;
+constexpr uint32_t VIDEO_PLI_COOLDOWN_MS      =  500;
+constexpr uint32_t VIDEO_PLI_RETRY_MS         =  500;
+constexpr uint32_t VIDEO_KEYFRAME_REQUEST_COOLDOWN_MS = 500;
 
 // Largest on-wire video record accepted by any stream parser: the length
 // prefix / type byte plus everything after it ([type][sender][header][encoded]).
@@ -38,7 +33,6 @@ constexpr size_t VIDEO_FRAME_MAX_BYTES = 4u * 1024u * 1024u;
 // this value so a compliant frame can never be rejected downstream.
 constexpr size_t VIDEO_FRAME_MAX_PAYLOAD_BYTES = VIDEO_FRAME_MAX_BYTES - 1 - 4;
 
-// ── Frame header ─────────────────────────────────────────────────────────────
 // Common 14-byte header of every screen-share frame, identical on the legacy
 // video stream 1 ([0x02][sender][hdr][encoded] after server forwarding) and on
 // per-frame unidirectional streams ([0x12][sender][hdr][encoded]).
@@ -87,7 +81,4 @@ constexpr int32_t video_seq_distance(uint32_t a, uint32_t b) {
     return static_cast<int32_t>(a - b);
 }
 
-// Nonce space: video counters have the high bit set to avoid collision with voice
-constexpr uint64_t VIDEO_NONCE_HIGH_BIT = 0x8000000000000000ULL;
-
-} // namespace parties
+}

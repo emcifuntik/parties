@@ -1,4 +1,3 @@
-// Dynamic loader for NVIDIA Video Codec SDK DLLs.
 #include "nvidia_loader.h"
 
 #include <cstring>
@@ -20,7 +19,6 @@ bool load_nvenc(NV_ENCODE_API_FUNCTION_LIST& funcs) {
 
     if (tried) {
         if (!ok) return false;
-        // Re-fill function list from cached module
     } else {
         tried = true;
         mod = LoadLibraryA("nvEncodeAPI64.dll");
@@ -137,8 +135,6 @@ bool load_cuvid(CuvidApi& api) {
     all_ok &= load_sym(mod, "cuvidGetDecoderCaps", api.cuvidGetDecoderCaps);
     all_ok &= load_sym(mod, "cuvidCreateDecoder", api.cuvidCreateDecoder);
     all_ok &= load_sym(mod, "cuvidDestroyDecoder", api.cuvidDestroyDecoder);
-    // SDK 13.1 opaque-output functions are optional by design. Their absence
-    // is a capability result, not a loader failure.
     load_sym(mod, "cuvidRegisterDecodeSurfaces", api.cuvidRegisterDecodeSurfaces);
     load_sym(mod, "cuvidDecodePictureAsync", api.cuvidDecodePictureAsync);
     all_ok &= load_sym(mod, "cuvidDecodePicture", api.cuvidDecodePicture);
@@ -157,4 +153,4 @@ bool load_cuvid(CuvidApi& api) {
     return true;
 }
 
-} // namespace parties::encdec::nvidia
+}

@@ -64,7 +64,6 @@ for scenario in $scenarios; do
         exit 1
     fi
 
-    # Let UIKit transitions and nested RmlUI data bindings settle.
     sleep 0.8
     kill -0 "$fixture_pid"
     xcrun simctl io "$device" screenshot "$output/$scenario.png"

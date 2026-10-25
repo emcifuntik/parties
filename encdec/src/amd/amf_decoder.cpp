@@ -304,9 +304,6 @@ AmfDecoder::AmfDecoder() = default;
 
 AmfDecoder::~AmfDecoder() {
     if (native_lifetime_) {
-        // Native frames may still be queued in RmlUI. Transfer component and
-        // context teardown to their shared lifetime so AMF cannot invalidate
-        // an in-flight surface when the stream object is replaced.
         native_lifetime_->context_lost = context_lost_;
         decoder_ = nullptr;
         context_ = nullptr;
@@ -314,9 +311,6 @@ AmfDecoder::~AmfDecoder() {
         native_lifetime_.reset();
     }
     if (decoder_) {
-        // Terminate is the AMF cleanup boundary. Draining during destruction is
-        // both unnecessary and dangerous: no output consumer remains and a
-        // full surface pool can make the driver wait indefinitely.
         if (!context_lost_) decoder_->Terminate();
         decoder_->Release();
         decoder_ = nullptr;
@@ -367,10 +361,6 @@ bool AmfDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height,
 
     D3D_FEATURE_LEVEL selected_feature_level{};
 
-    // AMF hardware decode is a DX11 path on Windows. Native InitDX12 may appear
-    // to initialize on some drivers but invalidates the application device as
-    // soon as decoded resources are consumed. Decode on the matching AMD DX11
-    // adapter and bridge to RmlUI with shared resources and a shared fence.
     Microsoft::WRL::ComPtr<IDXGIFactory1> dxgi_factory;
     if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&dxgi_factory)))) {
         LOG_ERROR("CreateDXGIFactory1 failed");
@@ -510,10 +500,6 @@ bool AmfDecoder::decode(const uint8_t* data, size_t len, int64_t timestamp) {
     std::memcpy(native, data, len);
     buffer->SetPts(timestamp);
 
-    // AMF explicitly requires retrying the *same* input when the queue or
-    // decoder surface pool is full. Releasing it here loses a compressed frame
-    // (often a reference frame) and was the source of the later driver AV that
-    // the old SEH wrappers merely hid.
     constexpr int max_backpressure_retries = 64;
     bool submit_without_input = false;
     bool accepted = false;
@@ -525,8 +511,6 @@ bool AmfDecoder::decode(const uint8_t* data, size_t len, int64_t timestamp) {
             retry = max_backpressure_retries;
             break;
         case AmfSubmitDisposition::RetryWithoutInput:
-            // AMF_REPEAT means the accepted compressed buffer contains more
-            // than one frame. Continue the component with a null input.
             submit_without_input = true;
             poll_output(true);
             break;
@@ -586,9 +570,6 @@ bool AmfDecoder::deliver_output(amf::AMFData* data) {
             return false;
         }
 
-        // D3D12 decoder allocations are commonly padded (for example 180
-        // visible lines in a 192-line resource). AMFPlane reports the visible
-        // image while ID3D12Resource::GetDesc reports the allocation extent.
         width_ = static_cast<uint32_t>(packed->GetWidth());
         height_ = static_cast<uint32_t>(packed->GetHeight());
         if (width_ == 0 || height_ == 0 || width_ > desc.Width || height_ > desc.Height) {
@@ -606,17 +587,12 @@ bool AmfDecoder::deliver_output(amf::AMFData* data) {
             ? interop_->create_slots(resource, width_, height_)
             : AmfD3D11InteropState::SlotCreationResult::Failed;
         if (slot_result == AmfD3D11InteropState::SlotCreationResult::Busy) {
-            // A resolution change cannot replace resources still referenced by
-            // a renderer back buffer. Drop this display callback and retry once
-            // those owners retire instead of stalling the decode queue.
             surface->Release();
             return true;
         }
         if (slot_result == AmfD3D11InteropState::SlotCreationResult::Ready) {
             auto* slot = interop_->acquire();
             if (!slot) {
-                // Every shared texture is still referenced by a renderer frame.
-                // Drop instead of blocking decode and growing live latency.
                 surface->Release();
                 return true;
             }
@@ -643,9 +619,6 @@ bool AmfDecoder::deliver_output(amf::AMFData* data) {
             return true;
         }
 
-        // Interop is optional. Disable it after a permanent allocation or
-        // format failure and deliver this same decoded surface through the
-        // portable host-NV12 path below instead of dropping every future frame.
         LOG_WARN("AMF shared RGBA interop unavailable; switching to host NV12 output");
         native_d3d12_output_ = false;
         interop_.reset();
@@ -717,9 +690,6 @@ void AmfDecoder::flush() {
     if (!initialized_ || !decoder_ || context_lost_) return;
     if (!check_device_health()) return;
 
-    // Flush discards queued pictures while keeping component configuration.
-    // Drain+ReInit is an end-of-stream transition and races the next network
-    // packet against asynchronous decoder teardown on some AMD drivers.
     const AMF_RESULT res = decoder_->Flush();
     if (res != AMF_OK) {
         mark_context_lost("Flush", res);
@@ -730,4 +700,4 @@ DecoderInfo AmfDecoder::info() const {
     return {Backend::AMF, codec_};
 }
 
-} // namespace parties::encdec::amd
+}

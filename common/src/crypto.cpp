@@ -30,9 +30,6 @@ void crypto_cleanup() {
 
 bool random_bytes(uint8_t* out, size_t len) {
     if (RAND_bytes(out, static_cast<int>(len)) != 1) {
-        // CSPRNG failure — do not leave the buffer with predictable/uninitialized
-        // bytes for callers that don't check (zero it so misuse is at least
-        // deterministic, and signal failure).
         std::memset(out, 0, len);
         return false;
     }
@@ -66,7 +63,6 @@ std::string sha256_hex(const uint8_t* data, size_t len) {
 bool generate_self_signed_cert(const std::string& common_name,
                                const std::string& cert_path,
                                const std::string& key_path) {
-    // Generate RSA 4096 key
     EVP_PKEY* pkey = nullptr;
     EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, nullptr);
     if (!ctx) return false;
@@ -80,7 +76,6 @@ bool generate_self_signed_cert(const std::string& common_name,
     }
     EVP_PKEY_CTX_free(ctx);
 
-    // Create self-signed X509 certificate
     X509* x509 = X509_new();
     ASN1_INTEGER_set(X509_get_serialNumber(x509), 1);
     X509_gmtime_adj(X509_get_notBefore(x509), 0);
@@ -100,13 +95,11 @@ bool generate_self_signed_cert(const std::string& common_name,
         return false;
     }
 
-    // Write cert PEM
     FILE* f = fopen(cert_path.c_str(), "wb");
     if (!f) { X509_free(x509); EVP_PKEY_free(pkey); return false; }
     PEM_write_X509(f, x509);
     fclose(f);
 
-    // Write key PEM
     f = fopen(key_path.c_str(), "wb");
     if (!f) { X509_free(x509); EVP_PKEY_free(pkey); return false; }
     PEM_write_PrivateKey(f, pkey, nullptr, nullptr, 0, nullptr, nullptr);
@@ -116,8 +109,6 @@ bool generate_self_signed_cert(const std::string& common_name,
     EVP_PKEY_free(pkey);
     return true;
 }
-
-// --- Seed phrase identity ---
 
 std::string generate_seed_phrase() {
     std::string phrase;
@@ -147,18 +138,15 @@ bool validate_seed_phrase(const std::string& seed_phrase) {
 }
 
 bool derive_keypair(const std::string& seed_phrase, SecretKey& sk, PublicKey& pk) {
-    // SHA-256 of seed phrase -> 32-byte Ed25519 seed
     uint8_t hash[SHA256_DIGEST_LENGTH];
     SHA256(reinterpret_cast<const uint8_t*>(seed_phrase.data()),
            seed_phrase.size(), hash);
     std::memcpy(sk.data(), hash, 32);
 
-    // Create Ed25519 key from raw 32-byte seed
     EVP_PKEY* pkey = EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, nullptr,
                                                     sk.data(), 32);
     if (!pkey) return false;
 
-    // Extract public key
     size_t pub_len = 32;
     if (EVP_PKEY_get_raw_public_key(pkey, pk.data(), &pub_len) != 1) {
         EVP_PKEY_free(pkey);
@@ -246,4 +234,4 @@ Fingerprint public_key_fingerprint(const PublicKey& pk) {
     return sha256_hex(pk.data(), pk.size());
 }
 
-} // namespace parties
+}

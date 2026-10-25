@@ -30,8 +30,6 @@ if(ENABLE_TRACY)
     find_package(Tracy CONFIG REQUIRED)
 endif()
 
-# Sentry (optional — enabled when ENABLE_SENTRY is ON)
-# iOS uses sentry-cocoa (xcframework linked in client/CMakeLists.txt), not sentry-native.
 if(ENABLE_SENTRY AND NOT APPLE)
     find_package(sentry CONFIG REQUIRED)
     set(_SENTRY_LIB sentry::sentry)
@@ -52,8 +50,6 @@ target_link_libraries(parties_common
 target_compile_definitions(parties_common PUBLIC
     SPDLOG_USE_STD_FORMAT
     $<$<BOOL:${BUILD_IN_RETAIL}>:PARTIES_RETAIL=1>
-    # Keep debug statements available in production binaries, but disabled at
-    # runtime by default. Support can opt in with PARTIES_LOG_LEVEL=debug.
     SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG
 )
 

@@ -1,11 +1,5 @@
 #pragma once
 
-// Internal header — included only by net_client_msquic.cpp (the single
-// transport implementation compiled on every platform).
-//
-// Pure wire-protocol parsing: accumulates bytes into a buffer and extracts
-// complete framed messages.  No transport library dependencies.
-
 #include <client/net_client.h>
 #include <parties/protocol.h>
 #include <parties/thread_queue.h>
@@ -17,8 +11,6 @@
 
 namespace parties::client::parsing {
 
-// Control stream — [u32 total_len][u16 type][payload]
-// Pushes complete ServerMessage values into `incoming`.
 inline void process_stream_data(const uint8_t* data, size_t len,
                                 std::vector<uint8_t>& buf,
                                 ThreadQueue<ServerMessage>& incoming)
@@ -52,8 +44,6 @@ inline void process_stream_data(const uint8_t* data, size_t len,
     }
 }
 
-// Video stream — [u32 frame_len][data]
-// Calls on_data_received for each complete frame.
 inline void process_video_stream_data(
     const uint8_t* data, size_t len,
     std::vector<uint8_t>& buf,
@@ -81,4 +71,4 @@ inline void process_video_stream_data(
     }
 }
 
-} // namespace parties::client::parsing
+}

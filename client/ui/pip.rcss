@@ -1,8 +1,3 @@
-/* Desktop picture-in-picture window (pip.rml). Layout and colour only: text
-   uses the semantic classes from typography.rcss. No chrome or title bar; the
-   overlay fades in within 150 ms. The actions stay centred and the volume
-   control spans the bottom edge, so both fit the 192 dp minimum width. */
-
 body.pip-body {
     position: absolute;
     left: 0dp;
@@ -68,8 +63,6 @@ body.pip-body {
 
 .pip-actions .pip-action:hover { color: #FFFFFF; }
 
-/* Volume: speaker icon, slider (same range as the main stream volume) and the
-   current level, which doubles as the control's visible label. */
 .pip-volume {
     display: flex;
     position: absolute;

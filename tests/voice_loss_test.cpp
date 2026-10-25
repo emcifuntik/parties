@@ -1,15 +1,3 @@
-// Offline, deterministic test for voice packet-loss resilience.
-//
-// Encodes a synthetic voiced signal with the production voice-encoder settings
-// (Opus in-band FEC), then feeds the packets through the REAL VoiceMixer jitter
-// buffer under seeded loss patterns and asserts:
-//   - LBRR (in-band FEC) is actually emitted by the encoder (the canary),
-//   - isolated losses are recovered via the FEC path (not skipped/PLC'd),
-//   - the playout clock never skips (one rendered frame per tick),
-//   - a clean 0% run uses zero FEC and is essentially all in-order decodes.
-//
-// Hand-rolled asserts (no gtest), mirroring integration_test.cpp.
-
 #include <client/voice_mixer.h>
 #include <parties/codec.h>
 #include <parties/audio_common.h>
@@ -31,12 +19,10 @@ using namespace parties::client;
 
 namespace {
 
-constexpr int kFrame = audio::OPUS_FRAME_SIZE;   // 960 samples / 20 ms
+constexpr int kFrame = audio::OPUS_FRAME_SIZE;
 constexpr UserId kUser = 1;
 constexpr double kPi = 3.14159265358979323846;
 
-// A voiced-sounding mono signal: two harmonics under a slow amplitude envelope,
-// so the encoder stays in SILK/hybrid and emits LBRR.
 std::vector<std::vector<float>> make_reference(int n_frames) {
     std::vector<std::vector<float>> frames(n_frames);
     double p1 = 0.0, p2 = 0.0;
@@ -56,13 +42,11 @@ std::vector<std::vector<float>> make_reference(int n_frames) {
 
 struct Packet { uint16_t seq; std::vector<uint8_t> bytes; };
 
-// Encode every reference frame with the production voice settings.
-// Returns the packets and how many carry LBRR (in-band FEC).
 std::vector<Packet> encode_all(const std::vector<std::vector<float>>& frames,
                                int* out_lbrr_count) {
     OpusCodec enc;
     enc.init_encoder(audio::SAMPLE_RATE, audio::CHANNELS, audio::OPUS_BITRATE,
-                     /*inband_fec=*/true, audio::OPUS_EXPECTED_LOSS_PCT);
+                     true, audio::OPUS_EXPECTED_LOSS_PCT);
     std::vector<Packet> pkts;
     pkts.reserve(frames.size());
     int lbrr = 0;
@@ -78,16 +62,13 @@ std::vector<Packet> encode_all(const std::vector<std::vector<float>>& frames,
     return pkts;
 }
 
-// Drive the real VoiceMixer tick-by-tick: at tick T the packet that "arrives"
-// (T, unless dropped) is pushed, then one 20 ms frame is pulled. The mixer's
-// own pre-buffer creates the playout delay that gives FEC its lookahead.
 struct RunResult { VoiceMixer::DecodeStats stats; int ticks; double out_energy; };
 
 template <typename DropFn>
 RunResult run(const std::vector<Packet>& pkts, DropFn dropped) {
     VoiceMixer mixer;
     std::vector<float> out(kFrame);
-    const int total_ticks = static_cast<int>(pkts.size()) + 20; // tail to drain
+    const int total_ticks = static_cast<int>(pkts.size()) + 20;
     double energy = 0.0;
     for (int t = 0; t < total_ticks; ++t) {
         if (t < static_cast<int>(pkts.size()) && !dropped(pkts[t].seq)) {
@@ -101,25 +82,22 @@ RunResult run(const std::vector<Packet>& pkts, DropFn dropped) {
     return { mixer.decode_stats(), total_ticks, energy };
 }
 
-} // namespace
+}
 
 int main() {
     std::printf("[voice_loss_test] start\n");
 
-    const int n = 250; // 5 s
+    const int n = 250;
     auto frames = make_reference(n);
 
     int lbrr = 0;
     auto pkts = encode_all(frames, &lbrr);
     TEST_ASSERT(static_cast<int>(pkts.size()) >= n - 2, "encoded most frames");
 
-    // Canary: the encoder MUST emit LBRR (in-band FEC). Packet 0 has no previous
-    // frame to protect, so allow it; require the large majority to carry LBRR.
     std::printf("[voice_loss_test] LBRR packets: %d / %zu\n", lbrr, pkts.size());
     TEST_ASSERT(lbrr >= static_cast<int>(pkts.size() * 7 / 10),
                 "encoder emits in-band FEC (LBRR) on most packets");
 
-    // 1. Clean run: no loss -> all in-order decodes, no FEC.
     {
         auto r = run(pkts, [](uint16_t) { return false; });
         std::printf("[clean] normal=%llu fec=%llu plc=%llu resync=%llu\n",
@@ -131,11 +109,9 @@ int main() {
         TEST_ASSERT(r.out_energy > 0.0, "clean run produced audio");
     }
 
-    // 2. 10% ISOLATED loss (every 10th packet) -> each loss recovered from the
-    //    successor's FEC, not skipped or PLC'd.
     {
         int dropped_total = 0;
-        for (auto& p : pkts) if (p.seq % 10 == 5 && p.seq != 5) ++dropped_total; // skip first to keep warmup clean
+        for (auto& p : pkts) if (p.seq % 10 == 5 && p.seq != 5) ++dropped_total;
         auto r = run(pkts, [](uint16_t s) { return s % 10 == 5 && s != 5; });
         std::printf("[10%%-isolated] drops=%d normal=%llu fec=%llu plc=%llu resync=%llu\n",
                     dropped_total, (unsigned long long)r.stats.normal,
@@ -147,8 +123,6 @@ int main() {
         TEST_ASSERT(r.out_energy > 0.0, "lossy run still produced audio");
     }
 
-    // 3. Bursts of 3 consecutive losses -> the last of each burst FEC-recovered,
-    //    the earlier ones PLC'd; never a hard skip, never silence mid-stream.
     {
         auto burst = [](uint16_t s) { uint16_t m = s % 40; return m == 10 || m == 11 || m == 12; };
         auto r = run(pkts, burst);
@@ -161,8 +135,6 @@ int main() {
         TEST_ASSERT(r.out_energy > 0.0, "burst run still produced audio");
     }
 
-    // 4. Seeded random 10% loss -> sanity: FEC dominates, clock never skips,
-    //    resync stays rare.
     {
         std::mt19937 rng(12345);
         std::uniform_real_distribution<double> u(0.0, 1.0);

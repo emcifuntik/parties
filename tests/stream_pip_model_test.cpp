@@ -1,7 +1,3 @@
-// Shared picture-in-picture model: StreamPipController transitions as AppCore
-// drives them, the grid placeholder binding, and VideoFrameRouter's
-// one-destination routing with texture retirement on the owning renderer.
-
 #include <client/lobby_model.h>
 #include <client/stream_pip.h>
 #include <client/video_element.h>
@@ -28,8 +24,6 @@ namespace {
 using namespace parties::client;
 using parties::UserId;
 
-// Counts video texture traffic so the test can tell which renderer allocated
-// and released a stream's planes.
 class CountingRenderer final : public ExtendedRenderInterface {
 public:
     int nv12_generated = 0;
@@ -135,7 +129,6 @@ void populate_channel(LobbyModel& model) {
     model.add_channel_sharer(33);
 }
 
-// Mirrors AppCore::rebuild_watched_model for the grid binding.
 void publish_watched(LobbyModel& model, const std::unordered_set<UserId>& watched) {
     auto& cells = model.watched.silent();
     cells.clear();
@@ -160,7 +153,6 @@ void check_transitions(Rml::Context* context) {
     pip.attach(&model, log.presenter());
     std::unordered_set<UserId> watched{22, 33};
     publish_watched(model, watched);
-    // AppCore wires the RML intent exactly like this (AppCore::toggle_pip).
     model.on_toggle_stream_pip = [&](int id) { pip.toggle(static_cast<UserId>(id), watched); };
 
     auto* document = context->LoadDocumentFromMemory(R"RML(
@@ -195,24 +187,20 @@ void check_transitions(Rml::Context* context) {
     check(visible("video-22") && visible("video-33") && !visible("placeholder-22"),
         "grid did not show both videos without PiP");
 
-    // Open from the stream controls.
     click("pip-22");
     check(pip.stream() == 22 && model.pip_stream_id.get() == 22, "open did not select the stream");
     check(log.take({"show 22 Bob", "moved 22"}), "open presented the wrong transition");
     check(!visible("video-22") && visible("placeholder-22") && visible("video-33"),
         "PiP stream's cell did not switch to the placeholder");
 
-    // Picking PiP on another stream switches it.
     click("pip-33");
     check(pip.stream() == 33 && model.pip_stream_id.get() == 33, "switch did not move PiP");
     check(log.take({"show 33 Carol", "moved 22", "moved 33"}), "switch presented the wrong transition");
     check(visible("video-22") && !visible("placeholder-22") && visible("placeholder-33"),
         "switch did not return the previous stream to its cell");
 
-    // Only watched streams can be shown.
     check(!pip.open(44, watched) && pip.stream() == 33 && log.take({}), "an unwatched stream opened PiP");
 
-    // The PiP button on the PiP stream closes it; the stream stays in the grid.
     click("pip-33");
     check(!pip.is_open() && model.pip_stream_id.get() == 0, "close left PiP open");
     check(log.take({"hide 33 user", "moved 33"}), "close presented the wrong transition");
@@ -220,13 +208,11 @@ void check_transitions(Rml::Context* context) {
     pip.close(PipCloseReason::UserClosed);
     check(log.take({}), "closing a closed PiP notified the platform");
 
-    // Return action: closes PiP with its own reason.
     pip.open(22, watched);
     log.take({"show 22 Bob", "moved 22"});
     pip.close(PipCloseReason::ReturnedToMain);
     check(!pip.is_open() && log.take({"hide 22 return", "moved 22"}), "return did not close PiP");
 
-    // The stream ends: AppCore::remove_watch -> rebuild_watched_model.
     pip.open(22, watched);
     log.take({"show 22 Bob", "moved 22"});
     watched.erase(22);
@@ -239,7 +225,6 @@ void check_transitions(Rml::Context* context) {
     check(document->GetElementById("placeholder-22") == nullptr || !visible("placeholder-22"),
         "ended stream still shows a placeholder");
 
-    // Another stream ending leaves PiP alone.
     model.add_channel_sharer(22);
     watched.insert(22);
     publish_watched(model, watched);
@@ -249,14 +234,11 @@ void check_transitions(Rml::Context* context) {
     pip.reconcile(watched);
     check(pip.stream() == 33 && log.take({}), "an unrelated stream end closed PiP");
 
-    // Stop watching: AppCore::stop_watching empties the set.
     watched.clear();
     publish_watched(model, watched);
     pip.reconcile(watched);
     check(!pip.is_open() && log.take({"hide 33 unwatched"}), "stop watching left PiP open");
 
-    // Leave channel: AppCore::leave_channel -> stop_watching + clear_all_sharers,
-    // which reconciles against an empty set even if nothing was rebuilt.
     watched = {22, 33};
     publish_watched(model, watched);
     pip.open(22, watched);
@@ -266,9 +248,6 @@ void check_transitions(Rml::Context* context) {
     check(!pip.is_open() && model.pip_stream_id.get() == 0 && log.take({"hide 22 unwatched"}),
         "leaving the channel left PiP open");
 
-    // The volume handler must apply the slider's new value. RmlUi runs the
-    // change handler before data-value commits it, so reading the model there
-    // would apply (and persist) the previous value; unmuting relies on this.
     float applied_volume = -1.0f;
     model.stream_volume = 1.0f;
     model.on_stream_volume_changed = [&](float volume) { applied_volume = volume; };
@@ -292,7 +271,6 @@ void check_transitions(Rml::Context* context) {
     document->Close();
     model.on_toggle_stream_pip = {};
     model.on_stream_volume_changed = {};
-    // Release the closed documents before the model's data bindings go away.
     context->Update();
 }
 
@@ -302,8 +280,6 @@ void feed_frame(VideoElement* element) {
     if (element) element->UpdateNV12Frame(y.data(), 16, uv.data(), 16, 16, 16);
 }
 
-// RmlUi keeps a render manager per render interface until Rml::Shutdown, so
-// both renderers outlive the library, as the platform PiP hosts must.
 void check_routing(Rml::Context* main_context, CountingRenderer& main_renderer,
                    CountingRenderer& pip_renderer) {
     Rml::Context* pip_context = Rml::CreateContext("stream-pip-surface", {320, 180}, &pip_renderer);
@@ -345,7 +321,6 @@ void check_routing(Rml::Context* main_context, CountingRenderer& main_renderer,
         pip_context->Render();
     };
 
-    // No PiP: every stream renders in its own cell on the main renderer.
     check(!router.sync(0, surfaces).grid, "sync without a change cleared a surface");
     check(router.target(22, surfaces) == cell22 && router.target(33, surfaces) == cell33,
         "grid streams were not routed to their cells");
@@ -355,8 +330,6 @@ void check_routing(Rml::Context* main_context, CountingRenderer& main_renderer,
     check(main_renderer.nv12_live == 2 && pip_renderer.nv12_generated == 0,
         "grid frames were not uploaded by the main renderer");
 
-    // Stream 22 moves to PiP: its cell releases on the main renderer, and its
-    // frames go only to the PiP surface, uploaded by the PiP renderer.
     const auto moved_in = router.sync(22, surfaces);
     check(moved_in.grid && moved_in.pip, "moving to PiP did not clear both surfaces");
     check(main_renderer.nv12_live == 1 && cell22->frame_width() == 0,
@@ -369,14 +342,12 @@ void check_routing(Rml::Context* main_context, CountingRenderer& main_renderer,
     check(pip_renderer.nv12_live == 1 && main_renderer.nv12_live == 1 && cell22->frame_width() == 0,
         "a PiP frame reached the grid or the wrong renderer");
 
-    // Switch to 33: the PiP surface drops 22's frame on its own renderer.
     router.sync(33, surfaces);
     check(pip_renderer.nv12_live == 0 && main_renderer.nv12_live == 0,
         "switching did not retire both streams' previous surfaces");
     check(router.target(22, surfaces) == cell22 && router.target(33, surfaces) == surfaces.pip,
         "switch did not swap destinations");
 
-    // Close: the PiP surface releases, the stream renders in its cell again.
     feed_frame(router.target(33, surfaces));
     render();
     router.sync(0, surfaces);
@@ -392,9 +363,6 @@ void check_routing(Rml::Context* main_context, CountingRenderer& main_renderer,
     VideoElement::UnregisterContextRenderInterface(pip_context);
 }
 
-// data-for reuses cells by index: when the watched list shifts, the hidden
-// <video_frame> of the PiP stream can become an element that still holds
-// another stream's texture. The router must clear it while PiP stays open.
 void check_cell_reuse(CountingRenderer& main_renderer) {
     Rml::Context* context = Rml::CreateContext("stream-pip-reuse", {640, 480});
     if (!context) {
@@ -436,14 +404,11 @@ void check_cell_reuse(CountingRenderer& main_renderer) {
         context->Render();
         check(main_renderer.nv12_live == live_before + 2, "both grid cells did not upload a frame");
 
-        // 33 enters PiP: its cell is cleared and hidden.
         model.pip_stream_id = 33;
         router.sync(33, surfaces);
         context->Update();
         check(main_renderer.nv12_live == live_before + 1, "the PiP stream's cell kept its texture");
 
-        // 22 stops sharing. The list shifts and the first cell, which still
-        // holds 22's texture, is rebound to the hidden PiP stream 33.
         watched.erase(22);
         model.remove_channel_sharer(22);
         publish_watched(model, watched);
@@ -459,7 +424,7 @@ void check_cell_reuse(CountingRenderer& main_renderer) {
     Rml::RemoveContext("stream-pip-reuse");
 }
 
-} // namespace
+}
 
 int main() {
 #ifdef _WIN32

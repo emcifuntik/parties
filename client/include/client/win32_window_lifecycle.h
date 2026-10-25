@@ -19,8 +19,6 @@ class OwnerThreadWindowDestroy {
 public:
     static constexpr UINT message_id = WM_APP + 0x4C;
 
-    // Call before reading window user data in the WndProc. The manager may
-    // already have completed teardown by the time this message is dispatched.
     static bool handle_message(HWND hwnd, UINT message) noexcept {
         if (message != message_id)
             return false;
@@ -99,4 +97,4 @@ public:
     }
 };
 
-} // namespace parties::client
+}

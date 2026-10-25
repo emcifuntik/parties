@@ -27,11 +27,6 @@
 
 using namespace parties::client;
 
-// ═══════════════════════════════════════════════════════════════════════
-// Window-action keyword indices (must match RCSS registration order
-// in ui_manager.cpp: "none, caption, close, minimize, maximize")
-// ═══════════════════════════════════════════════════════════════════════
-
 enum WindowAction {
     WA_NONE     = 0,
     WA_CAPTION  = 1,
@@ -42,10 +37,6 @@ enum WindowAction {
 
 static constexpr int RESIZE_BORDER_PX = 8;
 static bool s_was_minimized = false;
-
-// ═══════════════════════════════════════════════════════════════════════
-// WndProc — custom titlebar, resize borders, RmlUi input forwarding
-// ═══════════════════════════════════════════════════════════════════════
 
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     auto* app = reinterpret_cast<App*>(GetPropW(hwnd, L"App"));
@@ -81,10 +72,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
     case WM_NCCALCSIZE:
         if (wParam == TRUE) {
-            // Collapse non-client area for borderless window.
-            // Fullscreen: use full monitor rect. Maximized: constrain to work area.
             if (ui && ui->is_fullscreen()) {
-                // Full monitor — no constraint needed, let it cover taskbar
             } else if (IsZoomed(hwnd)) {
                 auto* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(lParam);
                 HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
@@ -109,7 +97,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         bool maximized = IsZoomed(hwnd);
         int border = maximized ? 0 : RESIZE_BORDER_PX;
 
-        // Resize borders (not when maximized)
         if (!maximized) {
             bool top    = pt.y < border;
             bool bottom = pt.y >= h - border;
@@ -126,10 +113,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             if (right)  return HTRIGHT;
         }
 
-        // Query RmlUi element under cursor for window-action property
         auto* ctx = ui->context();
         if (ctx) {
-            // Context is owned by the render thread; lock for this synchronous read.
             std::lock_guard<std::recursive_mutex> lock(app->ui_mutex());
             auto* elem = ctx->GetElementAtPoint(
                 Rml::Vector2f(static_cast<float>(pt.x), static_cast<float>(pt.y)));
@@ -149,7 +134,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         return HTCLIENT;
     }
 
-    // Forward non-client mouse movement to RmlUi so :hover works on titlebar
     case WM_NCMOUSEMOVE: {
         if (!app || !ui || !ui->context()) break;
         POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
@@ -182,7 +166,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         mi.cbSize = sizeof(mi);
         GetMonitorInfoW(mon, &mi);
         if (ui && ui->is_fullscreen()) {
-            // Fullscreen: allow full monitor size (cover taskbar)
             mmi->ptMaxPosition.x = 0;
             mmi->ptMaxPosition.y = 0;
             mmi->ptMaxSize.x = mi.rcMonitor.right - mi.rcMonitor.left;
@@ -198,7 +181,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         return 0;
     }
 
-    // Prevent GDI from painting over the DX12 swapchain
     case WM_ERASEBKGND:
         return 1;
     case WM_PAINT: {
@@ -207,11 +189,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         EndPaint(hwnd, &ps);
         return 0;
     }
-
-    // No special move/resize handling needed: rendering runs on App's dedicated
-    // render thread, so it keeps going while the OS modal move/resize loop parks
-    // this (message) thread. The old WM_MOVING/WM_SIZING re-render workaround is
-    // gone — it only rendered while the mouse was actually moving.
 
     case WM_SIZE: {
         int w = LOWORD(lParam);
@@ -222,8 +199,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         } else if (app) {
             bool restoring = s_was_minimized;
             s_was_minimized = false;
-            // Defer the swap-chain + context resize to the render thread, which
-            // owns the GPU. on_resize there also clears the minimized flag.
             app->defer_resize(w, h);
             if (restoring) {
                 // Force DWM to re-register the window surface immediately
@@ -250,7 +225,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     }
 
 #ifndef PARTIES_RETAIL
-    // F8 toggles RmlUi debugger
     case WM_KEYDOWN:
         if (wParam == VK_F8) {
             if (app) {
@@ -270,12 +244,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 #endif
     }
 
-    // Forward input events to RmlUi via vendored Win32 platform layer.
-    // Context is owned by the render thread, so serialize input application.
     if (app && ui && ui->context()) {
         std::lock_guard<std::recursive_mutex> lock(app->ui_mutex());
-        // Chat drag-select + Ctrl+C copy. Updates selection state; only fully
-        // consumes Ctrl+C (returns true), letting RmlUi still see mouse events.
         if (app->handle_chat_input(msg, wParam, lParam))
             return 0;
         bool propagating = RmlWin32::WindowProcedure(
@@ -286,10 +256,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
-
-// ═══════════════════════════════════════════════════════════════════════
-// Entry point
-// ═══════════════════════════════════════════════════════════════════════
 
 int main(int argc, char* argv[]) {
     // Must be first: if launched as crashpad handler subprocess, run handler and exit.
@@ -327,8 +293,6 @@ int main(int argc, char* argv[]) {
     const bool main_priority_set = parties::set_current_thread_highest_priority();
 
     TracySetThreadName("Main");
-    // Initialise the persistent file logger before Sentry so the current log
-    // can be attached to crash reports from production builds.
     parties::log_init(parties::LogTarget::Client);
     if (!timer_resolution.active())
         LOG_WARN("Failed to request 1 ms Windows timer resolution");
@@ -364,13 +328,12 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Register window class
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
     wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc = WndProc;
     wc.hInstance = GetModuleHandleW(nullptr);
-    wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512) /*IDC_ARROW*/);
+    wc.hCursor = LoadCursorW(nullptr, reinterpret_cast<LPCWSTR>(IDC_ARROW));
     wc.hIcon = LoadIconW(wc.hInstance, MAKEINTRESOURCEW(1));
     wc.hIconSm = LoadIconW(wc.hInstance, MAKEINTRESOURCEW(1));
     wc.lpszClassName = window_class;
@@ -401,11 +364,9 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Enable DWM shadow on borderless window
     MARGINS margins = {0, 0, 0, 1};
     DwmExtendFrameIntoClientArea(hwnd, &margins);
 
-    // Initialize application
     App app;
     SetPropW(hwnd, L"App", &app);
 
@@ -429,10 +390,6 @@ int main(int argc, char* argv[]) {
     SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
 
-    // Main loop — the message thread. Rendering runs on App's dedicated render
-    // thread, so it continues even while the OS parks us in the modal
-    // move/resize loop. Here we only pump Win32 messages and run the per-frame
-    // logic tick (network, hotkeys, fullscreen sync).
     bool running = true;
     MSG msg{};
     while (running) {
@@ -447,17 +404,13 @@ int main(int argc, char* argv[]) {
         }
         if (!running) break;
 
-        // Logic tick (also drives sounds/hotkeys regardless of window state).
         app.tick_message_thread();
 
-        // Block until input arrives or a short timeout (~8 ms logic cadence),
-        // without spinning. Rendering is paced separately on the render thread.
         const HANDLE activation_event = instance.activation_event();
         MsgWaitForMultipleObjectsEx(activation_event ? 1 : 0,
             activation_event ? &activation_event : nullptr, 8, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
     }
 
-    // Cleanup (order matters: app before window destruction)
     SetPropW(hwnd, L"App", nullptr);
     app.shutdown();
     DestroyWindow(hwnd);

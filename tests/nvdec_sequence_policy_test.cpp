@@ -23,7 +23,7 @@ void check(bool condition, const char* message) {
         std::exit(1);
     }
 }
-} // namespace
+}
 
 int main() {
     const NvdecSequenceState state{

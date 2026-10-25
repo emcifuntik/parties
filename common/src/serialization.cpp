@@ -90,4 +90,4 @@ size_t BinaryReader::remaining() const {
     return len_ - pos_;
 }
 
-} // namespace parties
+}

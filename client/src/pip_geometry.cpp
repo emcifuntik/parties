@@ -25,7 +25,7 @@ double sanitize_aspect(double aspect) {
     return (std::isfinite(aspect) && aspect > 0.0) ? aspect : kPipDefaultAspect;
 }
 
-} // namespace
+}
 
 double pip_height_for_width(double width, double aspect) {
     return width / sanitize_aspect(aspect);
@@ -86,7 +86,6 @@ PipRect pip_clamp_to_work_areas(PipRect rect, const std::vector<PipRect>& work_a
         rect.height = pip_height_for_width(rect.width, aspect);
     }
 
-    // Size: within [min_width, max_work_fraction of the work area], aspect kept.
     const double max_width = area.width * limits.max_work_fraction;
     const double max_height = area.height * limits.max_work_fraction;
     double scale = 1.0;
@@ -128,4 +127,4 @@ std::optional<PipRect> pip_rect_from_string(std::string_view text) {
     return PipRect{values[0], values[1], values[2], values[3]};
 }
 
-} // namespace parties::client
+}

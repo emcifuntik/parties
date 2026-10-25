@@ -14,7 +14,7 @@ bool expect(AMF_RESULT result, AmfSubmitDisposition expected, const char* name) 
     return false;
 }
 
-} // namespace
+}
 
 int main() {
     bool ok = true;
