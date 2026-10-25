@@ -357,15 +357,10 @@ bool App::init(HWND hwnd) {
     bridge.video = MultiStreamVideo{
         .start_stream = [this](UserId id) { start_video_stream(id); },
         .stop_stream = [this](UserId id) { stop_video_stream(id); },
-        .wants_pli_retry = [this](UserId id) -> bool {
-            std::lock_guard<std::mutex> slock(streams_mutex_);
+        .wants_pli_retry = [this](UserId id) {
+            std::lock_guard<std::mutex> lock(streams_mutex_);
             auto it = video_streams_.find(id);
-            if (it == video_streams_.end()) return false;
-            VideoStream* s = it->second.get();
-            if (s->self_preview) return false;
-            std::lock_guard<std::mutex> qlock(s->queue_mutex);
-            if (s->stale_flushes.suppressed()) return false;
-            return s->decode_gate.awaiting_keyframe();
+            return it != video_streams_.end() && it->second->inbox.wants_pli_retry();
         },
     };
 
@@ -420,7 +415,7 @@ bool App::init(HWND hwnd) {
     };
 
     core_.on_video_frame_received = [this](UserId sender, ParsedVideoFrame&& frame) {
-        on_video_frame_received(sender, std::move(frame));
+        enqueue_decode_work(sender, std::move(frame));
     };
 
     core_.model_.on_select_share_target = [this](int index) {
@@ -514,8 +509,6 @@ void App::shutdown() {
     auto abandoned_capture_start = std::move(screen_share_start_job_);
     if (abandoned_capture_start &&
         !abandoned_capture_start->complete.load(std::memory_order_acquire)) {
-        // The detached job owns the capture object until the non-cancellable
-        // Windows RPC returns. Do not race shutdown against ScreenCapture::start.
         capture_.reset();
     }
     if (stream_audio_capture_) { stream_audio_capture_->stop(); stream_audio_capture_.reset(); }
@@ -674,17 +667,7 @@ void App::deliver_video_frames(bool grid_visible) {
     ZoneScopedN("App::deliver_video_frames");
     struct PendingUpload {
         uint32_t sharer;
-        std::shared_ptr<void> native_owner;
-        void* native_resource = nullptr;
-        void* native_chroma_resource = nullptr;
-        void* native_ready_fence = nullptr;
-        uint64_t native_ready_value = 0;
-        uint32_t native_resource_state = 0;
-        bool native_rgba = false;
-        uint32_t native_texture_width = 0;
-        uint32_t native_texture_height = 0;
-        uint32_t native_crop_x = 0;
-        uint32_t native_crop_y = 0;
+        std::optional<NativeVideoFrame> native;
         std::vector<uint8_t> y, u, v;
         uint32_t w, h, ys, uvs;
         bool nv12;
@@ -701,27 +684,7 @@ void App::deliver_video_frames(bool grid_visible) {
             if (!s->new_frame.load(std::memory_order_relaxed)) continue;
             PendingUpload up;
             up.sharer = static_cast<uint32_t>(s->sharer_id);
-            up.native_owner = std::move(s->native_owner);
-            up.native_resource = s->native_resource;
-            up.native_chroma_resource = s->native_chroma_resource;
-            up.native_ready_fence = s->native_ready_fence;
-            up.native_ready_value = s->native_ready_value;
-            up.native_resource_state = s->native_resource_state;
-            up.native_rgba = s->native_rgba;
-            up.native_texture_width = s->native_texture_width;
-            up.native_texture_height = s->native_texture_height;
-            up.native_crop_x = s->native_crop_x;
-            up.native_crop_y = s->native_crop_y;
-            s->native_resource = nullptr;
-            s->native_chroma_resource = nullptr;
-            s->native_ready_fence = nullptr;
-            s->native_ready_value = 0;
-            s->native_resource_state = 0;
-            s->native_rgba = false;
-            s->native_texture_width = 0;
-            s->native_texture_height = 0;
-            s->native_crop_x = 0;
-            s->native_crop_y = 0;
+            up.native = std::exchange(s->native, std::nullopt);
             up.y.swap(s->y); up.u.swap(s->u); up.v.swap(s->v);
             up.w = s->width; up.h = s->height;
             up.ys = s->y_stride; up.uvs = s->uv_stride;
@@ -733,16 +696,12 @@ void App::deliver_video_frames(bool grid_visible) {
     if (uploads.empty()) return;
     const auto surfaces = video_surfaces();
     for (auto& up : uploads) {
-        if ((!up.native_resource && up.y.empty()) || up.w == 0 || up.h == 0) continue;
+        if ((!up.native && up.y.empty()) || up.w == 0 || up.h == 0) continue;
         core_.stream_frame_count_.fetch_add(1, std::memory_order_relaxed);
         VideoElement* ve = video_router_.target(up.sharer, surfaces);
         if (!ve) continue;
-        if (up.native_resource)
-            ve->UpdateNativeVideoFrame({up.native_resource, up.native_chroma_resource,
-                std::move(up.native_owner), up.native_ready_fence,
-                up.native_ready_value, up.native_resource_state, up.native_rgba, up.w, up.h,
-                up.native_texture_width, up.native_texture_height,
-                up.native_crop_x, up.native_crop_y});
+        if (up.native)
+            ve->UpdateNativeVideoFrame(std::move(*up.native));
         else if (up.nv12)
             ve->UpdateNV12Frame(up.y, up.ys, up.u, up.uvs, up.w, up.h);
         else
@@ -1086,7 +1045,8 @@ void App::start_application_audio_share(int target_index) {
 
     stop_application_audio_share();
     auto capture = std::make_unique<StreamAudioCapture>();
-    if (!capture->init(static_cast<uint32_t>(target_pid), StreamAudioCapture::OutputMode::MonoPcm)) {
+    if (!capture->init(CaptureProcessTree{static_cast<uint32_t>(target_pid)},
+                       StreamAudioCapture::OutputMode::MonoPcm)) {
         LOG_ERROR("Application audio capture init failed for PID {}", target_pid);
         return;
     }
@@ -1163,11 +1123,11 @@ void App::start_screen_share(int target_index) {
 
     const auto target = capture_targets_[target_index];
 
-    uint32_t target_process_id = 0;
+    StreamAudioSource audio_source = CaptureAllExceptOwnProcess{};
     if (target.type == CaptureTarget::Type::Window && target.handle) {
         DWORD pid = 0;
         GetWindowThreadProcessId(static_cast<HWND>(target.handle), &pid);
-        target_process_id = static_cast<uint32_t>(pid);
+        if (pid != 0) audio_source = CaptureProcessTree{static_cast<uint32_t>(pid)};
     }
 
     encode_fps_ = frames_per_second(core_.model_.share_fps.get());
@@ -1176,7 +1136,7 @@ void App::start_screen_share(int target_index) {
     job->capture = capture_;
     job->target = target;
     job->fps = encode_fps_;
-    job->target_process_id = target_process_id;
+    job->audio_source = audio_source;
     job->channel_id = core_.current_channel_;
     screen_share_start_job_ = std::move(job);
     capture_targets_.clear();
@@ -1239,10 +1199,10 @@ void App::poll_screen_share_start() {
         return;
     }
 
-    finish_screen_share_start(job->target_process_id);
+    finish_screen_share_start(job->audio_source);
 }
 
-void App::finish_screen_share_start(uint32_t target_process_id) {
+void App::finish_screen_share_start(StreamAudioSource audio_source) {
     ZoneScopedN("App::finish_screen_share_start");
     if (!capture_)
         return;
@@ -1280,10 +1240,10 @@ void App::finish_screen_share_start(uint32_t target_process_id) {
             LOG_INFO("keyframe fn={} size={} sent={}", r.frame_seq, len, r.sent ? 1 : 0);
 
         if (core_.is_watching(core_.user_id_)) {
-            std::vector<uint8_t> copy(data, data + len);
-            enqueue_decode_work(core_.user_id_, std::move(copy),
-                                static_cast<int64_t>(r.frame_seq),
-                                codec, w, h, keyframe);
+            enqueue_decode_work(core_.user_id_, ParsedVideoFrame::assemble(
+                VideoFrameHeader{.frame_seq = r.frame_seq, .keyframe = keyframe,
+                                 .width = w, .height = h, .codec = codec},
+                std::span(data, len)));
         }
     };
     encode_on_encoded_ = on_encoded_cb;
@@ -1427,7 +1387,7 @@ void App::finish_screen_share_start(uint32_t target_process_id) {
     });
 
     stream_audio_capture_ = std::make_unique<StreamAudioCapture>();
-    if (stream_audio_capture_->init(target_process_id)) {
+    if (stream_audio_capture_->init(audio_source)) {
         stream_audio_capture_->on_encoded_frame = [this](const uint8_t* data, size_t len) {
             if (!sharing_screen_ || !core_.authenticated_) return;
             std::vector<uint8_t> pkt(1 + len);
@@ -1484,66 +1444,41 @@ void App::stop_screen_share() {
         core_.net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_STOP, nullptr, 0);
 }
 
-void App::on_video_frame_received(UserId sender, ParsedVideoFrame&& frame) {
-    ZoneScopedN("App::on_video_frame_received");
-    const auto encoded = frame.encoded();
-    if (encoded.empty()) return;
-
-    const VideoFrameHeader& h = frame.header();
-    enqueue_decode_work(sender, std::vector<uint8_t>(encoded.begin(), encoded.end()),
-                        static_cast<int64_t>(h.frame_seq), h.codec, h.width, h.height, h.keyframe);
-}
-
 static int64_t steady_now_us() {
     return std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-static_assert(kVideoDecodeStaleFlushRecoveryUs <=
-                  static_cast<int64_t>(VIDEO_KEYFRAME_INTERVAL_MS) * 1000,
-              "kVideoDecodeStaleFlushRecoveryUs must fit in VIDEO_KEYFRAME_INTERVAL_MS");
-
-void App::enqueue_decode_work(UserId sharer_id, std::vector<uint8_t>&& encoded,
-                              int64_t timestamp, VideoCodecId codec,
-                              uint16_t width, uint16_t height, bool is_keyframe) {
-    bool request_keyframe = false;
-    bool self_preview = false;
+void App::enqueue_decode_work(UserId sharer_id, ParsedVideoFrame&& frame) {
+    ZoneScopedN("App::enqueue_decode_work");
+    if (frame.encoded().empty()) return;
+    KeyframeRecovery recovery = KeyframeRecovery::None;
     {
-        std::lock_guard<std::mutex> slock(streams_mutex_);
+        std::lock_guard<std::mutex> lock(streams_mutex_);
         auto it = video_streams_.find(sharer_id);
         if (it == video_streams_.end()) return;
-        VideoStream* s = it->second.get();
-        if (!s->running.load(std::memory_order_relaxed)) return;
-
-        std::lock_guard<std::mutex> qlock(s->queue_mutex);
-        const bool recovery_keyframe = is_keyframe && s->decode_gate.awaiting_keyframe();
-        const auto decision = s->decode_gate.on_frame(
-            static_cast<uint32_t>(timestamp), is_keyframe);
-        if (decision == VideoDecodeDecision::Discontinuity) {
-            while (!s->queue.empty()) s->queue.pop();
-            request_keyframe = true;
-            self_preview = s->self_preview;
-        } else if (decision == VideoDecodeDecision::Accept) {
-            DecodeWork work;
-            work.data = std::move(encoded);
-            work.timestamp = timestamp;
-            work.codec = codec;
-            work.width = width;
-            work.height = height;
-            work.keyframe = is_keyframe;
-            work.arrival_us = steady_now_us();
-            work.recovery_keyframe = recovery_keyframe;
-            s->queue.push(std::move(work));
-            s->queue_cv.notify_one();
-        }
+        recovery = it->second->inbox.push(std::move(frame), steady_now_us());
     }
-    if (request_keyframe) {
-        if (self_preview) {
-            LOG_WARN("Self-preview video frame discontinuity; waiting for the encoder's next keyframe");
-        } else {
-            LOG_WARN("Video frame discontinuity from user {}; requesting a keyframe", sharer_id);
-            core_.send_pli(sharer_id);
-        }
+    apply_keyframe_recovery(sharer_id, recovery, "Video frame discontinuity");
+}
+
+void App::apply_keyframe_recovery(UserId sharer_id, KeyframeRecovery recovery,
+                                  std::string_view event) {
+    switch (recovery) {
+    case KeyframeRecovery::None:
+    case KeyframeRecovery::Suppressed:
+        return;
+    case KeyframeRecovery::RequestFromSharer:
+        LOG_WARN("{} for user {}; requesting a keyframe", event, sharer_id);
+        core_.send_pli(sharer_id);
+        return;
+    case KeyframeRecovery::AwaitLocalEncoder:
+        LOG_WARN("{} in self-preview; waiting for the encoder's next keyframe", event);
+        return;
+    case KeyframeRecovery::AwaitPeriodicKeyframe:
+        LOG_WARN("{} for user {} keeps recurring; decoder too slow, waiting for the periodic keyframe",
+                 event, sharer_id);
+        return;
     }
 }
 
@@ -1635,53 +1570,35 @@ void App::encode_loop() {
     }
 }
 
+App::VideoStream::VideoStream(UserId sharer, StreamOrigin origin) : sharer_id(sharer), inbox(origin) {}
+
 void App::start_video_stream(UserId sharer_id) {
     std::lock_guard<std::mutex> lock(streams_mutex_);
-    if (video_streams_.count(sharer_id)) return;
-    auto s = std::make_unique<VideoStream>();
-    s->sharer_id = sharer_id;
-    s->element_id = "screen-share-" + std::to_string(sharer_id);
-    s->self_preview = (sharer_id == core_.user_id_);
-    s->running.store(true, std::memory_order_relaxed);
-    VideoStream* ptr = s.get();
-    s->thread = std::thread([this, ptr] { decode_loop(ptr); });
+    if (video_streams_.contains(sharer_id)) return;
+    auto s = std::make_unique<VideoStream>(
+        sharer_id, sharer_id == core_.user_id_ ? StreamOrigin::SelfPreview : StreamOrigin::RemoteSharer);
+    s->thread = std::jthread([this, stream = s.get()](std::stop_token stop) { decode_loop(stop, stream); });
     video_streams_.emplace(sharer_id, std::move(s));
 }
 
 void App::stop_video_stream(UserId sharer_id) {
-    std::unique_ptr<VideoStream> s;
+    std::unique_ptr<VideoStream> stopped;
     {
         std::lock_guard<std::mutex> lock(streams_mutex_);
         auto it = video_streams_.find(sharer_id);
         if (it == video_streams_.end()) return;
-        s = std::move(it->second);
+        stopped = std::move(it->second);
         video_streams_.erase(it);
     }
-    stop_stream_thread(s.get());
-    if (s->decoder) { s->decoder->shutdown(); s->decoder.reset(); }
 }
 
 void App::stop_all_video_streams() {
-    std::vector<std::unique_ptr<VideoStream>> dead;
+    std::vector<std::unique_ptr<VideoStream>> stopped;
     {
         std::lock_guard<std::mutex> lock(streams_mutex_);
-        for (auto& [uid, sp] : video_streams_) dead.push_back(std::move(sp));
+        for (auto& [uid, s] : video_streams_) stopped.push_back(std::move(s));
         video_streams_.clear();
     }
-    for (auto& s : dead) {
-        stop_stream_thread(s.get());
-        if (s->decoder) { s->decoder->shutdown(); s->decoder.reset(); }
-    }
-}
-
-void App::stop_stream_thread(VideoStream* s) {
-    {
-        std::lock_guard<std::mutex> lock(s->queue_mutex);
-        s->running.store(false, std::memory_order_relaxed);
-    }
-    s->decode_stop.request_stop();
-    s->queue_cv.notify_all();
-    if (s->thread.joinable()) s->thread.join();
 }
 
 void App::on_video_decoded(VideoStream* s, const encdec::DecodedFrame& frame) {
@@ -1692,17 +1609,21 @@ void App::on_video_decoded(VideoStream* s, const encdec::DecodedFrame& frame) {
 
     if (frame.native_d3d12_resource && frame.native_owner) {
         std::lock_guard<std::mutex> lock(s->frame_mutex);
-        s->native_owner = frame.native_owner;
-        s->native_resource = frame.native_d3d12_resource;
-        s->native_chroma_resource = frame.native_d3d12_chroma_resource;
-        s->native_ready_fence = frame.native_d3d12_fence;
-        s->native_ready_value = frame.native_fence_value;
-        s->native_resource_state = frame.native_d3d12_state;
-        s->native_rgba = frame.native_rgba;
-        s->native_texture_width = frame.native_texture_width;
-        s->native_texture_height = frame.native_texture_height;
-        s->native_crop_x = frame.native_crop_x;
-        s->native_crop_y = frame.native_crop_y;
+        s->native = NativeVideoFrame{
+            .resource = frame.native_d3d12_resource,
+            .chroma_resource = frame.native_d3d12_chroma_resource,
+            .owner = frame.native_owner,
+            .ready_fence = frame.native_d3d12_fence,
+            .ready_fence_value = frame.native_fence_value,
+            .resource_state = frame.native_d3d12_state,
+            .rgba = frame.native_rgba,
+            .visible_width = w,
+            .visible_height = h,
+            .texture_width = frame.native_texture_width,
+            .texture_height = frame.native_texture_height,
+            .crop_x = frame.native_crop_x,
+            .crop_y = frame.native_crop_y,
+        };
         s->y.clear();
         s->u.clear();
         s->v.clear();
@@ -1728,17 +1649,7 @@ void App::on_video_decoded(VideoStream* s, const encdec::DecodedFrame& frame) {
     }
     {
         std::lock_guard<std::mutex> lock(s->frame_mutex);
-        s->native_owner.reset();
-        s->native_resource = nullptr;
-        s->native_chroma_resource = nullptr;
-        s->native_ready_fence = nullptr;
-        s->native_ready_value = 0;
-        s->native_resource_state = 0;
-        s->native_rgba = false;
-        s->native_texture_width = 0;
-        s->native_texture_height = 0;
-        s->native_crop_x = 0;
-        s->native_crop_y = 0;
+        s->native.reset();
         s->y.swap(s->staging_y); s->u.swap(s->staging_u); s->v.swap(s->staging_v);
         s->width = w; s->height = h;
         s->y_stride = frame.y_stride; s->uv_stride = frame.uv_stride;
@@ -1747,101 +1658,36 @@ void App::on_video_decoded(VideoStream* s, const encdec::DecodedFrame& frame) {
     }
 }
 
-template <typename Work>
-static bool queue_contains_keyframe(std::queue<Work>& frames) {
-    bool found = false;
-    const size_t count = frames.size();
-    for (size_t i = 0; i < count; ++i) {
-        Work work = std::move(frames.front());
-        frames.pop();
-        if (work.keyframe) found = true;
-        frames.push(std::move(work));
-    }
-    return found;
-}
-
-void App::decode_loop(VideoStream* s) {
+void App::decode_loop(std::stop_token stop, VideoStream* s) {
     TracySetThreadName("VideoDecoder");
     if (parties::raise_thread_to_highest_normal_priority() == parties::ThreadPriorityChange::Failed)
         LOG_WARN("Failed to set a video decode thread to highest priority");
 
-    auto resync_warm_decoder_at_keyframe = [this, s](const char* reason) {
-        bool request_keyframe = false;
-        uint32_t flushes = 0;
-        {
-            std::lock_guard<std::mutex> lock(s->queue_mutex);
-            s->decode_gate.require_keyframe();
-            while (!s->queue.empty()) s->queue.pop();
-            request_keyframe = s->stale_flushes.on_stale_flush();
-            flushes = s->stale_flushes.stale_flushes_in_a_row;
-        }
-        if (flushes == kVideoDecodeStaleFlushPliLimit + 1) {
-            if (s->self_preview)
-                LOG_WARN("Self-preview decoder too slow (user {}); waiting for the encoder's periodic keyframe",
-                         s->sharer_id);
-            else
-                LOG_WARN("Decoder too slow for user {}; waiting for the sharer's periodic keyframe",
-                         s->sharer_id);
-            return;
-        }
-        if (!request_keyframe) return;
-        if (s->self_preview) {
-            LOG_WARN("Resynchronizing self-preview video decoder after {}; keeping warm decoder, "
-                     "waiting for the encoder's next keyframe", reason);
-            return;
-        }
-        LOG_WARN("Resynchronizing video decoder for user {} after {}; keeping warm decoder",
-                 s->sharer_id, reason);
-        core_.send_pli(s->sharer_id);
+    auto resync_warm_decoder = [this, s](std::string_view event) {
+        apply_keyframe_recovery(s->sharer_id, s->inbox.resync_after_stale_backlog(), event);
     };
-
-    auto recover_at_keyframe = [this, s](const char* reason, bool disable_hardware) {
-        {
-            std::lock_guard<std::mutex> lock(s->queue_mutex);
-            s->decode_gate.require_keyframe();
-            while (!s->queue.empty()) s->queue.pop();
-        }
+    auto reset_decoder = [this, s](std::string_view event, bool disable_hardware) {
+        const KeyframeRecovery recovery = s->inbox.reset_after_decoder_failure();
         if (disable_hardware) s->hardware_decode_disabled = true;
-        if (s->decoder) {
-            s->decoder->shutdown();
-            s->decoder.reset();
-        }
+        s->decoder.reset();
         s->decoded_since_init = false;
-        if (s->self_preview) {
-            LOG_WARN("Resetting self-preview video decoder after {}; waiting for the encoder's next keyframe",
-                     reason);
-            return;
-        }
-        LOG_WARN("Resetting video decoder for user {} after {}; waiting for keyframe",
-                 s->sharer_id, reason);
-        core_.send_pli(s->sharer_id);
+        apply_keyframe_recovery(s->sharer_id, recovery, event);
     };
+    const auto is_keyframe = [](const DecodeWork& work) { return work.keyframe(); };
 
-    while (s->running.load(std::memory_order_relaxed)) {
+    while (auto batch = s->inbox.wait_batch(stop)) {
         ZoneScopedN("App::decode_loop");
-        std::queue<DecodeWork> batch;
-        {
-            std::unique_lock<std::mutex> lock(s->queue_mutex);
-            s->queue_cv.wait(lock, [s] {
-                return !s->queue.empty() || !s->running.load(std::memory_order_relaxed);
-            });
-            if (!s->running.load(std::memory_order_relaxed)) break;
-            batch.swap(s->queue);
-        }
+        std::deque<DecodeWork>& frames = *batch;
+        std::optional<bool> has_keyframe;
 
-        bool batch_has_keyframe = false;
-        bool batch_keyframe_known = false;
-
-        if (batch.size() > kVideoDecodeBacklogWarningFrames) {
-            const size_t original_size = batch.size();
-            const auto trim = trim_to_latest_keyframe(
-                batch, [](const DecodeWork& work) { return work.keyframe; });
-            batch_has_keyframe = trim.found_keyframe;
-            batch_keyframe_known = true;
+        if (frames.size() > kVideoDecodeBacklogWarningFrames) {
+            const size_t original_size = frames.size();
+            const auto trim = trim_to_latest_keyframe(frames, is_keyframe);
+            has_keyframe = trim.found_keyframe;
             if (trim.dropped > 0) {
                 LOG_WARN("Decode queue backed up ({} frames); dropped {} frames before "
                          "the newest keyframe and retained {}",
-                         original_size, trim.dropped, batch.size());
+                         original_size, trim.dropped, frames.size());
             } else {
                 LOG_WARN("Decode queue backed up ({} contiguous frames); draining without "
                          "resetting the warm decoder",
@@ -1849,83 +1695,67 @@ void App::decode_loop(VideoStream* s) {
             }
 
             if (should_resync_decode_backlog(
-                    batch.size(), trim.found_keyframe, s->decoded_since_init)) {
-                while (!batch.empty()) batch.pop();
-                resync_warm_decoder_at_keyframe("sustained decode queue overflow");
+                    frames.size(), trim.found_keyframe, s->decoded_since_init)) {
+                resync_warm_decoder("Sustained decode queue overflow");
                 continue;
             }
         }
 
-        if (!batch.empty() && s->decoded_since_init) {
+        if (!frames.empty() && s->decoded_since_init) {
             const int64_t now_us = steady_now_us();
-            const int64_t oldest_us = batch.front().arrival_us;
+            const int64_t oldest_us = frames.front().arrival_us;
             if (now_us - oldest_us >= kVideoDecodeBacklogMaxAgeUs) {
-                if (!batch_keyframe_known) {
-                    batch_has_keyframe = queue_contains_keyframe(batch);
-                    batch_keyframe_known = true;
-                }
-                if (should_resync_stale_decode_backlog(oldest_us, now_us,
-                                                       batch_has_keyframe,
+                if (!has_keyframe) has_keyframe = std::ranges::any_of(frames, is_keyframe);
+                if (should_resync_stale_decode_backlog(oldest_us, now_us, *has_keyframe,
                                                        s->decoded_since_init)) {
-                    if (s->stale_flushes.suppressed())
+                    if (s->inbox.stale_flushes_suppressed())
                         LOG_DEBUG("Decode backlog for user {} is stale ({} frames, oldest {} ms old)",
-                                  s->sharer_id, batch.size(), (now_us - oldest_us) / 1000);
+                                  s->sharer_id, frames.size(), (now_us - oldest_us) / 1000);
                     else
                         LOG_WARN("Decode backlog for user {} is stale ({} frames, oldest {} ms old)",
-                                 s->sharer_id, batch.size(), (now_us - oldest_us) / 1000);
-                    while (!batch.empty()) batch.pop();
-                    resync_warm_decoder_at_keyframe("stale decode backlog");
+                                 s->sharer_id, frames.size(), (now_us - oldest_us) / 1000);
+                    resync_warm_decoder("Stale decode backlog");
                     continue;
                 }
             }
         }
 
-        while (!batch.empty()) {
-            auto& work = batch.front();
+        for (size_t i = 0; i < frames.size(); ++i) {
+            const DecodeWork& work = frames[i];
+            const VideoFrameHeader& header = work.frame.header();
             if (s->decoder && s->decoder->context_lost()) {
-                while (!batch.empty()) batch.pop();
-                recover_at_keyframe("GPU decode context loss", true);
+                reset_decoder("GPU decode context loss", true);
                 break;
             }
             if (!s->decoder ||
-                s->decoder->codec() != work.codec ||
-                s->decoder->width() != work.width ||
-                s->decoder->height() != work.height) {
-                if (s->decoder) s->decoder->shutdown();
+                s->decoder->codec() != header.codec ||
+                s->decoder->width() != header.width ||
+                s->decoder->height() != header.height) {
                 s->decoder = std::make_unique<VideoDecoder>();
                 s->decoded_since_init = false;
                 if (s->hardware_decode_disabled)
                     s->decoder->disable_hardware();
-                if (!s->decoder->init(work.codec, work.width, work.height,
-                                      decode_d3d12_device_, s->decode_stop.get_token())) {
+                if (!s->decoder->init(header.codec, header.width, header.height,
+                                      decode_d3d12_device_, stop)) {
                     LOG_ERROR("Decoder init failed codec={} {}x{}",
-                                 static_cast<uint8_t>(work.codec), work.width, work.height);
-                    while (!batch.empty()) batch.pop();
-                    recover_at_keyframe("decoder initialization failure", false);
+                                 static_cast<uint8_t>(header.codec), header.width, header.height);
+                    reset_decoder("Decoder initialization failure", false);
                     break;
                 }
                 LOG_INFO("Decoder reinitialized: {}",  s->decoder->backend_name());
                 s->decoder->on_decoded = [this, s](const DecodedFrame& f) { on_video_decoded(s, f); };
             }
-            s->suppress_output = batch.size() > 1;
-            const bool decoded = s->decoder->decode(work.data.data(), work.data.size(),
-                                                    work.timestamp);
+            s->suppress_output = i + 1 < frames.size();
+            const auto encoded = work.frame.encoded();
+            const bool decoded = s->decoder->decode(encoded.data(), encoded.size(), header.frame_seq);
             s->suppress_output = false;
             if (!decoded) {
-                if (!s->running.load(std::memory_order_relaxed)) {
-                    while (!batch.empty()) batch.pop();
-                    break;
-                }
-                const bool lost_context = s->decoder->context_lost();
-                while (!batch.empty()) batch.pop();
-                recover_at_keyframe("bitstream decode failure", lost_context);
+                if (stop.stop_requested()) break;
+                reset_decoder("Bitstream decode failure", s->decoder->context_lost());
                 break;
             }
-            if (work.keyframe) {
-                std::lock_guard<std::mutex> lock(s->queue_mutex);
-                s->stale_flushes.on_keyframe_decoded(steady_now_us(), work.recovery_keyframe);
-            }
-            batch.pop();
+            if (header.keyframe)
+                s->inbox.on_keyframe_decoded(steady_now_us(), work.recovery_keyframe);
         }
     }
 }

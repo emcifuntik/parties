@@ -11,8 +11,8 @@
 #include <client/hotkey_binding.h>
 #include <client/win32_power_request.h>
 #include <client/win32_tray.h>
-#include <client/video_decode_gate.h>
-#include <client/video_decode_backlog.h>
+#include <client/native_video_frame.h>
+#include <client/video_decode_inbox.h>
 #include <client/video_frame_router.h>
 #include <parties/types.h>
 #include <parties/video_common.h>
@@ -34,9 +34,9 @@ struct ID3D12Device;
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <queue>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -93,21 +93,18 @@ private:
     void share_thumbnail_worker(std::stop_token stop_token);
     void start_screen_share(int target_index);
     void poll_screen_share_start();
-    void finish_screen_share_start(uint32_t target_process_id);
+    void finish_screen_share_start(StreamAudioSource audio_source);
     void stop_screen_share();
     void start_application_audio_share(int target_index);
     void stop_application_audio_share();
-    void on_video_frame_received(UserId sender, ParsedVideoFrame&& frame);
 
     void start_video_stream(UserId sharer_id);
     void stop_video_stream(UserId sharer_id);
     void stop_all_video_streams();
-    void stop_stream_thread(VideoStream* s);
-    void decode_loop(VideoStream* s);
+    void decode_loop(std::stop_token stop, VideoStream* s);
     void on_video_decoded(VideoStream* s, const encdec::DecodedFrame& frame);
-    void enqueue_decode_work(UserId sharer_id, std::vector<uint8_t>&& encoded,
-                             int64_t timestamp, VideoCodecId codec,
-                             uint16_t width, uint16_t height, bool is_keyframe);
+    void enqueue_decode_work(UserId sharer_id, ParsedVideoFrame&& frame);
+    void apply_keyframe_recovery(UserId sharer_id, KeyframeRecovery recovery, std::string_view event);
     void encode_loop();
 
 
@@ -170,7 +167,7 @@ private:
         std::shared_ptr<ScreenCapture> capture;
         CaptureTarget target;
         uint32_t fps = 0;
-        uint32_t target_process_id = 0;
+        StreamAudioSource audio_source;
         ChannelId channel_id = 0;
         bool launched = false;
         bool succeeded = false;
@@ -222,52 +219,25 @@ private:
     std::unique_ptr<StreamAudioCapture> application_audio_capture_;
     std::atomic<bool> application_audio_sharing_{false};
 
-    struct DecodeWork {
-        std::vector<uint8_t> data;
-        int64_t      timestamp;
-        VideoCodecId codec;
-        uint16_t     width;
-        uint16_t     height;
-        bool         keyframe = false;
-        int64_t      arrival_us = 0;
-        bool         recovery_keyframe = false;
-    };
-
     struct VideoStream {
-        UserId       sharer_id = 0;
-        std::string  element_id;
+        VideoStream(UserId sharer, StreamOrigin origin);
+
+        const UserId sharer_id;
+        VideoDecodeInbox inbox;
         std::unique_ptr<VideoDecoder> decoder;
-        std::thread  thread;
-        std::atomic<bool> running{false};
-        std::stop_source decode_stop;
-        VideoDecodeGate decode_gate;
-        VideoDecodeStaleFlushTracker stale_flushes;
-        bool self_preview = false;
         bool decoded_since_init = false;
         bool hardware_decode_disabled = false;
         bool suppress_output = false;
 
-        std::mutex queue_mutex;
-        std::condition_variable queue_cv;
-        std::queue<DecodeWork> queue;
-
         std::mutex frame_mutex;
         std::atomic<bool> new_frame{false};
-        std::shared_ptr<void> native_owner;
-        void* native_resource = nullptr;
-        void* native_chroma_resource = nullptr;
-        void* native_ready_fence = nullptr;
-        uint64_t native_ready_value = 0;
-        uint32_t native_resource_state = 0;
-        bool native_rgba = false;
-        uint32_t native_texture_width = 0;
-        uint32_t native_texture_height = 0;
-        uint32_t native_crop_x = 0;
-        uint32_t native_crop_y = 0;
+        std::optional<NativeVideoFrame> native;
         std::vector<uint8_t> y, u, v;
         std::vector<uint8_t> staging_y, staging_u, staging_v;
         uint32_t width = 0, height = 0, y_stride = 0, uv_stride = 0;
         bool nv12 = false;
+
+        std::jthread thread;
     };
 
     std::mutex streams_mutex_;

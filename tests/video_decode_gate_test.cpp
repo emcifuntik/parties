@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <iostream>
 #include <limits>
-#include <queue>
+#include <deque>
 
 using parties::client::VideoDecodeDecision;
 using parties::client::VideoDecodeGate;
@@ -42,9 +42,9 @@ int main() {
                 "wrapped delta")) return 1;
 
     struct Work { int id; bool keyframe; };
-    std::queue<Work> warmup_backlog;
+    std::deque<Work> warmup_backlog;
     for (int i = 0; i < 17; ++i)
-        warmup_backlog.push({i, false});
+        warmup_backlog.push_back({i, false});
     const auto warmup_trim = parties::client::trim_to_latest_keyframe(
         warmup_backlog, [](const Work& work) { return work.keyframe; });
     if (warmup_trim.found_keyframe || warmup_trim.dropped != 0 ||
@@ -58,9 +58,9 @@ int main() {
         return 1;
     }
 
-    std::queue<Work> keyframe_backlog;
+    std::deque<Work> keyframe_backlog;
     for (int i = 0; i < 8; ++i)
-        keyframe_backlog.push({i, i == 2 || i == 5});
+        keyframe_backlog.push_back({i, i == 2 || i == 5});
     const auto keyframe_trim = parties::client::trim_to_latest_keyframe(
         keyframe_backlog, [](const Work& work) { return work.keyframe; });
     if (!keyframe_trim.found_keyframe || keyframe_trim.dropped != 5 ||

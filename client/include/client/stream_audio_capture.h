@@ -7,9 +7,14 @@
 #include <cstdint>
 #include <functional>
 #include <thread>
+#include <variant>
 #include <vector>
 
 namespace parties::client {
+
+struct CaptureAllExceptOwnProcess {};
+struct CaptureProcessTree { uint32_t pid; };
+using StreamAudioSource = std::variant<CaptureAllExceptOwnProcess, CaptureProcessTree>;
 
 // Uses ActivateAudioInterfaceAsync for process-specific capture (Win10 2004+).
 class StreamAudioCapture {
@@ -22,7 +27,7 @@ public:
     StreamAudioCapture();
     ~StreamAudioCapture();
 
-    bool init(uint32_t target_pid = 0, OutputMode mode = OutputMode::EncodedStereo);
+    bool init(StreamAudioSource source, OutputMode mode = OutputMode::EncodedStereo);
     void shutdown();
 
     bool start();

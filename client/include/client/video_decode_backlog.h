@@ -1,9 +1,10 @@
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <queue>
-#include <utility>
+#include <deque>
+#include <iterator>
 
 namespace parties::client {
 
@@ -20,22 +21,13 @@ struct VideoDecodeBacklogTrim {
 };
 
 template <typename Work, typename IsKeyframe>
-VideoDecodeBacklogTrim trim_to_latest_keyframe(
-        std::queue<Work>& frames, IsKeyframe&& is_keyframe) {
-    std::queue<Work> retained;
-    VideoDecodeBacklogTrim result;
-    while (!frames.empty()) {
-        Work work = std::move(frames.front());
-        frames.pop();
-        if (is_keyframe(work)) {
-            result.dropped += retained.size();
-            while (!retained.empty()) retained.pop();
-            result.found_keyframe = true;
-        }
-        retained.push(std::move(work));
-    }
-    frames.swap(retained);
-    return result;
+VideoDecodeBacklogTrim trim_to_latest_keyframe(std::deque<Work>& frames, IsKeyframe&& is_keyframe) {
+    const auto newest_keyframe = std::find_if(frames.rbegin(), frames.rend(), is_keyframe);
+    if (newest_keyframe == frames.rend()) return {};
+    const auto keep_from = std::prev(newest_keyframe.base());
+    const auto dropped = static_cast<size_t>(keep_from - frames.begin());
+    frames.erase(frames.begin(), keep_from);
+    return {true, dropped};
 }
 
 inline bool should_resync_decode_backlog(size_t retained_frames,

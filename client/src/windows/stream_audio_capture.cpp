@@ -88,7 +88,7 @@ StreamAudioCapture::~StreamAudioCapture() {
     shutdown();
 }
 
-bool StreamAudioCapture::init(uint32_t target_pid, OutputMode mode) {
+bool StreamAudioCapture::init(StreamAudioSource source, OutputMode mode) {
 	ZoneScopedN("StreamAudioCapture::init");
     // Ensure COM is initialized on the calling thread (needed for IMMDeviceEnumerator)
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -109,8 +109,8 @@ bool StreamAudioCapture::init(uint32_t target_pid, OutputMode mode) {
     AUDIOCLIENT_ACTIVATION_PARAMS ac_params = {};
     ac_params.ActivationType = AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK;
 
-    if (target_pid != 0) {
-        ac_params.ProcessLoopbackParams.TargetProcessId = target_pid;
+    if (const auto* tree = std::get_if<CaptureProcessTree>(&source)) {
+        ac_params.ProcessLoopbackParams.TargetProcessId = tree->pid;
         ac_params.ProcessLoopbackParams.ProcessLoopbackMode =
             PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE;
     } else {
@@ -209,8 +209,8 @@ bool StreamAudioCapture::init(uint32_t target_pid, OutputMode mode) {
     wasapi_ = state;
 
     LOG_INFO("Loopback: {} PID {} ({} Hz, {} ch)",
-                target_pid != 0 ? "include" : "exclude-self",
-                target_pid != 0 ? target_pid : static_cast<uint32_t>(GetCurrentProcessId()),
+                std::holds_alternative<CaptureProcessTree>(source) ? "include" : "exclude-self",
+                static_cast<uint32_t>(ac_params.ProcessLoopbackParams.TargetProcessId),
                 state->mix_format->nSamplesPerSec, state->mix_format->nChannels);
     return true;
 }
