@@ -1,6 +1,7 @@
 #pragma once
 
 #include <server/session.h>
+#include <server/video_ingress_queue.h>
 #include <parties/thread_queue.h>
 #include <parties/protocol.h>
 #include <parties/quic_common.h>
@@ -11,7 +12,6 @@
 #include <vector>
 #include <mutex>
 #include <atomic>
-#include <functional>
 #include <unordered_map>
 
 namespace parties::server {
@@ -43,9 +43,57 @@ struct FileDownloadRequest {
 };
 
 struct SessionDisconnect {
-    uint32_t  session_id;
-    UserId    user_id;
-    ChannelId channel_id;
+    std::shared_ptr<Session> session;
+};
+
+class SessionRegistry {
+public:
+    uint32_t allocate_id() {
+        std::lock_guard lock(m_);
+        return next_id_++;
+    }
+
+    void insert(std::shared_ptr<Session> session) {
+        std::lock_guard lock(m_);
+        const uint32_t id = session->id;
+        sessions_[id] = std::move(session);
+    }
+
+    std::shared_ptr<Session> find(uint32_t id) const {
+        std::lock_guard lock(m_);
+        auto it = sessions_.find(id);
+        return it == sessions_.end() ? nullptr : it->second;
+    }
+
+    std::vector<std::shared_ptr<Session>> snapshot() const {
+        std::lock_guard lock(m_);
+        std::vector<std::shared_ptr<Session>> result;
+        result.reserve(sessions_.size());
+        for (const auto& [id, session] : sessions_) result.push_back(session);
+        return result;
+    }
+
+    std::shared_ptr<Session> remove(uint32_t id) {
+        std::lock_guard lock(m_);
+        auto it = sessions_.find(id);
+        if (it == sessions_.end()) return nullptr;
+        auto session = std::move(it->second);
+        sessions_.erase(it);
+        return session;
+    }
+
+    uint16_t count_authenticated() const {
+        std::lock_guard lock(m_);
+        uint16_t count = 0;
+        for (const auto& [id, session] : sessions_)
+            if (session->phase.authenticated()) ++count;
+        return count;
+    }
+
+private:
+    mutable std::mutex m_;
+    std::unordered_map<uint32_t, std::shared_ptr<Session>> sessions_;
+    uint32_t next_id_ = 1;
 };
 
 class QuicServer {
@@ -63,9 +111,6 @@ public:
     bool send_to(uint32_t session_id, protocol::ControlMessageType type,
                  const uint8_t* payload, size_t payload_len);
 
-    void broadcast(protocol::ControlMessageType type,
-                   const uint8_t* payload, size_t payload_len);
-
     void disconnect(uint32_t session_id);
 
     std::shared_ptr<Session> get_session(uint32_t session_id);
@@ -77,8 +122,7 @@ public:
 
     ThreadQueue<SessionDisconnect>& disconnects() { return disconnects_; }
 
-    std::function<void(uint32_t session_id, uint8_t packet_type,
-                       const uint8_t* data, size_t len)> on_video_frame;
+    VideoIngressQueue& video_ingress() { return video_ingress_; }
 
     ThreadQueue<DataPacket>& data_incoming() { return data_incoming_; }
 
@@ -88,19 +132,8 @@ public:
     void send_to_many(const std::vector<uint32_t>& session_ids,
                       const uint8_t* data, size_t len, bool priority = false);
 
-    bool send_video_to(uint32_t session_id, const uint8_t* data, size_t len);
-
     bool send_video_frame_to(const std::shared_ptr<Session>& session,
                              std::shared_ptr<const std::vector<uint8_t>> frame);
-
-    bool send_stream(uint32_t session_id, const uint8_t* data, size_t len);
-
-    void send_to_many_on_channel(const std::vector<uint32_t>& session_ids,
-                                 uint8_t channel, const uint8_t* data, size_t len,
-                                 uint32_t flags);
-
-    bool send_to_on_channel(uint32_t session_id, uint8_t channel,
-                            const uint8_t* data, size_t len, uint32_t flags);
 
     ThreadQueue<FileUploadEvent>& file_uploads() { return file_uploads_; }
     ThreadQueue<FileDownloadRequest>& file_downloads() { return file_downloads_; }
@@ -119,6 +152,7 @@ private:
     static QUIC_STATUS QUIC_API stream_callback(HQUIC stream, void* context,
                                                  QUIC_STREAM_EVENT* event);
 
+    struct SendCtx;
     struct FileStreamContext;
     static QUIC_STATUS QUIC_API file_stream_callback(HQUIC stream, void* context,
                                                       QUIC_STREAM_EVENT* event);
@@ -139,12 +173,13 @@ private:
     QUIC_STATUS on_file_stream_event(HQUIC stream, FileStreamContext* ctx,
                                       QUIC_STREAM_EVENT* event);
 
-    bool send_control_on_stream(HQUIC stream, protocol::ControlMessageType type,
-                                const uint8_t* payload, size_t payload_len);
+    bool send_control(Session& session, protocol::ControlMessageType type,
+                      const uint8_t* payload, size_t payload_len);
 
     void process_stream_data(uint32_t session_id, const uint8_t* data, size_t len);
 
-    void process_video_stream_data(uint32_t session_id, const uint8_t* data, size_t len);
+    void process_video_stream_data(const std::shared_ptr<Session>& session,
+                                   const uint8_t* data, size_t len);
 
     const QUIC_API_TABLE* api_ = nullptr;
     HQUIC registration_ = nullptr;
@@ -152,9 +187,7 @@ private:
     HQUIC listener_ = nullptr;
     std::atomic<bool> running_{false};
 
-    std::mutex sessions_mutex_;
-    std::unordered_map<uint32_t, std::shared_ptr<Session>> sessions_;
-    uint32_t next_session_id_ = 1;
+    SessionRegistry registry_;
 
     std::atomic<uint64_t> reliable_send_failures_{0};
 
@@ -171,6 +204,7 @@ private:
     ThreadQueue<FileUploadEvent> file_uploads_;
     ThreadQueue<FileDownloadRequest> file_downloads_;
     ThreadQueue<SessionDisconnect> disconnects_;
+    VideoIngressQueue video_ingress_;
 };
 
 }

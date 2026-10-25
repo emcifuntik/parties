@@ -719,7 +719,7 @@ std::vector<MessageRow> Database::search_messages(uint32_t channel_id, const std
 
 uint64_t Database::insert_attachment(uint64_t message_id, const std::string& file_name,
                                       int64_t file_size, const std::string& mime_type,
-                                      const std::string& disk_path) {
+                                      const AttachmentStoragePath& disk_path) {
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "INSERT INTO file_attachments (message_id, file_name, file_size, mime_type, disk_path) "
                       "VALUES (?, ?, ?, ?, ?)";
@@ -731,7 +731,7 @@ uint64_t Database::insert_attachment(uint64_t message_id, const std::string& fil
     sqlite3_bind_text(stmt, 2, file_name.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(stmt, 3, file_size);
     sqlite3_bind_text(stmt, 4, mime_type.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 5, disk_path.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, disk_path.relative().c_str(), -1, SQLITE_TRANSIENT);
 
     if (sqlite3_step(stmt) != SQLITE_DONE) {
         sqlite3_finalize(stmt);
@@ -756,6 +756,19 @@ bool Database::mark_attachment_uploaded(uint64_t attachment_id) {
     return ok;
 }
 
+static AttachmentRow read_attachment_row(sqlite3_stmt* stmt) {
+    return AttachmentRow{
+        .id         = static_cast<uint64_t>(sqlite3_column_int64(stmt, 0)),
+        .message_id = static_cast<uint64_t>(sqlite3_column_int64(stmt, 1)),
+        .file_name  = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2)),
+        .file_size  = sqlite3_column_int64(stmt, 3),
+        .mime_type  = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4)),
+        .disk_path  = AttachmentStoragePath::from_database(
+            reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5))),
+        .uploaded   = sqlite3_column_int(stmt, 6) != 0,
+    };
+}
+
 std::optional<AttachmentRow> Database::get_attachment(uint64_t file_id) {
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "SELECT id, message_id, file_name, file_size, mime_type, disk_path, uploaded "
@@ -771,15 +784,7 @@ std::optional<AttachmentRow> Database::get_attachment(uint64_t file_id) {
         return std::nullopt;
     }
 
-    AttachmentRow row;
-    row.id = static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
-    row.message_id = static_cast<uint64_t>(sqlite3_column_int64(stmt, 1));
-    row.file_name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-    row.file_size = sqlite3_column_int64(stmt, 3);
-    row.mime_type = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-    row.disk_path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
-    row.uploaded = sqlite3_column_int(stmt, 6) != 0;
-
+    AttachmentRow row = read_attachment_row(stmt);
     sqlite3_finalize(stmt);
     return row;
 }
@@ -795,17 +800,8 @@ std::vector<AttachmentRow> Database::get_attachments_for_message(uint64_t messag
     sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(message_id));
 
     std::vector<AttachmentRow> result;
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        AttachmentRow row;
-        row.id = static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
-        row.message_id = static_cast<uint64_t>(sqlite3_column_int64(stmt, 1));
-        row.file_name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        row.file_size = sqlite3_column_int64(stmt, 3);
-        row.mime_type = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-        row.disk_path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
-        row.uploaded = sqlite3_column_int(stmt, 6) != 0;
-        result.push_back(std::move(row));
-    }
+    while (sqlite3_step(stmt) == SQLITE_ROW)
+        result.push_back(read_attachment_row(stmt));
 
     sqlite3_finalize(stmt);
     return result;
@@ -836,17 +832,17 @@ int Database::purge_old_files(int days, const std::string& storage_path) {
 
     sqlite3_bind_int(stmt, 1, days);
 
-    std::vector<std::pair<uint64_t, std::string>> files;
+    std::vector<std::pair<uint64_t, AttachmentStoragePath>> files;
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         auto id = static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
         auto path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-        files.emplace_back(id, path);
+        files.emplace_back(id, AttachmentStoragePath::from_database(path));
     }
     sqlite3_finalize(stmt);
 
     int count = 0;
     for (auto& [id, path] : files) {
-        std::filesystem::remove(std::filesystem::path(storage_path) / path);
+        std::filesystem::remove(path.under(storage_path));
         sqlite3_stmt* del = nullptr;
         if (sqlite3_prepare_v2(db_, "DELETE FROM file_attachments WHERE id = ?", -1, &del, nullptr) == SQLITE_OK) {
             sqlite3_bind_int64(del, 1, static_cast<sqlite3_int64>(id));
@@ -887,10 +883,11 @@ int Database::purge_oldest_files(int64_t max_size, const std::string& storage_pa
     int count = 0;
     while (sqlite3_step(stmt) == SQLITE_ROW && total > max_size) {
         auto id = static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
-        auto path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        auto path = AttachmentStoragePath::from_database(
+            reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1)));
         auto size = sqlite3_column_int64(stmt, 2);
 
-        std::filesystem::remove(std::filesystem::path(storage_path) / path);
+        std::filesystem::remove(path.under(storage_path));
 
         sqlite3_stmt* del = nullptr;
         if (sqlite3_prepare_v2(db_, "DELETE FROM file_attachments WHERE id = ?", -1, &del, nullptr) == SQLITE_OK) {

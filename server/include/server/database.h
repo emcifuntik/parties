@@ -1,5 +1,6 @@
 #pragma once
 
+#include <server/attachment_storage_path.h>
 #include <parties/types.h>
 #include <parties/permissions.h>
 
@@ -51,7 +52,7 @@ struct AttachmentRow {
     std::string file_name;
     int64_t     file_size = 0;
     std::string mime_type;
-    std::string disk_path;
+    AttachmentStoragePath disk_path;
     bool        uploaded = false;
 };
 
@@ -104,7 +105,7 @@ public:
 
     uint64_t insert_attachment(uint64_t message_id, const std::string& file_name,
                                int64_t file_size, const std::string& mime_type,
-                               const std::string& disk_path);
+                               const AttachmentStoragePath& disk_path);
     bool mark_attachment_uploaded(uint64_t attachment_id);
     std::optional<AttachmentRow> get_attachment(uint64_t file_id);
     std::vector<AttachmentRow> get_attachments_for_message(uint64_t message_id);

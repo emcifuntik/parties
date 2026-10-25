@@ -196,7 +196,7 @@ int main() {
     Server server;
     TEST_ASSERT(server.start(cfg), "server start");
 
-    std::thread server_thread([&]() { server.run(); });
+    std::thread server_thread([&]() { server.run_until_stopped(); });
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     LOG("[2/21] Server started on port %u\n", TEST_PORT);
 
@@ -212,7 +212,7 @@ int main() {
         client_a.disconnect();
         client_b.disconnect();
         client_c.disconnect();
-        server.stop();
+        server.request_stop();
         if (server_thread.joinable()) server_thread.join();
         fs::remove_all(tmp);
     };

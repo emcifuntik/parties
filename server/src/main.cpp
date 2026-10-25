@@ -5,12 +5,11 @@
 #include <server/server.h>
 
 #include <csignal>
-#include <atomic>
 
-static std::atomic<bool> g_running{true};
+static parties::server::Server* g_server = nullptr;
 
 static void signal_handler(int) {
-    g_running = false;
+    g_server->request_stop();
 }
 
 #ifdef SENTRY_DSN_VALUE
@@ -38,15 +37,12 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    g_server = &server;
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 
     LOG_INFO("Server running. Press Ctrl+C to stop.");
 
-    while (g_running) {
-        server.run();
-    }
-
-    server.stop();
+    server.run_until_stopped();
     return 0;
 }

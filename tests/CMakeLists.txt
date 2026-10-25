@@ -184,7 +184,7 @@ add_executable(parties_hotkey_binding_test hotkey_binding_test.cpp)
 target_include_directories(parties_hotkey_binding_test PRIVATE ../client/include)
 
 add_executable(parties_auth_replay_guard_test auth_replay_guard_test.cpp)
-target_include_directories(parties_auth_replay_guard_test PRIVATE ../server/include)
+target_include_directories(parties_auth_replay_guard_test PRIVATE ../server/include ../common/include)
 
 add_executable(parties_attachment_storage_path_test attachment_storage_path_test.cpp)
 target_include_directories(parties_attachment_storage_path_test PRIVATE ../server/include)

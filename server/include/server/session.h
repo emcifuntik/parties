@@ -7,23 +7,69 @@
 #include <string>
 #include <cstdint>
 #include <atomic>
-#include <mutex>
+#include <memory>
 #include <unordered_map>
 #include <unordered_set>
 
-typedef struct QUIC_HANDLE *HQUIC;
-
 namespace parties::server {
 
+enum class SessionPhase : uint8_t {
+    Handshaking,
+    Authenticated,
+    SharingVideo,
+    Retired,
+};
+
+class PublishedSessionPhase {
+public:
+    SessionPhase load() const { return phase_.load(std::memory_order_acquire); }
+    bool authenticated() const {
+        const SessionPhase p = load();
+        return p == SessionPhase::Authenticated || p == SessionPhase::SharingVideo;
+    }
+    bool admits_video_streams() const { return load() == SessionPhase::SharingVideo; }
+
+    void publish(SessionPhase p) { phase_.store(p, std::memory_order_release); }
+
+private:
+    std::atomic<SessionPhase> phase_{SessionPhase::Handshaking};
+};
+
+class SessionTransportStats {
+public:
+    int64_t video_outstanding_bytes() const {
+        return video_outstanding_bytes_.load(std::memory_order_relaxed);
+    }
+    MinRtt min_rtt() const {
+        return MinRtt::from_quic_min_rtt_us(min_rtt_us_.load(std::memory_order_relaxed));
+    }
+    bool alive() const { return alive_.load(std::memory_order_acquire); }
+
+private:
+    friend class QuicServer;
+    friend class SessionTransport;
+
+    std::atomic<int64_t>  video_outstanding_bytes_{0};
+    std::atomic<uint32_t> min_rtt_us_{VIDEO_BACKLOG_DEFAULT_RTT_US};
+    std::atomic<bool>     alive_{true};
+};
+
+class SessionTransport;
+
 struct Session {
-    uint32_t         id = 0;
+    explicit Session(uint32_t session_id);
+    ~Session();
+    Session(const Session&) = delete;
+    Session& operator=(const Session&) = delete;
 
-    HQUIC            quic_connection = nullptr;
-    HQUIC            quic_control_stream = nullptr;
-    HQUIC            quic_video_stream = nullptr;
-    std::mutex       quic_mutex;
+    const uint32_t id;
 
-    bool             authenticated = false;
+    PublishedSessionPhase phase;
+    SessionTransportStats transport_stats;
+    std::atomic<uint64_t> video_generation{0};
+    std::atomic<int64_t>  video_pending_bytes{0};
+    static constexpr int64_t VIDEO_INGRESS_MAX_BUFFERED_BYTES = 4 * 4 * 1024 * 1024;
+
     UserId           user_id = 0;
     std::string      username;
     int              role = 3;
@@ -33,16 +79,7 @@ struct Session {
         return protocol::protocol_supports_frame_streams(protocol_version);
     }
 
-    std::atomic<int64_t> video_outstanding_bytes{0};
     std::unordered_map<UserId, ViewerVideoGate> video_gates;
-    std::atomic<uint32_t> min_rtt_us{VIDEO_BACKLOG_DEFAULT_RTT_US};
-    int64_t rtt_sample_last_us = 0;
-
-    std::atomic<bool> video_ingress_allowed{false};
-    std::atomic<uint64_t> video_generation{0};
-    std::atomic<int64_t> video_in_buffered_bytes{0};
-    std::atomic<int64_t> video_pending_bytes{0};
-    static constexpr int64_t VIDEO_INGRESS_MAX_BUFFERED_BYTES = 4 * 4 * 1024 * 1024;
 
     ChannelId        channel_id = 0;
     bool             muted = false;
@@ -54,7 +91,9 @@ struct Session {
 
     std::unordered_set<UserId> subscribed_sharers;
 
-    std::atomic<bool> alive{true};
+private:
+    friend class QuicServer;
+    std::unique_ptr<SessionTransport> transport_;
 };
 
 }

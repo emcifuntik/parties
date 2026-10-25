@@ -1,4 +1,5 @@
 #include <server/quic_server.h>
+#include "session_transport.h"
 #include <parties/quic_common.h>
 #include <parties/protocol.h>
 #include <parties/server_query.h>
@@ -10,68 +11,59 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <mutex>
+#include <optional>
+#include <span>
+#include <utility>
 
 namespace parties::server {
-// GetParam blocks when called off the connection's worker. Sample only from
-// that connection's stream callbacks, where MsQuic executes it inline, and
-// never while holding quic_mutex (the worker itself needs that mutex).
-static void sample_min_rtt(const QUIC_API_TABLE* api, Session& session, HQUIC stream) {
-    const auto now = std::chrono::duration_cast<std::chrono::microseconds>(
+
+static int64_t now_us() {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
-    if (now - session.rtt_sample_last_us < 1'000'000) return;
-    session.rtt_sample_last_us = now;
-    QUIC_STATISTICS_V2 stats{};
-    uint32_t size = sizeof(stats);
-    if (QUIC_SUCCEEDED(api->GetParam(stream, QUIC_PARAM_CONN_STATISTICS_V2, &size, &stats))) {
-        session.min_rtt_us.store(std::clamp<uint32_t>(stats.MinRtt, 1'000, VIDEO_BACKLOG_MAX_RTT_US),
-                                 std::memory_order_relaxed);
-    }
 }
+
+Session::Session(uint32_t session_id) : id(session_id) {}
+Session::~Session() = default;
 
 struct ConnectionContext {
     QuicServer* server;
     uint32_t session_id;
 };
 
-// Context of one StreamSend on a long-lived stream (control stream, legacy
-// video stream 1, file download stream). MsQuic keeps only the QUIC_BUFFER
-// pointers until SEND_COMPLETE, so the descriptors and the bytes live here.
-struct SendCtx {
-    static constexpr uint8_t KIND_CONTROL = 0;
-    static constexpr uint8_t KIND_VIDEO   = 1;
-
+struct QuicServer::SendCtx {
     QUIC_BUFFER bufs[2]{};
     uint32_t    buf_count = 0;
     std::vector<uint8_t> owned;
     std::shared_ptr<const std::vector<uint8_t>> shared;
     std::shared_ptr<Session> session;
-    uint32_t    len  = 0;
-    uint8_t     kind = KIND_CONTROL;
+    uint32_t    len = 0;
+
+    void uncharge() {
+        if (session && len) {
+            session->transport_stats.video_outstanding_bytes_.fetch_sub(len, std::memory_order_relaxed);
+            len = 0;
+        }
+    }
 };
 
-static void send_ctx_uncharge(SendCtx* ctx) {
-    if (ctx->kind == SendCtx::KIND_VIDEO && ctx->session && ctx->len) {
-        ctx->session->video_outstanding_bytes.fetch_sub(ctx->len, std::memory_order_relaxed);
-        ctx->len = 0;
-    }
-}
-
-struct LogThrottle {
-    std::atomic<int64_t>  last_us{0};
-    std::atomic<uint32_t> suppressed_count{0};
-
-    bool allow(uint32_t& suppressed) {
-        const int64_t now = std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count();
-        int64_t last = last_us.load(std::memory_order_relaxed);
-        if ((last != 0 && now - last < 1'000'000) ||
-            !last_us.compare_exchange_strong(last, now, std::memory_order_relaxed)) {
-            suppressed_count.fetch_add(1, std::memory_order_relaxed);
-            return false;
+class LogThrottle {
+public:
+    std::optional<uint32_t> allow() {
+        std::lock_guard lock(m_);
+        const int64_t now = now_us();
+        if (last_us_ && now - *last_us_ < 1'000'000) {
+            ++suppressed_;
+            return std::nullopt;
         }
-        suppressed = suppressed_count.exchange(0, std::memory_order_relaxed);
-        return true;
+        last_us_ = now;
+        return std::exchange(suppressed_, 0);
     }
+
+private:
+    std::mutex             m_;
+    std::optional<int64_t> last_us_;
+    uint32_t               suppressed_ = 0;
 };
 
 static LogThrottle video_reject_log_throttle;
@@ -101,7 +93,7 @@ struct QuicServer::VideoInStreamContext {
 
     void uncharge() {
         if (charged && session)
-            session->video_in_buffered_bytes.fetch_sub(charged, std::memory_order_relaxed);
+            session->transport_->uncharge_ingress(charged);
         charged = 0;
     }
 
@@ -114,18 +106,6 @@ struct QuicServer::VideoInStreamContext {
     }
 };
 
-// Ownership: once StreamOpen succeeded the stream callback owns the context
-// and frees it in SHUTDOWN_COMPLETE (StreamClose + delete). The sender makes
-// exactly ONE further MsQuic call — StreamSend with QUIC_SEND_FLAG_START|FIN,
-// which starts the stream and queues the frame atomically — and never touches
-// the context afterwards: MsQuic starts the stream asynchronously (with
-// SHUTDOWN_ON_FAIL), so a start failure may already have delivered
-// SHUTDOWN_COMPLETE, inline or on the viewer's worker, by the time StreamSend
-// returns. A synchronous StreamSend failure queues nothing, so the sender then
-// asks for an ABORT|IMMEDIATE shutdown (asynchronous, never blocks) whose
-// SHUTDOWN_COMPLETE performs the cleanup. The sender therefore never calls
-// StreamClose — which would block on the viewer's worker while quic_mutex is
-// held — from a foreign thread.
 struct QuicServer::VideoOutStreamContext {
     QuicServer* server = nullptr;
     std::shared_ptr<Session> session;
@@ -137,7 +117,7 @@ struct QuicServer::VideoOutStreamContext {
     void uncharge() {
         uint32_t n = charged.exchange(0, std::memory_order_acq_rel);
         if (n && session)
-            session->video_outstanding_bytes.fetch_sub(n, std::memory_order_relaxed);
+            session->transport_stats.video_outstanding_bytes_.fetch_sub(n, std::memory_order_relaxed);
     }
 };
 
@@ -277,17 +257,8 @@ void QuicServer::stop() {
         listener_ = nullptr;
     }
 
-    {
-        std::lock_guard<std::mutex> lock(sessions_mutex_);
-        for (auto& [id, session] : sessions_) {
-            std::lock_guard<std::mutex> qlock(session->quic_mutex);
-            session->alive = false;
-            if (session->quic_connection) {
-                api_->ConnectionShutdown(session->quic_connection,
-                    QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, 0);
-            }
-        }
-    }
+    for (const auto& session : registry_.snapshot())
+        session->transport_->shutdown_connection(*api_);
 
     if (configuration_) {
         api_->ConfigurationClose(configuration_);
@@ -304,55 +275,21 @@ void QuicServer::stop() {
 bool QuicServer::send_to(uint32_t session_id, protocol::ControlMessageType type,
                           const uint8_t* payload, size_t payload_len) {
 	ZoneScopedN("QuicServer::send_to");
-    std::lock_guard<std::mutex> lock(sessions_mutex_);
-    auto it = sessions_.find(session_id);
-    if (it == sessions_.end()) return false;
-
-    auto& session = it->second;
-    std::lock_guard<std::mutex> qlock(session->quic_mutex);
-    if (!session->alive || !session->quic_control_stream) return false;
-
-    return send_control_on_stream(session->quic_control_stream, type, payload, payload_len);
-}
-
-void QuicServer::broadcast(protocol::ControlMessageType type,
-                            const uint8_t* payload, size_t payload_len) {
-    std::lock_guard<std::mutex> lock(sessions_mutex_);
-    for (auto& [id, session] : sessions_) {
-        std::lock_guard<std::mutex> qlock(session->quic_mutex);
-        if (session->alive && session->authenticated && session->quic_control_stream) {
-            send_control_on_stream(session->quic_control_stream, type, payload, payload_len);
-        }
-    }
+    auto session = registry_.find(session_id);
+    return session && send_control(*session, type, payload, payload_len);
 }
 
 void QuicServer::disconnect(uint32_t session_id) {
-    std::lock_guard<std::mutex> lock(sessions_mutex_);
-    auto it = sessions_.find(session_id);
-    if (it == sessions_.end()) return;
-
-    std::lock_guard<std::mutex> qlock(it->second->quic_mutex);
-    it->second->alive = false;
-    if (it->second->quic_connection) {
-        api_->ConnectionShutdown(it->second->quic_connection,
-            QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, 0);
-    }
+    if (auto session = registry_.find(session_id))
+        session->transport_->shutdown_connection(*api_);
 }
 
 std::shared_ptr<Session> QuicServer::get_session(uint32_t session_id) {
-    std::lock_guard<std::mutex> lock(sessions_mutex_);
-    auto it = sessions_.find(session_id);
-    if (it == sessions_.end()) return nullptr;
-    return it->second;
+    return registry_.find(session_id);
 }
 
 std::vector<std::shared_ptr<Session>> QuicServer::get_sessions() {
-    std::lock_guard<std::mutex> lock(sessions_mutex_);
-    std::vector<std::shared_ptr<Session>> result;
-    result.reserve(sessions_.size());
-    for (auto& [id, session] : sessions_)
-        result.push_back(session);
-    return result;
+    return registry_.snapshot();
 }
 
 bool QuicServer::send_datagram(uint32_t session_id, const uint8_t* data, size_t len,
@@ -361,21 +298,16 @@ bool QuicServer::send_datagram(uint32_t session_id, const uint8_t* data, size_t 
     std::shared_ptr<Session> session = get_session(session_id);
     if (!session) return false;
 
-    std::lock_guard<std::mutex> qlock(session->quic_mutex);
-    if (!session->alive || !session->quic_connection)
-        return false;
-
     // Both the data buffer AND the QUIC_BUFFER descriptor must be heap-allocated
     // because DatagramSend is async — MsQuic stores only the pointer.
     auto* buf_data = new uint8_t[len];
     std::memcpy(buf_data, data, len);
 
     auto* quic_buf = new QUIC_BUFFER{ static_cast<uint32_t>(len), buf_data };
-    QUIC_STATUS status = api_->DatagramSend(session->quic_connection,
-        quic_buf, 1, priority ? QUIC_SEND_FLAG_DGRAM_PRIORITY : QUIC_SEND_FLAG_NONE,
-        quic_buf);
+    const auto status = session->transport_->send_datagram(*api_, quic_buf,
+        priority ? QUIC_SEND_FLAG_DGRAM_PRIORITY : QUIC_SEND_FLAG_NONE, quic_buf);
 
-    if (QUIC_FAILED(status)) {
+    if (!status || QUIC_FAILED(*status)) {
         delete[] buf_data;
         delete quic_buf;
         return false;
@@ -390,52 +322,10 @@ void QuicServer::send_to_many(const std::vector<uint32_t>& session_ids,
         send_datagram(id, data, len, priority);
 }
 
-bool QuicServer::send_stream(uint32_t session_id, const uint8_t* data, size_t len) {
-    return send_video_to(session_id, data, len);
-}
-
-bool QuicServer::send_video_to(uint32_t session_id, const uint8_t* data, size_t len) {
-	ZoneScopedN("QuicServer::send_video_to");
-    std::shared_ptr<Session> session = get_session(session_id);
-    if (!session) return false;
-
-    auto* ctx = new SendCtx;
-    ctx->kind = SendCtx::KIND_VIDEO;
-    ctx->session = session;
-    ctx->owned.resize(4 + len);
-    uint32_t frame_len = static_cast<uint32_t>(len);
-    std::memcpy(ctx->owned.data(), &frame_len, 4);
-    if (len) std::memcpy(ctx->owned.data() + 4, data, len);
-    ctx->bufs[0] = QUIC_BUFFER{ static_cast<uint32_t>(ctx->owned.size()), ctx->owned.data() };
-    ctx->buf_count = 1;
-    ctx->len = static_cast<uint32_t>(ctx->owned.size());
-
-    std::lock_guard<std::mutex> qlock(session->quic_mutex);
-    if (!session->alive || !session->quic_video_stream) {
-        delete ctx;
-        return false;
-    }
-
-    session->video_outstanding_bytes.fetch_add(ctx->len, std::memory_order_relaxed);
-    QUIC_STATUS status = api_->StreamSend(session->quic_video_stream, ctx->bufs, ctx->buf_count,
-                                           QUIC_SEND_FLAG_NONE, ctx);
-    if (QUIC_FAILED(status)) {
-        send_ctx_uncharge(ctx);
-        delete ctx;
-        reliable_send_failures_.fetch_add(1, std::memory_order_relaxed);
-        return false;
-    }
-    return true;
-}
-
 bool QuicServer::send_video_frame_to(const std::shared_ptr<Session>& session,
                                      std::shared_ptr<const std::vector<uint8_t>> frame) {
 	ZoneScopedN("QuicServer::send_video_frame_to");
     if (!session || !frame) return false;
-
-    std::lock_guard<std::mutex> qlock(session->quic_mutex);
-    if (!session->alive || !session->quic_connection) return false;
-
     if (1 + frame->size() > VIDEO_FRAME_MAX_BYTES) return false;
 
     if (session->supports_frame_streams()) {
@@ -447,45 +337,25 @@ bool QuicServer::send_video_frame_to(const std::shared_ptr<Session>& session,
         ctx->bufs[1] = QUIC_BUFFER{ static_cast<uint32_t>(ctx->frame->size()),
                                     const_cast<uint8_t*>(ctx->frame->data()) };
 
-        HQUIC stream = nullptr;
-        QUIC_STATUS status = api_->StreamOpen(session->quic_connection,
-                                              QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL,
-                                              video_out_stream_callback, ctx, &stream);
-        if (QUIC_FAILED(status)) {
+        switch (session->transport_->send_on_new_frame_stream(*api_, video_out_stream_callback, ctx,
+                                                               ctx->bufs, 2, ctx->charged)) {
+        case SessionTransport::FrameStreamResult::Sent:
+            return true;
+        case SessionTransport::FrameStreamResult::NotConnected:
+            delete ctx;
+            return false;
+        case SessionTransport::FrameStreamResult::OpenFailed:
             delete ctx;
             reliable_send_failures_.fetch_add(1, std::memory_order_relaxed);
             return false;
-        }
-
-        const uint32_t total = 1 + static_cast<uint32_t>(ctx->frame->size());
-        session->video_outstanding_bytes.fetch_add(total, std::memory_order_relaxed);
-        ctx->charged.store(total, std::memory_order_release);
-
-        // Start + send + FIN in one call (see VideoOutStreamContext). The
-        // start is asynchronous with SHUTDOWN_ON_FAIL and WITHOUT FAIL_BLOCKED:
-        // when the viewer's unidirectional stream credit is exhausted (its 128
-        // per-frame streams are all still open) MsQuic parks the stream in
-        // WaitingStreams until an older one closes — the start does not fail,
-        // the bytes stay charged to video_outstanding_bytes, and the backlog
-        // gate bounds the wait. A start fails only for a closed connection or
-        // an allocation failure, and then ends in SHUTDOWN_COMPLETE with the
-        // queued send completed as canceled.
-        status = api_->StreamSend(stream, ctx->bufs, 2,
-                                  QUIC_SEND_FLAG_START | QUIC_SEND_FLAG_FIN, ctx);
-        if (QUIC_FAILED(status)) {
-            ctx->uncharge();
-            api_->StreamShutdown(stream,
-                QUIC_STREAM_SHUTDOWN_FLAG_ABORT | QUIC_STREAM_SHUTDOWN_FLAG_IMMEDIATE, 0);
+        case SessionTransport::FrameStreamResult::SendFailed:
             reliable_send_failures_.fetch_add(1, std::memory_order_relaxed);
             return false;
         }
-        return true;
+        return false;
     }
 
-    if (!session->quic_video_stream) return false;
-
     auto* ctx = new SendCtx;
-    ctx->kind = SendCtx::KIND_VIDEO;
     ctx->session = session;
     ctx->shared = std::move(frame);
     ctx->owned.resize(5);
@@ -498,28 +368,16 @@ bool QuicServer::send_video_frame_to(const std::shared_ptr<Session>& session,
     ctx->buf_count = 2;
     ctx->len = 5 + static_cast<uint32_t>(ctx->shared->size());
 
-    session->video_outstanding_bytes.fetch_add(ctx->len, std::memory_order_relaxed);
-    QUIC_STATUS status = api_->StreamSend(session->quic_video_stream, ctx->bufs, ctx->buf_count,
-                                           QUIC_SEND_FLAG_NONE, ctx);
-    if (QUIC_FAILED(status)) {
-        send_ctx_uncharge(ctx);
+    session->transport_stats.video_outstanding_bytes_.fetch_add(ctx->len, std::memory_order_relaxed);
+    const auto status = session->transport_->send_on(*api_, SessionTransport::Stream::LegacyVideo,
+                                                     ctx->bufs, ctx->buf_count, ctx);
+    if (!status || QUIC_FAILED(*status)) {
+        ctx->uncharge();
         delete ctx;
-        reliable_send_failures_.fetch_add(1, std::memory_order_relaxed);
+        if (status) reliable_send_failures_.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
     return true;
-}
-
-void QuicServer::send_to_many_on_channel(const std::vector<uint32_t>& session_ids,
-                                          uint8_t, const uint8_t* data, size_t len,
-                                          uint32_t) {
-	ZoneScopedN("QuicServer::send_to_many_on_channel");
-    send_to_many(session_ids, data, len);
-}
-
-bool QuicServer::send_to_on_channel(uint32_t session_id, uint8_t,
-                                     const uint8_t* data, size_t len, uint32_t) {
-    return send_datagram(session_id, data, len);
 }
 
 QUIC_STATUS QUIC_API QuicServer::listener_callback(
@@ -577,14 +435,7 @@ QUIC_STATUS QuicServer::on_unconnected_query(QUIC_LISTENER_EVENT* event) {
     info.max_users        = query_max_users_;
     info.password_locked  = query_password_locked_;
 
-    uint16_t count = 0;
-    {
-        std::lock_guard<std::mutex> lock(sessions_mutex_);
-        for (auto& [id, session] : sessions_) {
-            if (session->authenticated) ++count;
-        }
-    }
-    info.current_users = count;
+    info.current_users = registry_.count_authenticated();
 
     uint32_t token = parties::server_query_request_token(q.Payload, q.PayloadLength);
     std::vector<uint8_t> reply = parties::build_server_query_reply(token, info);
@@ -602,11 +453,7 @@ QUIC_STATUS QuicServer::on_unconnected_query(QUIC_LISTENER_EVENT* event) {
 QUIC_STATUS QuicServer::on_new_connection(HQUIC, QUIC_LISTENER_EVENT* event) {
     HQUIC connection = event->NEW_CONNECTION.Connection;
 
-    uint32_t session_id;
-    {
-        std::lock_guard<std::mutex> lock(sessions_mutex_);
-        session_id = next_session_id_++;
-    }
+    const uint32_t session_id = registry_.allocate_id();
 
     auto* ctx = new ConnectionContext{ this, session_id };
     api_->SetCallbackHandler(connection, (void*)connection_callback, ctx);
@@ -617,14 +464,9 @@ QUIC_STATUS QuicServer::on_new_connection(HQUIC, QUIC_LISTENER_EVENT* event) {
         return status;
     }
 
-    auto session = std::make_shared<Session>();
-    session->id = session_id;
-    session->quic_connection = connection;
-
-    {
-        std::lock_guard<std::mutex> lock(sessions_mutex_);
-        sessions_[session_id] = session;
-    }
+    auto session = std::make_shared<Session>(session_id);
+    session->transport_ = std::make_unique<SessionTransport>(connection, session->transport_stats);
+    registry_.insert(std::move(session));
 
     LOG_INFO("New connection: session {}", session_id);
     return QUIC_STATUS_SUCCESS;
@@ -643,20 +485,11 @@ QUIC_STATUS QuicServer::on_connection_event(HQUIC connection, uint32_t session_i
         HQUIC stream = event->PEER_STREAM_STARTED.Stream;
 
         if (event->PEER_STREAM_STARTED.Flags & QUIC_STREAM_OPEN_FLAG_UNIDIRECTIONAL) {
-            std::shared_ptr<Session> session;
-            {
-                std::lock_guard<std::mutex> lock(sessions_mutex_);
-                auto it = sessions_.find(session_id);
-                if (it != sessions_.end()) session = it->second;
-            }
-            const bool allowed = session &&
-                                 session->video_ingress_allowed.load(std::memory_order_acquire) &&
-                                 session->authenticated;
-            if (!allowed) {
-                uint32_t suppressed = 0;
-                if (video_reject_log_throttle.allow(suppressed)) {
+            std::shared_ptr<Session> session = registry_.find(session_id);
+            if (!session || !session->phase.admits_video_streams()) {
+                if (const auto suppressed = video_reject_log_throttle.allow()) {
                     LOG_DEBUG("Session {}: refused per-frame video stream (not an active sharer); {} more refusal(s) since the last line",
-                              session_id, suppressed);
+                              session_id, *suppressed);
                 }
                 auto* rctx = new RejectedStreamCtx{ api_ };
                 api_->SetCallbackHandler(stream, (void*)rejected_stream_callback, rctx);
@@ -673,20 +506,17 @@ QUIC_STATUS QuicServer::on_connection_event(HQUIC connection, uint32_t session_i
         }
 
         bool is_file_stream = false;
-        {
-            std::lock_guard<std::mutex> lock(sessions_mutex_);
-            auto it = sessions_.find(session_id);
-            if (it != sessions_.end()) {
-                std::lock_guard<std::mutex> qlock(it->second->quic_mutex);
-                if (!it->second->quic_control_stream) {
-                    it->second->quic_control_stream = stream;
-                    LOG_INFO("Session {} opened control stream", session_id);
-                } else if (!it->second->quic_video_stream) {
-                    it->second->quic_video_stream = stream;
-                    LOG_INFO("Session {} opened video stream", session_id);
-                } else {
-                    is_file_stream = true;
-                }
+        if (auto session = registry_.find(session_id)) {
+            switch (session->transport_->adopt_peer_bidi_stream(stream)) {
+            case SessionTransport::PeerStreamRole::Control:
+                LOG_INFO("Session {} opened control stream", session_id);
+                break;
+            case SessionTransport::PeerStreamRole::LegacyVideo:
+                LOG_INFO("Session {} opened video stream", session_id);
+                break;
+            case SessionTransport::PeerStreamRole::FileTransfer:
+                is_file_stream = true;
+                break;
             }
         }
 
@@ -741,24 +571,9 @@ QUIC_STATUS QuicServer::on_connection_event(HQUIC connection, uint32_t session_i
     case QUIC_CONNECTION_EVENT_SHUTDOWN_COMPLETE: {
         LOG_INFO("Session {} shutdown complete", session_id);
 
-        {
-            std::lock_guard<std::mutex> lock(sessions_mutex_);
-            auto it = sessions_.find(session_id);
-            if (it != sessions_.end()) {
-                auto& session = it->second;
-                {
-                    std::lock_guard<std::mutex> qlock(session->quic_mutex);
-                    session->alive = false;
-                    session->quic_connection = nullptr;
-                    session->quic_control_stream = nullptr;
-                    session->quic_video_stream = nullptr;
-                }
-                if (session->authenticated) {
-                    disconnects_.push(SessionDisconnect{
-                        session_id, session->user_id, session->channel_id});
-                }
-                sessions_.erase(it);
-            }
+        if (auto session = registry_.remove(session_id)) {
+            session->transport_->retire_handles();
+            disconnects_.push(SessionDisconnect{ std::move(session) });
         }
         {
             std::lock_guard<std::mutex> lock(buffers_mutex_);
@@ -781,16 +596,16 @@ QUIC_STATUS QuicServer::on_stream_event(HQUIC stream, uint32_t session_id,
                                          QUIC_STREAM_EVENT* event) {
     switch (event->Type) {
     case QUIC_STREAM_EVENT_RECEIVE: {
+        std::shared_ptr<Session> session = get_session(session_id);
         bool is_video = false;
-        if (auto session = get_session(session_id)) {
-            sample_min_rtt(api_, *session, stream);
-            std::lock_guard<std::mutex> qlock(session->quic_mutex);
-            is_video = (stream == session->quic_video_stream);
+        if (session) {
+            session->transport_->sample_min_rtt_if_due(*api_, stream, now_us());
+            is_video = session->transport_->is_legacy_video_stream(stream);
         }
         for (uint32_t i = 0; i < event->RECEIVE.BufferCount; i++) {
             auto& buf = event->RECEIVE.Buffers[i];
             if (is_video)
-                process_video_stream_data(session_id, buf.Buffer, buf.Length);
+                process_video_stream_data(session, buf.Buffer, buf.Length);
             else
                 process_stream_data(session_id, buf.Buffer, buf.Length);
         }
@@ -803,8 +618,8 @@ QUIC_STATUS QuicServer::on_stream_event(HQUIC stream, uint32_t session_id,
     case QUIC_STREAM_EVENT_SEND_COMPLETE: {
         auto* ctx = static_cast<SendCtx*>(event->SEND_COMPLETE.ClientContext);
         if (ctx) {
-            if (ctx->session) sample_min_rtt(api_, *ctx->session, stream);
-            send_ctx_uncharge(ctx);
+            if (ctx->session) ctx->session->transport_->sample_min_rtt_if_due(*api_, stream, now_us());
+            ctx->uncharge();
             delete ctx;
         }
         break;
@@ -816,13 +631,8 @@ QUIC_STATUS QuicServer::on_stream_event(HQUIC stream, uint32_t session_id,
         break;
 
     case QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE: {
-        if (auto session = get_session(session_id)) {
-            std::lock_guard<std::mutex> qlock(session->quic_mutex);
-            if (session->quic_control_stream == stream)
-                session->quic_control_stream = nullptr;
-            else if (session->quic_video_stream == stream)
-                session->quic_video_stream = nullptr;
-        }
+        if (auto session = get_session(session_id))
+            session->transport_->forget_stream(stream);
         api_->StreamClose(stream);
         break;
     }
@@ -834,14 +644,12 @@ QUIC_STATUS QuicServer::on_stream_event(HQUIC stream, uint32_t session_id,
     return QUIC_STATUS_SUCCESS;
 }
 
-bool QuicServer::send_control_on_stream(HQUIC stream,
-                                         protocol::ControlMessageType type,
-                                         const uint8_t* payload, size_t payload_len) {
+bool QuicServer::send_control(Session& session, protocol::ControlMessageType type,
+                              const uint8_t* payload, size_t payload_len) {
     uint32_t msg_len = static_cast<uint32_t>(2 + payload_len);
     size_t total_len = 6 + payload_len;
 
     auto* ctx = new SendCtx;
-    ctx->kind = SendCtx::KIND_CONTROL;
     ctx->owned.resize(total_len);
     std::memcpy(ctx->owned.data(), &msg_len, 4);
     uint16_t msg_type = static_cast<uint16_t>(type);
@@ -851,11 +659,11 @@ bool QuicServer::send_control_on_stream(HQUIC stream,
     ctx->bufs[0] = QUIC_BUFFER{ static_cast<uint32_t>(total_len), ctx->owned.data() };
     ctx->buf_count = 1;
 
-    QUIC_STATUS status = api_->StreamSend(stream, ctx->bufs, ctx->buf_count,
-                                           QUIC_SEND_FLAG_NONE, ctx);
-    if (QUIC_FAILED(status)) {
+    const auto status = session.transport_->send_on(*api_, SessionTransport::Stream::Control,
+                                                    ctx->bufs, ctx->buf_count, ctx);
+    if (!status || QUIC_FAILED(*status)) {
         delete ctx;
-        reliable_send_failures_.fetch_add(1, std::memory_order_relaxed);
+        if (status) reliable_send_failures_.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
     return true;
@@ -897,7 +705,7 @@ void QuicServer::process_stream_data(uint32_t session_id,
     }
 }
 
-void QuicServer::process_video_stream_data(uint32_t session_id,
+void QuicServer::process_video_stream_data(const std::shared_ptr<Session>& session,
                                             const uint8_t* data, size_t len) {
 	ZoneScopedN("QuicServer::process_video_stream_data");
     struct PendingFrame {
@@ -908,7 +716,7 @@ void QuicServer::process_video_stream_data(uint32_t session_id,
 
     {
         std::lock_guard<std::mutex> lock(buffers_mutex_);
-        auto& buffer = video_recv_buffers_[session_id];
+        auto& buffer = video_recv_buffers_[session->id];
         buffer.insert(buffer.end(), data, data + len);
 
         while (buffer.size() >= 4) {
@@ -916,7 +724,7 @@ void QuicServer::process_video_stream_data(uint32_t session_id,
             std::memcpy(&frame_len, buffer.data(), 4);
 
             if (frame_len == 0 || frame_len > 1 + VIDEO_FRAME_MAX_PAYLOAD_BYTES) {
-                LOG_ERROR("Invalid video frame length {} from session {}", frame_len, session_id);
+                LOG_ERROR("Invalid video frame length {} from session {}", frame_len, session->id);
                 buffer.clear();
                 break;
             }
@@ -936,11 +744,11 @@ void QuicServer::process_video_stream_data(uint32_t session_id,
     }
 
     for (auto& f : frames) {
-        if (on_video_frame) {
-            on_video_frame(session_id, f.packet_type, f.data.data(), f.data.size());
+        if (f.packet_type == protocol::VIDEO_FRAME_PACKET_TYPE) {
+            video_ingress_.offer(session, f.data);
         } else {
             DataPacket pkt;
-            pkt.session_id = session_id;
+            pkt.session_id = session->id;
             pkt.packet_type = f.packet_type;
             pkt.channel_id = 0;
             pkt.reliable = true;
@@ -998,14 +806,9 @@ QUIC_STATUS QuicServer::on_file_stream_event(HQUIC stream, FileStreamContext* ct
         break;
     }
 
-    case QUIC_STREAM_EVENT_SEND_COMPLETE: {
-        auto* sctx = static_cast<SendCtx*>(event->SEND_COMPLETE.ClientContext);
-        if (sctx) {
-            send_ctx_uncharge(sctx);
-            delete sctx;
-        }
+    case QUIC_STREAM_EVENT_SEND_COMPLETE:
+        delete static_cast<SendCtx*>(event->SEND_COMPLETE.ClientContext);
         break;
-    }
 
     case QUIC_STREAM_EVENT_PEER_SEND_ABORTED:
     case QUIC_STREAM_EVENT_PEER_RECEIVE_ABORTED:
@@ -1024,7 +827,6 @@ QUIC_STATUS QuicServer::on_file_stream_event(HQUIC stream, FileStreamContext* ct
 
 bool QuicServer::send_file_on_stream(HQUIC stream, const uint8_t* data, size_t len) {
     auto* ctx = new SendCtx;
-    ctx->kind = SendCtx::KIND_CONTROL;
     ctx->owned.assign(data, data + len);
     ctx->bufs[0] = QUIC_BUFFER{ static_cast<uint32_t>(len), ctx->owned.data() };
     ctx->buf_count = 1;
@@ -1047,19 +849,17 @@ QUIC_STATUS QUIC_API QuicServer::video_in_stream_callback(
     switch (event->Type) {
     case QUIC_STREAM_EVENT_RECEIVE: {
         if (ctx->dead) break;
-        sample_min_rtt(api, *ctx->session, stream);
+        ctx->session->transport_->sample_min_rtt_if_due(*api, stream, now_us());
 
         int64_t incoming = 0;
         for (uint32_t i = 0; i < event->RECEIVE.BufferCount; i++)
             incoming += event->RECEIVE.Buffers[i].Length;
         ctx->charged += incoming;
-        const int64_t buffered = ctx->session->video_in_buffered_bytes.fetch_add(
-            incoming, std::memory_order_relaxed) + incoming;
+        const int64_t buffered = ctx->session->transport_->charge_ingress(incoming);
         if (buffered > Session::VIDEO_INGRESS_MAX_BUFFERED_BYTES) {
-            uint32_t suppressed = 0;
-            if (video_ingress_log_throttle.allow(suppressed)) {
+            if (const auto suppressed = video_ingress_log_throttle.allow()) {
                 LOG_WARN("Session {}: per-frame video ingress over the {} byte buffer cap ({} buffered) - aborting stream; {} more since the last line",
-                         ctx->session_id, Session::VIDEO_INGRESS_MAX_BUFFERED_BYTES, buffered, suppressed);
+                         ctx->session_id, Session::VIDEO_INGRESS_MAX_BUFFERED_BYTES, buffered, *suppressed);
             }
             ctx->abort(stream);
             break;
@@ -1072,10 +872,9 @@ QUIC_STATUS QUIC_API QuicServer::video_in_stream_callback(
 
         if ((!ctx->buf.empty() && ctx->buf[0] != protocol::STREAM_TYPE_VIDEO_FRAME) ||
             ctx->buf.size() > 1 + VIDEO_FRAME_MAX_PAYLOAD_BYTES) {
-            uint32_t suppressed = 0;
-            if (video_ingress_log_throttle.allow(suppressed)) {
+            if (const auto suppressed = video_ingress_log_throttle.allow()) {
                 LOG_WARN("Session {}: invalid per-frame video stream (first byte {:#x}, {} bytes) - aborting; {} more since the last line",
-                         ctx->session_id, ctx->buf.empty() ? 0u : (unsigned)ctx->buf[0], ctx->buf.size(), suppressed);
+                         ctx->session_id, ctx->buf.empty() ? 0u : (unsigned)ctx->buf[0], ctx->buf.size(), *suppressed);
             }
             ctx->abort(stream);
             break;
@@ -1083,20 +882,7 @@ QUIC_STATUS QUIC_API QuicServer::video_in_stream_callback(
 
         if (event->RECEIVE.Flags & QUIC_RECEIVE_FLAG_FIN) {
             if (ctx->buf.size() >= 1 + VIDEO_FRAME_HEADER_SIZE) {
-                const uint8_t* frame = ctx->buf.data() + 1;
-                const size_t   flen  = ctx->buf.size() - 1;
-                if (self->on_video_frame) {
-                    self->on_video_frame(ctx->session_id, protocol::VIDEO_FRAME_PACKET_TYPE,
-                                         frame, flen);
-                } else {
-                    DataPacket pkt;
-                    pkt.session_id = ctx->session_id;
-                    pkt.packet_type = protocol::VIDEO_FRAME_PACKET_TYPE;
-                    pkt.channel_id = 0;
-                    pkt.reliable = true;
-                    pkt.data.assign(frame, frame + flen);
-                    self->data_incoming_.push(std::move(pkt));
-                }
+                self->video_ingress_.offer(ctx->session, std::span<const uint8_t>(ctx->buf).subspan(1));
             } else {
                 LOG_DEBUG("Session {}: dropping truncated per-frame video stream ({} bytes)",
                           ctx->session_id, ctx->buf.size());
@@ -1144,7 +930,7 @@ QUIC_STATUS QUIC_API QuicServer::video_out_stream_callback(
         break;
 
     case QUIC_STREAM_EVENT_SEND_COMPLETE:
-        sample_min_rtt(api, *ctx->session, stream);
+        ctx->session->transport_->sample_min_rtt_if_due(*api, stream, now_us());
         ctx->uncharge();
         break;
 
