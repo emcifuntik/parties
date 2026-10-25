@@ -58,6 +58,7 @@
 						<option value="float">float</option>
 						<option value="bool">bool</option>
 						<option value="string[]">string[]</option>
+						<option value="list">list</option>
 					</select>
 					<span class="btn btn-primary" data-event-click="add_var">Add Variable</span>
 				</div>

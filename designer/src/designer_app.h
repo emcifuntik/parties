@@ -8,6 +8,10 @@
 #include <RmlUi/Core/Context.h>
 #include <RmlUi/Core/DataModelHandle.h>
 
+#include <rapidjson/document.h>
+#include <rapidjson/stringbuffer.h>
+#include <rapidjson/writer.h>
+
 #include <map>
 #include <memory>
 #include <string>
@@ -52,19 +56,20 @@ private:
 	std::string base_dir_;
 };
 
-enum class VarType { String = 0, Int, Float, Bool, StringArray, Event };
+enum class VarType { String = 0, Int, Float, Bool, StringArray, List, Event };
 
 }
 
 namespace parties {
 
 template <>
-inline constexpr auto enum_names_v<designer::VarType> = EnumNames<designer::VarType, 6>{{{
+inline constexpr auto enum_names_v<designer::VarType> = EnumNames<designer::VarType, 7>{{{
 	{designer::VarType::String, "string"},
 	{designer::VarType::Int, "int"},
 	{designer::VarType::Float, "float"},
 	{designer::VarType::Bool, "bool"},
 	{designer::VarType::StringArray, "string[]"},
+	{designer::VarType::List, "list"},
 	{designer::VarType::Event, "event"},
 }}};
 
@@ -83,6 +88,7 @@ struct DesignerVar {
 	std::unique_ptr<float>                      val_float;
 	std::unique_ptr<bool>                       val_bool;
 	std::unique_ptr<Rml::Vector<Rml::String>>   val_string_array;
+	std::unique_ptr<rapidjson::Document>        val_list;
 
 	DesignerVar() : type(VarType::String) {}
 	explicit DesignerVar(VarType t) : type(t) { Allocate(); }
@@ -94,6 +100,7 @@ struct DesignerVar {
 		case VarType::Float:       val_float = std::make_unique<float>(0.0f); break;
 		case VarType::Bool:        val_bool = std::make_unique<bool>(false); break;
 		case VarType::StringArray: val_string_array = std::make_unique<Rml::Vector<Rml::String>>(); break;
+		case VarType::List:        val_list = std::make_unique<rapidjson::Document>(rapidjson::kArrayType); break;
 		case VarType::Event:       break;
 		}
 	}
@@ -120,6 +127,13 @@ struct DesignerVar {
 			}
 			break;
 		}
+		case VarType::List: {
+			if (!val_list) break;
+			rapidjson::Document parsed;
+			parsed.Parse(s.data(), s.size());
+			if (!parsed.HasParseError() && parsed.IsArray()) val_list->Swap(parsed);
+			break;
+		}
 		}
 	}
 
@@ -138,6 +152,13 @@ struct DesignerVar {
 				result += (*val_string_array)[i];
 			}
 			return result;
+		}
+		case VarType::List: {
+			if (!val_list) return "[]";
+			rapidjson::StringBuffer buffer;
+			rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+			val_list->Accept(writer);
+			return Rml::String(buffer.GetString(), buffer.GetSize());
 		}
 		}
 		return "";

@@ -49,6 +49,58 @@ namespace designer {
 
 namespace {
 
+Rml::DataVariable MakeJsonVariable(rapidjson::Value& value);
+
+class JsonVariableDefinition final : public Rml::VariableDefinition {
+public:
+	explicit JsonVariableDefinition(Rml::DataVariableType type) : Rml::VariableDefinition(type) {}
+
+	bool Get(void* ptr, Rml::Variant& variant) override {
+		const auto& value = *static_cast<const rapidjson::Value*>(ptr);
+		if (value.IsBool()) variant = value.GetBool();
+		else if (value.IsInt()) variant = value.GetInt();
+		else if (value.IsNumber()) variant = value.GetDouble();
+		else if (value.IsString()) variant = Rml::String(value.GetString(), value.GetStringLength());
+		else return false;
+		return true;
+	}
+
+	int Size(void* ptr) override {
+		const auto& value = *static_cast<const rapidjson::Value*>(ptr);
+		if (value.IsArray()) return static_cast<int>(value.Size());
+		if (value.IsObject()) return static_cast<int>(value.MemberCount());
+		return 0;
+	}
+
+	Rml::DataVariable Child(void* ptr, const Rml::DataAddressEntry& address) override {
+		auto& value = *static_cast<rapidjson::Value*>(ptr);
+		if (value.IsArray()) {
+			const int size = static_cast<int>(value.Size());
+			if (address.index >= 0 && address.index < size)
+				return MakeJsonVariable(value[static_cast<rapidjson::SizeType>(address.index)]);
+			if (address.name == "size")
+				return Rml::MakeLiteralIntVariable(size);
+			Rml::Log::Message(Rml::Log::LT_WARNING, "Designer list index out of bounds.");
+			return {};
+		}
+		if (value.IsObject()) {
+			const auto member = value.FindMember(address.name.c_str());
+			if (member != value.MemberEnd()) return MakeJsonVariable(member->value);
+			Rml::Log::Message(Rml::Log::LT_WARNING, "Designer list item has no field '%s'.",
+				address.name.c_str());
+		}
+		return {};
+	}
+};
+
+Rml::DataVariable MakeJsonVariable(rapidjson::Value& value) {
+	static JsonVariableDefinition scalar{Rml::DataVariableType::Scalar};
+	static JsonVariableDefinition array{Rml::DataVariableType::Array};
+	static JsonVariableDefinition object{Rml::DataVariableType::Struct};
+	auto* definition = value.IsArray() ? &array : value.IsObject() ? &object : &scalar;
+	return Rml::DataVariable(definition, &value);
+}
+
 size_t CountElementTree(Rml::Element* element) {
 	if (!element)
 		return 0;
@@ -2027,6 +2079,9 @@ void DesignerApp::RebuildPreviewDataModels() {
 			case VarType::StringArray:
 				if (var.val_string_array) b.bind_raw(var_name, var.val_string_array.get());
 				break;
+			case VarType::List:
+				if (var.val_list) ctor.BindCustomDataVariable(var_name, MakeJsonVariable(*var.val_list));
+				break;
 			case VarType::Event:
 				// Register a no-op event callback so data-event-* expressions don't error
 				b.on(var_name, [] {});
@@ -2195,6 +2250,10 @@ bool DesignerApp::SaveBindVars(const std::string& path) {
 					for (const auto& item : *var.val_string_array) write_string(item);
 				writer.EndArray();
 				break;
+			case VarType::List:
+				writer.Key("value");
+				var.val_list->Accept(writer);
+				break;
 			case VarType::Event:
 				break;
 			}
@@ -2242,6 +2301,10 @@ static bool LoadBindVar(const rapidjson::Value& json, DesignerVar& var) {
 			if (!item.IsString()) return false;
 			var.val_string_array->emplace_back(item.GetString(), item.GetStringLength());
 		}
+		return true;
+	case VarType::List:
+		if (!v.IsArray()) return false;
+		var.val_list->CopyFrom(v, var.val_list->GetAllocator());
 		return true;
 	case VarType::Event:
 		return true;
