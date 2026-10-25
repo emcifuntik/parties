@@ -44,5 +44,7 @@ int main(int argc, char* argv[]) {
     LOG_INFO("Server running. Press Ctrl+C to stop.");
 
     server.run_until_stopped();
+    std::signal(SIGINT, SIG_DFL);
+    std::signal(SIGTERM, SIG_DFL);
     return 0;
 }
