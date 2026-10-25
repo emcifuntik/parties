@@ -70,13 +70,13 @@ fragment float4 rmlui_fragment_texture(VertexOut in         [[stage_in]],
     return in.color * tex.sample(samp, in.texcoord);
 }
 
-float3 bt709_limited_to_rgb(float y, float2 cbcr)
+float3 bt601_limited_to_rgb(float y, float2 cbcr)
 {
     const float  Y = (y - 16.0/255.0) * (255.0/219.0);
     const float2 C = (cbcr - float2(128.0/255.0)) * (255.0/224.0);
-    return float3(Y + 1.5748 * C.y,
-                  Y - 0.1873 * C.x - 0.4681 * C.y,
-                  Y + 1.8556 * C.x);
+    return float3(Y + 1.402 * C.y,
+                  Y - 0.344136 * C.x - 0.714136 * C.y,
+                  Y + 1.772 * C.x);
 }
 
 fragment float4 rmlui_fragment_nv12(VertexOut in          [[stage_in]],
@@ -86,7 +86,7 @@ fragment float4 rmlui_fragment_nv12(VertexOut in          [[stage_in]],
 {
     float  y    = y_tex.sample(samp, in.texcoord).r;
     float2 cbcr = uv_tex.sample(samp, in.texcoord).rg;
-    return in.color * float4(clamp(bt709_limited_to_rgb(y, cbcr), 0.0, 1.0), 1.0);
+    return in.color * float4(clamp(bt601_limited_to_rgb(y, cbcr), 0.0, 1.0), 1.0);
 }
 
 #define GRADIENT_MAX_STOPS        16

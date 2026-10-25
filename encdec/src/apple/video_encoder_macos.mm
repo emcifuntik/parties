@@ -202,7 +202,7 @@ bool VideoEncoderMac::init(MacVideoCodec codec, uint32_t width, uint32_t height,
     VTSessionSetProperty(session_, kVTCompressionPropertyKey_TransferFunction,
                          kCVImageBufferTransferFunction_ITU_R_709_2);
     VTSessionSetProperty(session_, kVTCompressionPropertyKey_YCbCrMatrix,
-                         kCVImageBufferYCbCrMatrix_ITU_R_709_2);
+                         kCVImageBufferYCbCrMatrix_ITU_R_601_4);
 
     VTCompressionSessionPrepareToEncodeFrames(session_);
     const char* codec_name = codec_ == MacVideoCodec::AV1  ? "AV1"
