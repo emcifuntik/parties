@@ -9,6 +9,13 @@ struct ID3D11Texture2D;
 
 namespace parties::encdec {
 
+inline constexpr int64_t TICKS_100NS_PER_MS = 10'000;
+inline constexpr int64_t TICKS_100NS_PER_SECOND = 10'000'000;
+
+constexpr int64_t ticks_100ns_to_ms(int64_t ticks_100ns) {
+    return ticks_100ns / TICKS_100NS_PER_MS;
+}
+
 struct EncoderInfo {
     Backend backend;
     VideoCodecId codec;
@@ -25,13 +32,13 @@ public:
     // Zero-copy path: register caller-owned textures, encode directly.
     // Not all backends support this — check supports_registered_input() first.
     virtual bool supports_registered_input() const { return false; }
-    virtual int  register_input(ID3D11Texture2D*) { return -1; }
+    virtual int  register_input(ID3D11Texture2D* texture) { return -1; }
     virtual void unregister_inputs() {}
-    virtual bool encode_registered(int, int64_t) { return false; }
+    virtual bool encode_registered(int slot, int64_t timestamp_100ns) { return false; }
 
     virtual void force_keyframe() = 0;
 
-    virtual void set_bitrate(uint32_t bitrate) = 0;
+    virtual void set_average_bitrate_bps(uint32_t average_bps) = 0;
 
     virtual EncoderInfo info() const = 0;
 

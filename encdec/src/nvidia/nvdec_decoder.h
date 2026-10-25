@@ -4,6 +4,7 @@
 #include "nvidia_loader.h"
 
 #include <cstdint>
+#include <memory>
 #include <stop_token>
 #include <vector>
 
@@ -12,6 +13,30 @@ struct ID3D12Device;
 namespace parties::encdec::nvidia {
 
 struct NvdecCudaInteropState;
+
+class CudaContextOwner {
+public:
+    CudaContextOwner(decltype(CudaApi::cuCtxDestroy) destroy, CUcontext context)
+        : destroy_(destroy), context_(context) {}
+    CudaContextOwner(const CudaContextOwner&) = delete;
+    CudaContextOwner& operator=(const CudaContextOwner&) = delete;
+    ~CudaContextOwner() { destroy_(context_); }
+
+    CUcontext get() const { return context_; }
+
+private:
+    decltype(CudaApi::cuCtxDestroy) destroy_;
+    CUcontext context_;
+};
+
+using CudaContextRef = std::shared_ptr<const CudaContextOwner>;
+
+enum class CuvidCallbackResult : int {
+    Abort = 0,
+    Continue = 1,
+};
+
+using CuvidSurfaceCount = int;
 
 class NvdecDecoder final : public Decoder {
 public:
@@ -70,9 +95,9 @@ private:
     static int CUDAAPI handle_decode(void* user, CUVIDPICPARAMS* pic);
     static int CUDAAPI handle_display(void* user, CUVIDPARSERDISPINFO* info);
 
-    int on_sequence(CUVIDEOFORMAT* fmt);
-    int on_decode(CUVIDPICPARAMS* pic);
-    int on_display(CUVIDPARSERDISPINFO* info);
+    CuvidSurfaceCount on_sequence(CUVIDEOFORMAT* fmt);
+    CuvidCallbackResult on_decode(CUVIDPICPARAMS* pic);
+    CuvidCallbackResult on_display(CUVIDPARSERDISPINFO* info);
     void log_slow_packet(uint64_t total_us) const;
 
     CudaApi cuda_{};
@@ -80,7 +105,7 @@ private:
 
     std::shared_ptr<NvdecCudaInteropState> interop_;
 
-    CUcontext cu_ctx_ = nullptr;
+    CudaContextRef cu_ctx_;
     CUvideoparser parser_ = nullptr;
     CUvideodecoder decoder_ = nullptr;
 

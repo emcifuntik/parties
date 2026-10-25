@@ -1651,7 +1651,7 @@ void App::encode_loop() {
                 bitrate_bps = static_cast<uint32_t>(core_.model_.share_bitrate * 1'000'000.0f);
             bitrate_bps = (std::max)(bitrate_bps, VIDEO_MIN_BITRATE);
             bitrate_bps = (std::min)(bitrate_bps, VIDEO_MAX_BITRATE);
-            if (!enc->init(capture_->device(), w, h, 0, 0, encode_fps_, bitrate_bps, codec)) {
+            if (!enc->init(capture_->device(), w, h, encode_fps_, bitrate_bps, codec)) {
                 LOG_ERROR("Encoder init failed at {}x{}", w, h);
                 { std::lock_guard<std::mutex> lock(encode_mutex_); encode_active_slot_ = -1; }
                 encode_cv_.notify_one();
@@ -1685,7 +1685,7 @@ void App::encode_loop() {
             uint32_t bitrate_bps = (std::max)(*b, VIDEO_MIN_BITRATE);
             bitrate_bps = (std::min)(bitrate_bps, VIDEO_MAX_BITRATE);
             LOG_INFO("Encoder bitrate -> {} kbps", bitrate_bps / 1000);
-            encoder_->set_bitrate(bitrate_bps);
+            encoder_->set_average_bitrate_bps(bitrate_bps);
         }
         if (core_.take_video_keyframe_request())
             encoder_->force_keyframe();

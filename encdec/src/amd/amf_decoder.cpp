@@ -19,23 +19,42 @@
 
 namespace parties::encdec::amd {
 
-struct AmfNativeLifetime {
-    amf::AMFComponent* decoder = nullptr;
-    amf::AMFContext* context = nullptr;
-    Microsoft::WRL::ComPtr<ID3D11Device> device;
-    bool context_lost = false;
+class AmfSession {
+public:
+    AmfSession(amf::AMFContext* context, Microsoft::WRL::ComPtr<ID3D11Device> device)
+        : context_(context), device_(std::move(device)) {}
+    AmfSession(const AmfSession&) = delete;
+    AmfSession& operator=(const AmfSession&) = delete;
 
-    ~AmfNativeLifetime() {
-        if (decoder) {
-            if (!context_lost) decoder->Terminate();
-            decoder->Release();
+    ~AmfSession() {
+        if (component_) {
+            if (!context_lost_) component_->Terminate();
+            component_->Release();
         }
-        if (context) {
-            if (!context_lost) context->Terminate();
-            context->Release();
-        }
+        if (!context_lost_) context_->Terminate();
+        context_->Release();
     }
+
+    amf::AMFContext* context() const { return context_; }
+    amf::AMFComponent* component() const { return component_; }
+    void adopt_component(amf::AMFComponent* component) { component_ = component; }
+    void mark_context_lost() { context_lost_ = true; }
+
+private:
+    amf::AMFContext* context_ = nullptr;
+    amf::AMFComponent* component_ = nullptr;
+    Microsoft::WRL::ComPtr<ID3D11Device> device_;
+    bool context_lost_ = false;
 };
+
+namespace {
+
+[[nodiscard]] FrameConsumed drop_frame(amf::AMFSurface* surface) {
+    surface->Release();
+    return FrameConsumed::Yes;
+}
+
+}
 
 struct AmfD3D11InteropState : std::enable_shared_from_this<AmfD3D11InteropState> {
     enum class SlotCreationResult {
@@ -55,7 +74,7 @@ struct AmfD3D11InteropState : std::enable_shared_from_this<AmfD3D11InteropState>
 
     struct Lease {
         std::shared_ptr<AmfD3D11InteropState> state;
-        std::shared_ptr<AmfNativeLifetime> lifetime;
+        std::shared_ptr<AmfSession> session;
         amf::AMFSurface* surface = nullptr;
         Slot* slot = nullptr;
 
@@ -281,10 +300,10 @@ struct AmfD3D11InteropState : std::enable_shared_from_this<AmfD3D11InteropState>
     }
 
     std::shared_ptr<void> make_owner(Slot* slot, amf::AMFSurface* surface,
-                                     std::shared_ptr<AmfNativeLifetime> lifetime) {
+                                     std::shared_ptr<AmfSession> session) {
         auto owner = std::make_shared<Lease>();
         owner->state = shared_from_this();
-        owner->lifetime = std::move(lifetime);
+        owner->session = std::move(session);
         owner->surface = surface;
         owner->slot = slot;
         return owner;
@@ -303,25 +322,8 @@ static const wchar_t* decoder_component_id(VideoCodecId codec) {
 AmfDecoder::AmfDecoder() = default;
 
 AmfDecoder::~AmfDecoder() {
-    if (native_lifetime_) {
-        native_lifetime_->context_lost = context_lost_;
-        decoder_ = nullptr;
-        context_ = nullptr;
-        d3d12_device_.Reset();
-        native_lifetime_.reset();
-    }
-    if (decoder_) {
-        if (!context_lost_) decoder_->Terminate();
-        decoder_->Release();
-        decoder_ = nullptr;
-    }
-
-    if (context_) {
-        if (!context_lost_)
-            context_->Terminate();
-        context_->Release();
-        context_ = nullptr;
-    }
+    if (session_ && context_lost_) session_->mark_context_lost();
+    session_.reset();
 
     device_.Reset();
     device_context_.Reset();
@@ -401,18 +403,19 @@ bool AmfDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height,
         return false;
     }
 
-    const AMF_RESULT create_result = factory_->CreateContext(&context_);
-    if (create_result != AMF_OK || !context_) {
+    amf::AMFContext* context = nullptr;
+    const AMF_RESULT create_result = factory_->CreateContext(&context);
+    if (create_result != AMF_OK || !context) {
         LOG_ERROR("Decoder CreateContext failed: {}", static_cast<int>(create_result));
         return false;
     }
-    AMF_RESULT res = context_->InitDX11(device_.Get());
+    AMF_RESULT res = context->InitDX11(device_.Get());
     if (res != AMF_OK) {
         LOG_ERROR("Decoder InitDX11 failed: {}", static_cast<int>(res));
-        context_->Release();
-        context_ = nullptr;
+        context->Release();
         return false;
     }
+    session_ = std::make_shared<AmfSession>(context, device_);
 
     if (render_device && matching_adapter) {
         auto interop = std::make_shared<AmfD3D11InteropState>();
@@ -426,36 +429,35 @@ bool AmfDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height,
     }
 
     const wchar_t* comp_id = decoder_component_id(codec);
-    res = factory_->CreateComponent(context_, comp_id, &decoder_);
-    if (res != AMF_OK || !decoder_) {
+    amf::AMFComponent* component = nullptr;
+    res = factory_->CreateComponent(session_->context(), comp_id, &component);
+    if (res != AMF_OK || !component) {
         LOG_ERROR("Decoder CreateComponent({}) failed: {}",
                   codec_name(codec), (int)res);
-        context_->Release();
-        context_ = nullptr;
+        session_.reset();
         return false;
     }
 
-    res = decoder_->SetProperty(AMF_VIDEO_DECODER_REORDER_MODE,
+    res = component->SetProperty(AMF_VIDEO_DECODER_REORDER_MODE,
         static_cast<amf_int64>(AMF_VIDEO_DECODER_MODE_LOW_LATENCY));
     if (res != AMF_OK)
         LOG_WARN("AMF low-latency reorder mode is unavailable: {}", static_cast<int>(res));
-    res = decoder_->SetProperty(AMF_VIDEO_DECODER_LOW_LATENCY, true);
+    res = component->SetProperty(AMF_VIDEO_DECODER_LOW_LATENCY, true);
     if (res != AMF_OK)
         LOG_WARN("AMF low-latency decode is unavailable: {}", static_cast<int>(res));
 
     uint32_t w = width > 0 ? width : 1920;
     uint32_t h = height > 0 ? height : 1080;
 
-    res = decoder_->Init(amf::AMF_SURFACE_NV12, w, h);
+    res = component->Init(amf::AMF_SURFACE_NV12, w, h);
     if (res != AMF_OK) {
         LOG_ERROR("Decoder Init({}, {}x{}) failed: {}",
                   codec_name(codec), w, h, (int)res);
-        decoder_->Release();
-        decoder_ = nullptr;
-        context_->Release();
-        context_ = nullptr;
+        component->Release();
+        session_.reset();
         return false;
     }
+    session_->adopt_component(component);
 
     codec_ = codec;
     width_ = w;
@@ -464,12 +466,6 @@ bool AmfDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height,
     LOG_INFO("Initialized {} AMF decoder ({}x{}, {} output)",
              codec_name(codec), w, h,
              native_d3d12_output_ ? "shared DX11/DX12 RGBA" : "host NV12");
-    if (native_d3d12_output_) {
-        native_lifetime_ = std::make_shared<AmfNativeLifetime>();
-        native_lifetime_->decoder = decoder_;
-        native_lifetime_->context = context_;
-        native_lifetime_->device = device_;
-    }
     initialized_ = true;
     return true;
 }
@@ -478,11 +474,11 @@ bool AmfDecoder::decode(const uint8_t* data, size_t len, int64_t timestamp) {
     ZoneScopedN("AmfDecoder::decode");
     if (!initialized_ || context_lost_) return false;
     if (!data || len == 0) return false;
-    if (!decoder_ || !context_ || !check_device_health())
+    if (!check_device_health())
         return false;
 
     amf::AMFBuffer* buffer = nullptr;
-    AMF_RESULT res = context_->AllocBuffer(amf::AMF_MEMORY_HOST, len, &buffer);
+    AMF_RESULT res = session_->context()->AllocBuffer(amf::AMF_MEMORY_HOST, len, &buffer);
     if (res != AMF_OK || !buffer) {
         LOG_ERROR("AllocBuffer failed: {}", (int)res);
         if (res == AMF_FAIL || res == AMF_NOT_INITIALIZED)
@@ -504,7 +500,7 @@ bool AmfDecoder::decode(const uint8_t* data, size_t len, int64_t timestamp) {
     bool submit_without_input = false;
     bool accepted = false;
     for (int retry = 0; retry < max_backpressure_retries; ++retry) {
-        res = decoder_->SubmitInput(submit_without_input ? nullptr : buffer);
+        res = session_->component()->SubmitInput(submit_without_input ? nullptr : buffer);
         switch (classify_amf_submit_result(res)) {
         case AmfSubmitDisposition::Accepted:
             accepted = true;
@@ -543,15 +539,15 @@ bool AmfDecoder::decode(const uint8_t* data, size_t len, int64_t timestamp) {
     return !context_lost_;
 }
 
-bool AmfDecoder::deliver_output(amf::AMFData* data) {
-    if (!data) return false;
+FrameConsumed AmfDecoder::deliver_output(amf::AMFData* data) {
+    if (!data) return FrameConsumed::No;
 
     amf::AMFSurface* surface = nullptr;
     const AMF_RESULT query_result = data->QueryInterface(
         amf::AMFSurface::IID(), reinterpret_cast<void**>(&surface));
     if (query_result != AMF_OK || !surface) {
         LOG_ERROR("AMF decoder output is not a surface: {}", static_cast<int>(query_result));
-        return false;
+        return FrameConsumed::No;
     }
 
     if (native_d3d12_output_) {
@@ -560,14 +556,14 @@ bool AmfDecoder::deliver_output(amf::AMFData* data) {
         if (!resource) {
             LOG_ERROR("AMF DX11 decoder returned no packed native resource");
             surface->Release();
-            return false;
+            return FrameConsumed::No;
         }
         D3D11_TEXTURE2D_DESC desc{};
         resource->GetDesc(&desc);
         if (desc.Format != DXGI_FORMAT_NV12) {
             LOG_ERROR("AMF DX11 decoder returned unexpected format {}", static_cast<int>(desc.Format));
             surface->Release();
-            return false;
+            return FrameConsumed::No;
         }
 
         width_ = static_cast<uint32_t>(packed->GetWidth());
@@ -576,32 +572,24 @@ bool AmfDecoder::deliver_output(amf::AMFData* data) {
             LOG_ERROR("AMF DX11 decoder returned invalid visible extent {}x{} in {}x{} resource",
                       width_, height_, desc.Width, desc.Height);
             surface->Release();
-            return false;
+            return FrameConsumed::No;
         }
-        if (!on_decoded) {
-            surface->Release();
-            return true;
-        }
+        if (!on_decoded) return drop_frame(surface);
 
         const auto slot_result = interop_
             ? interop_->create_slots(resource, width_, height_)
             : AmfD3D11InteropState::SlotCreationResult::Failed;
-        if (slot_result == AmfD3D11InteropState::SlotCreationResult::Busy) {
-            surface->Release();
-            return true;
-        }
+        if (slot_result == AmfD3D11InteropState::SlotCreationResult::Busy)
+            return drop_frame(surface);
         if (slot_result == AmfD3D11InteropState::SlotCreationResult::Ready) {
             auto* slot = interop_->acquire();
-            if (!slot) {
-                surface->Release();
-                return true;
-            }
+            if (!slot) return drop_frame(surface);
             uint64_t fence_value = 0;
             if (!interop_->copy(resource, *slot, fence_value)) {
                 slot->in_use.store(false, std::memory_order_release);
                 surface->Release();
                 mark_context_lost("DX11/DX12 shared RGBA conversion", AMF_DIRECTX_FAILED);
-                return false;
+                return FrameConsumed::No;
             }
 
             DecodedFrame frame{};
@@ -614,9 +602,9 @@ bool AmfDecoder::deliver_output(amf::AMFData* data) {
             frame.native_fence_value = fence_value;
             frame.native_d3d12_state = static_cast<uint32_t>(D3D12_RESOURCE_STATE_COMMON);
             frame.native_rgba = true;
-            frame.native_owner = interop_->make_owner(slot, surface, native_lifetime_);
+            frame.native_owner = interop_->make_owner(slot, surface, session_);
             on_decoded(frame);
-            return true;
+            return FrameConsumed::Yes;
         }
 
         LOG_WARN("AMF shared RGBA interop unavailable; switching to host NV12 output");
@@ -629,7 +617,7 @@ bool AmfDecoder::deliver_output(amf::AMFData* data) {
     if (convert_result != AMF_OK) {
         LOG_ERROR("AMF decoder GPU-to-host conversion failed: {}", static_cast<int>(convert_result));
         surface->Release();
-        return false;
+        return FrameConsumed::No;
     }
 
     amf::AMFPlane* y_plane = surface->GetPlane(amf::AMF_PLANE_Y);
@@ -637,7 +625,7 @@ bool AmfDecoder::deliver_output(amf::AMFData* data) {
     if (!y_plane || !uv_plane) {
         LOG_ERROR("AMF decoder returned an incomplete NV12 surface");
         surface->Release();
-        return false;
+        return FrameConsumed::No;
     }
 
     width_ = static_cast<uint32_t>(y_plane->GetWidth());
@@ -657,16 +645,16 @@ bool AmfDecoder::deliver_output(amf::AMFData* data) {
     }
 
     surface->Release();
-    return true;
+    return FrameConsumed::Yes;
 }
 
 size_t AmfDecoder::poll_output(bool deliver_frames) {
     size_t produced = 0;
-    while (decoder_ && !context_lost_) {
+    while (!context_lost_) {
         amf::AMFData* data = nullptr;
-        const AMF_RESULT result = decoder_->QueryOutput(&data);
+        const AMF_RESULT result = session_->component()->QueryOutput(&data);
         if (result == AMF_OK && data) {
-            if (!deliver_frames || deliver_output(data)) ++produced;
+            if (!deliver_frames || deliver_output(data) == FrameConsumed::Yes) ++produced;
             data->Release();
             continue;
         }
@@ -687,10 +675,10 @@ size_t AmfDecoder::poll_output(bool deliver_frames) {
 }
 
 void AmfDecoder::flush() {
-    if (!initialized_ || !decoder_ || context_lost_) return;
+    if (!initialized_ || context_lost_) return;
     if (!check_device_health()) return;
 
-    const AMF_RESULT res = decoder_->Flush();
+    const AMF_RESULT res = session_->component()->Flush();
     if (res != AMF_OK) {
         mark_context_lost("Flush", res);
     }

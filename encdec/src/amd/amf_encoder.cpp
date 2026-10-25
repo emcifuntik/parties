@@ -1,5 +1,6 @@
 #include "amf_encoder.h"
 #include "amf_loader.h"
+#include "amf_submit.h"
 #include <encdec/rate_control.h>
 
 #include <AMF/components/VideoEncoderVCE.h>
@@ -12,6 +13,14 @@
 namespace parties::encdec::amd {
 
 namespace {
+
+constexpr int kEncoderSubmitRetries = 8;
+
+bool drop_newest_keep_keyframe_request() {
+    LOG_WARN("AMF encoder remained full after {} retries; dropping newest frame",
+             kEncoderSubmitRetries);
+    return true;
+}
 
 amf_int64 query_timeout_ms_for_fps(uint32_t fps) {
     const uint32_t safe_fps = fps == 0 ? 30u : fps;
@@ -47,7 +56,7 @@ AmfEncoder::~AmfEncoder() {
 }
 
 bool AmfEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
-                       uint32_t fps, uint32_t bitrate, VideoCodecId preferred_codec) {
+                       uint32_t fps, uint32_t average_bps, VideoCodecId preferred_codec) {
     ZoneScopedN("AmfEncoder::init");
     if (initialized_) return false;
 
@@ -97,18 +106,18 @@ bool AmfEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
         return false;
     }
 
-    const auto rate_control = make_stream_vbr_rate_control(bitrate, fps);
+    const auto rate_control = make_stream_vbr_rate_control(average_bps, fps);
     LOG_INFO("Selected encoder codec: {} ({}x{} @ {} fps), VBR average: {} bps, peak: {} bps, VBV: {} bits, max frame: {} bits",
              codec_name(codec_), width, height, fps,
-             rate_control.average_bitrate, rate_control.peak_bitrate,
-             rate_control.vbv_buffer_size, rate_control.max_frame_bits);
+             rate_control.average_bps, rate_control.peak_bps,
+             rate_control.vbv_buffer_bits, rate_control.max_frame_bits);
 
     const amf_int64 average_bitrate =
-        static_cast<amf_int64>(rate_control.average_bitrate);
+        static_cast<amf_int64>(rate_control.average_bps);
     const amf_int64 peak_bitrate =
-        static_cast<amf_int64>(rate_control.peak_bitrate);
+        static_cast<amf_int64>(rate_control.peak_bps);
     const amf_int64 vbv_buffer_size =
-        static_cast<amf_int64>(rate_control.vbv_buffer_size);
+        static_cast<amf_int64>(rate_control.vbv_buffer_bits);
     const amf_int64 max_frame_bits =
         static_cast<amf_int64>(rate_control.max_frame_bits);
     amf_int64 keyframe_period = static_cast<amf_int64>(fps * (VIDEO_KEYFRAME_INTERVAL_MS / 1000));
@@ -277,15 +286,11 @@ bool AmfEncoder::do_encode(ID3D11Texture2D* texture, int64_t timestamp_100ns) {
         }
     }
 
-    static constexpr int max_submit_retries = 8;
-    for (int retry = 0; retry < max_submit_retries; ++retry) {
+    AmfEncoderSubmit submit = AmfEncoderSubmit::RetrySameSurface;
+    for (int retry = 0; retry < kEncoderSubmitRetries; ++retry) {
         res = encoder_->SubmitInput(surface);
-        if (res == AMF_OK) break;
-        if (res != AMF_INPUT_FULL) {
-            LOG_ERROR("SubmitInput failed: {}", (int)res);
-            surface->Release();
-            return false;
-        }
+        submit = classify_amf_encoder_submit(res);
+        if (submit != AmfEncoderSubmit::RetrySameSurface) break;
 
         amf::AMFData* pending = nullptr;
         const AMF_RESULT output_result = encoder_->QueryOutput(&pending);
@@ -303,10 +308,14 @@ bool AmfEncoder::do_encode(ID3D11Texture2D* texture, int64_t timestamp_100ns) {
     }
     surface->Release();
 
-    if (res != AMF_OK) {
-        LOG_WARN("AMF encoder remained full after {} retries; dropping newest frame",
-                 max_submit_retries);
-        return true;
+    switch (submit) {
+    case AmfEncoderSubmit::Fatal:
+        LOG_ERROR("SubmitInput failed: {}", (int)res);
+        return false;
+    case AmfEncoderSubmit::RetrySameSurface:
+        return drop_newest_keep_keyframe_request();
+    case AmfEncoderSubmit::Accepted:
+        break;
     }
     if (requested_keyframe) force_keyframe_ = false;
 
@@ -368,16 +377,16 @@ void AmfEncoder::force_keyframe() {
     force_keyframe_ = true;
 }
 
-void AmfEncoder::set_bitrate(uint32_t bitrate) {
+void AmfEncoder::set_average_bitrate_bps(uint32_t average_bps) {
     if (!initialized_ || !encoder_) return;
 
-    const auto rate_control = make_stream_vbr_rate_control(bitrate, fps_);
+    const auto rate_control = make_stream_vbr_rate_control(average_bps, fps_);
     const amf_int64 average_bitrate =
-        static_cast<amf_int64>(rate_control.average_bitrate);
+        static_cast<amf_int64>(rate_control.average_bps);
     const amf_int64 peak_bitrate =
-        static_cast<amf_int64>(rate_control.peak_bitrate);
+        static_cast<amf_int64>(rate_control.peak_bps);
     const amf_int64 vbv_buffer_size =
-        static_cast<amf_int64>(rate_control.vbv_buffer_size);
+        static_cast<amf_int64>(rate_control.vbv_buffer_bits);
     const amf_int64 max_frame_bits =
         static_cast<amf_int64>(rate_control.max_frame_bits);
     if (codec_ == VideoCodecId::AV1) {
@@ -399,8 +408,8 @@ void AmfEncoder::set_bitrate(uint32_t bitrate) {
         encoder_->SetProperty(AMF_VIDEO_ENCODER_MAX_AU_SIZE, max_frame_bits);
     }
     LOG_DEBUG("AMF rate control updated: average {} bps, peak {} bps, VBV {} bits, max frame {} bits",
-              rate_control.average_bitrate, rate_control.peak_bitrate,
-              rate_control.vbv_buffer_size, rate_control.max_frame_bits);
+              rate_control.average_bps, rate_control.peak_bps,
+              rate_control.vbv_buffer_bits, rate_control.max_frame_bits);
 }
 
 EncoderInfo AmfEncoder::info() const {

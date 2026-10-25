@@ -17,8 +17,7 @@ public:
     ~VideoEncoder();
 
     bool init(ID3D11Device* device, uint32_t width, uint32_t height,
-              uint32_t input_width = 0, uint32_t input_height = 0,
-              uint32_t fps = 30, uint32_t bitrate = VIDEO_DEFAULT_BITRATE,
+              uint32_t fps = 30, uint32_t average_bps = VIDEO_DEFAULT_BITRATE,
               VideoCodecId preferred_codec = VideoCodecId::AV1);
     void shutdown();
 
@@ -31,7 +30,7 @@ public:
 
     void force_keyframe();
 
-    void set_bitrate(uint32_t bitrate);
+    void set_average_bitrate_bps(uint32_t average_bps);
 
     VideoCodecId codec() const { return encoder_ ? encoder_->codec() : VideoCodecId::H264; }
     uint32_t width() const { return encoder_ ? encoder_->width() : 0; }

@@ -13,6 +13,46 @@ using Microsoft::WRL::ComPtr;
 
 namespace parties::encdec::openh264 {
 
+namespace {
+
+void bgra_to_i420_bt601_limited_topleft_chroma(const uint8_t* bgra, uint32_t bgra_stride,
+                                               uint32_t width, uint32_t height,
+                                               uint8_t* i420) {
+    uint8_t* y_plane = i420;
+    uint8_t* u_plane = y_plane + width * height;
+    uint8_t* v_plane = u_plane + (width / 2) * (height / 2);
+
+    for (uint32_t y = 0; y < height; y++) {
+        const uint8_t* row = bgra + y * bgra_stride;
+        uint8_t* y_row = y_plane + y * width;
+
+        for (uint32_t x = 0; x < width; x++) {
+            uint8_t b = row[x * 4 + 0];
+            uint8_t g = row[x * 4 + 1];
+            uint8_t r = row[x * 4 + 2];
+
+            y_row[x] = static_cast<uint8_t>((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
+        }
+
+        if ((y & 1) == 0) {
+            uint32_t uv_y = y / 2;
+            uint8_t* u_row = u_plane + uv_y * (width / 2);
+            uint8_t* v_row = v_plane + uv_y * (width / 2);
+
+            for (uint32_t x = 0; x < width; x += 2) {
+                uint8_t b = row[x * 4 + 0];
+                uint8_t g = row[x * 4 + 1];
+                uint8_t r = row[x * 4 + 2];
+
+                u_row[x / 2] = static_cast<uint8_t>((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
+                v_row[x / 2] = static_cast<uint8_t>((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
+            }
+        }
+    }
+}
+
+}
+
 OpenH264Encoder::~OpenH264Encoder() {
     if (encoder_) {
         encoder_->Uninitialize();
@@ -21,7 +61,7 @@ OpenH264Encoder::~OpenH264Encoder() {
 }
 
 bool OpenH264Encoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
-                            uint32_t fps, uint32_t bitrate) {
+                            uint32_t fps, uint32_t average_bps) {
     device_ = device;
     device_->GetImmediateContext(&context_);
     width_ = width;
@@ -40,9 +80,9 @@ bool OpenH264Encoder::init(ID3D11Device* device, uint32_t width, uint32_t height
     params.iUsageType = SCREEN_CONTENT_REAL_TIME;
     params.iPicWidth = static_cast<int>(width);
     params.iPicHeight = static_cast<int>(height);
-    const auto rate_control = make_stream_vbr_rate_control(bitrate, fps);
-    params.iTargetBitrate = static_cast<int>(rate_control.average_bitrate);
-    params.iMaxBitrate = static_cast<int>(rate_control.peak_bitrate);
+    const auto rate_control = make_stream_vbr_rate_control(average_bps, fps);
+    params.iTargetBitrate = static_cast<int>(rate_control.average_bps);
+    params.iMaxBitrate = static_cast<int>(rate_control.peak_bps);
     params.iRCMode = RC_BITRATE_MODE;
     params.fMaxFrameRate = static_cast<float>(fps);
     params.bEnableFrameSkip = false;
@@ -58,9 +98,9 @@ bool OpenH264Encoder::init(ID3D11Device* device, uint32_t width, uint32_t height
     params.sSpatialLayers[0].iVideoHeight = static_cast<int>(height);
     params.sSpatialLayers[0].fFrameRate = static_cast<float>(fps);
     params.sSpatialLayers[0].iSpatialBitrate =
-        static_cast<int>(rate_control.average_bitrate);
+        static_cast<int>(rate_control.average_bps);
     params.sSpatialLayers[0].iMaxSpatialBitrate =
-        static_cast<int>(rate_control.peak_bitrate);
+        static_cast<int>(rate_control.peak_bps);
     params.sSpatialLayers[0].uiProfileIdc = PRO_BASELINE;
     params.sSpatialLayers[0].uiLevelIdc = LEVEL_UNKNOWN;
 
@@ -113,40 +153,9 @@ bool OpenH264Encoder::encode(ID3D11Texture2D* bgra_texture, int64_t timestamp_10
 
     {
         ZoneScopedN("BGRA_to_I420");
-        const uint8_t* bgra = static_cast<const uint8_t*>(mapped.pData);
-        uint32_t bgra_stride = mapped.RowPitch;
-
-        uint8_t* y_plane = i420_buffer_.data();
-        uint8_t* u_plane = y_plane + width_ * height_;
-        uint8_t* v_plane = u_plane + (width_ / 2) * (height_ / 2);
-
-        for (uint32_t y = 0; y < height_; y++) {
-            const uint8_t* row = bgra + y * bgra_stride;
-            uint8_t* y_row = y_plane + y * width_;
-
-            for (uint32_t x = 0; x < width_; x++) {
-                uint8_t b = row[x * 4 + 0];
-                uint8_t g = row[x * 4 + 1];
-                uint8_t r = row[x * 4 + 2];
-
-                y_row[x] = static_cast<uint8_t>((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
-            }
-
-            if ((y & 1) == 0) {
-                uint32_t uv_y = y / 2;
-                uint8_t* u_row = u_plane + uv_y * (width_ / 2);
-                uint8_t* v_row = v_plane + uv_y * (width_ / 2);
-
-                for (uint32_t x = 0; x < width_; x += 2) {
-                    uint8_t b = row[x * 4 + 0];
-                    uint8_t g = row[x * 4 + 1];
-                    uint8_t r = row[x * 4 + 2];
-
-                    u_row[x / 2] = static_cast<uint8_t>((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
-                    v_row[x / 2] = static_cast<uint8_t>((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
-                }
-            }
-        }
+        bgra_to_i420_bt601_limited_topleft_chroma(
+            static_cast<const uint8_t*>(mapped.pData), mapped.RowPitch,
+            width_, height_, i420_buffer_.data());
     }
 
     context_->Unmap(staging_.Get(), 0);
@@ -155,7 +164,7 @@ bool OpenH264Encoder::encode(ID3D11Texture2D* bgra_texture, int64_t timestamp_10
     pic.iColorFormat = videoFormatI420;
     pic.iPicWidth = static_cast<int>(width_);
     pic.iPicHeight = static_cast<int>(height_);
-    pic.uiTimeStamp = timestamp_100ns / 10000;
+    pic.uiTimeStamp = ticks_100ns_to_ms(timestamp_100ns);
     pic.iStride[0] = static_cast<int>(width_);
     pic.iStride[1] = static_cast<int>(width_ / 2);
     pic.iStride[2] = static_cast<int>(width_ / 2);
@@ -200,16 +209,16 @@ void OpenH264Encoder::force_keyframe() {
     force_keyframe_ = true;
 }
 
-void OpenH264Encoder::set_bitrate(uint32_t bitrate) {
+void OpenH264Encoder::set_average_bitrate_bps(uint32_t average_bps) {
     if (!encoder_) return;
 
-    const auto rate_control = make_stream_vbr_rate_control(bitrate, fps_);
+    const auto rate_control = make_stream_vbr_rate_control(average_bps, fps_);
     SBitrateInfo info = {};
     info.iLayer = SPATIAL_LAYER_ALL;
-    info.iBitrate = static_cast<int>(rate_control.average_bitrate);
+    info.iBitrate = static_cast<int>(rate_control.average_bps);
     encoder_->SetOption(ENCODER_OPTION_BITRATE, &info);
 
-    float max_br = static_cast<float>(rate_control.peak_bitrate);
+    float max_br = static_cast<float>(rate_control.peak_bps);
     encoder_->SetOption(ENCODER_OPTION_MAX_BITRATE, &max_br);
 }
 

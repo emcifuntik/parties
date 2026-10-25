@@ -17,11 +17,10 @@ MftDecoder::~MftDecoder() {
         mft_->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0);
         mft_.Reset();
     }
-    if (mf_started_)
-        MFShutdown();
 }
 
 bool MftDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height) {
+    if (initialized_) return false;
     if (codec == VideoCodecId::AV1)
         return false;
 
@@ -29,12 +28,8 @@ bool MftDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height) {
     width_ = width;
     height_ = height;
 
-    HRESULT hr = MFStartup(MF_VERSION, MFSTARTUP_LITE);
-    if (FAILED(hr)) {
-        LOG_ERROR("MFStartup failed: {:#010x}", hr);
-        return false;
-    }
-    mf_started_ = true;
+    mf_ = MfStartupGuard::start(MfStartupMode::Lite);
+    if (!mf_) return false;
 
     GUID subtype = (codec == VideoCodecId::H265) ? MFVideoFormat_HEVC
                                                   : MFVideoFormat_H264;
@@ -44,9 +39,9 @@ bool MftDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height) {
     IMFActivate** activates = nullptr;
     UINT32 count = 0;
 
-    hr = MFTEnumEx(MFT_CATEGORY_VIDEO_DECODER,
-                   MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER,
-                   &input_info, nullptr, &activates, &count);
+    HRESULT hr = MFTEnumEx(MFT_CATEGORY_VIDEO_DECODER,
+                           MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER,
+                           &input_info, nullptr, &activates, &count);
 
     if (FAILED(hr) || count == 0) {
         LOG_ERROR("No {} decoder found", name);

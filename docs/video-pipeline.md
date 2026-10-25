@@ -195,23 +195,23 @@ The UI bitrate is an average. The old policy (peak 2x average, VBV = 2x average
 bits, i.e. a two-second reservoir) let one keyframe be several hundred kilobytes,
 which on a link close to the average is a stall followed by catch-up. The
 low-latency policy in `encdec/include/encdec/rate_control.h`
-(`make_stream_vbr_rate_control(average, fps)`) expresses the reservoir in frame
+(`make_stream_vbr_rate_control(average_bps, fps)`) expresses the reservoir in frame
 intervals:
 
 | Field | Value |
 |-------|-------|
-| `peak_bitrate` | 1.5 x average |
-| `vbv_buffer_size` | max(4 frame intervals at average, 250 kbit) |
-| `vbv_initial_delay` | = `vbv_buffer_size` |
-| `max_frame_bits` | 6 frame intervals at average (~200 ms of link time at 30 fps), never below `vbv_buffer_size` |
+| `peak_bps` | 1.5 x average (`peak_bps_for`) |
+| `vbv_buffer_bits` | max(4 frame intervals at average, 250 kbit) |
+| `vbv_initial_delay_bits` | = `vbv_buffer_bits` |
+| `max_frame_bits` | 6 frame intervals at average (~200 ms of link time at 30 fps), never below `vbv_buffer_bits` |
 
 Which fields each backend consumes:
 
 | Backend | Fields |
 |---------|--------|
-| NVENC | `average`, `peak`, `vbv_buffer_size`, `vbv_initial_delay` |
-| AMF | `average`, `peak`, `vbv_buffer_size`, `max_frame_bits` (`MAX_AU_SIZE` / `HEVC_MAX_AU_SIZE` / `AV1_MAX_COMPRESSED_FRAME_SIZE`) |
-| MFT | `average`, `peak`, `vbv_buffer_size` (`CODECAPI_AVEncCommonBufferSize`) |
+| NVENC | `average_bps`, `peak_bps`, `vbv_buffer_bits`, `vbv_initial_delay_bits` |
+| AMF | `average_bps`, `peak_bps`, `vbv_buffer_bits`, `max_frame_bits` (`MAX_AU_SIZE` / `HEVC_MAX_AU_SIZE` / `AV1_MAX_COMPRESSED_FRAME_SIZE`) |
+| MFT | `average_bps`, `peak_bps`, `vbv_buffer_bits` (`CODECAPI_AVEncCommonBufferSize`) |
 | VideoToolbox | `average` plus a `DataRateLimits` window derived from `peak` |
 
 Bitrate changes reach the encoder only from the encode thread

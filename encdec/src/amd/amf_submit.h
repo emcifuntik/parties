@@ -29,4 +29,21 @@ constexpr AmfSubmitDisposition classify_amf_submit_result(AMF_RESULT result) {
     }
 }
 
+enum class AmfEncoderSubmit {
+    Accepted,
+    RetrySameSurface,
+    Fatal,
+};
+
+constexpr AmfEncoderSubmit classify_amf_encoder_submit(AMF_RESULT result) {
+    switch (result) {
+    case AMF_OK:
+        return AmfEncoderSubmit::Accepted;
+    case AMF_INPUT_FULL:
+        return AmfEncoderSubmit::RetrySameSurface;
+    default:
+        return AmfEncoderSubmit::Fatal;
+    }
+}
+
 }

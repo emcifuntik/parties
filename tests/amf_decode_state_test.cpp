@@ -2,7 +2,9 @@
 
 #include <iostream>
 
+using parties::encdec::amd::AmfEncoderSubmit;
 using parties::encdec::amd::AmfSubmitDisposition;
+using parties::encdec::amd::classify_amf_encoder_submit;
 using parties::encdec::amd::classify_amf_submit_result;
 
 namespace {
@@ -11,6 +13,13 @@ bool expect(AMF_RESULT result, AmfSubmitDisposition expected, const char* name) 
     const auto actual = classify_amf_submit_result(result);
     if (actual == expected) return true;
     std::cerr << name << ": unexpected AMF submit disposition\n";
+    return false;
+}
+
+bool expect_encoder(AMF_RESULT result, AmfEncoderSubmit expected, const char* name) {
+    const auto actual = classify_amf_encoder_submit(result);
+    if (actual == expected) return true;
+    std::cerr << name << ": unexpected AMF encoder submit disposition\n";
     return false;
 }
 
@@ -28,5 +37,17 @@ int main() {
                  "AMF_RESOLUTION_CHANGED");
     ok &= expect(AMF_FAIL, AmfSubmitDisposition::Fatal, "AMF_FAIL");
     ok &= expect(AMF_INVALID_DATA_TYPE, AmfSubmitDisposition::Fatal, "AMF_INVALID_DATA_TYPE");
+
+    ok &= expect_encoder(AMF_OK, AmfEncoderSubmit::Accepted, "encoder AMF_OK");
+    ok &= expect_encoder(AMF_INPUT_FULL, AmfEncoderSubmit::RetrySameSurface,
+                         "encoder AMF_INPUT_FULL");
+    ok &= expect_encoder(AMF_NEED_MORE_INPUT, AmfEncoderSubmit::Fatal,
+                         "encoder AMF_NEED_MORE_INPUT");
+    ok &= expect_encoder(AMF_REPEAT, AmfEncoderSubmit::Fatal, "encoder AMF_REPEAT");
+    ok &= expect_encoder(AMF_DECODER_NO_FREE_SURFACES, AmfEncoderSubmit::Fatal,
+                         "encoder AMF_DECODER_NO_FREE_SURFACES");
+    ok &= expect_encoder(AMF_RESOLUTION_CHANGED, AmfEncoderSubmit::Fatal,
+                         "encoder AMF_RESOLUTION_CHANGED");
+    ok &= expect_encoder(AMF_FAIL, AmfEncoderSubmit::Fatal, "encoder AMF_FAIL");
     return ok ? 0 : 1;
 }

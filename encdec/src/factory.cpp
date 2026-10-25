@@ -18,8 +18,7 @@ namespace parties::encdec {
 std::unique_ptr<Encoder> create_encoder(
     ID3D11Device* device,
     uint32_t width, uint32_t height,
-    uint32_t input_width, uint32_t input_height,
-    uint32_t fps, uint32_t bitrate,
+    uint32_t fps, uint32_t average_bps,
     VideoCodecId preferred_codec) {
 
     uint32_t enc_w = (width + 1) & ~1u;
@@ -27,41 +26,40 @@ std::unique_ptr<Encoder> create_encoder(
 
     {
         auto enc = std::make_unique<nvidia::NvencEncoder>();
-        if (enc->init(device, enc_w, enc_h, fps, bitrate, preferred_codec)) {
+        if (enc->init(device, enc_w, enc_h, fps, average_bps, preferred_codec)) {
             LOG_INFO("Selected video encoder backend={} codec={} size={}x{} fps={} bitrate={}",
                      backend_name(enc->info().backend), codec_name(enc->info().codec),
-                     enc_w, enc_h, fps, bitrate);
+                     enc_w, enc_h, fps, average_bps);
             return enc;
         }
     }
 
     {
         auto enc = std::make_unique<amd::AmfEncoder>();
-        if (enc->init(device, enc_w, enc_h, fps, bitrate, preferred_codec)) {
+        if (enc->init(device, enc_w, enc_h, fps, average_bps, preferred_codec)) {
             LOG_INFO("Selected video encoder backend={} codec={} size={}x{} fps={} bitrate={}",
                      backend_name(enc->info().backend), codec_name(enc->info().codec),
-                     enc_w, enc_h, fps, bitrate);
+                     enc_w, enc_h, fps, average_bps);
             return enc;
         }
     }
 
     {
         auto enc = std::make_unique<mft::MftEncoder>();
-        if (enc->init(device, enc_w, enc_h, input_width, input_height,
-                      fps, bitrate, preferred_codec)) {
+        if (enc->init(device, enc_w, enc_h, fps, average_bps, preferred_codec)) {
             LOG_INFO("Selected video encoder backend={} codec={} size={}x{} fps={} bitrate={}",
                      backend_name(enc->info().backend), codec_name(enc->info().codec),
-                     enc_w, enc_h, fps, bitrate);
+                     enc_w, enc_h, fps, average_bps);
             return enc;
         }
     }
 
     {
         auto enc = std::make_unique<openh264::OpenH264Encoder>();
-        if (enc->init(device, enc_w, enc_h, fps, bitrate)) {
+        if (enc->init(device, enc_w, enc_h, fps, average_bps)) {
             LOG_INFO("Selected video encoder backend={} codec={} size={}x{} fps={} bitrate={}",
                      backend_name(enc->info().backend), codec_name(enc->info().codec),
-                     enc_w, enc_h, fps, bitrate);
+                     enc_w, enc_h, fps, average_bps);
             return enc;
         }
     }

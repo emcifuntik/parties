@@ -37,32 +37,23 @@ MftEncoder::~MftEncoder() {
     dxgi_manager_.Reset();
     context_.Reset();
     device_.Reset();
-
-    if (mf_started_)
-        MFShutdown();
 }
 
 bool MftEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
-                       uint32_t input_width, uint32_t input_height,
-                       uint32_t fps, uint32_t bitrate, VideoCodecId preferred_codec) {
+                       uint32_t fps, uint32_t average_bps, VideoCodecId preferred_codec) {
+    if (initialized_) return false;
+
     device_ = device;
     device_->GetImmediateContext(&context_);
     fps_ = fps;
 
-    if (input_width == 0) input_width = width;
-    if (input_height == 0) input_height = height;
-
     width = (width + 1) & ~1u;
     height = (height + 1) & ~1u;
 
-    HRESULT hr = MFStartup(MF_VERSION);
-    if (FAILED(hr)) {
-        LOG_ERROR("MFStartup failed: {:#010x}", hr);
-        return false;
-    }
-    mf_started_ = true;
+    mf_ = MfStartupGuard::start(MfStartupMode::Full);
+    if (!mf_) return false;
 
-    hr = MFCreateDXGIDeviceManager(&dxgi_reset_token_, &dxgi_manager_);
+    HRESULT hr = MFCreateDXGIDeviceManager(&dxgi_reset_token_, &dxgi_manager_);
     if (FAILED(hr)) {
         LOG_ERROR("MFCreateDXGIDeviceManager failed");
         return false;
@@ -103,12 +94,12 @@ bool MftEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
         return false;
     }
 
-    if (!configure_encoder(width, height, fps, bitrate)) {
+    if (!configure_encoder(width, height, fps, average_bps)) {
         LOG_ERROR("Failed to configure encoder");
         return false;
     }
 
-    if (!create_color_converter(input_width, input_height, width, height)) {
+    if (!create_color_converter(width, height)) {
         LOG_ERROR("Failed to create color converter");
         return false;
     }
@@ -172,7 +163,7 @@ bool MftEncoder::try_create_encoder(const GUID& codec_subtype, VideoCodecId id) 
 }
 
 bool MftEncoder::configure_encoder(uint32_t width, uint32_t height,
-                                    uint32_t fps, uint32_t bitrate) {
+                                    uint32_t fps, uint32_t average_bps) {
     GUID subtype;
     switch (codec_) {
         case VideoCodecId::AV1:  subtype = MFVideoFormat_AV1;  break;
@@ -186,14 +177,14 @@ bool MftEncoder::configure_encoder(uint32_t width, uint32_t height,
     if (FAILED(hr))
         LOG_ERROR("Failed to set D3D manager: {:#010x}", hr);
 
-    const auto rate_control = make_stream_vbr_rate_control(bitrate, fps);
+    const auto rate_control = make_stream_vbr_rate_control(average_bps, fps);
 
     // Output type (must be set BEFORE input type)
     ComPtr<IMFMediaType> output_type;
     MFCreateMediaType(&output_type);
     output_type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
     output_type->SetGUID(MF_MT_SUBTYPE, subtype);
-    output_type->SetUINT32(MF_MT_AVG_BITRATE, rate_control.average_bitrate);
+    output_type->SetUINT32(MF_MT_AVG_BITRATE, rate_control.average_bps);
     MFSetAttributeSize(output_type.Get(), MF_MT_FRAME_SIZE, width, height);
     MFSetAttributeRatio(output_type.Get(), MF_MT_FRAME_RATE, fps, 1);
     output_type->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
@@ -234,17 +225,17 @@ bool MftEncoder::configure_encoder(uint32_t width, uint32_t height,
 
         VariantInit(&var);
         var.vt = VT_UI4;
-        var.ulVal = rate_control.average_bitrate;
+        var.ulVal = rate_control.average_bps;
         codec_api->SetValue(&CODECAPI_AVEncCommonMeanBitRate, &var);
 
         VariantInit(&var);
         var.vt = VT_UI4;
-        var.ulVal = rate_control.peak_bitrate;
+        var.ulVal = rate_control.peak_bps;
         codec_api->SetValue(&CODECAPI_AVEncCommonMaxBitRate, &var);
 
         VariantInit(&var);
         var.vt = VT_UI4;
-        var.ulVal = rate_control.vbv_buffer_size;
+        var.ulVal = rate_control.vbv_buffer_bits;
         codec_api->SetValue(&CODECAPI_AVEncCommonBufferSize, &var);
 
         VariantInit(&var);
@@ -271,8 +262,7 @@ bool MftEncoder::configure_encoder(uint32_t width, uint32_t height,
     return true;
 }
 
-bool MftEncoder::create_color_converter(uint32_t in_w, uint32_t in_h,
-                                         uint32_t out_w, uint32_t out_h) {
+bool MftEncoder::create_color_converter(uint32_t width, uint32_t height) {
     HRESULT hr = CoCreateInstance(
         CLSID_VideoProcessorMFT, nullptr, CLSCTX_INPROC_SERVER,
         IID_PPV_ARGS(&converter_));
@@ -289,7 +279,7 @@ bool MftEncoder::create_color_converter(uint32_t in_w, uint32_t in_h,
     MFCreateMediaType(&in_type);
     in_type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
     in_type->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_ARGB32);
-    MFSetAttributeSize(in_type.Get(), MF_MT_FRAME_SIZE, in_w, in_h);
+    MFSetAttributeSize(in_type.Get(), MF_MT_FRAME_SIZE, width, height);
 
     hr = converter_->SetInputType(0, in_type.Get(), 0);
     if (FAILED(hr)) {
@@ -301,7 +291,7 @@ bool MftEncoder::create_color_converter(uint32_t in_w, uint32_t in_h,
     MFCreateMediaType(&out_type);
     out_type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
     out_type->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12);
-    MFSetAttributeSize(out_type.Get(), MF_MT_FRAME_SIZE, out_w, out_h);
+    MFSetAttributeSize(out_type.Get(), MF_MT_FRAME_SIZE, width, height);
 
     hr = converter_->SetOutputType(0, out_type.Get(), 0);
     if (FAILED(hr)) {
@@ -364,7 +354,7 @@ bool MftEncoder::encode(ID3D11Texture2D* bgra_texture, int64_t timestamp_100ns) 
     ZoneScopedN("MftEncoder::encode");
     if (!initialized_) return false;
 
-    int64_t duration = 10'000'000LL / fps_;
+    int64_t duration = TICKS_100NS_PER_SECOND / fps_;
 
     ComPtr<IMFMediaBuffer> bgra_buffer;
     HRESULT hr = MFCreateDXGISurfaceBuffer(
@@ -491,26 +481,26 @@ void MftEncoder::force_keyframe() {
     force_keyframe_ = true;
 }
 
-void MftEncoder::set_bitrate(uint32_t bitrate) {
+void MftEncoder::set_average_bitrate_bps(uint32_t average_bps) {
     if (!initialized_) return;
 
     ComPtr<ICodecAPI> codec_api;
     if (SUCCEEDED(encoder_.As(&codec_api))) {
-        const auto rate_control = make_stream_vbr_rate_control(bitrate, fps_);
+        const auto rate_control = make_stream_vbr_rate_control(average_bps, fps_);
         VARIANT var;
         VariantInit(&var);
         var.vt = VT_UI4;
-        var.ulVal = rate_control.average_bitrate;
+        var.ulVal = rate_control.average_bps;
         codec_api->SetValue(&CODECAPI_AVEncCommonMeanBitRate, &var);
 
         VariantInit(&var);
         var.vt = VT_UI4;
-        var.ulVal = rate_control.peak_bitrate;
+        var.ulVal = rate_control.peak_bps;
         codec_api->SetValue(&CODECAPI_AVEncCommonMaxBitRate, &var);
 
         VariantInit(&var);
         var.vt = VT_UI4;
-        var.ulVal = rate_control.vbv_buffer_size;
+        var.ulVal = rate_control.vbv_buffer_bits;
         codec_api->SetValue(&CODECAPI_AVEncCommonBufferSize, &var);
     }
 }

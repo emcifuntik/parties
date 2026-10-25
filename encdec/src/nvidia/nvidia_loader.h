@@ -5,6 +5,8 @@
 #include "nvcuvid.h"
 #include "nvEncodeAPI.h"
 
+#include <optional>
+
 namespace parties::encdec::nvidia {
 
 struct CudaApi {
@@ -52,14 +54,17 @@ struct CudaApi {
     CUresult (CUDAAPI *cuGetErrorString)(CUresult, const char**);
 };
 
-struct CuvidApi {
-    CUresult (CUDAAPI *cuvidGetDecoderCaps)(CUVIDDECODECAPS*);
-    CUresult (CUDAAPI *cuvidCreateDecoder)(CUvideodecoder*, CUVIDDECODECREATEINFO*);
-    CUresult (CUDAAPI *cuvidDestroyDecoder)(CUvideodecoder);
+struct CuvidOpaqueOutputApi {
     CUresult (CUDAAPI *cuvidRegisterDecodeSurfaces)(
         CUvideodecoder, CUVIDREGISTERDECODESURFACESINFO*);
     CUresult (CUDAAPI *cuvidDecodePictureAsync)(
         CUvideodecoder, CUVIDPICPARAMS*, CUstream);
+};
+
+struct CuvidApi {
+    CUresult (CUDAAPI *cuvidGetDecoderCaps)(CUVIDDECODECAPS*);
+    CUresult (CUDAAPI *cuvidCreateDecoder)(CUvideodecoder*, CUVIDDECODECREATEINFO*);
+    CUresult (CUDAAPI *cuvidDestroyDecoder)(CUvideodecoder);
     CUresult (CUDAAPI *cuvidDecodePicture)(CUvideodecoder, CUVIDPICPARAMS*);
     CUresult (CUDAAPI *cuvidMapVideoFrame64)(CUvideodecoder, int,
         unsigned long long*, unsigned int*, CUVIDPROCPARAMS*);
@@ -67,6 +72,7 @@ struct CuvidApi {
     CUresult (CUDAAPI *cuvidCreateVideoParser)(CUvideoparser*, CUVIDPARSERPARAMS*);
     CUresult (CUDAAPI *cuvidDestroyVideoParser)(CUvideoparser);
     CUresult (CUDAAPI *cuvidParseVideoData)(CUvideoparser, CUVIDSOURCEDATAPACKET*);
+    std::optional<CuvidOpaqueOutputApi> opaque_output;
 };
 
 bool load_nvenc(NV_ENCODE_API_FUNCTION_LIST& funcs);

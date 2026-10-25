@@ -11,15 +11,13 @@ VideoEncoder::~VideoEncoder() {
 }
 
 bool VideoEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
-                         uint32_t input_width, uint32_t input_height,
-                         uint32_t fps, uint32_t bitrate,
+                         uint32_t fps, uint32_t average_bps,
                          VideoCodecId preferred_codec) {
 	ZoneScopedN("VideoEncoder::init");
     if (initialized_) return false;
 
     encoder_ = encdec::create_encoder(device, width, height,
-                                       input_width, input_height,
-                                       fps, bitrate, preferred_codec);
+                                       fps, average_bps, preferred_codec);
     if (!encoder_) return false;
 
     initialized_ = true;
@@ -62,8 +60,8 @@ void VideoEncoder::force_keyframe() {
     if (encoder_) encoder_->force_keyframe();
 }
 
-void VideoEncoder::set_bitrate(uint32_t bitrate) {
-    if (encoder_) encoder_->set_bitrate(bitrate);
+void VideoEncoder::set_average_bitrate_bps(uint32_t average_bps) {
+    if (encoder_) encoder_->set_average_bitrate_bps(average_bps);
 }
 
 const char* VideoEncoder::backend_name() const {
