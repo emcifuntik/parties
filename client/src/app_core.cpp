@@ -148,7 +148,7 @@ void PliLimiter::clear()
 }
 
 AppCore::AppCore() = default;
-AppCore::~AppCore() { stop_query_thread(); }
+AppCore::~AppCore() { shutdown(); }
 
 bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml::Context* rml_context)
 {
