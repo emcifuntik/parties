@@ -2,7 +2,10 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
+#include <optional>
+#include <span>
+#include <utility>
+#include <vector>
 
 namespace parties {
 
@@ -24,56 +27,46 @@ constexpr uint32_t VIDEO_PLI_COOLDOWN_MS      =  500;
 constexpr uint32_t VIDEO_PLI_RETRY_MS         =  500;
 constexpr uint32_t VIDEO_KEYFRAME_REQUEST_COOLDOWN_MS = 500;
 
-// Largest on-wire video record accepted by any stream parser: the length
-// prefix / type byte plus everything after it ([type][sender][header][encoded]).
 constexpr size_t VIDEO_FRAME_MAX_BYTES = 4u * 1024u * 1024u;
-// Largest [header][encoded] a sharer may send. The server prepends up to
-// 1 (type) + 4 (sender_id) bytes when re-originating a frame, so the sharer's
-// limit is 5 bytes below the parser cap on every path; every ingress enforces
-// this value so a compliant frame can never be rejected downstream.
-constexpr size_t VIDEO_FRAME_MAX_PAYLOAD_BYTES = VIDEO_FRAME_MAX_BYTES - 1 - 4;
+constexpr size_t VIDEO_RELAY_PREFIX_BYTES = 1 + 4;
+constexpr size_t VIDEO_FRAME_MAX_PAYLOAD_BYTES = VIDEO_FRAME_MAX_BYTES - VIDEO_RELAY_PREFIX_BYTES;
 
-// Common 14-byte header of every screen-share frame, identical on the legacy
-// video stream 1 ([0x02][sender][hdr][encoded] after server forwarding) and on
-// per-frame unidirectional streams ([0x12][sender][hdr][encoded]).
-//   [frame_seq u32][timestamp u32][flags u8][width u16][height u16][codec u8]
-// All little-endian. timestamp currently mirrors frame_seq; nothing consumes it.
 constexpr size_t VIDEO_FRAME_HEADER_SIZE = 14;
 
 struct VideoFrameHeader {
-    uint32_t frame_seq = 0;
-    uint32_t timestamp = 0;
-    uint8_t  flags     = 0;
-    uint16_t width     = 0;
-    uint16_t height    = 0;
-    uint8_t  codec     = 0;
+    uint32_t     frame_seq = 0;
+    bool         keyframe  = false;
+    uint16_t     width     = 0;
+    uint16_t     height    = 0;
+    VideoCodecId codec     = VideoCodecId::AV1;
 
-    bool keyframe() const { return (flags & VIDEO_FLAG_KEYFRAME) != 0; }
-
-    // Writes exactly VIDEO_FRAME_HEADER_SIZE bytes.
-    void write(uint8_t* out) const {
-        std::memcpy(out + 0, &frame_seq, 4);
-        std::memcpy(out + 4, &timestamp, 4);
-        out[8] = flags;
-        std::memcpy(out + 9,  &width,  2);
-        std::memcpy(out + 11, &height, 2);
-        out[13] = codec;
-    }
-
-    // Parses the first VIDEO_FRAME_HEADER_SIZE bytes; false if len is too short.
-    static bool parse(const uint8_t* data, size_t len, VideoFrameHeader& out) {
-        if (!data || len < VIDEO_FRAME_HEADER_SIZE) return false;
-        std::memcpy(&out.frame_seq, data + 0, 4);
-        std::memcpy(&out.timestamp, data + 4, 4);
-        out.flags = data[8];
-        std::memcpy(&out.width,  data + 9,  2);
-        std::memcpy(&out.height, data + 11, 2);
-        out.codec = data[13];
-        return true;
-    }
+    void write(std::span<uint8_t, VIDEO_FRAME_HEADER_SIZE> out) const;
+    static std::optional<VideoFrameHeader> parse(std::span<const uint8_t> bytes);
 };
 
-// Wrap-safe sequence comparison: true when `a` is newer than `b`.
+class ParsedVideoFrame {
+public:
+    static std::optional<ParsedVideoFrame> parse(std::vector<uint8_t>&& wire);
+    static ParsedVideoFrame assemble(const VideoFrameHeader& header, std::span<const uint8_t> encoded);
+
+    const VideoFrameHeader&  header() const { return header_; }
+    std::span<const uint8_t> wire() const { return wire_; }
+    std::span<const uint8_t> encoded() const { return std::span(wire_).subspan(VIDEO_FRAME_HEADER_SIZE); }
+    size_t                   wire_size() const { return wire_.size(); }
+
+    ParsedVideoFrame(ParsedVideoFrame&&) noexcept = default;
+    ParsedVideoFrame& operator=(ParsedVideoFrame&&) noexcept = default;
+    ParsedVideoFrame(const ParsedVideoFrame&) = delete;
+    ParsedVideoFrame& operator=(const ParsedVideoFrame&) = delete;
+
+private:
+    ParsedVideoFrame(const VideoFrameHeader& header, std::vector<uint8_t>&& wire)
+        : header_(header), wire_(std::move(wire)) {}
+
+    VideoFrameHeader     header_;
+    std::vector<uint8_t> wire_;
+};
+
 constexpr bool video_seq_newer(uint32_t a, uint32_t b) {
     return static_cast<int32_t>(a - b) > 0;
 }

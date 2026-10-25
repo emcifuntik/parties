@@ -1,15 +1,21 @@
 #pragma once
 
-#include <string>
+#include <optional>
+#include <string_view>
 
 namespace parties {
 
-bool crash_reporter_is_crashpad_handler(int argc, char* argv[]);
+class LogSession;
 
-void crash_reporter_init(const char* dsn, const char* exe_path = nullptr);
+class CrashReporterSession {
+public:
+    CrashReporterSession(const LogSession& log, std::optional<std::string_view> dsn);
+    ~CrashReporterSession();
+    CrashReporterSession(const CrashReporterSession&) = delete;
+    CrashReporterSession& operator=(const CrashReporterSession&) = delete;
 
-void crash_reporter_set_user(const std::string& user_id, const std::string& display_name);
-
-void crash_reporter_shutdown();
+private:
+    bool active_ = false;
+};
 
 }

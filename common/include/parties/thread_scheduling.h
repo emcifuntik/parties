@@ -2,13 +2,13 @@
 
 namespace parties {
 
-class TimerResolutionGuard {
+class WindowsTimerResolution {
 public:
-    explicit TimerResolutionGuard(unsigned int period_ms) noexcept;
-    ~TimerResolutionGuard();
+    explicit WindowsTimerResolution(unsigned int period_ms) noexcept;
+    ~WindowsTimerResolution();
 
-    TimerResolutionGuard(const TimerResolutionGuard&) = delete;
-    TimerResolutionGuard& operator=(const TimerResolutionGuard&) = delete;
+    WindowsTimerResolution(const WindowsTimerResolution&) = delete;
+    WindowsTimerResolution& operator=(const WindowsTimerResolution&) = delete;
 
     bool active() const noexcept { return active_; }
 
@@ -17,6 +17,8 @@ private:
     bool active_ = false;
 };
 
-bool set_current_thread_highest_priority() noexcept;
+enum class ThreadPriorityChange { Raised, Failed, Unsupported };
+
+[[nodiscard]] ThreadPriorityChange raise_thread_to_highest_normal_priority() noexcept;
 
 }

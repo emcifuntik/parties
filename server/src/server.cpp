@@ -411,7 +411,7 @@ void Server::handle_message(const IncomingMessage& msg) {
             client_password = reader.read_string();
 
         if (!config_.server_password.empty()) {
-            if (!parties::constant_time_equals(client_password, config_.server_password)) {
+            if (!config_.server_password.matches(client_password)) {
                 send_error(msg.session_id, "Incorrect server password",
                            protocol::ServerErrorCode::BadPassword);
                 break;
@@ -490,11 +490,10 @@ void Server::handle_message(const IncomingMessage& msg) {
 
         db_.update_last_login(user->id);
 
-        parties::random_bytes(session->session_token.data(), session->session_token.size());
-
         BinaryWriter writer;
         writer.write_u32(session->user_id);
-        writer.write_bytes(session->session_token.data(), session->session_token.size());
+        const uint8_t reserved_session_token[32]{};
+        writer.write_bytes(reserved_session_token, sizeof(reserved_session_token));
         writer.write_u8(static_cast<uint8_t>(session->role));
         writer.write_string(config_.server_name);
         writer.write_u16(protocol::PROTOCOL_VERSION);
@@ -1048,7 +1047,7 @@ void Server::handle_message(const IncomingMessage& msg) {
             }
             newly_subscribed = session->subscribed_sharers.insert(target_id).second;
             if (newly_subscribed) {
-                session->video_gates[target_id].awaiting_keyframe = true;
+                session->video_gates[target_id].require_keyframe();
             }
         }
         for (UserId old : dropped)
@@ -1498,15 +1497,15 @@ void Server::process_video_frames() {
                                                std::memory_order_relaxed);
         if (!session->alive || !session->video_ingress_allowed.load(std::memory_order_acquire) ||
             frame.generation != session->video_generation.load(std::memory_order_acquire)) continue;
-        VideoFrameHeader hdr;
-        if (!VideoFrameHeader::parse(frame.data.data(), frame.data.size(), hdr)) continue;
+        auto parsed = ParsedVideoFrame::parse(std::move(frame.data));
+        if (!parsed) continue;
         auto& ingress = video_ingress_[session->id];
         ingress.session = session;
-        ingress.reorder.on_frame(hdr, std::move(frame.data), now_us(),
-            [this, id = session->id](const VideoFrameHeader&, std::vector<uint8_t>&& data) {
-                forward_video_frame(id, data.data(), data.size());
-            },
-            [this, user = session->user_id](uint32_t) { request_keyframe_from_sharer(user, 0); });
+        ReorderOutcome out = ingress.reorder.on_frame(std::move(*parsed), now_us());
+        for (const auto& f : out.deliver)
+            forward_video_frame(session->id, f.wire().data(), f.wire_size());
+        if (out.keyframe == KeyframeRequest::Needed)
+            request_keyframe_from_sharer(session->user_id, 0);
     }
     const int64_t now = now_us();
     for (auto it = video_ingress_.begin(); it != video_ingress_.end();) {
@@ -1515,12 +1514,9 @@ void Server::process_video_frames() {
             it = video_ingress_.erase(it);
             continue;
         }
-        it->second.reorder.poll(now,
-            [this, id = session->id](const VideoFrameHeader&, std::vector<uint8_t>&& data) {
-                forward_video_frame(id, data.data(), data.size());
-            },
-            [this, user = session->user_id](uint32_t) { request_keyframe_from_sharer(user, 0); });
-        if (it->second.reorder.needs_keyframe())
+        if (it->second.reorder.poll(now) == KeyframeRequest::Needed)
+            request_keyframe_from_sharer(session->user_id, 0);
+        if (it->second.reorder.wants_pli_retry())
             request_keyframe_from_sharer(session->user_id, 0);
         ++it;
     }
@@ -1540,12 +1536,12 @@ void Server::forward_video_frame(uint32_t session_id, const uint8_t* data, size_
             return;
     }
 
-    VideoFrameHeader hdr;
-    if (!VideoFrameHeader::parse(data, len, hdr)) {
+    const auto hdr = VideoFrameHeader::parse({data, len});
+    if (!hdr) {
         LOG_DEBUG("Session {}: video frame too short ({} bytes)", session_id, len);
         return;
     }
-    const bool      keyframe = hdr.keyframe();
+    const bool      keyframe = hdr->keyframe;
     const UserId    sharer   = session->user_id;
     const ChannelId channel  = session->channel_id;
     const int64_t   now      = now_us();
@@ -1557,7 +1553,7 @@ void Server::forward_video_frame(uint32_t session_id, const uint8_t* data, size_
         std::lock_guard<std::mutex> lock(video_state_mutex_);
         auto& st = sharer_video_state_[sharer];
         st.rate.add(now, len);
-        st.last_frame_seq = hdr.frame_seq;
+        st.last_frame_seq = hdr->frame_seq;
         st.have_frame = true;
         if (keyframe) {
             const int64_t size  = static_cast<int64_t>(len);
@@ -1575,7 +1571,7 @@ void Server::forward_video_frame(uint32_t session_id, const uint8_t* data, size_
         sharer_rates.reserve(sharer_video_state_.size());
         for (auto& [uid, s] : sharer_video_state_) {
             const double fallback = (uid == sharer) ? static_cast<double>(len) * 30.0 : 0.0;
-            sharer_rates[uid] = s.rate.bytes_per_second(fallback);
+            sharer_rates[uid] = s.rate.bytes_per_second().value_or(fallback);
         }
         sharer_rate = sharer_rates[sharer];
     }
@@ -1602,21 +1598,26 @@ void Server::forward_video_frame(uint32_t session_id, const uint8_t* data, size_
 
             const int64_t threshold = viewer_backlog_threshold(*s, sharer_rates, keyframe_headroom);
             auto& gate = s->video_gates[sharer];
-            bool needs_key = false;
-            if (gate.admit(s->video_outstanding_bytes.load(std::memory_order_relaxed),
-                           threshold, keyframe, &needs_key)) {
+            switch (gate.admit(s->video_outstanding_bytes.load(std::memory_order_relaxed),
+                               threshold, keyframe)) {
+            case GateDecision::Forward:
                 targets.push_back(s);
-            } else {
+                break;
+            case GateDecision::DropAndRequestKeyframe:
+                want_keyframe = true;
                 ++dropped;
+                break;
+            case GateDecision::Drop:
+                ++dropped;
+                break;
             }
-            if (needs_key) want_keyframe = true;
         }
     }
 
     for (auto& s : targets) {
         if (!quic_.send_video_frame_to(s, shared_frame)) {
             std::lock_guard<std::mutex> lock(subscriptions_mutex_);
-            s->video_gates[sharer].awaiting_keyframe = true;
+            s->video_gates[sharer].require_keyframe();
             want_keyframe = true;
             ++dropped;
         }
@@ -1645,9 +1646,11 @@ int64_t Server::viewer_backlog_threshold(const Session& viewer,
         auto it = sharer_rates.find(sharer);
         if (it != sharer_rates.end()) viewer_rate += it->second;
     }
-    return video_backlog_threshold_bytes(viewer_rate,
-                                         viewer.min_rtt_us.load(std::memory_order_relaxed),
-                                         keyframe_headroom);
+    return viewer_backlog_threshold_bytes({
+        .viewer_rate_bytes_per_s = viewer_rate,
+        .min_rtt = MinRtt::from_quic_min_rtt_us(viewer.min_rtt_us.load(std::memory_order_relaxed)),
+        .keyframe_headroom_bytes = keyframe_headroom,
+    });
 }
 
 void Server::handle_video_control(const DataPacket& pkt) {
@@ -1686,7 +1689,7 @@ void Server::handle_video_control(const DataPacket& pkt) {
             std::lock_guard<std::mutex> lock(video_state_mutex_);
             sharer_rates.reserve(sharer_video_state_.size());
             for (auto& [uid, st] : sharer_video_state_)
-                sharer_rates[uid] = st.rate.bytes_per_second(0.0);
+                sharer_rates[uid] = st.rate.bytes_per_second().value_or(0.0);
             auto st = sharer_video_state_.find(target_id);
             if (st != sharer_video_state_.end())
                 keyframe_headroom = st->second.max_keyframe_bytes;
@@ -1694,7 +1697,7 @@ void Server::handle_video_control(const DataPacket& pkt) {
         {
             std::lock_guard<std::mutex> lock(subscriptions_mutex_);
             auto g = session->video_gates.find(target_id);
-            if (g != session->video_gates.end() && g->second.awaiting_keyframe) {
+            if (g != session->video_gates.end() && g->second.awaiting_keyframe()) {
                 const int64_t threshold =
                     viewer_backlog_threshold(*session, sharer_rates, keyframe_headroom);
                 if (session->video_outstanding_bytes.load(std::memory_order_relaxed) > threshold)

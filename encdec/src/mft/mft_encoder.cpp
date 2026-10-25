@@ -314,7 +314,7 @@ bool MftEncoder::create_color_converter(uint32_t in_w, uint32_t in_h,
 
 void MftEncoder::encoder_loop() {
     TracySetThreadName("MftEncoder");
-    if (!parties::set_current_thread_highest_priority())
+    if (parties::raise_thread_to_highest_normal_priority() == parties::ThreadPriorityChange::Failed)
         LOG_WARN("Failed to set the MFT encoder thread to highest priority");
     while (encoder_running_) {
         ZoneScopedN("MftEncoder::encoder_loop");

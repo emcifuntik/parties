@@ -167,10 +167,8 @@ static QUIC_STATUS QUIC_API s_video_in_stream_cb(HQUIC stream, void* ctx,
         }
         if (!c->have_header && c->buf.size() >= VIDEO_IN_PREFIX + VIDEO_FRAME_HEADER_SIZE) {
             std::memcpy(&c->sender, c->buf.data() + 1, 4);
-            VideoFrameHeader hdr;
-            if (VideoFrameHeader::parse(c->buf.data() + VIDEO_IN_PREFIX,
-                                        c->buf.size() - VIDEO_IN_PREFIX, hdr)) {
-                c->frame_seq   = hdr.frame_seq;
+            if (const auto hdr = VideoFrameHeader::parse(std::span(c->buf).subspan(VIDEO_IN_PREFIX))) {
+                c->frame_seq   = hdr->frame_seq;
                 c->have_header = true;
             }
         }
@@ -615,7 +613,7 @@ struct NetClient::Impl {
         case QUIC_CONNECTION_EVENT_PEER_CERTIFICATE_RECEIVED: {
             auto* cert = static_cast<QUIC_BUFFER*>(ev->PEER_CERTIFICATE_RECEIVED.Certificate);
             if (cert && cert->Buffer && cert->Length > 0) {
-                server_fingerprint = parties::sha256_hex(cert->Buffer, cert->Length);
+                server_fingerprint = parties::sha256_colon_hex(cert->Buffer, cert->Length);
                 LOG_INFO("Server fingerprint: {}", server_fingerprint);
             }
             break;

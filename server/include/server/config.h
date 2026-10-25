@@ -1,5 +1,7 @@
 #pragma once
 
+#include <parties/crypto.h>
+
 #include <string>
 #include <vector>
 #include <cstdint>
@@ -21,7 +23,7 @@ struct Config {
     std::string listen_ip      = "0.0.0.0";
     uint16_t    port           = 7800;
     int         max_clients    = 64;
-    std::string server_password;
+    SecretString server_password;
 
     std::string cert_file      = "server.pem";
     std::string key_file       = "server.key.pem";

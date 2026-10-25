@@ -89,10 +89,10 @@ bool VoiceMixer::decode_frame(UserStream& stream, float* pcm_out, int frame_size
 
     if (stream.packet_queue.empty()) {
         if (++stream.consecutive_empty <= PLC_MAX_FRAMES) {
-            int d = stream.decoder.decode(nullptr, 0, pcm_out, frame_size, 0);
+            const auto d = stream.decoder.conceal_lost_frame(pcm_out, frame_size);
             ++stream.next_seq;
             ++stats_.plc;
-            return d > 0;
+            return d.value_or(0) > 0;
         }
         stream.primed = false;
         stream.has_seq = false;
@@ -105,10 +105,10 @@ bool VoiceMixer::decode_frame(UserStream& stream, float* pcm_out, int frame_size
     }
     if (stream.packet_queue.empty()) {
         ++stream.consecutive_empty;
-        int d = stream.decoder.decode(nullptr, 0, pcm_out, frame_size, 0);
+        const auto d = stream.decoder.conceal_lost_frame(pcm_out, frame_size);
         ++stream.next_seq;
         ++stats_.plc;
-        return d > 0;
+        return d.value_or(0) > 0;
     }
 
     uint16_t front = stream.packet_queue.front().seq;
@@ -122,30 +122,21 @@ bool VoiceMixer::decode_frame(UserStream& stream, float* pcm_out, int frame_size
 
     if (gap == 0) {
         auto& pkt = stream.packet_queue.front();
-        int d = stream.decoder.decode(pkt.data.data(), static_cast<int>(pkt.data.size()),
-                                      pcm_out, frame_size, 0);
+        const auto d = stream.decoder.decode(pkt.data, pcm_out, frame_size);
         stream.next_seq = pkt.seq + 1;
         stream.packet_queue.pop_front();
         stream.consecutive_empty = 0;
         ++stats_.normal;
-        return d > 0;
+        return d.value_or(0) > 0;
     }
 
-    // 6. Single loss: the owed frame is missing but its immediate successor is the
-    //    front — reconstruct it from the successor's in-band FEC (LBRR). Do NOT pop
-    //    the successor; it is decoded normally on the next slot (step 5), which is
-    //    the required consecutive FEC(succ)→normal(succ) pair for Opus state
-    //    continuity. If a queue overrun evicts the successor before its normal
-    //    decode, push_packet advances to the retained window instead. Opus
-    //    internally PLCs if the packet carried no LBRR.
     if (gap == 1) {
         auto& succ = stream.packet_queue.front();
-        int d = stream.decoder.decode(succ.data.data(), static_cast<int>(succ.data.size()),
-                                      pcm_out, frame_size, 1);
+        const auto d = stream.decoder.recover_from_successor_fec(succ.data, pcm_out, frame_size);
         ++stream.next_seq;
         stream.consecutive_empty = 0;
         ++stats_.fec;
-        return d > 0;
+        return d.value_or(0) > 0;
     }
 
     if (++stream.consecutive_empty > PLC_MAX_FRAMES) {
@@ -153,17 +144,16 @@ bool VoiceMixer::decode_frame(UserStream& stream, float* pcm_out, int frame_size
         stream.consecutive_empty = 0;
         ++stats_.resync;
         auto& pkt = stream.packet_queue.front();
-        int d = stream.decoder.decode(pkt.data.data(), static_cast<int>(pkt.data.size()),
-                                      pcm_out, frame_size, 0);
+        const auto d = stream.decoder.decode(pkt.data, pcm_out, frame_size);
         stream.next_seq = pkt.seq + 1;
         stream.packet_queue.pop_front();
         ++stats_.normal;
-        return d > 0;
+        return d.value_or(0) > 0;
     }
-    int d = stream.decoder.decode(nullptr, 0, pcm_out, frame_size, 0);
+    const auto d = stream.decoder.conceal_lost_frame(pcm_out, frame_size);
     ++stream.next_seq;
     ++stats_.plc;
-    return d > 0;
+    return d.value_or(0) > 0;
 }
 
 VoiceMixer::DecodeStats VoiceMixer::decode_stats() const {

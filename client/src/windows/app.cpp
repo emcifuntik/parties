@@ -675,7 +675,7 @@ void App::poll_hotkeys() {
 
 void App::render_loop() {
     TracySetThreadName("Render");
-    if (!parties::set_current_thread_highest_priority())
+    if (parties::raise_thread_to_highest_normal_priority() == parties::ThreadPriorityChange::Failed)
         LOG_WARN("Failed to set the render thread to highest priority");
     while (render_running_.load(std::memory_order_acquire)) {
         if (resize_pending_.exchange(false, std::memory_order_acquire)) {
@@ -1620,7 +1620,7 @@ void App::enqueue_decode_work(UserId sharer_id, std::vector<uint8_t>&& encoded,
 void App::encode_loop() {
     ZoneScopedN("App::encode_loop");
     TracySetThreadName("VideoEncode");
-    if (!parties::set_current_thread_highest_priority())
+    if (parties::raise_thread_to_highest_normal_priority() == parties::ThreadPriorityChange::Failed)
         LOG_WARN("Failed to set the video encode thread to highest priority");
 
     while (encode_running_.load(std::memory_order_relaxed)) {
@@ -1646,7 +1646,7 @@ void App::encode_loop() {
                                                                 : VideoCodecId::AV1;
             encoder_.reset(); encode_registered_ = false;
             auto enc = std::make_unique<VideoEncoder>();
-            uint32_t bitrate_bps = core_.video_sender_.bitrate_bps();
+            uint32_t bitrate_bps = core_.video_sender_.accounting().bitrate_bps();
             if (bitrate_bps == 0)
                 bitrate_bps = static_cast<uint32_t>(core_.model_.share_bitrate * 1'000'000.0f);
             bitrate_bps = (std::max)(bitrate_bps, VIDEO_MIN_BITRATE);
@@ -1834,7 +1834,7 @@ static bool queue_contains_keyframe(std::queue<Work>& frames) {
 
 void App::decode_loop(VideoStream* s) {
     TracySetThreadName("VideoDecoder");
-    if (!parties::set_current_thread_highest_priority())
+    if (parties::raise_thread_to_highest_normal_priority() == parties::ThreadPriorityChange::Failed)
         LOG_WARN("Failed to set a video decode thread to highest priority");
 
     auto resync_warm_decoder_at_keyframe = [this, s](const char* reason) {

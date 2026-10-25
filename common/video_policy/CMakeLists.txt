@@ -1,4 +1,5 @@
 add_library(parties_video_policy STATIC
+    src/video_common.cpp
     src/video_frame_reorder.cpp
     src/video_send_controller.cpp
 )

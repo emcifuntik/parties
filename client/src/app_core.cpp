@@ -147,7 +147,7 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
         }
     };
 
-    net_.on_video_bytes_completed = [this](size_t bytes) { video_sender_.on_completed(bytes); };
+    net_.on_video_bytes_completed = [this](size_t bytes) { video_sender_.accounting().on_bytes_retired(bytes); };
 
     net_.on_video_stream_frame = [this](uint32_t sender_id, std::vector<uint8_t>&& frame) {
         route_video_stream_frame(sender_id, std::move(frame));
@@ -487,8 +487,20 @@ void AppCore::load_or_generate_identity(const std::string& username_hint)
 
 void AppCore::generate_identity()
 {
-    seed_phrase_ = parties::generate_seed_phrase();
-    parties::derive_keypair(seed_phrase_, secret_key_, public_key_);
+    auto phrase = parties::generate_seed_phrase();
+    if (!phrase) {
+        LOG_ERROR("Failed to generate a seed phrase: the system random source is unavailable");
+        return;
+    }
+    const SecretKey sk = parties::secret_key_from_phrase_sha256(*phrase);
+    const auto pk = parties::public_key_of(sk);
+    if (!pk) {
+        LOG_ERROR("Failed to derive public key");
+        return;
+    }
+    seed_phrase_ = std::move(*phrase);
+    secret_key_ = sk;
+    public_key_ = *pk;
     has_identity_ = true;
     settings_.save_identity(seed_phrase_, secret_key_, public_key_);
 }
@@ -752,8 +764,7 @@ void AppCore::on_disconnect_cleanup()
     tofu_pending_ = false;
     server_protocol_version_ = protocol::PROTOCOL_VERSION_ASSUMED_LEGACY;
 
-    video_sender_.reset();
-    video_sender_.clear_outstanding();
+    video_sender_.on_connection_lost();
     {
         std::lock_guard<std::mutex> lock(reorder_mutex_);
         reorder_buffers_.clear();
@@ -1231,7 +1242,7 @@ void AppCore::retry_pending_plis()
         {
             std::lock_guard<std::mutex> lock(reorder_mutex_);
             const auto it = reorder_buffers_.find(id);
-            awaiting_ingress = it != reorder_buffers_.end() && it->second.needs_keyframe();
+            awaiting_ingress = it != reorder_buffers_.end() && it->second.wants_pli_retry();
         }
         const bool awaiting = awaiting_ingress || (bridge_.stream_awaiting_keyframe
             ? bridge_.stream_awaiting_keyframe(id)
@@ -1274,34 +1285,34 @@ void AppCore::reset_video_sender(uint32_t target_bitrate_bps)
 {
     video_frame_number_.store(0, std::memory_order_relaxed);
     VideoSendControllerConfig cfg;
-    cfg.target_bitrate_bps = std::clamp(target_bitrate_bps, VIDEO_MIN_BITRATE, VIDEO_MAX_BITRATE);
-    cfg.min_bitrate_bps = (std::min)(cfg.min_bitrate_bps, cfg.target_bitrate_bps);
-    video_sender_.reset(cfg);
+    cfg.ceiling_bitrate_bps = std::clamp(target_bitrate_bps, VIDEO_MIN_BITRATE, VIDEO_MAX_BITRATE);
+    cfg.floor_bitrate_bps = (std::min)(cfg.floor_bitrate_bps, cfg.ceiling_bitrate_bps);
+    video_sender_.start_share(cfg);
     LOG_INFO("Video sender reset: target {} kbps, {} transport",
-             cfg.target_bitrate_bps / 1000,
+             cfg.ceiling_bitrate_bps / 1000,
              protocol::protocol_supports_frame_streams(server_protocol_version_)
                  ? "per-frame streams" : "legacy stream 1");
 }
 
 void AppCore::set_video_target_bitrate(uint32_t target_bitrate_bps)
 {
-    video_sender_.set_target_bitrate(
+    video_sender_.set_ceiling_bitrate(
         std::clamp(target_bitrate_bps, VIDEO_MIN_BITRATE, VIDEO_MAX_BITRATE));
 }
 
 bool AppCore::video_admit_frame()
 {
-    return video_sender_.admit_frame(steady_now_us());
+    return video_sender_.accounting().admit_frame();
 }
 
 std::optional<uint32_t> AppCore::take_video_bitrate_update()
 {
-    return video_sender_.take_bitrate_update();
+    return video_sender_.encode_feedback().take_bitrate_update();
 }
 
 bool AppCore::take_video_keyframe_request()
 {
-    return video_sender_.take_keyframe_request();
+    return video_sender_.encode_feedback().take_keyframe_request();
 }
 
 AppCore::VideoSendResult AppCore::send_video_frame(const uint8_t* encoded, size_t len, bool keyframe,
@@ -1313,11 +1324,10 @@ AppCore::VideoSendResult AppCore::send_video_frame(const uint8_t* encoded, size_
 
     VideoFrameHeader hdr;
     hdr.frame_seq = result.frame_seq;
-    hdr.timestamp = result.frame_seq;
-    hdr.flags     = keyframe ? VIDEO_FLAG_KEYFRAME : 0;
+    hdr.keyframe  = keyframe;
     hdr.width     = width;
     hdr.height    = height;
-    hdr.codec     = static_cast<uint8_t>(codec);
+    hdr.codec     = codec;
 
     // Charge the bytes BEFORE handing them to MsQuic and undo on a synchronous
     // failure. The transport's SEND_COMPLETE (which reports exactly the same
@@ -1330,20 +1340,20 @@ AppCore::VideoSendResult AppCore::send_video_frame(const uint8_t* encoded, size_
         uint8_t h[VIDEO_FRAME_HEADER_SIZE];
         hdr.write(h);
         accounted = 1 + sizeof(h) + len;
-        video_sender_.on_enqueued(accounted);
+        video_sender_.accounting().on_bytes_queued(accounted);
         result.sent = net_.send_video_frame_stream(h, sizeof(h), encoded, len);
     } else {
         uint8_t pkt[1 + VIDEO_FRAME_HEADER_SIZE];
         pkt[0] = protocol::VIDEO_FRAME_PACKET_TYPE;
-        hdr.write(pkt + 1);
+        hdr.write(std::span(pkt).subspan<1>());
         accounted = 4 + sizeof(pkt) + len;
-        video_sender_.on_enqueued(accounted);
+        video_sender_.accounting().on_bytes_queued(accounted);
         result.sent = net_.send_video_parts(pkt, sizeof(pkt), encoded, len);
     }
 
     if (!result.sent) {
-        video_sender_.on_completed(accounted);
-        video_sender_.on_send_failed(accounted);
+        video_sender_.accounting().on_bytes_retired(accounted);
+        video_sender_.accounting().on_send_failed();
     }
 
     if (keyframe)
@@ -1360,28 +1370,30 @@ void AppCore::feed_video_sender_stats()
     if (!model_.is_sharing.get() && video_sender_.outstanding_bytes() <= 0) return;
     const NetClient::ConnectionStats st = net_.connection_stats();
     if (!st.valid) return;
-    video_sender_.on_connection_stats(steady_now_us(), st.min_rtt_us ? st.min_rtt_us : st.rtt_us,
-                                      st.suspected_lost_packets,
-                                      st.spurious_lost_packets,
-                                      st.sent_packets);
+    video_sender_.on_path_counters({
+        .rtt_us = st.min_rtt_us ? st.min_rtt_us : st.rtt_us,
+        .cumulative_suspected_lost_packets = st.suspected_lost_packets,
+        .cumulative_spurious_lost_packets = st.spurious_lost_packets,
+        .cumulative_sent_packets = st.sent_packets,
+    });
 }
 
 void AppCore::route_video_stream_frame(uint32_t sender_id, std::vector<uint8_t>&& frame)
 {
     if (sender_id == user_id_ || !is_watching(sender_id)) return;
-    VideoFrameHeader hdr;
-    if (!VideoFrameHeader::parse(frame.data(), frame.size(), hdr)) return;
+    auto parsed = ParsedVideoFrame::parse(std::move(frame));
+    if (!parsed) return;
 
     const int64_t now = steady_now_us();
-    const VideoFrameReorderBuffer::DeliverFn deliver =
-        [this, sender_id](const VideoFrameHeader&, std::vector<uint8_t>&& f) {
-            if (on_video_frame_received) on_video_frame_received(sender_id, f.data(), f.size());
-        };
-    const VideoFrameReorderBuffer::LostFn lost =
-        [this, sender_id](uint32_t) { send_pli(sender_id); };
-
-    std::lock_guard<std::mutex> lock(reorder_mutex_);
-    reorder_buffers_[sender_id].on_frame(hdr, std::move(frame), now, deliver, lost);
+    ReorderOutcome out;
+    {
+        std::lock_guard<std::mutex> lock(reorder_mutex_);
+        out = reorder_buffers_[sender_id].on_frame(std::move(*parsed), now);
+    }
+    if (on_video_frame_received)
+        for (const auto& f : out.deliver)
+            on_video_frame_received(sender_id, f.wire().data(), f.wire_size());
+    if (out.keyframe == KeyframeRequest::Needed) send_pli(sender_id);
 }
 
 void AppCore::route_video_stream_aborted(uint32_t sender_id, uint32_t frame_seq, bool have_seq)
@@ -1391,33 +1403,24 @@ void AppCore::route_video_stream_aborted(uint32_t sender_id, uint32_t frame_seq,
         send_pli(sender_id);
         return;
     }
-    const int64_t now = steady_now_us();
-    const VideoFrameReorderBuffer::DeliverFn deliver =
-        [this, sender_id](const VideoFrameHeader&, std::vector<uint8_t>&& f) {
-            if (on_video_frame_received) on_video_frame_received(sender_id, f.data(), f.size());
-        };
-    const VideoFrameReorderBuffer::LostFn lost =
-        [this, sender_id](uint32_t) { send_pli(sender_id); };
-
-    std::lock_guard<std::mutex> lock(reorder_mutex_);
-    reorder_buffers_[sender_id].on_frame_aborted(frame_seq, now, deliver, lost);
+    KeyframeRequest request;
+    {
+        std::lock_guard<std::mutex> lock(reorder_mutex_);
+        request = reorder_buffers_[sender_id].on_frame_aborted(frame_seq);
+    }
+    if (request == KeyframeRequest::Needed) send_pli(sender_id);
 }
 
 void AppCore::poll_video_reorder_buffers()
 {
-    std::lock_guard<std::mutex> lock(reorder_mutex_);
-    if (reorder_buffers_.empty()) return;
-    const int64_t now = steady_now_us();
-    for (auto& [sender_id, buffer] : reorder_buffers_) {
-        const UserId id = sender_id;
-        const VideoFrameReorderBuffer::DeliverFn deliver =
-            [this, id](const VideoFrameHeader&, std::vector<uint8_t>&& f) {
-                if (on_video_frame_received) on_video_frame_received(id, f.data(), f.size());
-            };
-        const VideoFrameReorderBuffer::LostFn lost =
-            [this, id](uint32_t) { send_pli(id); };
-        buffer.poll(now, deliver, lost);
+    std::vector<UserId> keyframe_requests;
+    {
+        std::lock_guard<std::mutex> lock(reorder_mutex_);
+        const int64_t now = steady_now_us();
+        for (auto& [sender_id, buffer] : reorder_buffers_)
+            if (buffer.poll(now) == KeyframeRequest::Needed) keyframe_requests.push_back(sender_id);
     }
+    for (UserId id : keyframe_requests) send_pli(id);
 }
 
 void AppCore::erase_reorder_buffer(UserId sharer_id)
@@ -2317,15 +2320,20 @@ void AppCore::setup_model_callbacks()
         SecretKey sk{}; PublicKey pk{}; std::string sp;
 
         if (input.size() == 64 && parties::secret_key_from_hex(input, sk)) {
-            if (!parties::derive_pubkey(sk, pk)) {
+            const auto derived = parties::public_key_of(sk);
+            if (!derived) {
                 model_.import_error = "Failed to derive public key";
                 return;
             }
+            pk = *derived;
         } else if (parties::validate_seed_phrase(input)) {
-            if (!parties::derive_keypair(input, sk, pk)) {
+            sk = parties::secret_key_from_phrase_sha256(input);
+            const auto derived = parties::public_key_of(sk);
+            if (!derived) {
                 model_.import_error = "Failed to derive keypair";
                 return;
             }
+            pk = *derived;
             sp = input;
         } else {
             model_.import_error = "Enter a 12-word seed phrase or 64-char hex private key.";
@@ -2504,8 +2512,12 @@ void AppCore::setup_server_model_callbacks()
     };
 
     server_model_.on_generate_identity = [this]() {
-        std::string phrase = parties::generate_seed_phrase();
-        server_model_.seed_phrase       = Rml::String(phrase);
+        auto phrase = parties::generate_seed_phrase();
+        if (!phrase) {
+            LOG_ERROR("Failed to generate a seed phrase: the system random source is unavailable");
+            return;
+        }
+        server_model_.seed_phrase       = Rml::String(*phrase);
         server_model_.show_onboarding   = true;
         server_model_.show_restore      = false;
         server_model_.show_key_import   = false;
@@ -2513,10 +2525,12 @@ void AppCore::setup_server_model_callbacks()
 
     server_model_.on_save_identity = [this]() {
         std::string phrase(server_model_.seed_phrase);
-        SecretKey sk{}; PublicKey pk{};
-        if (!parties::derive_keypair(phrase, sk, pk)) {
+        const SecretKey sk = parties::secret_key_from_phrase_sha256(phrase);
+        const auto derived = parties::public_key_of(sk);
+        if (!derived) {
             LOG_ERROR("Failed to derive keypair"); return;
         }
+        const PublicKey pk = *derived;
         if (!settings_.save_identity(phrase, sk, pk)) {
             LOG_ERROR("Failed to save identity"); return;
         }
@@ -2534,11 +2548,13 @@ void AppCore::setup_server_model_callbacks()
             server_model_.login_error = "Invalid seed phrase";
             return;
         }
-        SecretKey sk{}; PublicKey pk{};
-        if (!parties::derive_keypair(phrase, sk, pk)) {
+        const SecretKey sk = parties::secret_key_from_phrase_sha256(phrase);
+        const auto derived = parties::public_key_of(sk);
+        if (!derived) {
             server_model_.login_error = "Failed to derive keypair";
             return;
         }
+        const PublicKey pk = *derived;
         if (!settings_.save_identity(phrase, sk, pk)) {
             server_model_.login_error = "Failed to save identity";
             return;
@@ -2566,15 +2582,17 @@ void AppCore::setup_server_model_callbacks()
 
     server_model_.on_import_key = [this]() {
         std::string hex(server_model_.import_key_hex);
-        SecretKey sk{}; PublicKey pk{};
+        SecretKey sk{};
         if (!parties::secret_key_from_hex(hex, sk)) {
             server_model_.login_error = "Invalid private key. Must be 64 hex characters.";
             return;
         }
-        if (!parties::derive_pubkey(sk, pk)) {
+        const auto derived = parties::public_key_of(sk);
+        if (!derived) {
             server_model_.login_error = "Failed to derive public key";
             return;
         }
+        const PublicKey pk = *derived;
         if (!settings_.save_identity("", sk, pk)) {
             server_model_.login_error = "Failed to save identity";
             return;

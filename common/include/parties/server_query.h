@@ -67,7 +67,7 @@ bool parse_server_query_reply(const uint8_t* data, size_t len,
 
 // Send a query to `host:port` over UDP and wait up to `timeout_ms` for the
 // reply. Returns std::nullopt on resolve/socket error or timeout. Requires
-// parties::net_init() to have been called (WSAStartup on Windows).
+// a live parties::NetLibrary (WSAStartup on Windows).
 std::optional<ServerQueryInfo> query_server(const std::string& host, uint16_t port,
                                              int timeout_ms = 1000);
 

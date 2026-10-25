@@ -27,7 +27,7 @@ struct Packet { uint16_t seq; std::vector<uint8_t> bytes; };
 std::vector<Packet> encode_music(int n_frames, float amplitude = 0.2f) {
     OpusCodec enc;
     enc.init_encoder(audio::SAMPLE_RATE, audio::CHANNELS, audio::SECONDARY_OPUS_BITRATE,
-                     true, audio::OPUS_EXPECTED_LOSS_PCT, OpusMode::Music);
+                     kVoiceFec, OpusMode::Music);
     std::vector<Packet> pkts;
     pkts.reserve(n_frames);
     uint8_t buf[audio::MAX_OPUS_PACKET];
@@ -40,9 +40,9 @@ std::vector<Packet> encode_music(int n_frames, float amplitude = 0.2f) {
             frame[i] = static_cast<float>(amplitude * (std::sin(p1) + 0.4 * std::sin(p2)));
             p1 += w1; p2 += w2;
         }
-        int n = enc.encode(frame, kFrame, buf, sizeof(buf));
-        if (n <= 0) continue;
-        pkts.push_back({ static_cast<uint16_t>(f), std::vector<uint8_t>(buf, buf + n) });
+        const auto n = enc.encode(frame, kFrame, buf);
+        if (!n) continue;
+        pkts.push_back({ static_cast<uint16_t>(f), std::vector<uint8_t>(buf, buf + *n) });
     }
     return pkts;
 }

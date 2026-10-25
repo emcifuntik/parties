@@ -25,9 +25,6 @@ namespace parties {
 
 namespace {
 
-std::mutex g_log_path_mutex;
-std::string g_log_path;
-
 std::string environment_value(const char* name) {
 #ifdef _WIN32
     char* value = nullptr;
@@ -73,13 +70,6 @@ spdlog::level::level_enum configured_log_level() {
     return spdlog::level::info;
 }
 
-void remember_log_path(const std::filesystem::path& path) {
-    std::error_code ec;
-    const auto absolute = std::filesystem::absolute(path, ec);
-    std::lock_guard lock(g_log_path_mutex);
-    g_log_path = (ec ? path : absolute).string();
-}
-
 }
 
 #ifdef __APPLE__
@@ -117,7 +107,7 @@ private:
 };
 #endif
 
-void log_init(LogTarget target) {
+LogSession::LogSession(LogTarget target) {
     std::vector<spdlog::sink_ptr> sinks;
 
     try {
@@ -135,7 +125,9 @@ void log_init(LogTarget target) {
         if (!file_path.empty()) {
             sinks.push_back(std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
                 file_path.string(), 5 * 1024 * 1024, 3));
-            remember_log_path(file_path);
+            std::error_code ec;
+            const auto absolute = std::filesystem::absolute(file_path, ec);
+            file_path_ = ec ? file_path : absolute;
         }
     } catch (const std::exception& error) {
 #ifdef _WIN32
@@ -179,21 +171,15 @@ void log_init(LogTarget target) {
     spdlog::set_default_logger(std::move(logger));
     spdlog::flush_every(std::chrono::seconds(1));
 
-    const auto path = log_file_path();
-    if (!path.empty())
-        LOG_INFO("Persistent log file: {}", path);
+    if (file_path_)
+        LOG_INFO("Persistent log file: {}", file_path_->string());
     else
         LOG_WARN("Persistent log file is unavailable; diagnostics will not survive process exit");
     const auto level_name = spdlog::level::to_string_view(runtime_level);
     LOG_INFO("Runtime log level: {}", std::string(level_name.data(), level_name.size()));
 }
 
-std::string log_file_path() {
-    std::lock_guard lock(g_log_path_mutex);
-    return g_log_path;
-}
-
-void log_shutdown() {
+LogSession::~LogSession() {
     spdlog::apply_all([](const std::shared_ptr<spdlog::logger>& logger) {
         logger->flush();
     });

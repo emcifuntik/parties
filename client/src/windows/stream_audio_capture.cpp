@@ -95,7 +95,7 @@ bool StreamAudioCapture::init(uint32_t target_pid, OutputMode mode) {
 
     output_mode_ = mode;
     if (output_mode_ == OutputMode::EncodedStereo) {
-        if (!encoder_.init_encoder(kSampleRate, kChannels, 64000)) {
+        if (!encoder_.init_encoder(kSampleRate, kChannels, 64000, std::nullopt)) {
             LOG_ERROR("Failed to init Opus encoder");
             return false;
         }
@@ -251,7 +251,7 @@ void StreamAudioCapture::stop() {
 
 void StreamAudioCapture::capture_thread_func() {
 	TracySetThreadName("StreamAudioCapture");
-    if (!parties::set_current_thread_highest_priority())
+    if (parties::raise_thread_to_highest_normal_priority() == parties::ThreadPriorityChange::Failed)
         LOG_WARN("Failed to set the stream audio capture thread to highest priority");
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 
@@ -310,10 +310,9 @@ void StreamAudioCapture::capture_thread_func() {
                         downmix_application_audio(capture_buf_.data(), mono_buf_.data(), kFrameSize);
                         on_pcm_frame(mono_buf_.data(), kFrameSize);
                     } else if (encoder_initialized_ && on_encoded_frame) {
-                        int encoded = encoder_.encode(capture_buf_.data(), kFrameSize,
-                                                       opus_buf_, audio::MAX_OPUS_PACKET);
-                        if (encoded > 0)
-                            on_encoded_frame(opus_buf_, static_cast<size_t>(encoded));
+                        const auto encoded = encoder_.encode(capture_buf_.data(), kFrameSize, opus_buf_);
+                        if (encoded)
+                            on_encoded_frame(opus_buf_, *encoded);
                     }
                     capture_pos_ = 0;
                 }

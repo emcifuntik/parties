@@ -2,31 +2,41 @@
 
 #include <parties/types.h>
 
-#include <string>
 #include <cstdint>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <utility>
 
 namespace parties {
 
-bool crypto_init();
-void crypto_cleanup();
+[[nodiscard]] bool random_bytes(uint8_t* out, size_t len);
 
-bool random_bytes(uint8_t* out, size_t len);
+class SecretString {
+public:
+    SecretString() = default;
+    explicit SecretString(std::string value) : value_(std::move(value)) {}
 
-bool constant_time_equals(const std::string& a, const std::string& b);
+    bool empty() const { return value_.empty(); }
+    [[nodiscard]] bool matches(std::string_view candidate) const;
 
-std::string sha256_hex(const uint8_t* data, size_t len);
+private:
+    std::string value_;
+};
+
+std::string sha256_colon_hex(const uint8_t* data, size_t len);
 
 bool generate_self_signed_cert(const std::string& common_name,
                                const std::string& cert_path,
                                const std::string& key_path);
 
-std::string generate_seed_phrase();
+[[nodiscard]] std::optional<std::string> generate_seed_phrase();
 
 bool validate_seed_phrase(const std::string& seed_phrase);
 
-bool derive_keypair(const std::string& seed_phrase, SecretKey& sk, PublicKey& pk);
+[[nodiscard]] SecretKey secret_key_from_phrase_sha256(std::string_view seed_phrase);
 
-bool derive_pubkey(const SecretKey& sk, PublicKey& pk);
+[[nodiscard]] std::optional<PublicKey> public_key_of(const SecretKey& sk);
 
 std::string secret_key_to_hex(const SecretKey& sk);
 bool secret_key_from_hex(const std::string& hex, SecretKey& sk);

@@ -2,12 +2,8 @@
 #include <client/auto_updater.h>
 #include <client/win32_single_instance.h>
 #include <parties/version.h>
-#include <parties/crypto.h>
-#include <parties/net_common.h>
-#include <parties/quic_common.h>
+#include <parties/process_services.h>
 #include <parties/profiler.h>
-#include <parties/log.h>
-#include <parties/crash_reporter.h>
 #include <parties/alloc_tracker.h>
 #include <parties/thread_scheduling.h>
 
@@ -257,10 +253,13 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
-int main(int argc, char* argv[]) {
-    // Must be first: if launched as crashpad handler subprocess, run handler and exit.
-    parties::crash_reporter_is_crashpad_handler(argc, argv);
+#ifdef SENTRY_DSN_VALUE
+static constexpr std::optional<std::string_view> kSentryDsn = SENTRY_DSN_VALUE;
+#else
+static constexpr std::optional<std::string_view> kSentryDsn = std::nullopt;
+#endif
 
+int main(int argc, char* argv[]) {
     if (AutoUpdater::handle_update_args(argc, argv)) return 1;
 
     Win32SingleInstance instance;
@@ -289,44 +288,22 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    parties::TimerResolutionGuard timer_resolution(1);
-    const bool main_priority_set = parties::set_current_thread_highest_priority();
+    parties::WindowsTimerResolution timer_resolution(1);
+    const auto main_priority = parties::raise_thread_to_highest_normal_priority();
 
     TracySetThreadName("Main");
-    parties::log_init(parties::LogTarget::Client);
+    const auto services = parties::ProcessServices::start({parties::LogTarget::Client, kSentryDsn});
+    if (!services) return 1;
+    const parties::alloctrack::ReportingSession alloc_report(services->log(), 10);
     if (!timer_resolution.active())
         LOG_WARN("Failed to request 1 ms Windows timer resolution");
-    if (!main_priority_set)
+    if (main_priority == parties::ThreadPriorityChange::Failed)
         LOG_WARN("Failed to set the main thread to highest priority");
-#ifdef SENTRY_DSN_VALUE
-    parties::crash_reporter_init(SENTRY_DSN_VALUE, argv[0]);
-#else
-    parties::crash_reporter_init(nullptr);
-#endif
     LOG_INFO("{} Client v{}", parties::APP_NAME, parties::APP_VERSION);
-    parties::alloctrack::start_reporting(10);
 
     // Per-monitor DPI awareness (must be set before creating any windows)
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     log_windows_system_diagnostics();
-
-    if (!parties::crypto_init()) {
-        LOG_ERROR("Failed to initialize crypto");
-        return 1;
-    }
-
-    if (!parties::net_init()) {
-        LOG_ERROR("Failed to initialize networking");
-        parties::crypto_cleanup();
-        return 1;
-    }
-
-    if (!parties::quic_init()) {
-        LOG_ERROR("Failed to initialize QUIC");
-        parties::net_cleanup();
-        parties::crypto_cleanup();
-        return 1;
-    }
 
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
@@ -340,8 +317,6 @@ int main(int argc, char* argv[]) {
 
     if (!RegisterClassExW(&wc)) {
         LOG_ERROR("Failed to register window class");
-        parties::net_cleanup();
-        parties::crypto_cleanup();
         return 1;
     }
 
@@ -359,8 +334,6 @@ int main(int argc, char* argv[]) {
     if (!hwnd) {
         LOG_ERROR("Failed to create window");
         UnregisterClassW(window_class, wc.hInstance);
-        parties::net_cleanup();
-        parties::crypto_cleanup();
         return 1;
     }
 
@@ -375,8 +348,6 @@ int main(int argc, char* argv[]) {
         SetPropW(hwnd, L"App", nullptr);
         DestroyWindow(hwnd);
         UnregisterClassW(window_class, wc.hInstance);
-        parties::net_cleanup();
-        parties::crypto_cleanup();
         return 1;
     }
 
@@ -415,12 +386,6 @@ int main(int argc, char* argv[]) {
     app.shutdown();
     DestroyWindow(hwnd);
     UnregisterClassW(window_class, wc.hInstance);
-    parties::quic_cleanup();
-    parties::net_cleanup();
-    parties::crypto_cleanup();
-    parties::alloctrack::stop_reporting();
     LOG_INFO("{} Client shutdown completed", parties::APP_NAME);
-    parties::log_shutdown();
-    parties::crash_reporter_shutdown();
     return 0;
 }

@@ -2,7 +2,8 @@
 
 #include <spdlog/spdlog.h>
 
-#include <string>
+#include <filesystem>
+#include <optional>
 
 #define LOG_DEBUG(...) SPDLOG_DEBUG(__VA_ARGS__)
 #define LOG_INFO(...)  SPDLOG_INFO(__VA_ARGS__)
@@ -16,10 +17,17 @@ enum class LogTarget {
     Server,
 };
 
-void log_init(LogTarget target);
+class LogSession {
+public:
+    explicit LogSession(LogTarget target);
+    ~LogSession();
+    LogSession(const LogSession&) = delete;
+    LogSession& operator=(const LogSession&) = delete;
 
-std::string log_file_path();
+    const std::optional<std::filesystem::path>& file_path() const { return file_path_; }
 
-void log_shutdown();
+private:
+    std::optional<std::filesystem::path> file_path_;
+};
 
 }

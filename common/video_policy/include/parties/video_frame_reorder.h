@@ -4,8 +4,8 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <map>
+#include <optional>
 #include <vector>
 
 namespace parties {
@@ -16,34 +16,39 @@ struct VideoFrameReorderConfig {
     size_t   max_bytes            = 8u * 1024u * 1024u;
 };
 
+enum class KeyframeRequest : bool { None = false, Needed = true };
+
+struct ReorderOutcome {
+    std::vector<ParsedVideoFrame> deliver;
+    KeyframeRequest               keyframe = KeyframeRequest::None;
+};
+
 class VideoFrameReorderBuffer {
 public:
-    using DeliverFn = std::function<void(const VideoFrameHeader& hdr, std::vector<uint8_t>&& frame)>;
-    using LostFn    = std::function<void(uint32_t first_missing_seq)>;
-
     VideoFrameReorderBuffer();
     explicit VideoFrameReorderBuffer(const VideoFrameReorderConfig& cfg);
 
-    void on_frame(const VideoFrameHeader& hdr, std::vector<uint8_t>&& frame,
-                  int64_t now_us, const DeliverFn& deliver, const LostFn& lost);
+    VideoFrameReorderBuffer(VideoFrameReorderBuffer&&) noexcept = default;
+    VideoFrameReorderBuffer& operator=(VideoFrameReorderBuffer&&) noexcept = default;
+    VideoFrameReorderBuffer(const VideoFrameReorderBuffer&) = delete;
+    VideoFrameReorderBuffer& operator=(const VideoFrameReorderBuffer&) = delete;
 
-    void on_frame_aborted(uint32_t frame_seq, int64_t now_us,
-                          const DeliverFn& deliver, const LostFn& lost);
-
-    void poll(int64_t now_us, const DeliverFn& deliver, const LostFn& lost);
+    [[nodiscard]] ReorderOutcome on_frame(ParsedVideoFrame&& frame, int64_t now_us);
+    [[nodiscard]] KeyframeRequest on_frame_aborted(uint32_t frame_seq);
+    [[nodiscard]] KeyframeRequest poll(int64_t now_us);
 
     void reset();
+
+    bool wants_pli_retry() const { return !have_last_ || awaiting_keyframe_; }
 
     size_t held_frames() const { return held_.size(); }
     size_t held_bytes() const { return held_bytes_; }
     bool   has_baseline() const { return have_last_; }
-    bool   needs_keyframe() const { return !have_last_ || awaiting_keyframe_; }
     uint32_t last_delivered() const { return last_delivered_; }
 
 private:
     struct Held {
-        VideoFrameHeader hdr;
-        std::vector<uint8_t> frame;
+        ParsedVideoFrame frame;
         int64_t arrived_us = 0;
     };
 
@@ -53,11 +58,10 @@ private:
     uint32_t last_delivered_ = 0;
     std::map<int64_t, Held> held_;
     size_t   held_bytes_ = 0;
-    int64_t  gap_since_us_ = 0;
+    std::optional<int64_t> gap_since_us_;
 
-    void deliver_one(Held&& h, const DeliverFn& deliver);
-    void drain(const DeliverFn& deliver);
-    void require_keyframe(const LostFn& lost);
+    void drain(ReorderOutcome& out);
+    KeyframeRequest require_keyframe();
     void bound_held();
     int64_t key_for(uint32_t seq) const;
 };

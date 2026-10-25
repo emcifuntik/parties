@@ -45,17 +45,16 @@ struct Packet { uint16_t seq; std::vector<uint8_t> bytes; };
 std::vector<Packet> encode_all(const std::vector<std::vector<float>>& frames,
                                int* out_lbrr_count) {
     OpusCodec enc;
-    enc.init_encoder(audio::SAMPLE_RATE, audio::CHANNELS, audio::OPUS_BITRATE,
-                     true, audio::OPUS_EXPECTED_LOSS_PCT);
+    enc.init_encoder(audio::SAMPLE_RATE, audio::CHANNELS, audio::OPUS_BITRATE, kVoiceFec);
     std::vector<Packet> pkts;
     pkts.reserve(frames.size());
     int lbrr = 0;
     uint8_t buf[audio::MAX_OPUS_PACKET];
     for (size_t f = 0; f < frames.size(); ++f) {
-        int n = enc.encode(frames[f].data(), kFrame, buf, sizeof(buf));
-        if (n <= 0) continue;
-        Packet p{ static_cast<uint16_t>(f), std::vector<uint8_t>(buf, buf + n) };
-        if (opus_packet_has_lbrr(p.bytes.data(), n) == 1) ++lbrr;
+        const auto n = enc.encode(frames[f].data(), kFrame, buf);
+        if (!n) continue;
+        Packet p{ static_cast<uint16_t>(f), std::vector<uint8_t>(buf, buf + *n) };
+        if (opus_packet_has_lbrr(p.bytes.data(), static_cast<opus_int32>(*n)) == 1) ++lbrr;
         pkts.push_back(std::move(p));
     }
     if (out_lbrr_count) *out_lbrr_count = lbrr;

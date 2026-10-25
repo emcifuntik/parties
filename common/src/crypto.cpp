@@ -15,19 +15,6 @@
 
 namespace parties {
 
-static bool g_initialized = false;
-
-bool crypto_init() {
-    if (g_initialized) return true;
-    g_initialized = true;
-    return true;
-}
-
-void crypto_cleanup() {
-    if (!g_initialized) return;
-    g_initialized = false;
-}
-
 bool random_bytes(uint8_t* out, size_t len) {
     if (RAND_bytes(out, static_cast<int>(len)) != 1) {
         std::memset(out, 0, len);
@@ -36,16 +23,16 @@ bool random_bytes(uint8_t* out, size_t len) {
     return true;
 }
 
-bool constant_time_equals(const std::string& a, const std::string& b) {
-    if (a.size() != b.size())
+bool SecretString::matches(std::string_view candidate) const {
+    if (candidate.size() != value_.size())
         return false;
     unsigned char diff = 0;
-    for (size_t i = 0; i < a.size(); ++i)
-        diff |= static_cast<unsigned char>(a[i]) ^ static_cast<unsigned char>(b[i]);
+    for (size_t i = 0; i < value_.size(); ++i)
+        diff |= static_cast<unsigned char>(value_[i]) ^ static_cast<unsigned char>(candidate[i]);
     return diff == 0;
 }
 
-std::string sha256_hex(const uint8_t* data, size_t len) {
+std::string sha256_colon_hex(const uint8_t* data, size_t len) {
     uint8_t hash[SHA256_DIGEST_LENGTH];
     SHA256(data, len, hash);
 
@@ -110,11 +97,11 @@ bool generate_self_signed_cert(const std::string& common_name,
     return true;
 }
 
-std::string generate_seed_phrase() {
+std::optional<std::string> generate_seed_phrase() {
     std::string phrase;
     for (int i = 0; i < 12; i++) {
         uint16_t idx;
-        random_bytes(reinterpret_cast<uint8_t*>(&idx), sizeof(idx));
+        if (!random_bytes(reinterpret_cast<uint8_t*>(&idx), sizeof(idx))) return std::nullopt;
         idx %= 2048;
         if (i > 0) phrase += ' ';
         phrase += bip39_wordlist[idx];
@@ -137,35 +124,26 @@ bool validate_seed_phrase(const std::string& seed_phrase) {
     return count == 12;
 }
 
-bool derive_keypair(const std::string& seed_phrase, SecretKey& sk, PublicKey& pk) {
+SecretKey secret_key_from_phrase_sha256(std::string_view seed_phrase) {
     uint8_t hash[SHA256_DIGEST_LENGTH];
     SHA256(reinterpret_cast<const uint8_t*>(seed_phrase.data()),
            seed_phrase.size(), hash);
-    std::memcpy(sk.data(), hash, 32);
-
-    EVP_PKEY* pkey = EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, nullptr,
-                                                    sk.data(), 32);
-    if (!pkey) return false;
-
-    size_t pub_len = 32;
-    if (EVP_PKEY_get_raw_public_key(pkey, pk.data(), &pub_len) != 1) {
-        EVP_PKEY_free(pkey);
-        return false;
-    }
-
-    EVP_PKEY_free(pkey);
-    return true;
+    SecretKey sk;
+    std::memcpy(sk.data(), hash, sk.size());
+    return sk;
 }
 
-bool derive_pubkey(const SecretKey& sk, PublicKey& pk) {
+std::optional<PublicKey> public_key_of(const SecretKey& sk) {
     EVP_PKEY* pkey = EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, nullptr,
                                                     sk.data(), 32);
-    if (!pkey) return false;
+    if (!pkey) return std::nullopt;
 
-    size_t pub_len = 32;
-    int ret = EVP_PKEY_get_raw_public_key(pkey, pk.data(), &pub_len);
+    PublicKey pk;
+    size_t pub_len = pk.size();
+    const int ret = EVP_PKEY_get_raw_public_key(pkey, pk.data(), &pub_len);
     EVP_PKEY_free(pkey);
-    return ret == 1;
+    if (ret != 1) return std::nullopt;
+    return pk;
 }
 
 std::string secret_key_to_hex(const SecretKey& sk) {
@@ -231,7 +209,7 @@ bool ed25519_verify(const uint8_t* msg, size_t msg_len,
 }
 
 Fingerprint public_key_fingerprint(const PublicKey& pk) {
-    return sha256_hex(pk.data(), pk.size());
+    return sha256_colon_hex(pk.data(), pk.size());
 }
 
 }

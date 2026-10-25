@@ -71,7 +71,6 @@ struct StackEntry {
     std::atomic<std::uint32_t> ready;
     void* frames[MAX_FRAMES];
     std::uint32_t frame_count;
-    const char* tag;
     std::atomic<std::int64_t> live_bytes;
     std::atomic<std::int64_t> live_count;
     std::atomic<std::uint64_t> total_allocs;
@@ -80,7 +79,6 @@ struct StackEntry {
 StackEntry g_stacks[STACK_TABLE_SIZE];
 std::atomic<std::uint32_t> g_stack_table_full;
 
-thread_local const char* t_tag = nullptr;
 
 std::uint32_t capture_stack() {
     void* frames[MAX_FRAMES];
@@ -106,7 +104,6 @@ std::uint32_t capture_stack() {
             if (e.key.compare_exchange_strong(expected, h, std::memory_order_acq_rel)) {
                 std::memcpy(e.frames, frames, n * sizeof(void*));
                 e.frame_count = n;
-                e.tag = t_tag;
                 e.ready.store(1, std::memory_order_release);
                 return idx + 1;
             }
@@ -316,11 +313,10 @@ void do_dump_report(const char* reason) {
         StackEntry& e = g_stacks[top[t].idx];
         format_bytes(top[t].delta, buf1, sizeof(buf1));
         format_bytes(top[t].live, buf2, sizeof(buf2));
-        LOG_INFO("[alloctrack]  #{:>2}: Δ {} (live {}, {} blocks, {} allocs total){}{}",
+        LOG_INFO("[alloctrack]  #{:>2}: Δ {} (live {}, {} blocks, {} allocs total)",
                  t + 1, buf1, buf2,
                  e.live_count.load(std::memory_order_relaxed),
-                 e.total_allocs.load(std::memory_order_relaxed),
-                 e.tag ? " tag=" : "", e.tag ? e.tag : "");
+                 e.total_allocs.load(std::memory_order_relaxed));
         const std::uint32_t n_show = e.frame_count < 8 ? e.frame_count : 8;
         for (std::uint32_t f = 0; f < n_show; ++f) {
             symbolize(e.frames[f], sym, sizeof(sym));
@@ -337,7 +333,7 @@ bool g_thread_stop = false;
 
 }
 
-void start_reporting(unsigned interval_seconds) {
+ReportingSession::ReportingSession(const LogSession&, unsigned interval_seconds) {
     std::lock_guard<std::mutex> lock(g_thread_mutex);
     if (g_report_thread)
         return;
@@ -354,7 +350,7 @@ void start_reporting(unsigned interval_seconds) {
     LOG_INFO("[alloctrack] tracking active, reporting every {}s", interval_seconds);
 }
 
-void stop_reporting() {
+ReportingSession::~ReportingSession() {
     std::thread* t = nullptr;
     {
         std::lock_guard<std::mutex> lock(g_thread_mutex);
@@ -369,18 +365,6 @@ void stop_reporting() {
         do_dump_report("final");
     }
 }
-
-void dump_report(const char* reason) {
-    do_dump_report(reason);
-}
-
-std::uint64_t live_bytes() {
-    const std::int64_t v = g_live_bytes.load(std::memory_order_relaxed);
-    return v > 0 ? static_cast<std::uint64_t>(v) : 0;
-}
-
-TagScope::TagScope(const char* tag) noexcept : prev_(t_tag) { t_tag = tag; }
-TagScope::~TagScope() noexcept { t_tag = prev_; }
 
 }
 

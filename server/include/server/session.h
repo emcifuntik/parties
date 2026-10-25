@@ -27,7 +27,6 @@ struct Session {
     UserId           user_id = 0;
     std::string      username;
     int              role = 3;
-    SessionToken     session_token{};
     PublicKey         public_key{};
     uint16_t         protocol_version = protocol::PROTOCOL_VERSION_ASSUMED_LEGACY;
     bool supports_frame_streams() const {

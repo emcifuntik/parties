@@ -171,9 +171,10 @@ int main() {
 #endif
     LOG("=== Parties Integration Test ===\n\n");
 
-    TEST_ASSERT(crypto_init(), "crypto_init");
-    TEST_ASSERT(net_init(), "net_init");
-    TEST_ASSERT(quic_init() != nullptr, "quic_init");
+    const auto net = NetLibrary::open();
+    TEST_ASSERT(net.has_value(), "NetLibrary::open");
+    const auto quic = QuicLibrary::open();
+    TEST_ASSERT(quic.has_value(), "QuicLibrary::open");
     LOG("[1/21] Subsystems initialized\n");
 
     auto tmp = fs::temp_directory_path() / "parties_integration_test";
@@ -213,20 +214,19 @@ int main() {
         client_c.disconnect();
         server.stop();
         if (server_thread.joinable()) server_thread.join();
-        quic_cleanup();
-        net_cleanup();
-        crypto_cleanup();
         fs::remove_all(tmp);
     };
 
-    SecretKey sk_a{}, sk_b{}, sk_c{};
-    PublicKey pk_a{}, pk_b{}, pk_c{};
-    TEST_ASSERT(derive_keypair("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about", sk_a, pk_a),
-                "derive keypair A");
-    TEST_ASSERT(derive_keypair("zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong", sk_b, pk_b),
-                "derive keypair B");
-    TEST_ASSERT(derive_keypair("letter advice cage absurd amount doctor acoustic avoid letter advice cage above", sk_c, pk_c),
-                "derive keypair C");
+    const SecretKey sk_a = secret_key_from_phrase_sha256("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about");
+    const SecretKey sk_b = secret_key_from_phrase_sha256("zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong");
+    const SecretKey sk_c = secret_key_from_phrase_sha256("letter advice cage absurd amount doctor acoustic avoid letter advice cage above");
+    const auto derived_a = public_key_of(sk_a);
+    const auto derived_b = public_key_of(sk_b);
+    const auto derived_c = public_key_of(sk_c);
+    TEST_ASSERT(derived_a.has_value(), "derive keypair A");
+    TEST_ASSERT(derived_b.has_value(), "derive keypair B");
+    TEST_ASSERT(derived_c.has_value(), "derive keypair C");
+    const PublicKey pk_a = *derived_a, pk_b = *derived_b, pk_c = *derived_c;
 
     LOG("[3/21] Client A connecting...\n");
     TEST_ASSERT(client_a.connect("127.0.0.1", TEST_PORT), "client A connect");
@@ -374,13 +374,13 @@ int main() {
     {
         OpusCodec codec;
         TEST_ASSERT(codec.init_encoder(audio::SAMPLE_RATE, audio::CHANNELS,
-                    audio::OPUS_BITRATE), "opus encoder init");
+                    audio::OPUS_BITRATE, std::nullopt), "opus encoder init");
 
         float pcm[audio::OPUS_FRAME_SIZE] = {};
         uint8_t opus_buf[audio::MAX_OPUS_PACKET];
-        int opus_len = codec.encode(pcm, audio::OPUS_FRAME_SIZE,
-                                    opus_buf, audio::MAX_OPUS_PACKET);
-        TEST_ASSERT(opus_len > 0, "opus encode");
+        const auto encoded = codec.encode(pcm, audio::OPUS_FRAME_SIZE, opus_buf);
+        TEST_ASSERT(encoded.has_value(), "opus encode");
+        const size_t opus_len = *encoded;
 
         original_opus.assign(opus_buf, opus_buf + opus_len);
 
@@ -434,9 +434,7 @@ int main() {
                     "opus decoder init");
 
         float pcm_out[audio::OPUS_FRAME_SIZE];
-        int decoded = decoder.decode(original_opus.data(),
-                                     static_cast<int>(original_opus.size()),
-                                     pcm_out, audio::OPUS_FRAME_SIZE);
+        const auto decoded = decoder.decode(original_opus, pcm_out, audio::OPUS_FRAME_SIZE);
         TEST_ASSERT(decoded == audio::OPUS_FRAME_SIZE,
                     "opus decode produces correct frame size");
     }
@@ -564,11 +562,10 @@ int main() {
         for (uint32_t i = 0; i < 5; i++) {
             VideoFrameHeader hdr;
             hdr.frame_seq = 10 + i;
-            hdr.timestamp = 10 + i;
-            hdr.flags     = (i == 0) ? VIDEO_FLAG_KEYFRAME : 0;
+            hdr.keyframe     = i == 0;
             hdr.width     = 1920;
             hdr.height    = 1080;
-            hdr.codec     = static_cast<uint8_t>(VideoCodecId::AV1);
+            hdr.codec     = VideoCodecId::AV1;
             uint8_t hdr_bytes[VIDEO_FRAME_HEADER_SIZE];
             hdr.write(hdr_bytes);
 
@@ -599,11 +596,10 @@ int main() {
         TEST_ASSERT(stream_frames.size() == 5, "client B received all 5 per-frame streams");
         for (size_t i = 0; i < 5; i++) {
             TEST_ASSERT(stream_frames[i].sender == user_a_id, "per-frame stream sender is client A");
-            VideoFrameHeader hdr;
-            TEST_ASSERT(VideoFrameHeader::parse(stream_frames[i].frame.data(),
-                        stream_frames[i].frame.size(), hdr), "per-frame stream header parses");
-            TEST_ASSERT(hdr.frame_seq == 10 + i, "per-frame streams arrive in order (frame_seq)");
-            TEST_ASSERT(hdr.keyframe() == (i == 0), "per-frame stream keyframe flag");
+            const auto hdr = VideoFrameHeader::parse(stream_frames[i].frame);
+            TEST_ASSERT(hdr.has_value(), "per-frame stream header parses");
+            TEST_ASSERT(hdr->frame_seq == 10 + i, "per-frame streams arrive in order (frame_seq)");
+            TEST_ASSERT(hdr->keyframe == (i == 0), "per-frame stream keyframe flag");
             TEST_ASSERT(stream_frames[i].frame == stream_originals[i],
                         "per-frame stream content matches");
         }
@@ -715,9 +711,9 @@ int main() {
     client_c.on_data_received = [&](const uint8_t* data, size_t len) {
         if (len == 0 || data[0] != VIDEO_FRAME_PACKET_TYPE) return;
         std::lock_guard<std::mutex> lock(c_video_mutex);
-        VideoFrameHeader header;
-        if (len >= 5 && VideoFrameHeader::parse(data + 5, len - 5, header))
-            c_received_sequences.push_back(header.frame_seq);
+        if (len >= 5)
+            if (const auto header = VideoFrameHeader::parse({data + 5, len - 5}))
+                c_received_sequences.push_back(header->frame_seq);
         if (c_video_received) return;
         c_received_video.assign(data, data + len);
         c_video_received = true;
@@ -820,11 +816,10 @@ int main() {
     {
         VideoFrameHeader hdr;
         hdr.frame_seq = 20;
-        hdr.timestamp = 20;
-        hdr.flags     = VIDEO_FLAG_KEYFRAME;
+        hdr.keyframe     = true;
         hdr.width     = 1920;
         hdr.height    = 1080;
-        hdr.codec     = static_cast<uint8_t>(VideoCodecId::AV1);
+        hdr.codec     = VideoCodecId::AV1;
         uint8_t hdr_bytes[VIDEO_FRAME_HEADER_SIZE];
         hdr.write(hdr_bytes);
 
@@ -852,12 +847,11 @@ int main() {
         uint32_t sender_id = 0;
         std::memcpy(&sender_id, c_received_video.data() + 1, 4);
         TEST_ASSERT(sender_id == user_a_id, "legacy frame sender_id matches client A");
-        VideoFrameHeader got;
-        TEST_ASSERT(VideoFrameHeader::parse(c_received_video.data() + 5,
-                    c_received_video.size() - 5, got), "legacy frame header parses");
-        TEST_ASSERT(got.frame_seq == 20, "legacy frame frame_seq");
-        TEST_ASSERT(got.keyframe(), "legacy frame keyframe flag");
-        TEST_ASSERT(got.width == 1920 && got.height == 1080, "legacy frame dimensions");
+        const auto got = VideoFrameHeader::parse(std::span(c_received_video).subspan(5));
+        TEST_ASSERT(got.has_value(), "legacy frame header parses");
+        TEST_ASSERT(got->frame_seq == 20, "legacy frame frame_seq");
+        TEST_ASSERT(got->keyframe, "legacy frame keyframe flag");
+        TEST_ASSERT(got->width == 1920 && got->height == 1080, "legacy frame dimensions");
         TEST_ASSERT(std::memcmp(c_received_video.data() + prefix, legacy_frame_payload.data(),
                     legacy_frame_payload.size()) == 0, "legacy frame encoded bytes intact");
         LOG("[18/21] Legacy re-origination verified: sender=%u, %zu bytes on stream 1\n",
@@ -868,11 +862,10 @@ int main() {
         auto send_frame = [&](uint32_t sequence, bool keyframe) {
             VideoFrameHeader hdr;
             hdr.frame_seq = sequence;
-            hdr.timestamp = sequence;
-            hdr.flags = keyframe ? VIDEO_FLAG_KEYFRAME : 0;
+            hdr.keyframe = keyframe;
             hdr.width = 1920;
             hdr.height = 1080;
-            hdr.codec = static_cast<uint8_t>(VideoCodecId::AV1);
+            hdr.codec = VideoCodecId::AV1;
             uint8_t bytes[VIDEO_FRAME_HEADER_SIZE];
             hdr.write(bytes);
             return client_a.send_video_frame_stream(bytes, sizeof(bytes),

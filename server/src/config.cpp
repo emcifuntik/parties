@@ -45,7 +45,7 @@ Config Config::load(const std::string& toml_path) {
                 cfg.listen_ip      = toml::find_or(s, "listen_ip", cfg.listen_ip);
                 cfg.port           = static_cast<uint16_t>(toml::find_or(s, "port", static_cast<int>(cfg.port)));
                 cfg.max_clients    = toml::find_or(s, "max_clients", cfg.max_clients);
-                cfg.server_password = toml::find_or(s, "password", cfg.server_password);
+                cfg.server_password = SecretString(toml::find_or(s, "password", std::string{}));
             }
 
             if (data.contains("tls")) {
@@ -104,7 +104,7 @@ Config Config::load(const std::string& toml_path) {
     if (!e.empty()) cfg.max_clients = std::stoi(e);
 
     e = env("PARTIES_PASSWORD");
-    if (!e.empty()) cfg.server_password = e;
+    if (!e.empty()) cfg.server_password = SecretString(e);
 
     e = env("PARTIES_CERT_FILE");
     if (!e.empty()) cfg.cert_file = e;

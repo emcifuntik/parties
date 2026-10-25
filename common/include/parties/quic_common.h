@@ -2,11 +2,25 @@
 
 #include <msquic.h>
 
+#include <optional>
+
 namespace parties {
 
-const QUIC_API_TABLE* quic_init();
+class QuicLibrary {
+public:
+    static std::optional<QuicLibrary> open();
+    QuicLibrary(QuicLibrary&& other) noexcept;
+    QuicLibrary& operator=(QuicLibrary&&) = delete;
+    QuicLibrary(const QuicLibrary&) = delete;
+    QuicLibrary& operator=(const QuicLibrary&) = delete;
+    ~QuicLibrary();
 
-void quic_cleanup();
+    const QUIC_API_TABLE& api() const { return *api_; }
+
+private:
+    explicit QuicLibrary(const QUIC_API_TABLE* api) : api_(api) {}
+    const QUIC_API_TABLE* api_;
+};
 
 const QUIC_API_TABLE* quic_api();
 

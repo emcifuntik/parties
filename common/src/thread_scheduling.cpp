@@ -10,27 +10,27 @@
 
 namespace parties {
 
-TimerResolutionGuard::TimerResolutionGuard(unsigned int period_ms) noexcept
+WindowsTimerResolution::WindowsTimerResolution(unsigned int period_ms) noexcept
     : period_ms_(period_ms) {
 #ifdef _WIN32
     active_ = period_ms_ != 0 && timeBeginPeriod(period_ms_) == TIMERR_NOERROR;
-#else
-    active_ = true;
 #endif
 }
 
-TimerResolutionGuard::~TimerResolutionGuard() {
+WindowsTimerResolution::~WindowsTimerResolution() {
 #ifdef _WIN32
     if (active_)
         timeEndPeriod(period_ms_);
 #endif
 }
 
-bool set_current_thread_highest_priority() noexcept {
+ThreadPriorityChange raise_thread_to_highest_normal_priority() noexcept {
 #ifdef _WIN32
-    return SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST) != FALSE;
+    return SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST) != FALSE
+        ? ThreadPriorityChange::Raised
+        : ThreadPriorityChange::Failed;
 #else
-    return true;
+    return ThreadPriorityChange::Unsupported;
 #endif
 }
 

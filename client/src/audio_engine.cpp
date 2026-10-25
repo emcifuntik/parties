@@ -16,7 +16,7 @@ namespace parties::client {
 static void capture_notification(const ma_device_notification* pNotification) {
     if (pNotification->type == ma_device_notification_type_started) {
         TracySetThreadName("AudioCapture");
-        if (!parties::set_current_thread_highest_priority())
+        if (parties::raise_thread_to_highest_normal_priority() == parties::ThreadPriorityChange::Failed)
             LOG_WARN("Failed to set the audio capture thread to highest priority");
     }
 }
@@ -24,7 +24,7 @@ static void capture_notification(const ma_device_notification* pNotification) {
 static void playback_notification(const ma_device_notification* pNotification) {
     if (pNotification->type == ma_device_notification_type_started) {
         TracySetThreadName("AudioPlayback");
-        if (!parties::set_current_thread_highest_priority())
+        if (parties::raise_thread_to_highest_normal_priority() == parties::ThreadPriorityChange::Failed)
             LOG_WARN("Failed to set the audio playback thread to highest priority");
     }
 }
@@ -85,8 +85,7 @@ bool AudioEngine::init() {
         return false;
     }
 
-    if (!encoder_.init_encoder(audio::SAMPLE_RATE, audio::CHANNELS, audio::OPUS_BITRATE,
-                               true, audio::OPUS_EXPECTED_LOSS_PCT)) {
+    if (!encoder_.init_encoder(audio::SAMPLE_RATE, audio::CHANNELS, audio::OPUS_BITRATE, kVoiceFec)) {
         LOG_ERROR("Failed to create Opus encoder");
         rnnoise_destroy(rnn_);
         rnn_ = nullptr;
@@ -98,8 +97,7 @@ bool AudioEngine::init() {
     secondary_encoder_ready_ =
         secondary_encoder_.init_encoder(audio::SAMPLE_RATE, audio::CHANNELS,
                                         audio::SECONDARY_OPUS_BITRATE,
-                                        true, audio::OPUS_EXPECTED_LOSS_PCT,
-                                        OpusMode::Music);
+                                        kVoiceFec, OpusMode::Music);
     if (!secondary_encoder_ready_)
         LOG_WARN("Secondary audio encoder unavailable; 2nd stream disabled");
 
@@ -132,13 +130,12 @@ void AudioEngine::push_secondary_pcm(const float* pcm, int frame_count) {
         remaining -= static_cast<int>(to_copy);
 
         if (secondary_pos_ >= static_cast<size_t>(audio::OPUS_FRAME_SIZE)) {
-            int encoded = secondary_encoder_.encode(secondary_buf_.data(),
-                                                    audio::OPUS_FRAME_SIZE,
-                                                    secondary_opus_buf_,
-                                                    audio::MAX_OPUS_PACKET);
-            if (encoded > 0) {
+            const auto encoded = secondary_encoder_.encode(secondary_buf_.data(),
+                                                           audio::OPUS_FRAME_SIZE,
+                                                           secondary_opus_buf_);
+            if (encoded) {
                 secondary_activity_.observe_pcm(secondary_buf_.data(), audio::OPUS_FRAME_SIZE);
-                on_secondary_encoded_frame(secondary_opus_buf_, static_cast<size_t>(encoded));
+                on_secondary_encoded_frame(secondary_opus_buf_, *encoded);
             }
             secondary_pos_ = 0;
         }
@@ -404,10 +401,9 @@ void AudioEngine::process_capture(const float* input, ma_uint32 frame_count) {
             encode_pos_ += audio::FRAME_SIZE;
 
             if (encode_pos_ >= static_cast<size_t>(audio::OPUS_FRAME_SIZE)) {
-                int encoded = encoder_.encode(encode_buf_, audio::OPUS_FRAME_SIZE,
-                                               opus_buf_, audio::MAX_OPUS_PACKET);
-                if (encoded > 0)
-                    on_encoded_frame(opus_buf_, static_cast<size_t>(encoded));
+                const auto encoded = encoder_.encode(encode_buf_, audio::OPUS_FRAME_SIZE, opus_buf_);
+                if (encoded)
+                    on_encoded_frame(opus_buf_, *encoded);
                 encode_pos_ = 0;
             }
 

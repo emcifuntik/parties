@@ -13,8 +13,8 @@ OpusCodec::~OpusCodec() {
     if (decoder_) opus_decoder_destroy(decoder_);
 }
 
-bool OpusCodec::init_encoder(int sample_rate, int channels, int bitrate,
-                             bool inband_fec, int expected_loss_pct, OpusMode mode) {
+bool OpusCodec::init_encoder(int sample_rate, int channels, int bitrate_bps,
+                             std::optional<OpusFec> fec, OpusMode mode) {
     if (encoder_) {
         opus_encoder_destroy(encoder_);
         encoder_ = nullptr;
@@ -27,20 +27,13 @@ bool OpusCodec::init_encoder(int sample_rate, int channels, int bitrate,
         encoder_ = nullptr;
         return false;
     }
-    opus_encoder_ctl(encoder_, OPUS_SET_BITRATE(bitrate));
+    opus_encoder_ctl(encoder_, OPUS_SET_BITRATE(bitrate_bps));
 
     const int signal = (mode == OpusMode::Music) ? OPUS_SIGNAL_MUSIC : OPUS_SIGNAL_VOICE;
 
-    if (inband_fec) {
-        // Packet-loss resilience over unreliable datagrams. In-band FEC (LBRR)
-        // embeds a low-bitrate copy of the previous frame in each packet; it is
-        // ONLY emitted when packet-loss-perc > 0 and the encoder is in
-        // SILK/hybrid (where LBRR lives). App-side VAD already gates voice
-        // transmission, so keep Opus DTX off (it would add in-band gaps the
-        // receiver would mistake for loss). For the music profile LBRR may not
-        // engage at high bitrate; the decoder still PLCs lost frames.
+    if (fec) {
         opus_encoder_ctl(encoder_, OPUS_SET_INBAND_FEC(1));
-        opus_encoder_ctl(encoder_, OPUS_SET_PACKET_LOSS_PERC(expected_loss_pct));
+        opus_encoder_ctl(encoder_, OPUS_SET_PACKET_LOSS_PERC(fec->expected_loss_pct));
         opus_encoder_ctl(encoder_, OPUS_SET_SIGNAL(signal));
         opus_encoder_ctl(encoder_, OPUS_SET_DTX(0));
         opus_encoder_ctl(encoder_, OPUS_SET_VBR(1));
@@ -74,20 +67,40 @@ bool OpusCodec::init_decoder(int sample_rate, int channels) {
     return true;
 }
 
-int OpusCodec::encode(const float* pcm_in, int frame_size,
-                      uint8_t* opus_out, int max_opus_bytes) {
-    if (!encoder_) return -1;
-    return opus_encode_float(encoder_, pcm_in, frame_size, opus_out, max_opus_bytes);
+std::optional<size_t> OpusCodec::encode(const float* pcm, int frame_size, std::span<uint8_t> out) {
+    if (!encoder_) return std::nullopt;
+    const opus_int32 n = opus_encode_float(encoder_, pcm, frame_size, out.data(),
+                                           static_cast<opus_int32>(out.size()));
+    if (n <= 0) return std::nullopt;
+    return static_cast<size_t>(n);
 }
 
-int OpusCodec::decode(const uint8_t* opus_in, int opus_len,
-                      float* pcm_out, int max_frame_size, int decode_fec) {
-    if (!decoder_) return -1;
-    return opus_decode_float(decoder_, opus_in, opus_len, pcm_out, max_frame_size, decode_fec);
+namespace {
+
+std::optional<int> decoded_samples(int result) {
+    if (result < 0) return std::nullopt;
+    return result;
 }
 
-void OpusCodec::set_bitrate(int bps) {
-    if (encoder_) opus_encoder_ctl(encoder_, OPUS_SET_BITRATE(bps));
+}
+
+std::optional<int> OpusCodec::decode(std::span<const uint8_t> packet, float* pcm, int max_frame_size) {
+    if (!decoder_) return std::nullopt;
+    return decoded_samples(opus_decode_float(decoder_, packet.data(), static_cast<opus_int32>(packet.size()),
+                                             pcm, max_frame_size, 0));
+}
+
+std::optional<int> OpusCodec::conceal_lost_frame(float* pcm, int frame_size) {
+    if (!decoder_) return std::nullopt;
+    return decoded_samples(opus_decode_float(decoder_, nullptr, 0, pcm, frame_size, 0));
+}
+
+std::optional<int> OpusCodec::recover_from_successor_fec(std::span<const uint8_t> successor,
+                                                         float* pcm, int frame_size) {
+    if (!decoder_) return std::nullopt;
+    return decoded_samples(opus_decode_float(decoder_, successor.data(),
+                                             static_cast<opus_int32>(successor.size()),
+                                             pcm, frame_size, 1));
 }
 
 }

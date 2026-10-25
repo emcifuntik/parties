@@ -1,23 +1,27 @@
 #include <parties/net_common.h>
 
+#include <utility>
+
 #ifdef _WIN32
 #  include <winsock2.h>
 #endif
 
 namespace parties {
 
-bool net_init() {
+std::optional<NetLibrary> NetLibrary::open() {
 #ifdef _WIN32
     WSADATA wsa;
-    return WSAStartup(MAKEWORD(2, 2), &wsa) == 0;
-#else
-    return true;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return std::nullopt;
 #endif
+    return NetLibrary();
 }
 
-void net_cleanup() {
+NetLibrary::NetLibrary(NetLibrary&& other) noexcept
+    : owned_(std::exchange(other.owned_, false)) {}
+
+NetLibrary::~NetLibrary() {
 #ifdef _WIN32
-    WSACleanup();
+    if (owned_) WSACleanup();
 #endif
 }
 
