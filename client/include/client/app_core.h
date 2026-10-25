@@ -38,7 +38,7 @@ struct UserContextWindowRequest {
     int user_id = 0;
     std::string name;
     std::string channel_name;
-    int role = 3;
+    Role role = Role::User;
     bool can_manage_roles = false;
     bool can_kick = false;
     float volume = 1.0f;
@@ -158,7 +158,7 @@ public:
     UserId      user_id_              = 0;
     std::string global_name_;
     std::string username_;
-    int         role_                 = 3;
+    Role        role_                 = Role::User;
     std::string server_host_;
     uint16_t    server_port_          = 7800;
     std::string server_password_;

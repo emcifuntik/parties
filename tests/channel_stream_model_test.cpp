@@ -2,6 +2,8 @@
 #include <RmlUi/Core.h>
 
 #include <cstdio>
+#include <optional>
+#include <string>
 
 namespace {
 class NullRenderer final : public Rml::RenderInterface {
@@ -101,6 +103,56 @@ bool check_voice_navigation(Rml::Context* context, parties::client::LobbyModel& 
     model.remove_channel_sharer(carol.id);
     return passed;
 }
+bool check_role_bindings(Rml::Context* context, parties::client::LobbyModel& model) {
+    using namespace parties::client;
+    ChannelUser admin; admin.id = 44; admin.name = "Ada"; admin.role = parties::Role::Admin;
+    ChannelUser member; member.id = 55; member.name = "Max"; member.role = parties::Role::User;
+    ChannelInfo room; room.id = 9; room.users = {admin, member};
+    model.channels = Rml::Vector<ChannelInfo>{room};
+
+    auto* document = context->LoadDocumentFromMemory(R"RML(
+<rml><body data-model="lobby">
+<div data-for="channel : channels">
+    <div data-for="user : channel.users" data-attr-id="'user-' + user.id"
+         data-event-mousedown="user_mousedown(user.id, user.name, user.role)">
+        <span class="ui-micro" data-attr-id="'admin-' + user.id" data-if="user.role == 1">ADMIN</span>
+    </div>
+</div>
+<button class="ui-control" id="make-mod" data-event-click="set_user_role(2)">Make moderator</button>
+<button class="ui-control" id="make-bogus" data-event-click="set_user_role(9)">Bogus</button>
+</body></rml>)RML");
+    if (!check(document != nullptr, "role document did not load")) return false;
+    document->Show();
+    context->Update();
+    bool passed = true;
+    passed &= check(document->GetElementById("admin-44") && document->GetElementById("admin-44")->IsVisible(),
+        "admin badge hidden for an admin");
+    passed &= check(document->GetElementById("admin-55") && !document->GetElementById("admin-55")->IsVisible(),
+        "admin badge shown for a member");
+
+    int menu_user = 0;
+    parties::Role menu_role = parties::Role::Owner;
+    model.on_show_user_menu = [&](int id, std::string, parties::Role role) { menu_user = id; menu_role = role; };
+    Rml::Dictionary right_click;
+    right_click["button"] = 1;
+    if (auto* row = document->GetElementById("user-44")) row->DispatchEvent("mousedown", right_click);
+    passed &= check(menu_user == 44 && menu_role == parties::Role::Admin, "user menu did not receive the admin role");
+
+    int role_target = 0;
+    std::optional<parties::Role> requested;
+    model.menu_user_id = 55;
+    model.on_set_user_role = [&](int id, parties::Role role) { role_target = id; requested = role; };
+    document->GetElementById("make-bogus")->DispatchEvent("click", {});
+    passed &= check(!requested, "out-of-table role index reached the role callback");
+    document->GetElementById("make-mod")->DispatchEvent("click", {});
+    passed &= check(role_target == 55 && requested == parties::Role::Moderator, "role index 2 did not request moderator");
+
+    document->Close();
+    model.on_show_user_menu = {};
+    model.on_set_user_role = {};
+    model.channels = Rml::Vector<ChannelInfo>{};
+    return passed;
+}
 }
 
 int main() {
@@ -161,6 +213,8 @@ int main() {
         model.clear_channel_sharers();
         model.current_channel = 0;
         passed &= check(!model.add_channel_sharer(11) && !model.add_channel_sharer(22), "share was accepted outside a channel");
+
+        passed &= check_role_bindings(context, model);
     }
     Rml::RemoveContext("channel-streams");
     Rml::Shutdown();

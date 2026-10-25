@@ -75,22 +75,18 @@ static bool is_modifier_vk(int vk) {
            vk == VK_LMENU   || vk == VK_RMENU;
 }
 
-static int current_mods() {
-    int m = 0;
-    if (GetAsyncKeyState(VK_CONTROL) & 0x8000) m |= 1;
-    if (GetAsyncKeyState(VK_SHIFT)   & 0x8000) m |= 2;
-    if (GetAsyncKeyState(VK_MENU)    & 0x8000) m |= 4;
-    return m;
+static HotkeyModifiers current_modifiers() {
+    HotkeyModifiers modifiers;
+    if (GetAsyncKeyState(VK_CONTROL) & 0x8000) modifiers = modifiers.with(HotkeyModifier::Ctrl);
+    if (GetAsyncKeyState(VK_SHIFT)   & 0x8000) modifiers = modifiers.with(HotkeyModifier::Shift);
+    if (GetAsyncKeyState(VK_MENU)    & 0x8000) modifiers = modifiers.with(HotkeyModifier::Alt);
+    return modifiers;
 }
 
-static std::string combo_name(int key, int key2, int mods) {
-    std::string name;
-    if (mods & 1) name += "Ctrl+";
-    if (mods & 2) name += "Shift+";
-    if (mods & 4) name += "Alt+";
-    if (key2 != 0) { name += vk_to_name(key2); name += "+"; }
-    name += vk_to_name(key);
-    return name;
+static bool hotkey_held(const HotkeyBinding& binding) {
+    if (!(GetAsyncKeyState(binding.primary_key) & 0x8000)) return false;
+    if (binding.second_key && !(GetAsyncKeyState(*binding.second_key) & 0x8000)) return false;
+    return current_modifiers() == binding.modifiers;
 }
 
 // Put UTF-8 text on the clipboard as CF_UNICODETEXT (CF_TEXT would mangle any
@@ -237,7 +233,7 @@ bool App::init(HWND hwnd) {
             if (core_.model_.on_user_compress_changed)
                 core_.model_.on_user_compress_changed(user_id, enabled, target);
         };
-        callbacks.set_role = [this, user_id = request.user_id](int role) {
+        callbacks.set_role = [this, user_id = request.user_id](Role role) {
             if (core_.model_.on_set_user_role)
                 core_.model_.on_set_user_role(user_id, role);
         };
@@ -331,7 +327,7 @@ bool App::init(HWND hwnd) {
                 core_.model_.router.back();
             cancel_share_thumbnails();
             capture_targets_.clear();
-            if (core_.model_.share_picker_mode == 0 && capture_) {
+            if (core_.model_.share_picker_mode == SharePickerMode::Screen && capture_) {
                 capture_->shutdown();
                 capture_.reset();
             }
@@ -431,7 +427,7 @@ bool App::init(HWND hwnd) {
         if (core_.model_.router.is(DocumentRoute::SharePicker))
             core_.model_.router.back();
         cancel_share_thumbnails();
-        if (core_.model_.share_picker_mode == 1)
+        if (core_.model_.share_picker_mode == SharePickerMode::ApplicationAudio)
             start_application_audio_share(index);
         else
             start_screen_share(index);
@@ -465,30 +461,8 @@ bool App::init(HWND hwnd) {
         LOG_WARN("Tray icon unavailable; closing the window will exit until it is available");
     }
 
-    {
-        auto pref = [&](const char* key) -> std::string {
-            auto v = core_.settings_.get_pref(key);
-            return v.value_or("");
-        };
-        auto load_hotkey = [&](int& key, int& key2, int& mods, Rml::String& name,
-                                const char* kKey, const char* kKey2, const char* kMods) {
-            std::string v = pref(kKey);
-            if (v.empty()) return;
-            key  = std::stoi(v);
-            std::string v2 = pref(kKey2); key2 = v2.empty() ? 0 : std::stoi(v2);
-            std::string vm = pref(kMods); mods = vm.empty() ? 0 : std::stoi(vm);
-            name = Rml::String(combo_name(key, key2, mods).c_str());
-        };
-        load_hotkey(core_.model_.ptt_key.silent(),    core_.model_.ptt_key2,    core_.model_.ptt_mods,
-                    core_.model_.ptt_key_name.silent(),
-                    "audio.ptt_key",    "audio.ptt_key2",    "audio.ptt_mods");
-        load_hotkey(core_.model_.mute_key.silent(),   core_.model_.mute_key2,   core_.model_.mute_mods,
-                    core_.model_.mute_key_name.silent(),
-                    "audio.mute_key",   "audio.mute_key2",   "audio.mute_mods");
-        load_hotkey(core_.model_.deafen_key.silent(), core_.model_.deafen_key2, core_.model_.deafen_mods,
-                    core_.model_.deafen_key_name.silent(),
-                    "audio.deafen_key", "audio.deafen_key2", "audio.deafen_mods");
-    }
+    for (HotkeyAction action : kHotkeyActions)
+        assign_hotkey(action, load_hotkey(core_.settings_, action));
 
     sound_player_.init();
 
@@ -569,13 +543,24 @@ void App::shutdown() {
     if (pip_host_) pip_host_->shutdown();
 }
 
+void App::assign_hotkey(HotkeyAction action, std::optional<HotkeyBinding> binding) {
+    auto props = core_.model_.hotkey_props(action);
+    props.assigned = binding.has_value();
+    props.name = binding
+        ? Rml::String(hotkey_label(*binding, [](uint16_t vk) { return vk_to_name(vk); }))
+        : Rml::String();
+    hotkeys_[hotkey_index(action)].binding = std::move(binding);
+}
+
 void App::poll_hotkeys() {
-    bool any_binding = core_.model_.ptt_binding || core_.model_.mute_binding || core_.model_.deafen_binding;
-    if (any_binding) {
+    const bool any_capturing = std::ranges::any_of(kHotkeyActions, [this](HotkeyAction action) {
+        return core_.model_.hotkey_props(action).capturing.get();
+    });
+    if (any_capturing) {
         if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) {
-            core_.model_.ptt_binding = core_.model_.mute_binding = core_.model_.deafen_binding = false;
-            capture_peak_key_ = capture_peak_key2_ = capture_peak_mods_ = 0;
-            capture_had_input_ = false;
+            for (HotkeyAction action : kHotkeyActions)
+                core_.model_.hotkey_props(action).capturing = false;
+            capture_peak_.reset();
         } else {
             int pressed[2] = {0, 0};
             int count = 0;
@@ -583,63 +568,31 @@ void App::poll_hotkeys() {
                 if (is_modifier_vk(vk)) continue;
                 if (GetAsyncKeyState(vk) & 0x8000) pressed[count++] = vk;
             }
-            int mods = current_mods();
 
             if (count > 0) {
-                int peak_count = (capture_peak_key2_ != 0) ? 2 : (capture_peak_key_ != 0 ? 1 : 0);
+                const int peak_count = !capture_peak_ ? 0 : (capture_peak_->second_key ? 2 : 1);
                 if (count > peak_count) {
-                    capture_peak_key2_ = (count >= 2) ? pressed[0] : 0;
-                    capture_peak_key_  = (count >= 2) ? pressed[1] : pressed[0];
-                    capture_peak_mods_ = mods;
+                    capture_peak_ = count >= 2
+                        ? hotkey_from_keys(pressed[1], pressed[0], current_modifiers())
+                        : hotkey_from_keys(pressed[0], 0, current_modifiers());
                 }
-                capture_had_input_ = true;
-            } else if (capture_had_input_ && capture_peak_key_ != 0) {
-                auto finalize = [&](int& key, int& key2, int& out_mods, Rml::String& name,
-                                    bool& binding,
-                                    const char* pk, const char* pk2, const char* pm,
-                                    const char* dirty_key, const char* dirty_name, const char* dirty_bind) {
-                    key     = capture_peak_key_;
-                    key2    = capture_peak_key2_;
-                    out_mods= capture_peak_mods_;
-                    name    = Rml::String(combo_name(key, key2, out_mods).c_str());
-                    binding = false;
-                    core_.settings_.set_pref(pk,  std::to_string(key));
-                    core_.settings_.set_pref(pk2, std::to_string(key2));
-                    core_.settings_.set_pref(pm,  std::to_string(out_mods));
-                    core_.model_.dirty(dirty_key);
-                    core_.model_.dirty(dirty_name);
-                    core_.model_.dirty(dirty_bind);
-                };
-                if (core_.model_.ptt_binding)
-                    finalize(core_.model_.ptt_key.silent(), core_.model_.ptt_key2, core_.model_.ptt_mods,
-                             core_.model_.ptt_key_name.silent(), core_.model_.ptt_binding.silent(),
-                             "audio.ptt_key", "audio.ptt_key2", "audio.ptt_mods",
-                             "ptt_key", "ptt_key_name", "ptt_binding");
-                if (core_.model_.mute_binding)
-                    finalize(core_.model_.mute_key.silent(), core_.model_.mute_key2, core_.model_.mute_mods,
-                             core_.model_.mute_key_name.silent(), core_.model_.mute_binding.silent(),
-                             "audio.mute_key", "audio.mute_key2", "audio.mute_mods",
-                             "mute_key", "mute_key_name", "mute_binding");
-                if (core_.model_.deafen_binding)
-                    finalize(core_.model_.deafen_key.silent(), core_.model_.deafen_key2, core_.model_.deafen_mods,
-                             core_.model_.deafen_key_name.silent(), core_.model_.deafen_binding.silent(),
-                             "audio.deafen_key", "audio.deafen_key2", "audio.deafen_mods",
-                             "deafen_key", "deafen_key_name", "deafen_binding");
-                capture_peak_key_ = capture_peak_key2_ = capture_peak_mods_ = 0;
-                capture_had_input_ = false;
+            } else if (capture_peak_) {
+                for (HotkeyAction action : kHotkeyActions) {
+                    auto props = core_.model_.hotkey_props(action);
+                    if (!props.capturing.get()) continue;
+                    save_hotkey(core_.settings_, action, *capture_peak_);
+                    assign_hotkey(action, capture_peak_);
+                    props.capturing = false;
+                }
+                capture_peak_.reset();
             }
         }
     }
 
-    auto combo_held = [](int key, int key2, int mods) -> bool {
-        if (!(GetAsyncKeyState(key) & 0x8000)) return false;
-        if (key2 != 0 && !(GetAsyncKeyState(key2) & 0x8000)) return false;
-        return current_mods() == mods;
-    };
-
-    if (core_.model_.ptt_enabled && core_.model_.ptt_key != 0 && core_.current_channel_ != 0) {
+    const auto& ptt = hotkeys_[hotkey_index(HotkeyAction::PushToTalk)].binding;
+    if (core_.model_.ptt_enabled && ptt && core_.current_channel_ != 0) {
         bool blocked = core_.model_.is_muted || core_.model_.is_deafened;
-        bool held = combo_held(core_.model_.ptt_key, core_.model_.ptt_key2, core_.model_.ptt_mods);
+        bool held = hotkey_held(*ptt);
         auto now = std::chrono::steady_clock::now();
         if (held && !blocked) {
             ptt_held_ = true;
@@ -659,21 +612,15 @@ void App::poll_hotkeys() {
         }
     }
 
-    if (core_.model_.mute_key != 0 && core_.current_channel_ != 0) {
-        bool held = combo_held(core_.model_.mute_key, core_.model_.mute_key2, core_.model_.mute_mods);
-        if (held && !mute_key_held_) {
-            if (core_.model_.on_toggle_mute) core_.model_.on_toggle_mute();
-        }
-        mute_key_held_ = held;
-    }
-
-    if (core_.model_.deafen_key != 0 && core_.current_channel_ != 0) {
-        bool held = combo_held(core_.model_.deafen_key, core_.model_.deafen_key2, core_.model_.deafen_mods);
-        if (held && !deafen_key_held_) {
-            if (core_.model_.on_toggle_deafen) core_.model_.on_toggle_deafen();
-        }
-        deafen_key_held_ = held;
-    }
+    auto poll_toggle = [this](HotkeyAction action, const std::function<void()>& toggle) {
+        auto& slot = hotkeys_[hotkey_index(action)];
+        if (!slot.binding || core_.current_channel_ == 0) return;
+        const bool held = hotkey_held(*slot.binding);
+        if (held && !slot.held && toggle) toggle();
+        slot.held = held;
+    };
+    poll_toggle(HotkeyAction::ToggleMute, core_.model_.on_toggle_mute);
+    poll_toggle(HotkeyAction::ToggleDeafen, core_.model_.on_toggle_deafen);
 }
 
 void App::render_loop() {
@@ -1005,7 +952,7 @@ void App::show_share_picker(bool audio_only) {
     monitor_targets.clear();
     application_targets.clear();
     core_.model_.selected_share_target = -1;
-    core_.model_.share_picker_mode = audio_only ? 1 : 0;
+    core_.model_.share_picker_mode = audio_only ? SharePickerMode::ApplicationAudio : SharePickerMode::Screen;
 
     if (!audio_only) {
         for (auto& m : picker->enumerate_monitors()) {
@@ -1224,9 +1171,7 @@ void App::start_screen_share(int target_index) {
         target_process_id = static_cast<uint32_t>(pid);
     }
 
-    constexpr uint32_t fps_presets[] = {15, 30, 60, 120};
-    int fps_idx = (std::max)(0, (std::min)(core_.model_.share_fps.get(), 3));
-    encode_fps_ = fps_presets[fps_idx];
+    encode_fps_ = frames_per_second(core_.model_.share_fps.get());
 
     auto job = std::make_shared<ScreenShareStartJob>();
     job->capture = capture_;
@@ -1304,9 +1249,7 @@ void App::finish_screen_share_start(uint32_t target_process_id) {
         return;
 
     core_.settings_.set_pref("video.share_bitrate", std::to_string(core_.model_.share_bitrate.get()));
-    core_.settings_.set_pref("video.share_fps",     std::to_string(core_.model_.share_fps.get()));
-    core_.settings_.set_pref("video.share_codec",   std::to_string(core_.model_.share_codec.get()));
-    core_.settings_.set_pref("video.share_scale",   std::to_string(core_.model_.share_scale.get()));
+    save_share_encoding(core_.settings_, core_.model_.share_encoding());
 
     {
         uint32_t bitrate_bps = static_cast<uint32_t>(core_.model_.share_bitrate * 1'000'000.0f);
@@ -1376,9 +1319,7 @@ void App::finish_screen_share_start(uint32_t target_process_id) {
         uint32_t cap_w = (desc.Width  + 1) & ~1u;
         uint32_t cap_h = (desc.Height + 1) & ~1u;
 
-        constexpr float scale_factors[] = {1.0f, 0.75f, 0.5f, 0.25f};
-        int scale_idx = (std::max)(0, (std::min)(core_.model_.share_scale.get(), 3));
-        float sf = scale_factors[scale_idx];
+        float sf = scale_factor(core_.model_.share_scale.get());
         uint32_t tex_w = (static_cast<uint32_t>(cap_w * sf) + 1) & ~1u;
         uint32_t tex_h = (static_cast<uint32_t>(cap_h * sf) + 1) & ~1u;
         if (tex_w < 64) tex_w = 64;
@@ -1631,9 +1572,7 @@ void App::encode_loop() {
         uint32_t w = encode_tex_w_, h = encode_tex_h_;
 
         if (!encoder_ || w != encoder_->width() || h != encoder_->height()) {
-            VideoCodecId codec = core_.model_.share_codec == 2 ? VideoCodecId::H264
-                               : core_.model_.share_codec == 1 ? VideoCodecId::H265
-                                                                : VideoCodecId::AV1;
+            VideoCodecId codec = video_codec_of(core_.model_.share_codec.get());
             encoder_.reset(); encode_registered_ = false;
             auto enc = std::make_unique<VideoEncoder>();
             uint32_t bitrate_bps = core_.video_accounting().bitrate_bps();

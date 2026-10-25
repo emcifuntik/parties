@@ -61,6 +61,25 @@ void LobbyModel::clear_channel_sharers() {
     sharers.notify();
 }
 
+LobbyModel::HotkeyProps LobbyModel::hotkey_props(HotkeyAction action) {
+    switch (action) {
+        case HotkeyAction::PushToTalk:   return {ptt_key_assigned, ptt_key_name, ptt_binding};
+        case HotkeyAction::ToggleMute:   return {mute_key_assigned, mute_key_name, mute_binding};
+        case HotkeyAction::ToggleDeafen: return {deafen_key_assigned, deafen_key_name, deafen_binding};
+    }
+    return {ptt_key_assigned, ptt_key_name, ptt_binding};
+}
+
+ShareEncoding LobbyModel::share_encoding() const {
+    return {share_fps.get(), share_codec.get(), share_scale.get()};
+}
+
+void LobbyModel::apply_share_encoding(const ShareEncoding& encoding) {
+    share_fps = encoding.frame_rate;
+    share_codec = encoding.codec;
+    share_scale = encoding.scale;
+}
+
 void LobbyModel::build(rml::Builder& b) {
     // Order matters: array types must be registered BEFORE structs that contain them as members.
     b.register_struct<ChannelUser>([](auto& s) {
@@ -144,15 +163,15 @@ void LobbyModel::build(rml::Builder& b) {
      .bind("music_send_volume", music_send_volume)
      .bind("notification_volume", notification_volume)
      .bind("ptt_enabled",       ptt_enabled)
-     .bind("ptt_key",           ptt_key)
+     .bind("ptt_key_assigned",  ptt_key_assigned)
      .bind("ptt_key_name",      ptt_key_name)
      .bind("ptt_binding",       ptt_binding)
      .bind("ptt_delay",         ptt_delay)
      .bind("ptt_delay_text",    ptt_delay_text)
-     .bind("mute_key",          mute_key)
+     .bind("mute_key_assigned", mute_key_assigned)
      .bind("mute_key_name",     mute_key_name)
      .bind("mute_binding",      mute_binding)
-     .bind("deafen_key",        deafen_key)
+     .bind("deafen_key_assigned", deafen_key_assigned)
      .bind("deafen_key_name",   deafen_key_name)
      .bind("deafen_binding",    deafen_binding)
      .bind("mobile_show_content", mobile_show_content)
@@ -178,7 +197,6 @@ void LobbyModel::build(rml::Builder& b) {
      .bind("share_fps",         share_fps)
      .bind("share_codec",       share_codec)
      .bind("share_scale",       share_scale)
-     .bind("share_preset",      share_preset)
      .bind("update_available",   update_available)
      .bind("update_downloading", update_downloading)
      .bind("update_ready",       update_ready)
@@ -381,44 +399,20 @@ void LobbyModel::build(rml::Builder& b) {
         if (on_start_native_share) on_start_native_share();
     });
 
-    b.on_args<int>("select_share_fps", [this](int v) {
-        share_fps = v;
-        share_preset = -1;
+    b.on_args<int>("select_share_fps", [this](int index) {
+        if (const auto rate = enum_names_v<ShareFrameRate>.from_int(index)) share_fps = *rate;
     });
 
     b.on("share_bitrate_changed", [this] {
-        share_preset = -1;
         if (on_share_bitrate_changed) on_share_bitrate_changed(share_bitrate.get());
     });
 
-    b.on_args<int>("select_share_codec", [this](int v) {
-        share_codec = v;
-        share_preset = -1;
+    b.on_args<int>("select_share_codec", [this](int index) {
+        if (const auto codec = enum_names_v<ShareCodec>.from_int(index)) share_codec = *codec;
     });
 
-    b.on_args<int>("select_share_scale", [this](int v) {
-        share_scale = v;
-        share_preset = -1;
-    });
-
-    b.on_args<int>("select_share_preset", [this](int preset) {
-        share_preset = preset;
-        share_codec = 0;
-        if (preset == 0) {
-            share_fps = 1;
-            share_scale = 2;
-            share_bitrate = 2.0f;
-        } else if (preset == 1) {
-            share_fps = 2;
-            share_scale = 1;
-            share_bitrate = 6.0f;
-        } else {
-            share_fps = 2;
-            share_scale = 0;
-            share_bitrate = 12.0f;
-        }
-        if (on_share_bitrate_changed)
-            on_share_bitrate_changed(share_bitrate.get());
+    b.on_args<int>("select_share_scale", [this](int index) {
+        if (const auto scale = enum_names_v<ShareScale>.from_int(index)) share_scale = *scale;
     });
 
     b.on_args<int>("watch_sharer", [this](int id) {
@@ -531,19 +525,21 @@ void LobbyModel::build(rml::Builder& b) {
         if (button != 1) return;
         ev.StopPropagation();
         if (args.size() < 3) return;
+        const auto role = enum_names_v<Role>.from_int(args[2].Get<int>(-1));
+        if (!role) return;
         int uid = args[0].Get<int>();
         auto name = args[1].Get<Rml::String>();
-        int role = args[2].Get<int>();
         if (on_show_user_menu)
-            on_show_user_menu(uid, std::string(name), role);
+            on_show_user_menu(uid, std::string(name), *role);
     });
 
     b.on("close_user_menu", [this] {
         show_user_menu = false;
     });
 
-    b.on_args<int>("set_user_role", [this](int role) {
-        if (on_set_user_role) on_set_user_role(menu_user_id.get(), role);
+    b.on_args<int>("set_user_role", [this](int index) {
+        const auto role = enum_names_v<Role>.from_int(index);
+        if (role && on_set_user_role) on_set_user_role(menu_user_id.get(), *role);
         show_user_menu = false;
     });
 

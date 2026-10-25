@@ -51,13 +51,14 @@ Rml::String initials_from_name(const std::string& name) {
     return result;
 }
 
-Rml::String role_name(int role) {
+Rml::String role_name(Role role) {
     switch (role) {
-    case 0: return "Owner";
-    case 1: return "Administrator";
-    case 2: return "Moderator";
-    default: return "Member";
+    case Role::Owner:     return "Owner";
+    case Role::Admin:     return "Administrator";
+    case Role::Moderator: return "Moderator";
+    case Role::User:      return "Member";
     }
+    return "Member";
 }
 
 }
@@ -404,9 +405,9 @@ void ContextWindowManager::show_user(const UserRequest& request, UserCallbacks c
 
     auto& actions = model->actions.silent();
     if (request.can_manage_roles) {
-        if (request.role != 1) actions.push_back({"Make administrator", "Full moderation access", 101, false, false});
-        if (request.role != 2) actions.push_back({"Make moderator", "Manage conversations", 102, false, false});
-        if (request.role != 3) actions.push_back({"Make member", "Standard permissions", 103, false, false});
+        if (request.role != Role::Admin) actions.push_back({"Make administrator", "Full moderation access", 101, false, false});
+        if (request.role != Role::Moderator) actions.push_back({"Make moderator", "Manage conversations", 102, false, false});
+        if (request.role != Role::User) actions.push_back({"Make member", "Standard permissions", 103, false, false});
     }
     if (request.can_kick) {
         if (!actions.empty()) actions.push_back({"", "", 0, false, true});
@@ -418,9 +419,9 @@ void ContextWindowManager::show_user(const UserRequest& request, UserCallbacks c
     model->on_music_volume = std::move(callbacks.set_music_volume);
     model->on_compression = std::move(callbacks.set_compression);
     model->on_action = [this, callbacks = std::move(callbacks)](int id) mutable {
-        if (id == 101 && callbacks.set_role) callbacks.set_role(1);
-        else if (id == 102 && callbacks.set_role) callbacks.set_role(2);
-        else if (id == 103 && callbacks.set_role) callbacks.set_role(3);
+        if (id == 101 && callbacks.set_role) callbacks.set_role(Role::Admin);
+        else if (id == 102 && callbacks.set_role) callbacks.set_role(Role::Moderator);
+        else if (id == 103 && callbacks.set_role) callbacks.set_role(Role::User);
         else if (id == 200 && callbacks.kick) callbacks.kick();
         impl_->request_close();
     };

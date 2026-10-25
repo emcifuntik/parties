@@ -1,8 +1,11 @@
 #pragma once
 
+#include <parties/permissions.h>
 #include <parties/types.h>
 #include <client/document_router.h>
+#include <client/hotkey_binding.h>
 #include <client/rml_binding.h>
+#include <client/share_settings.h>
 
 #include <RmlUi/Core/Types.h>
 
@@ -17,7 +20,7 @@ namespace rml = parties::rml;
 struct ChannelUser {
     Rml::String name;
     int id = 0;
-    int role = 0;
+    Role role = Role::Owner;
     bool muted = false;
     bool deafened = false;
     bool speaking = false;
@@ -66,6 +69,16 @@ public:
     void remove_channel_sharer(int user_id);
     void clear_channel_sharers();
 
+    struct HotkeyProps {
+        rml::Prop<bool>&        assigned;
+        rml::Prop<Rml::String>& name;
+        rml::Prop<bool>&        capturing;
+    };
+    HotkeyProps hotkey_props(HotkeyAction action);
+
+    ShareEncoding share_encoding() const;
+    void apply_share_encoding(const ShareEncoding& encoding);
+
     rml::Prop<bool>        is_connected{false};
     rml::Prop<int>         ping_ms{0};
     rml::Prop<Rml::String> server_name;
@@ -102,22 +115,16 @@ public:
     rml::Prop<float>       notification_volume{1.0f};
 
     rml::Prop<bool>        ptt_enabled{false};
-    rml::Prop<int>         ptt_key{0};
-    int ptt_key2 = 0;
-    int ptt_mods = 0;
+    rml::Prop<bool>        ptt_key_assigned{false};
     rml::Prop<Rml::String> ptt_key_name;
     rml::Prop<bool>        ptt_binding{false};
     rml::Prop<float>       ptt_delay{0.0f};
     rml::Prop<Rml::String> ptt_delay_text{"0 ms"};
 
-    rml::Prop<int>         mute_key{0};
-    int mute_key2 = 0;
-    int mute_mods = 0;
+    rml::Prop<bool>        mute_key_assigned{false};
     rml::Prop<Rml::String> mute_key_name;
     rml::Prop<bool>        mute_binding{false};
-    rml::Prop<int>         deafen_key{0};
-    int deafen_key2 = 0;
-    int deafen_mods = 0;
+    rml::Prop<bool>        deafen_key_assigned{false};
     rml::Prop<Rml::String> deafen_key_name;
     rml::Prop<bool>        deafen_binding{false};
 
@@ -145,19 +152,18 @@ public:
     rml::Prop<Rml::Vector<ShareTarget>> share_monitor_targets;
     rml::Prop<Rml::Vector<ShareTarget>> share_application_targets;
     rml::Prop<int>         selected_share_target{-1};
-    rml::Prop<int>         share_picker_mode{0};
+    rml::Prop<SharePickerMode> share_picker_mode{SharePickerMode::Screen};
     rml::Prop<float>       share_bitrate{2.0f};
-    rml::Prop<int>         share_fps{2};
-    rml::Prop<int>         share_codec{0};
-    rml::Prop<int>         share_scale{0};
-    rml::Prop<int>         share_preset{-1};
+    rml::Prop<ShareFrameRate> share_fps{ShareEncoding{}.frame_rate};
+    rml::Prop<ShareCodec>  share_codec{ShareEncoding{}.codec};
+    rml::Prop<ShareScale>  share_scale{ShareEncoding{}.scale};
 
     rml::Prop<bool>        update_available{false};
     rml::Prop<bool>        update_downloading{false};
     rml::Prop<bool>        update_ready{false};
     rml::Prop<Rml::String> update_version;
 
-    rml::Prop<int>         my_role{3};
+    rml::Prop<Role>        my_role{Role::User};
     rml::Prop<bool>        can_manage_channels{false};
     rml::Prop<bool>        can_kick{false};
     rml::Prop<bool>        can_manage_roles{false};
@@ -165,7 +171,7 @@ public:
     rml::Prop<bool>        show_user_menu{false};
     rml::Prop<int>         menu_user_id{0};
     rml::Prop<Rml::String> menu_user_name;
-    rml::Prop<int>         menu_user_role{0};
+    rml::Prop<Role>        menu_user_role{Role::Owner};
     rml::Prop<float>       menu_user_volume{1.0f};
     rml::Prop<float>       menu_user_music_volume{1.0f};
     rml::Prop<bool>        menu_user_compress{false};
@@ -241,10 +247,10 @@ public:
     std::function<void()>      on_create_channel;
     std::function<void(int)>   on_delete_channel;
     std::function<void()>      on_rename_channel;
-    std::function<void(int, std::string, int)> on_show_user_menu;
+    std::function<void(int, std::string, Role)> on_show_user_menu;
     std::function<void(int, std::string)>      on_show_channel_menu;
 
-    std::function<void(int, int)>    on_set_user_role;
+    std::function<void(int, Role)>   on_set_user_role;
     std::function<void(int)>         on_kick_user;
     std::function<void(int, float)>  on_user_volume_changed;
     std::function<void(int, float)>  on_user_music_volume_changed;

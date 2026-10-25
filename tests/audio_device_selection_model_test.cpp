@@ -35,6 +35,64 @@ bool Check(bool condition, const char* message) {
 	return condition;
 }
 
+bool CheckShareSettingsAndHotkeys(Rml::Context* context, parties::client::LobbyModel& model) {
+	using namespace parties::client;
+	const Rml::String source = R"RML(
+<rml>
+<body data-model="lobby">
+	<div id="codec-h265" data-class-active="share_codec == 1" data-event-click="select_share_codec(1)">H.265</div>
+	<div id="codec-out-of-table" data-event-click="select_share_codec(7)">Bogus</div>
+	<div id="fps-120" data-class-active="share_fps == 3" data-event-click="select_share_fps(3)">120</div>
+	<div id="scale-half" data-class-active="share_scale == 2" data-event-click="select_share_scale(2)">50%</div>
+	<div id="audio-picker" data-if="share_picker_mode == 1">Application audio</div>
+	<span id="ptt-name" data-if="ptt_binding == false && ptt_key_assigned">{{ ptt_key_name }}</span>
+	<span id="ptt-unset" data-if="ptt_binding == false && ptt_key_assigned == false">Not set</span>
+</body>
+</rml>
+)RML";
+	Rml::ElementDocument* document = context->LoadDocumentFromMemory(source, "share-settings-test.rml");
+	if (!Check(document != nullptr, "share settings document did not load"))
+		return false;
+	document->Show();
+	context->Update();
+	bool success = true;
+	auto element = [document](const char* id) { return document->GetElementById(id); };
+
+	success &= Check(!element("codec-h265")->IsClassSet("active"), "H.265 was active before selection");
+	element("codec-h265")->DispatchEvent("click", {});
+	context->Update();
+	success &= Check(model.share_codec.get() == ShareCodec::H265, "codec index 1 did not select H.265");
+	success &= Check(element("codec-h265")->IsClassSet("active"), "RML did not compare the codec enum numerically");
+
+	element("codec-out-of-table")->DispatchEvent("click", {});
+	context->Update();
+	success &= Check(model.share_codec.get() == ShareCodec::H265, "out-of-table codec index changed the selection");
+
+	element("fps-120")->DispatchEvent("click", {});
+	element("scale-half")->DispatchEvent("click", {});
+	context->Update();
+	success &= Check(model.share_fps.get() == ShareFrameRate::Fps120 && element("fps-120")->IsClassSet("active"),
+		"frame rate index 3 did not select 120 fps");
+	success &= Check(model.share_scale.get() == ShareScale::Half && element("scale-half")->IsClassSet("active"),
+		"scale index 2 did not select half scale");
+
+	success &= Check(!element("audio-picker")->IsVisible(), "audio picker copy shown in screen mode");
+	model.share_picker_mode = SharePickerMode::ApplicationAudio;
+	context->Update();
+	success &= Check(element("audio-picker")->IsVisible(), "audio picker copy hidden in application audio mode");
+
+	success &= Check(element("ptt-unset")->IsVisible() && !element("ptt-name")->IsVisible(),
+		"unassigned push to talk did not show Not set");
+	model.ptt_key_assigned = true;
+	model.ptt_key_name = "Ctrl+Space";
+	context->Update();
+	success &= Check(!element("ptt-unset")->IsVisible() && element("ptt-name")->IsVisible(),
+		"assigned push to talk still showed Not set");
+
+	document->Close();
+	return success;
+}
+
 }
 
 int main() {
@@ -107,6 +165,8 @@ int main() {
 		success &= Check(model.selected_playback.get() == 1, "playback model value was not updated");
 		document->Close();
 	}
+
+	success &= CheckShareSettingsAndHotkeys(context, model);
 
 	Rml::RemoveContext("audio-device-selection-test");
 	Rml::Shutdown();

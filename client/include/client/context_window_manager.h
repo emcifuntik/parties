@@ -1,5 +1,7 @@
 #pragma once
 
+#include <parties/permissions.h>
+
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -24,7 +26,7 @@ public:
         int user_id = 0;
         std::string name;
         std::string channel_name;
-        int role = 3;
+        Role role = Role::User;
         bool can_manage_roles = false;
         bool can_kick = false;
         float volume = 1.0f;
@@ -37,7 +39,7 @@ public:
         std::function<void(float)> set_volume;
         std::function<void(float)> set_music_volume;
         std::function<void(bool, float)> set_compression;
-        std::function<void(int)> set_role;
+        std::function<void(Role)> set_role;
         std::function<void()> kick;
     };
 

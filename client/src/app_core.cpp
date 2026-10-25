@@ -50,6 +50,10 @@ std::string trim_display_name(std::string value) {
     return value;
 }
 
+Role role_from_wire(uint8_t raw) {
+    return enum_names_v<Role>.from_persisted_int(raw, Role::User);
+}
+
 int64_t steady_now_us() {
     return std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -513,14 +517,7 @@ void AppCore::load_saved_prefs()
     v = pref("video.share_bitrate");
     if (!v.empty()) model_.share_bitrate = std::strtof(v.c_str(), nullptr);
 
-    v = pref("video.share_fps");
-    if (!v.empty()) model_.share_fps = std::atoi(v.c_str());
-
-    v = pref("video.share_codec");
-    if (!v.empty()) model_.share_codec = std::atoi(v.c_str());
-
-    v = pref("video.share_scale");
-    if (!v.empty()) model_.share_scale = std::atoi(v.c_str());
+    model_.apply_share_encoding(load_share_encoding(settings_));
 
     v = pref("audio.capture_device");
     if (!v.empty()) {
@@ -882,7 +879,7 @@ void AppCore::on_disconnect_cleanup()
     model_.audio_share_target_name = "";
     model_.router.reset();
     model_.show_create_channel = false;
-    model_.my_role = 3;
+    model_.my_role = Role::User;
     model_.can_manage_channels = false;
     chat_model_.can_manage_channels = false;
     model_.can_kick = false;
@@ -1519,7 +1516,7 @@ void AppCore::on_auth_response(const uint8_t* data, size_t len)
     BinaryReader reader(data, len);
     user_id_ = reader.read_u32();
     reader.skip<protocol::ReservedSessionToken>();
-    role_ = reader.read_u8();
+    role_ = role_from_wire(reader.read_u8());
     std::string server_name = reader.read_string();
     server_protocol_version_ = reader.remaining() >= 2
         ? reader.read_u16()
@@ -1557,10 +1554,10 @@ void AppCore::on_auth_response(const uint8_t* data, size_t len)
     model_.is_connected         = true;
     if (bridge_.play_sound) bridge_.play_sound(SoundPlayer::Effect::ServerConnected);
     model_.my_role              = role_;
-    model_.can_manage_channels  = (role_ <= static_cast<int>(parties::Role::Moderator));
+    model_.can_manage_channels  = (role_ <= Role::Moderator);
     chat_model_.can_manage_channels = model_.can_manage_channels;
-    model_.can_kick             = (role_ <= static_cast<int>(parties::Role::Moderator));
-    model_.can_manage_roles     = (role_ <= static_cast<int>(parties::Role::Admin));
+    model_.can_kick             = (role_ <= Role::Moderator);
+    model_.can_manage_roles     = (role_ <= Role::Admin);
 
     server_model_.connected_server_id = connecting_server_id_;
     server_model_.show_login          = false;
@@ -1642,7 +1639,7 @@ void AppCore::on_channel_user_list(const uint8_t* data, size_t len)
     for (uint32_t i = 0; i < count; i++) {
         uint32_t uid      = reader.read_u32();
         std::string uname = reader.read_string();
-        uint8_t urole     = reader.read_u8();
+        Role urole        = role_from_wire(reader.read_u8());
         uint8_t muted     = reader.read_u8();
         uint8_t deaf      = reader.read_u8();
         if (reader.error()) break;
@@ -1721,7 +1718,7 @@ void AppCore::on_user_joined(const uint8_t* data, size_t len)
     uint32_t uid        = reader.read_u32();
     std::string uname   = reader.read_string();
     uint32_t channel_id = reader.read_u32();
-    uint8_t urole       = reader.has_remaining(1) ? reader.read_u8() : 3;
+    Role urole          = reader.has_remaining(1) ? role_from_wire(reader.read_u8()) : Role::User;
     if (reader.error()) return;
 
     auto& channels = model_.channels.silent();
@@ -1805,16 +1802,16 @@ void AppCore::on_user_role_changed(const uint8_t* data, size_t len)
 {
     BinaryReader reader(data, len);
     uint32_t uid      = reader.read_u32();
-    uint8_t new_role  = reader.read_u8();
+    Role new_role     = role_from_wire(reader.read_u8());
     if (reader.error()) return;
 
     if (uid == user_id_) {
         role_                   = new_role;
         model_.my_role          = new_role;
-        model_.can_manage_channels = (new_role <= static_cast<int>(parties::Role::Moderator));
+        model_.can_manage_channels = (new_role <= Role::Moderator);
         chat_model_.can_manage_channels = model_.can_manage_channels;
-        model_.can_kick            = (new_role <= static_cast<int>(parties::Role::Moderator));
-        model_.can_manage_roles    = (new_role <= static_cast<int>(parties::Role::Admin));
+        model_.can_kick            = (new_role <= Role::Moderator);
+        model_.can_manage_roles    = (new_role <= Role::Admin);
     }
     auto& channels = model_.channels.silent();
     for (auto& ch : channels)
@@ -2204,7 +2201,7 @@ void AppCore::setup_model_callbacks()
         model_.show_rename_channel = false;
     };
 
-    model_.on_show_user_menu = [this](int user_id, std::string name, int user_role) {
+    model_.on_show_user_menu = [this](int user_id, std::string name, Role user_role) {
         if (!authenticated_ || static_cast<uint32_t>(user_id) == user_id_) return;
         apply_user_audio_prefs(static_cast<UserId>(user_id));
         model_.menu_user_id            = user_id;
@@ -2240,7 +2237,7 @@ void AppCore::setup_model_callbacks()
         }
     };
 
-    model_.on_set_user_role = [this](int user_id, int new_role) {
+    model_.on_set_user_role = [this](int user_id, Role new_role) {
         if (!authenticated_) return;
         BinaryWriter w;
         w.write_u32(static_cast<uint32_t>(user_id));

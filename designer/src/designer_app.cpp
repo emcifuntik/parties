@@ -219,7 +219,8 @@ struct DesignerApp::PartiesFixture {
 	int room_watched_user_id = 0;
 
 	static parties::client::ChannelUser User(const char* name, int id,
-		bool speaking = false, bool muted = false, bool streaming = false, int role = 3) {
+		bool speaking = false, bool muted = false, bool streaming = false,
+		parties::Role role = parties::Role::User) {
 		parties::client::ChannelUser user;
 		user.name = name;
 		user.id = id;
@@ -328,14 +329,13 @@ struct DesignerApp::PartiesFixture {
 		lobby.vad_enabled = true;
 		lobby.vad_threshold = 0.12f;
 		lobby.voice_level = 0.0f;
-		lobby.share_codec = 0;
-		lobby.share_scale = 0;
-		lobby.share_fps = 2;
+		lobby.share_codec = parties::client::ShareCodec::AV1;
+		lobby.share_scale = parties::client::ShareScale::Source;
+		lobby.share_fps = parties::client::ShareFrameRate::Fps60;
 		lobby.share_bitrate = 8.0f;
-		lobby.share_preset = -1;
 		lobby.selected_share_target = 0;
 		lobby.can_manage_channels = true;
-		lobby.my_role = 0;
+		lobby.my_role = parties::Role::Owner;
 
 		Rml::Vector<parties::client::ChannelInfo> channels;
 		parties::client::ChannelInfo general;
@@ -343,7 +343,7 @@ struct DesignerApp::PartiesFixture {
 		general.name = "General";
 		general.max_users = 64;
 		general.users = {
-			User("tuxick", 1, false, false, false, 0),
+			User("tuxick", 1, false, false, false, parties::Role::Owner),
 			User("IceTroll", 2, true),
 			User("ivan", 3, false, false, true),
 			User("Sara", 4),
@@ -373,7 +373,7 @@ struct DesignerApp::PartiesFixture {
 			{"Microphone (fifine SC3)", 0}, {"Headset Microphone", 1}};
 		lobby.playback_devices = Rml::Vector<parties::client::AudioDevice>{
 			{"Speakers (fifine SC3)", 0}, {"Headphones", 1}};
-		lobby.mute_key = 123;
+		lobby.mute_key_assigned = true;
 		lobby.mute_key_name = "F12";
 
 		Rml::Vector<parties::client::ServerEntry> servers;
@@ -458,10 +458,11 @@ struct DesignerApp::PartiesFixture {
 
 		if (scenario == "share" || scenario == "audio-share") {
 			lobby.router.go(parties::client::DocumentRoute::SharePicker);
-			lobby.share_picker_mode = scenario == "audio-share" ? 1 : 0;
+			lobby.share_picker_mode = scenario == "audio-share"
+				? parties::client::SharePickerMode::ApplicationAudio
+				: parties::client::SharePickerMode::Screen;
 			lobby.selected_share_target = scenario == "audio-share" ? 0 : -1;
-			lobby.share_preset = 1;
-			lobby.share_scale = 1;
+			lobby.share_scale = parties::client::ShareScale::ThreeQuarters;
 			lobby.share_bitrate = 6.0f;
 			if (scenario == "audio-share") {
 				lobby.share_application_targets = Rml::Vector<parties::client::ShareTarget>{
@@ -494,7 +495,7 @@ struct DesignerApp::PartiesFixture {
 		if (scenario == "member") {
 			lobby.menu_user_id = 2;
 			lobby.menu_user_name = "IceTroll";
-			lobby.menu_user_role = 1;
+			lobby.menu_user_role = parties::Role::Admin;
 			lobby.menu_user_volume = 0.86f;
 			lobby.menu_user_music_volume = 0.64f;
 			lobby.menu_user_compress = true;

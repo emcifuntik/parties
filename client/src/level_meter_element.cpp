@@ -6,6 +6,13 @@
 #include <parties/profiler.h>
 
 namespace parties::client {
+namespace {
+
+const Rml::ColourbPremultiplied kLevelFillColour(94, 234, 212, 255);
+const Rml::ColourbPremultiplied kThresholdMarkerColour(232, 100, 90, 255);
+constexpr float kThresholdMarkerWidth = 2.0f;
+
+}
 
 LevelMeterElement::LevelMeterElement(const Rml::String& tag)
     : Rml::Element(tag) {}
@@ -58,10 +65,8 @@ void LevelMeterElement::RebuildGeometry() {
         4, 5, 6, 4, 6, 7,
     };
 
-    Rml::ColourbPremultiplied green(94, 234, 212, 255);
-    Rml::ColourbPremultiplied red(232, 100, 90, 255);
-    for (int i = 0; i < 4; ++i) vertices[i].colour = green;
-    for (int i = 4; i < 8; ++i) vertices[i].colour = red;
+    for (int i = 0; i < 4; ++i) vertices[i].colour = kLevelFillColour;
+    for (int i = 4; i < 8; ++i) vertices[i].colour = kThresholdMarkerColour;
 
     auto* ri = Rml::GetRenderInterface();
     if (!ri) return;
@@ -85,21 +90,18 @@ void LevelMeterElement::UpdateVertices() {
     float fill_w = level_ * w;
 
     float marker_x = threshold_ * w;
-    float marker_w = 2.0f;
+    float marker_end = marker_x + kThresholdMarkerWidth;
 
     Rml::Vertex vertices[8] = {};
-    Rml::ColourbPremultiplied green(94, 234, 212, 255);
-    Rml::ColourbPremultiplied red(232, 100, 90, 255);
+    vertices[0] = {{0, 0}, kLevelFillColour, {0, 0}};
+    vertices[1] = {{fill_w, 0}, kLevelFillColour, {0, 0}};
+    vertices[2] = {{fill_w, h}, kLevelFillColour, {0, 0}};
+    vertices[3] = {{0, h}, kLevelFillColour, {0, 0}};
 
-    vertices[0] = {{0, 0}, green, {0, 0}};
-    vertices[1] = {{fill_w, 0}, green, {0, 0}};
-    vertices[2] = {{fill_w, h}, green, {0, 0}};
-    vertices[3] = {{0, h}, green, {0, 0}};
-
-    vertices[4] = {{marker_x, 0}, red, {0, 0}};
-    vertices[5] = {{marker_x + marker_w, 0}, red, {0, 0}};
-    vertices[6] = {{marker_x + marker_w, h}, red, {0, 0}};
-    vertices[7] = {{marker_x, h}, red, {0, 0}};
+    vertices[4] = {{marker_x, 0}, kThresholdMarkerColour, {0, 0}};
+    vertices[5] = {{marker_end, 0}, kThresholdMarkerColour, {0, 0}};
+    vertices[6] = {{marker_end, h}, kThresholdMarkerColour, {0, 0}};
+    vertices[7] = {{marker_x, h}, kThresholdMarkerColour, {0, 0}};
 
     ext_ri->UpdateGeometryVertices(geom_, {vertices, 8});
     dirty_ = false;

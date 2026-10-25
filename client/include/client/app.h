@@ -8,6 +8,7 @@
 #include <client/rml_elements.h>
 #include <client/stream_audio_capture.h>
 #include <client/context_window_manager.h>
+#include <client/hotkey_binding.h>
 #include <client/win32_power_request.h>
 #include <client/win32_tray.h>
 #include <client/video_decode_gate.h>
@@ -26,11 +27,13 @@
 namespace parties::encdec { struct DecodedFrame; }
 struct ID3D12Device;
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <queue>
 #include <stop_token>
 #include <string>
@@ -63,6 +66,7 @@ public:
     void tick_message_thread();
 
     void poll_hotkeys();
+    void assign_hotkey(HotkeyAction action, std::optional<HotkeyBinding> binding);
 
     void defer_resize(int width, int height);
     void defer_dpi(float scale);
@@ -140,13 +144,12 @@ private:
     std::chrono::steady_clock::time_point ptt_release_time_{};
     bool ptt_held_ = false;
 
-    bool mute_key_held_   = false;
-    bool deafen_key_held_ = false;
-
-    int  capture_peak_key_  = 0;
-    int  capture_peak_key2_ = 0;
-    int  capture_peak_mods_ = 0;
-    bool capture_had_input_ = false;
+    struct HotkeySlot {
+        std::optional<HotkeyBinding> binding;
+        bool held = false;
+    };
+    std::array<HotkeySlot, kHotkeyActions.size()> hotkeys_;
+    std::optional<HotkeyBinding> capture_peak_;
 
     struct ShareThumbnail {
         int target_index = -1;

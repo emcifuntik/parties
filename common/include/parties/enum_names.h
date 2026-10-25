@@ -29,10 +29,14 @@ struct EnumNames {
         return std::nullopt;
     }
 
-    constexpr E from_persisted_int(int raw, E fallback) const {
+    constexpr std::optional<E> from_int(int raw) const {
         for (const auto& e : entries)
             if (static_cast<int>(e.value) == raw) return e.value;
-        return fallback;
+        return std::nullopt;
+    }
+
+    constexpr E from_persisted_int(int raw, E fallback) const {
+        return from_int(raw).value_or(fallback);
     }
 };
 

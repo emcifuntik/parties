@@ -164,7 +164,6 @@ select.settings-device-select selectbox option:checked { font-weight: bold; }
 .settings-vad-foot { font-size: 10dp; font-weight: normal; line-height: 14dp; }
 .settings-test-output,
 .settings-ptt-delay-value { font-size: 12dp; font-weight: bold; line-height: 16dp; }
-.settings-keycap,
 .settings-secondary-action,
 .settings-danger-action,
 .share-codec-btn,

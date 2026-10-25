@@ -90,13 +90,13 @@ if(BUILD_CLIENT)
     target_include_directories(parties_audio_device_selection_model_test PRIVATE
         ../client/include
         ../common/include)
-    target_link_libraries(parties_audio_device_selection_model_test PRIVATE RmlUi::RmlUi)
+    target_link_libraries(parties_audio_device_selection_model_test PRIVATE RmlUi::RmlUi parties_video_policy)
 
     add_executable(parties_channel_stream_model_test
         channel_stream_model_test.cpp
         ../client/src/lobby_model.cpp)
     target_include_directories(parties_channel_stream_model_test PRIVATE ../client/include ../common/include)
-    target_link_libraries(parties_channel_stream_model_test PRIVATE RmlUi::RmlUi)
+    target_link_libraries(parties_channel_stream_model_test PRIVATE RmlUi::RmlUi parties_video_policy)
     add_test(NAME parties_channel_stream_model COMMAND parties_channel_stream_model_test)
 
     add_executable(parties_context_render_manager_lifecycle_test
@@ -117,7 +117,7 @@ if(BUILD_CLIENT)
         ../client/src/video_frame_router.cpp)
     target_include_directories(parties_stream_pip_model_test PRIVATE
         ../client/include ../client/src ../common/include)
-    target_link_libraries(parties_stream_pip_model_test PRIVATE RmlUi::RmlUi)
+    target_link_libraries(parties_stream_pip_model_test PRIVATE RmlUi::RmlUi parties_video_policy)
     add_test(NAME parties_stream_pip_model COMMAND parties_stream_pip_model_test)
 
     add_executable(parties_pip_geometry_test
@@ -181,6 +181,7 @@ target_link_libraries(parties_video_decode_inbox_test PRIVATE parties_video_poli
 
 add_executable(parties_share_settings_test share_settings_test.cpp)
 target_include_directories(parties_share_settings_test PRIVATE ../client/include ../common/include)
+target_link_libraries(parties_share_settings_test PRIVATE parties_video_policy)
 
 add_executable(parties_hotkey_binding_test hotkey_binding_test.cpp)
 target_include_directories(parties_hotkey_binding_test PRIVATE ../client/include)
