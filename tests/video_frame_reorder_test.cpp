@@ -119,12 +119,12 @@ bool test_hold_then_timeout() {
     if (!same(s.lost, {11}) || !b.needs_keyframe()) return fail("timeout: recovery not requested");
     if (!same(s.delivered, {10}) || b.last_delivered() != 10)
         return fail("timeout: broken deltas advanced the decode baseline");
-    // A late delta cannot repair a reference chain already declared lost.
+    // The chain up to 10 is intact, so the late delta itself resumes playback.
     feed(b, s, 11, false, T0 + 170 * MS);
-    if (!same(s.delivered, {10})) return fail("timeout: late delta resumed decoding");
-    feed(b, s, 11, true, T0 + 180 * MS);
     if (!same(s.delivered, {10, 11, 12, 13}) || b.needs_keyframe())
-        return fail("timeout: late keyframe did not recover buffered successors");
+        return fail("timeout: late delta did not resume the intact chain");
+    feed(b, s, 11, true, T0 + 180 * MS);
+    if (!same(s.delivered, {10, 11, 12, 13})) return fail("timeout: stale keyframe delivered");
     // Filling a later gap partially must not restart its timer.
     feed(b, s, 16, false, T0 + 300 * MS);
     feed(b, s, 15, false, T0 + 400 * MS);
@@ -132,12 +132,12 @@ bool test_hold_then_timeout() {
     if (!same(s.lost, {11})) return fail("timeout: second gap expired too early");
     b.poll(T0 + 450 * MS, s.deliver_fn(), s.lost_fn());
     b.poll(T0 + 800 * MS, s.deliver_fn(), s.lost_fn());
-    if (!same(s.lost, {11, 14}) || !b.needs_keyframe() || b.held_bytes() != 0)
-        return fail("timeout: loss repeated or expired recovery deltas retained");
+    if (!same(s.lost, {11, 14}) || !b.needs_keyframe() || b.held_frames() != 2)
+        return fail("timeout: loss repeated or held successors discarded");
     feed(b, s, 14, true, T0 + 810 * MS);
     feed(b, s, 15, false, T0 + 820 * MS);
-    if (!same(s.delivered, {10, 11, 12, 13, 14, 15}))
-        return fail("timeout: keyframe was made stale by expired recovery deltas");
+    if (!same(s.delivered, {10, 11, 12, 13, 14, 15, 16}) || b.needs_keyframe())
+        return fail("timeout: recovery keyframe did not drain held successors");
     return true;
 }
 
@@ -373,7 +373,8 @@ bool test_delayed_recovery_keyframes() {
         bool delivered_key = false;
         for (uint32_t seq : s.delivered) delivered_key |= seq == key;
         if (!delivered_key) return fail("recovery: delayed keyframe discarded after delta overflow");
-        if (b.held_frames() > 8 || b.held_bytes() > 8 * 1024 * 1024)
+        const VideoFrameReorderConfig bounds;
+        if (b.held_frames() > bounds.max_held_frames || b.held_bytes() > bounds.max_bytes)
             return fail("recovery: buffer exceeded its bounds");
     }
     return true;
