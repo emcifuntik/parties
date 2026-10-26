@@ -59,9 +59,9 @@ ReorderOutcome VideoFrameReorderBuffer::on_frame(ParsedVideoFrame&& frame, int64
 
     if (have_last_ && !video_seq_newer(seq, last_delivered_)) return out;
 
-    if (!have_last_ || awaiting_keyframe_) {
+    if (!have_last_) {
         if (!keyframe) {
-            if (!have_last_ && held_.empty()) last_delivered_ = seq;
+            if (held_.empty()) last_delivered_ = seq;
             const int64_t key = key_for(seq);
             if (held_.contains(key)) return out;
             held_bytes_ += frame.wire_size();
@@ -87,6 +87,7 @@ ReorderOutcome VideoFrameReorderBuffer::on_frame(ParsedVideoFrame&& frame, int64
     }
 
     if (seq == last_delivered_ + 1) {
+        awaiting_keyframe_ = false;
         last_delivered_ = seq;
         out.deliver.push_back(std::move(frame));
         drain(out);
@@ -99,6 +100,7 @@ ReorderOutcome VideoFrameReorderBuffer::on_frame(ParsedVideoFrame&& frame, int64
         for (auto it = held_.begin(); it != end; ++it)
             held_bytes_ -= it->second.frame.wire_size();
         held_.erase(held_.begin(), end);
+        awaiting_keyframe_ = false;
         last_delivered_ = seq;
         out.deliver.push_back(std::move(frame));
         drain(out);
@@ -135,7 +137,7 @@ KeyframeRequest VideoFrameReorderBuffer::on_frame_aborted(uint32_t frame_seq) {
 
 KeyframeRequest VideoFrameReorderBuffer::poll(int64_t now_us) {
     const int64_t max_hold_us = static_cast<int64_t>(cfg_.max_hold_ms) * 1000;
-    if (!have_last_ || awaiting_keyframe_) {
+    if (!have_last_) {
         for (auto it = held_.begin(); it != held_.end();) {
             if (now_us - it->second.arrived_us >= max_hold_us) {
                 held_bytes_ -= it->second.frame.wire_size();
@@ -147,6 +149,7 @@ KeyframeRequest VideoFrameReorderBuffer::poll(int64_t now_us) {
         gap_since_us_ = earliest_arrival(held_);
         return KeyframeRequest::None;
     }
+    if (awaiting_keyframe_) return KeyframeRequest::None;
     if (gap_since_us_ && now_us - *gap_since_us_ >= max_hold_us)
         return require_keyframe();
     return KeyframeRequest::None;

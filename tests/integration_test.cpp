@@ -920,10 +920,10 @@ int main() {
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
             TEST_ASSERT(pli_received.load(), "server retries recovery PLI without new frames");
             TEST_ASSERT(send_frame(key, true), "send delayed recovery keyframe");
-            expected.push_back(key);
-            TEST_ASSERT(wait_sequences(expected.size()), "delayed keyframe reaches viewer after gap timeout");
-            TEST_ASSERT(send_frame(key + 1, false), "send successor after recovery");
-            expected.push_back(key + 1);
+            for (uint32_t seq = key; seq <= key + 10; ++seq) expected.push_back(seq);
+            TEST_ASSERT(wait_sequences(expected.size()), "delayed keyframe releases its held successors");
+            TEST_ASSERT(send_frame(key + 11, false), "send successor after recovery");
+            expected.push_back(key + 11);
             TEST_ASSERT(wait_sequences(expected.size()), "playback continues after recovery");
             std::lock_guard<std::mutex> lock(c_video_mutex);
             TEST_ASSERT(c_received_sequences == expected, "recovery preserves usable frame order");

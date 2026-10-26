@@ -12,7 +12,7 @@ namespace parties {
 
 struct VideoFrameReorderConfig {
     uint32_t max_hold_ms          = 150;
-    size_t   max_held_frames      = 8;
+    size_t   max_held_frames      = 240;
     size_t   max_bytes            = 8u * 1024u * 1024u;
 };
 
