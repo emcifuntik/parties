@@ -2,6 +2,7 @@
 
 #include <client/app_core.h>
 #include <client/ui_manager.h>
+#include <client/camera_capture.h>
 #include <client/screen_capture.h>
 #include <client/sound_player.h>
 #include <client/gradient_circle_element.h>
@@ -27,6 +28,8 @@ struct ID3D12Device;
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <queue>
@@ -98,6 +101,19 @@ private:
     void start_application_audio_share(int target_index);
     void stop_application_audio_share();
     void on_video_frame_received(uint32_t sender_id, const uint8_t* data, size_t len);
+
+    // Webcam publishing (PlatformBridge start_camera / stop_camera / restart_camera).
+    struct CameraSession;
+    bool start_camera_capture();
+    void stop_camera_capture();
+    void restart_camera_capture();
+    void poll_camera();                     // message thread: opens, first picture, failures
+    void post_camera_task(std::function<void()> task);
+    void camera_thread_loop();
+    void on_camera_frame(CameraSession& session, ID3D11Texture2D* bgra,
+                         uint32_t width, uint32_t height, int64_t timestamp_100ns);
+    void on_camera_encoded(CameraSession& session, const uint8_t* data, size_t len, bool keyframe,
+                           uint16_t width, uint16_t height, VideoCodecId codec);
 
     // Per-sharer video stream lifecycle (multiple streams play at once in a grid).
     void start_video_stream(UserId sharer_id);
@@ -230,6 +246,56 @@ private:
     std::unique_ptr<StreamAudioCapture> stream_audio_capture_;
     std::unique_ptr<StreamAudioCapture> application_audio_capture_;
     std::atomic<bool> application_audio_sharing_{false};
+
+    // ── Webcam ──
+    // Devices open and close one at a time on camera_thread_: the message
+    // thread never waits on a driver, and a closing device is released before
+    // the next open. Each capture is a CameraSession with its own encoder and
+    // error slot. Its frames are dropped until it is live, and it is published
+    // only once the device has delivered a picture, so a camera that is busy
+    // or blocked by privacy settings is never announced to the room.
+    struct CameraSession {
+        // Message thread, before the open is posted.
+        CameraDevice device;
+        CameraCapture::Config config;
+        VideoCodecId codec = VideoCodecId::AV1;
+        bool restart = false;                    // reopen under an announced stream
+        std::chrono::steady_clock::time_point opened_seen{};   // message thread
+        std::atomic<bool> cancelled{false};      // no longer wanted: skip the open
+        // Camera thread; published by `opened`.
+        CameraCapture capture;
+        bool open_ok = false;
+        std::atomic<bool> opened{false};
+        // Capture worker -> message thread.
+        std::atomic<bool> first_frame{false};
+        // Message thread -> capture worker; published by `live`.
+        uint32_t fps = 30;
+        std::atomic<bool> live{false};
+        // Capture worker only (or the camera thread once the worker is joined).
+        Microsoft::WRL::ComPtr<ID3D11Device> device_ref;   // outlives the encoder
+        std::unique_ptr<VideoEncoder> encoder;
+        bool encoder_failed = false;
+        int  encode_failures = 0;                // consecutive encode_frame failures
+        int64_t next_frame_ts = 0;               // frame limiter phase (100 ns)
+        // Any thread: the first failure after the open.
+        std::mutex error_mutex;
+        std::string error;
+        std::atomic<bool> failed{false};
+
+        void fail(const std::string& reason);
+        std::string failure();
+        void close();                            // joins the capture worker, then the encoder
+        ~CameraSession();                        // close(); defined where VideoEncoder is complete
+    };
+    std::shared_ptr<CameraSession> camera_;          // live (message thread)
+    std::shared_ptr<CameraSession> camera_opening_;  // open in flight, still wanted
+    std::vector<CameraDevice> camera_devices_;       // message thread, bridge.list_cameras order
+    std::atomic<bool> camera_keyframe_requested_{false};
+    std::thread camera_thread_;
+    std::mutex camera_tasks_mutex_;
+    std::condition_variable camera_tasks_cv_;
+    std::deque<std::function<void()>> camera_tasks_;
+    bool camera_thread_exit_ = false;
 
     // ── Video decode (multiple simultaneous sharer streams, tiled in a grid) ──
     struct DecodeWork {

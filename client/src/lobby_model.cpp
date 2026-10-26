@@ -1,4 +1,5 @@
 #include <client/lobby_model.h>
+#include <parties/protocol.h>
 
 #include <RmlUi/Core/Event.h>
 
@@ -13,24 +14,31 @@ void LobbyModel::show_voice_channel(int channel_id) {
     router.go(resume_streams ? DocumentRoute::Streams : DocumentRoute::Room);
 }
 
-bool LobbyModel::add_channel_sharer(int user_id) {
+bool LobbyModel::add_channel_sharer(int stream_id) {
     if (current_channel.get() == 0) return false;
+    const auto stream  = static_cast<uint32_t>(stream_id);
+    if (!protocol::video_stream_valid(stream)) return false;
+    const int  user_id = static_cast<int>(protocol::video_stream_owner(stream));
+    const bool camera  = protocol::video_stream_source(stream) == protocol::VideoSource::Camera;
     for (auto& channel : channels.silent()) {
         if (channel.id != current_channel.get()) continue;
         for (auto& user : channel.users) {
             if (user.id != user_id) continue;
             auto& list = sharers.silent();
             auto found = std::find_if(list.begin(), list.end(),
-                [user_id](const ActiveSharer& sharer) { return sharer.id == user_id; });
+                [stream_id](const ActiveSharer& sharer) { return sharer.id == stream_id; });
             if (found == list.end()) {
                 ActiveSharer sharer;
-                sharer.id = user_id;
+                sharer.id = stream_id;
+                sharer.user_id = user_id;
                 sharer.name = user.name;
+                sharer.camera = camera;
                 list.push_back(std::move(sharer));
             } else {
                 found->name = user.name;
             }
-            user.streaming = true;
+            if (camera) user.camera_on = true;
+            else        user.streaming = true;
             someone_sharing = true;
             channels.notify();
             sharers.notify();
@@ -40,14 +48,17 @@ bool LobbyModel::add_channel_sharer(int user_id) {
     return false;
 }
 
-void LobbyModel::remove_channel_sharer(int user_id) {
+void LobbyModel::remove_channel_sharer(int stream_id) {
     auto& list = sharers.silent();
     list.erase(std::remove_if(list.begin(), list.end(),
-        [user_id](const ActiveSharer& sharer) { return sharer.id == user_id; }), list.end());
+        [stream_id](const ActiveSharer& sharer) { return sharer.id == stream_id; }), list.end());
     someone_sharing = !list.empty();
+    const auto stream  = static_cast<uint32_t>(stream_id);
+    const int  user_id = static_cast<int>(protocol::video_stream_owner(stream));
+    const bool camera  = protocol::video_stream_source(stream) == protocol::VideoSource::Camera;
     for (auto& channel : channels.silent())
         for (auto& user : channel.users)
-            if (user.id == user_id) user.streaming = false;
+            if (user.id == user_id) (camera ? user.camera_on : user.streaming) = false;
     channels.notify();
     sharers.notify();
 }
@@ -56,8 +67,10 @@ void LobbyModel::clear_channel_sharers() {
     sharers.silent().clear();
     someone_sharing = false;
     for (auto& channel : channels.silent())
-        for (auto& user : channel.users)
+        for (auto& user : channel.users) {
             user.streaming = false;
+            user.camera_on = false;
+        }
     channels.notify();
     sharers.notify();
 }
@@ -75,6 +88,7 @@ void LobbyModel::build(rml::Builder& b) {
          .member("speaking",    &ChannelUser::speaking)
          .member("music_playing", &ChannelUser::music_playing)
          .member("streaming",   &ChannelUser::streaming)
+         .member("camera_on",   &ChannelUser::camera_on)
          .member("color_index", &ChannelUser::color_index);
     });
     b.register_array<Rml::Vector<ChannelUser>>();
@@ -104,15 +118,20 @@ void LobbyModel::build(rml::Builder& b) {
 
     b.register_struct<ActiveSharer>([](auto& s) {
         s.member("id",       &ActiveSharer::id)
+         .member("user_id",  &ActiveSharer::user_id)
          .member("name",     &ActiveSharer::name)
-         .member("watching", &ActiveSharer::watching);
+         .member("watching", &ActiveSharer::watching)
+         .member("camera",   &ActiveSharer::camera);
     });
     b.register_array<Rml::Vector<ActiveSharer>>();
 
     b.register_struct<WatchedStream>([](auto& s) {
         s.member("id",         &WatchedStream::id)
+         .member("user_id",    &WatchedStream::user_id)
          .member("name",       &WatchedStream::name)
-         .member("element_id", &WatchedStream::element_id);
+         .member("element_id", &WatchedStream::element_id)
+         .member("camera",     &WatchedStream::camera)
+         .member("mirror",     &WatchedStream::mirror);
     });
     b.register_array<Rml::Vector<WatchedStream>>();
 
@@ -181,6 +200,13 @@ void LobbyModel::build(rml::Builder& b) {
      .bind("share_codec",       share_codec)
      .bind("share_scale",       share_scale)
      .bind("share_preset",      share_preset)
+     .bind("camera_available",  camera_available)
+     .bind("camera_supported",  camera_supported)
+     .bind("is_camera_on",      is_camera_on)
+     .bind("camera_devices",    camera_devices)
+     .bind("selected_camera",   selected_camera)
+     .bind("camera_quality",    camera_quality)
+     .bind("camera_error",      camera_error)
      .bind("update_available",   update_available)
      .bind("update_downloading", update_downloading)
      .bind("update_ready",       update_ready)
@@ -250,10 +276,13 @@ void LobbyModel::build(rml::Builder& b) {
 
     b.on_args<int>("navigate_settings", [this](int section) {
         const int first = static_cast<int>(SettingsSection::AudioVoice);
-        const int last = static_cast<int>(SettingsSection::AccountKeys);
+        const int last = static_cast<int>(SettingsSection::Camera);
         section = std::clamp(section, first, last);
         router.select_settings(static_cast<SettingsSection>(section));
         mobile_show_content = true;
+        // Cameras come and go (USB): list them again whenever the page opens.
+        if (section == static_cast<int>(SettingsSection::Camera) && on_camera_settings_opened)
+            on_camera_settings_opened();
     });
 
     b.on("route_back", [this] {
@@ -431,22 +460,38 @@ void LobbyModel::build(rml::Builder& b) {
         }
     });
 
+    // Participant card: open whatever this user is publishing (screen share
+    // and/or camera). A card of someone who publishes nothing does nothing.
     b.on_args<int>("watch_user_stream", [this](int id) {
-        bool streaming = false;
+        bool publishing = false;
         for (const auto& channel : channels.get()) {
             if (channel.id != current_channel.get()) continue;
             for (const auto& user : channel.users) {
                 if (user.id == id) {
-                    streaming = user.streaming;
+                    publishing = user.streaming || user.camera_on;
                     break;
                 }
             }
-            if (streaming) break;
+            if (publishing) break;
         }
-        if (streaming && on_watch_sharer) {
-            on_watch_sharer(id);
+        if (publishing && on_watch_user) {
+            on_watch_user(id);
             mobile_show_content = true;
         }
+    });
+
+    b.on("toggle_camera", [this] {
+        if (on_toggle_camera) on_toggle_camera();
+    });
+
+    b.on("camera_selection_changed", [this] {
+        if (on_select_camera) on_select_camera(selected_camera.get());
+    });
+
+    b.on_args<int>("select_camera_quality", [this](int quality) {
+        quality = std::clamp(quality, 0, 2);
+        camera_quality = quality;
+        if (on_select_camera_quality) on_select_camera_quality(quality);
     });
 
     b.on_args<int>("select_sharer", [this](int id) {

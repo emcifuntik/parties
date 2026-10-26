@@ -49,12 +49,16 @@ public:
     // Which backend is active?
     const char* backend_name() const;
 
-    // Callback with encoded bitstream data
+    // Callback with encoded bitstream data. Set it before the first encode:
+    // it is handed to the backend once, because an asynchronous backend (MFT)
+    // calls it from its own thread and must never see it reassigned.
     std::function<void(const uint8_t* data, size_t len, bool keyframe)> on_encoded;
 
 private:
     std::unique_ptr<encdec::Encoder> encoder_;
     bool initialized_ = false;
+    bool output_bound_ = false;
+    void bind_output();
 };
 
 } // namespace parties::client

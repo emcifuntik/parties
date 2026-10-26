@@ -302,6 +302,26 @@
     color: #B8E7CC;
 }
 .voice-stage-music > svg { flex-shrink: 0; }
+.voice-stage-camera {
+    display: flex;
+    position: absolute;
+    top: 12dp;
+    right: 12dp;
+    align-items: center;
+    gap: 5dp;
+    padding: 5dp 8dp;
+    border-radius: 8dp;
+    background-color: #17312D;
+    color: #5EEAD4;
+}
+.voice-stage-camera > svg { flex-shrink: 0; image-color: #5EEAD4; }
+
+/* A camera opens on click like a screen share; a screen share's live border
+   wins when the member publishes both. */
+.voice-stage-card.camera-on {
+    border-color: #5EEAD466;
+    cursor: pointer;
+}
 
 .voice-stage-card.streaming {
     border-color: var(--color-danger);

@@ -350,8 +350,7 @@ void MftEncoder::encoder_loop() {
                 input_queue_.pop();
             }
 
-            if (force_keyframe_) {
-                force_keyframe_ = false;
+            if (force_keyframe_.exchange(false)) {
                 ComPtr<ICodecAPI> codec_api;
                 if (SUCCEEDED(encoder_.As(&codec_api))) {
                     VARIANT var;
@@ -431,8 +430,7 @@ bool MftEncoder::encode(ID3D11Texture2D* bgra_texture, int64_t timestamp_100ns) 
         }
         queue_cv_.notify_one();
     } else {
-        if (force_keyframe_) {
-            force_keyframe_ = false;
+        if (force_keyframe_.exchange(false)) {
             ComPtr<ICodecAPI> codec_api;
             if (SUCCEEDED(encoder_.As(&codec_api))) {
                 VARIANT var;

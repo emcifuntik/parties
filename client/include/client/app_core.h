@@ -74,6 +74,23 @@ struct PlatformBridge {
     std::function<void(UserId)>                                start_video_stream;
     std::function<void(UserId)>                                stop_video_stream;
     std::function<void(bool)>                                  set_keep_awake;
+    // Camera publishing — set only on platforms that can capture one; the
+    // camera controls stay hidden elsewhere. start_camera opens the device
+    // selected in model_.selected_camera asynchronously and reports back on
+    // the main thread through AppCore::camera_started / camera_failed; it
+    // returns false when it could not even begin. stop_camera is idempotent
+    // and must leave nothing running.
+    std::function<bool()>                                      start_camera;
+    std::function<void()>                                      stop_camera;
+    // The device or quality changed while the camera is on: reopen the capture
+    // underneath the announced stream (viewers keep it; a failure is reported
+    // through AppCore::camera_failed, which ends the stream).
+    std::function<void()>                                      restart_camera;
+    // Force the camera encoder's next frame to be a keyframe (same cooldown and
+    // threads as request_keyframe).
+    std::function<void()>                                      request_camera_keyframe;
+    // Capture device names, in the index order start_camera uses.
+    std::function<std::vector<std::string>()>                  list_cameras;
 };
 
 class AppCore {
@@ -100,8 +117,9 @@ public:
     ServerListModel   server_model_;
     StreamAudioPlayer stream_audio_player_;
 
-    // Shared state
-    bool        authenticated_        = false;
+    // Shared state. authenticated_ and server_protocol_version_ are also read
+    // by the encoder threads (send_video_frame), hence atomic.
+    std::atomic<bool> authenticated_{false};
     UserId      user_id_              = 0;
     std::string global_name_;          // launcher profile/default for new servers
     std::string username_;
@@ -132,23 +150,34 @@ public:
     std::atomic<uint32_t> stream_frame_count_{0};
     // Protocol version the server reported in AUTH_RESPONSE (1.2+); older
     // servers report nothing and are assumed PROTOCOL_VERSION_ASSUMED_LEGACY.
-    uint16_t    server_protocol_version_ = protocol::PROTOCOL_VERSION_ASSUMED_LEGACY;
+    std::atomic<uint16_t> server_protocol_version_{protocol::PROTOCOL_VERSION_ASSUMED_LEGACY};
 
-    // ── Screen-share sender (shared by Windows/macOS platform code) ─────────
-    // Congestion control: admission on the capture thread + AIMD bitrate.
-    VideoSendController video_sender_;
+    // ── Video senders (shared by Windows/macOS platform code) ───────────────
+    // One per protocol::VideoSource, each with its own frame counter:
+    // congestion control (admission on the capture thread + AIMD bitrate).
+    // The source-less overloads below are the screen share's.
+    VideoSendController video_sender_;    // screen share
+    VideoSendController camera_sender_;   // camera
+    std::atomic<uint32_t> camera_frame_number_{0};
+    VideoSendController& video_sender_for(protocol::VideoSource source) {
+        return source == protocol::VideoSource::Camera ? camera_sender_ : video_sender_;
+    }
 
-    // Share start: clear counters, seed the controller with the user's target.
+    // Stream start: clear counters, seed the controller with the user's target.
     void reset_video_sender(uint32_t target_bitrate_bps);
+    void reset_video_sender(protocol::VideoSource source, uint32_t target_bitrate_bps);
     // UI slider (main thread). The adapted bitrate never exceeds this.
     void set_video_target_bitrate(uint32_t target_bitrate_bps);
     // Capture-thread gate: true = encode this frame. Atomics only.
     bool video_admit_frame();
+    bool video_admit_frame(protocol::VideoSource source);
     // Encode thread: bitrate the encoder should switch to (once per change).
     std::optional<uint32_t> take_video_bitrate_update();
+    std::optional<uint32_t> take_video_bitrate_update(protocol::VideoSource source);
     // Encode thread: true once when a keyframe must be forced (send failure or
     // an incoming PLI that passed the cooldown).
     bool take_video_keyframe_request();
+    bool take_video_keyframe_request(protocol::VideoSource source);
 
     struct VideoSendResult {
         uint32_t frame_seq = 0;   // sequence stamped into the header (always assigned)
@@ -156,10 +185,37 @@ public:
     };
     // Encode-thread entry point used by the platform encoders. Builds the
     // 14-byte VideoFrameHeader, stamps frame_seq, picks the transport (per-frame
-    // stream when the server supports it, else stream 1) and accounts the bytes
-    // in video_sender_. Safe to call when not sharing (returns sent=false).
+    // stream when the server supports it, else stream 1 — screen only) and
+    // accounts the bytes in that source's sender. Safe to call when not
+    // publishing (returns sent=false).
     VideoSendResult send_video_frame(const uint8_t* encoded, size_t len, bool keyframe,
                                      uint16_t width, uint16_t height, VideoCodecId codec);
+    VideoSendResult send_video_frame(protocol::VideoSource source,
+                                     const uint8_t* encoded, size_t len, bool keyframe,
+                                     uint16_t width, uint16_t height, VideoCodecId codec);
+    // Any thread: SCREEN_SHARE_UPDATE for a non-screen source once its encoder
+    // knows the real codec and size.
+    void send_video_stream_update(protocol::VideoSource source, VideoCodecId codec,
+                                  uint16_t width, uint16_t height);
+
+    // ── Camera (main thread) ─────────────────────────────────────────────────
+    // The platform can publish a camera and the server speaks protocol 1.4.
+    bool camera_supported() const;
+    void start_camera();                // camera button on
+    // Button off, leave, channel switch, disconnect (idempotent). tell_server
+    // = false when the server ended the stream itself (no STOP to answer).
+    void stop_camera(bool tell_server = true);
+    // Platform -> core once the capture runs (or failed to): announces the
+    // stream to the channel and opens the local preview.
+    void camera_started();
+    void camera_failed(const std::string& reason);
+    void restart_camera();              // device/quality changed while on
+    void refresh_camera_devices();      // model_.camera_devices from bridge_.list_cameras
+    struct CameraPreset { uint16_t width; uint16_t height; uint32_t fps; uint32_t bitrate_bps; };
+    // model_.camera_quality: 0 = 480p, 1 = 720p, 2 = 1080p (all 30 fps).
+    static CameraPreset camera_preset(int quality);
+    // The capture device the user picked, by index into bridge_.list_cameras.
+    int selected_camera_index() const { return model_.selected_camera.get(); }
     std::string tofu_pending_fingerprint_;
     bool        tofu_pending_ = false;
     // Set on the MsQuic worker thread when the connection drops; the actual
@@ -186,12 +242,16 @@ public:
     std::chrono::steady_clock::time_point reconnect_next_attempt_{};
     std::chrono::steady_clock::time_point auth_success_time_{};  // last successful auth
 
-    // Actions
+    // Actions. Every id below is a stream id (protocol::video_stream_id): a
+    // screen share's is its owner's user id, a camera's sets the source bits.
     void watch_sharer(UserId id);   // single-select (replace) — used by chips/cards + single-decoder platforms
     void stop_watching();           // stop watching ALL streams
     void add_watch(UserId id);      // start watching one more stream (additive when supported)
     void remove_watch(UserId id);   // stop watching one stream
     void toggle_watch(UserId id);   // add if not watched, else remove
+    // Participant card: open everything this user is publishing (screen and
+    // camera; the screen when only one stream can be shown at a time).
+    void watch_user(UserId user_id);
     bool is_watching(UserId id) const;
     // Force the watched set to exactly {id} (or empty if 0) and refresh the grid
     // model. For platforms whose watch flow lives in platform code (macOS/iOS,
@@ -232,7 +292,8 @@ public:
 
     // Channel operations (public so platform can call join_channel if needed)
     void join_channel(ChannelId id);
-    void leave_channel();
+    // tell_server = false: the server already took us out (channel deleted).
+    void leave_channel(bool tell_server = true);
 
 private:
     PlatformBridge bridge_;
@@ -255,11 +316,29 @@ private:
     void erase_reorder_buffer(UserId sharer_id);
 
     // PLI cooldown per target (send_pli) and keyframe-request cooldown for
-    // incoming PLIs (bridge_.request_keyframe). Both touched from the MsQuic
-    // thread and the main thread; guarded by pli_mutex_.
+    // incoming PLIs per source (bridge_.request_keyframe /
+    // request_camera_keyframe). Both touched from the MsQuic thread and the
+    // main thread; guarded by pli_mutex_.
     std::mutex pli_mutex_;
     std::unordered_map<UserId, std::chrono::steady_clock::time_point> pli_last_sent_;
     std::chrono::steady_clock::time_point keyframe_request_last_{};
+    std::chrono::steady_clock::time_point camera_keyframe_request_last_{};
+    void on_keyframe_request(protocol::VideoSource source);   // incoming PLI (MsQuic thread)
+
+    // Camera publishing state (main thread).
+    bool camera_starting_        = false;   // start issued, camera_started not seen yet
+    bool camera_preview_pending_ = false;   // open our own preview once the server confirms
+    bool camera_restart_pending_ = false;   // device/quality changed while still opening
+    // SCREEN_SHARE_STOPs for our camera the server has not echoed yet: an
+    // echo matching one is ours; any other STOPPED means the server ended it.
+    int  camera_stops_in_flight_ = 0;
+    void sync_camera_supported();
+
+    // The watched screen share whose stream audio plays (StreamAudioPlayer is
+    // a single decoder). Cameras carry no audio, so a camera never takes the
+    // focus. Read on the MsQuic worker thread.
+    std::atomic<UserId> audio_sharer_{0};
+    void refocus_stream_audio();           // after a removal: any watched screen, else none
     void retry_pending_plis();          // tick(): re-send while a stream awaits a keyframe
     void feed_video_sender_stats();     // tick(): QUIC stats -> video_sender_
 
@@ -296,6 +375,9 @@ private:
     std::chrono::steady_clock::time_point ping_sent_at_{};
     std::chrono::steady_clock::time_point ping_last_send_{};
     bool ping_pending_ = false;
+    // Last NetClient::datagram_backlog().dropped value written to the log.
+    std::chrono::steady_clock::time_point datagram_drop_log_last_{};
+    uint64_t datagram_drops_logged_ = 0;
 
 #ifdef _WIN32
     std::unique_ptr<class AutoUpdater> updater_;

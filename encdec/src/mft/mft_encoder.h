@@ -8,6 +8,7 @@
 #include <mfidl.h>
 #include <wrl/client.h>
 
+#include <atomic>
 #include <thread>
 #include <mutex>
 #include <condition_variable>
@@ -62,7 +63,9 @@ private:
     uint32_t fps_ = 30;
     bool initialized_ = false;
     bool mf_started_ = false;  // MFStartup succeeded — MFShutdown owed even if init() failed later
-    bool force_keyframe_ = false;
+    // Set by force_keyframe() from any thread (PLI handlers), consumed by the
+    // thread that submits frames.
+    std::atomic<bool> force_keyframe_{false};
 };
 
 } // namespace parties::encdec::mft

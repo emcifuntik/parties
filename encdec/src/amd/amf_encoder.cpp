@@ -280,7 +280,7 @@ bool AmfEncoder::do_encode(ID3D11Texture2D* texture, int64_t timestamp_100ns) {
 
     surface->SetPts(timestamp_100ns);
 
-    const bool requested_keyframe = force_keyframe_;
+    const bool requested_keyframe = force_keyframe_.load();
     if (requested_keyframe) {
         if (codec_ == VideoCodecId::AV1) {
             surface->SetProperty(AMF_VIDEO_ENCODER_AV1_FORCE_FRAME_TYPE,
@@ -328,7 +328,7 @@ bool AmfEncoder::do_encode(ID3D11Texture2D* texture, int64_t timestamp_100ns) {
                  max_submit_retries);
         return true;
     }
-    if (requested_keyframe) force_keyframe_ = false;
+    if (requested_keyframe) force_keyframe_.store(false);
 
     // The QUERY_TIMEOUT property makes QueryOutput block inside AMF for up to
     // one frame interval, so a single call normally returns the frame just

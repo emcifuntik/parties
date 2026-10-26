@@ -108,6 +108,10 @@
     width: 250dp;
     margin-left: -125dp;
 }
+.platform-desktop .stream-call-dock.with-camera {
+    width: 298dp;
+    margin-left: -149dp;
+}
 .platform-desktop .send-btn.ui-icon-button {
     width: 40dp;
     height: 40dp;
