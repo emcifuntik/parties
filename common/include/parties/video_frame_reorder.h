@@ -12,9 +12,10 @@
 //   * holds newer complete frames while an older one is missing, bounded by
 //     max_hold_ms / max_held_frames / max_bytes;
 //   * on timeout, abort of the missing frame, or overflow, reports the gap once
-//     via `lost` and waits for a keyframe without advancing over broken deltas;
-//   * retains bounded recovery deltas, so a delayed keyframe can release its
-//     successors even after the original gap expired;
+//     via `lost` so the owner requests a keyframe, but keeps holding: the
+//     missing frame is usually a retransmission still in flight, and whichever
+//     of it or a keyframe arrives first resumes delivery without advancing over
+//     broken deltas;
 //   * delivers a held keyframe immediately: nothing before a keyframe matters;
 //   * ignores frames older than the last delivered one and duplicates;
 //   * resets its baseline only when the owner explicitly resets the share.
@@ -36,8 +37,8 @@
 namespace parties {
 
 struct VideoFrameReorderConfig {
-    uint32_t max_hold_ms          = 150;                 // wait this long for a missing frame
-    size_t   max_held_frames      = 8;                   // then give up on the gap
+    uint32_t max_hold_ms          = 150;                 // then request a keyframe
+    size_t   max_held_frames      = 240;                 // drop the oldest beyond this
     size_t   max_bytes            = 8u * 1024u * 1024u;  // total bytes held
 };
 
