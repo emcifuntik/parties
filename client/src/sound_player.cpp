@@ -10,7 +10,6 @@
 
 namespace parties::client {
 
-// Embedded WAV files (16-bit PCM, 48kHz, exported from sounds/generator.html)
 static constexpr unsigned char wav_unmute[] = {
     #embed "../../sounds/parties-unmute.wav"
 };
@@ -48,11 +47,9 @@ static constexpr unsigned char wav_viewer_joined[] = {
     #embed "../../sounds/parties-viewer-joined.wav"
 };
 
-// Decode 16-bit PCM WAV to float samples.
 // Scans for "data" subchunk to handle varying header sizes.
 static std::vector<float> decode_wav(const unsigned char* data, size_t size) {
     std::vector<float> out;
-    // Find "data" subchunk
     for (size_t i = 0; i + 8 < size; i++) {
         if (data[i] == 'd' && data[i+1] == 'a' &&
             data[i+2] == 't' && data[i+3] == 'a') {
@@ -173,7 +170,7 @@ void SoundPlayer::play(Effect effect) {
 }
 
 void SoundPlayer::data_callback(ma_device* device, void* output,
-                                  const void* /*input*/, ma_uint32 frame_count) {
+                                  const void*, ma_uint32 frame_count) {
     auto* self = static_cast<SoundPlayer*>(device->pUserData);
     auto* out = static_cast<float*>(output);
     std::memset(out, 0, frame_count * sizeof(float));
@@ -201,4 +198,4 @@ void SoundPlayer::data_callback(ma_device* device, void* output,
     }
 }
 
-} // namespace parties::client
+}

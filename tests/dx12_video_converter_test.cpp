@@ -1,4 +1,5 @@
 #include "dx12/Dx12VideoConverter.h"
+#include "test_skip.h"
 
 #include <d3d12.h>
 #include <wrl/client.h>
@@ -47,9 +48,9 @@ std::array<uint8_t, 4> convert(ID3D12Device* device, ID3D12CommandQueue* queue,
 		uv[index * 2 + 1] = v[index];
 	}
 	const bool updated = layout == Dx12VideoConverter::Layout::I420
-		? converter.UpdateI420(*texture, list.Get(), 0, y.data(), width,
+		? converter.UpdateI420(*texture, list.Get(), Dx12FrameSlot::after_fence_wait(0), y.data(), width,
 			u.data(), v.data(), width / 2)
-		: converter.UpdateNV12(*texture, list.Get(), 0, y.data(), width,
+		: converter.UpdateNV12(*texture, list.Get(), Dx12FrameSlot::after_fence_wait(0), y.data(), width,
 			uv.data(), width);
 	if (!updated) return {};
 
@@ -132,7 +133,7 @@ bool upload_direct_nv12(ID3D12Device* device, ID3D12CommandQueue* queue,
 		uv[index] = 90;
 		uv[index + 1] = 240;
 	}
-	if (!converter.UpdateNV12(*texture, list.Get(), 0, y.data(), width,
+	if (!converter.UpdateNV12(*texture, list.Get(), Dx12FrameSlot::after_fence_wait(0), y.data(), width,
 		uv.data(), width))
 		return false;
 
@@ -205,13 +206,13 @@ bool upload_direct_nv12(ID3D12Device* device, ID3D12CommandQueue* queue,
 	}
 	return samples[0] == 81 && samples[1] == 90 && samples[2] == 240;
 }
-} // namespace
+}
 
 int main() {
 	ComPtr<ID3D12Device> device;
 	if (FAILED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0,
 		IID_PPV_ARGS(&device))))
-		return 77;
+		return kSkipExitCode;
 	D3D12_COMMAND_QUEUE_DESC queue_desc{};
 	queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
 	ComPtr<ID3D12CommandQueue> queue;

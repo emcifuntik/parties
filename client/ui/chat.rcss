@@ -1,7 +1,3 @@
-/* Text chat, messages, search, attachments and composer. */
-
-/* ── Chat content ────────────────────────────────────── */
-
 .chat-content {
     display: flex;
     flex-direction: column;
@@ -65,7 +61,6 @@
     background-color: #252838;
 }
 
-/* Search bar */
 .chat-search-bar {
     display: flex;
     padding: 8dp 20dp;
@@ -82,7 +77,6 @@ input.chat-search-input.ui-input {
     color: #C4C8D8;
 }
 
-/* Pinned messages panel */
 .chat-pinned-panel {
     display: flex;
     flex-direction: column;
@@ -112,7 +106,6 @@ input.chat-search-input.ui-input {
     text-align: center;
 }
 
-/* Date separator */
 .date-separator {
     display: flex;
     flex-direction: row;
@@ -135,7 +128,6 @@ input.chat-search-input.ui-input {
     font-weight: bold;
 }
 
-/* Message list */
 .chat-messages {
     display: flex;
     flex-direction: column;
@@ -158,7 +150,6 @@ input.chat-search-input.ui-input {
     text-decoration: underline;
 }
 
-/* Message row — avatar + body side by side */
 .msg-row {
     display: flex;
     flex-direction: row;
@@ -170,7 +161,6 @@ input.chat-search-input.ui-input {
     background-color: #1A1D28;
 }
 
-/* Avatar — gradient circle with initials overlay */
 .msg-avatar-wrap {
     display: flex;
     flex: none;
@@ -200,7 +190,6 @@ input.chat-search-input.ui-input {
     position: relative;
 }
 
-/* Message body */
 .msg-body {
     display: block;
     flex: 1;
@@ -247,7 +236,6 @@ selectable_text {
     text-decoration: underline;
 }
 
-/* Attachment cards */
 .msg-attachments {
     display: flex;
     flex-direction: column;
@@ -308,7 +296,6 @@ selectable_text {
     image-color: #7C9BFC;
 }
 
-/* Empty state */
 .chat-empty {
     display: flex;
     flex: 1;
@@ -316,7 +303,6 @@ selectable_text {
     align-items: center;
 }
 
-/* Unread dot */
 .chat-unread-dot {
     display: block;
     width: 6dp;
@@ -331,8 +317,6 @@ selectable_text {
     color: #F0F2F8;
     font-weight: bold;
 }
-
-/* ── Compose area ─────────────────────────────────────── */
 
 .chat-compose {
     display: flex;
@@ -415,7 +399,6 @@ input.text.compose-input {
     image-color: #0E1018;
 }
 
-/* Pending files */
 .pending-files {
     display: flex;
     flex-direction: row;
@@ -459,8 +442,6 @@ input.text.compose-input {
     background-color: #3D1515;
 }
 
-/* Chat visual composition. */
-/* Chat */
 .chat-welcome {
     display: flex;
     flex-direction: row;

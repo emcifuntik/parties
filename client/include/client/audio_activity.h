@@ -8,8 +8,6 @@
 
 namespace parties::client {
 
-// UI activity follows audible source PCM before receiver volume controls.
-// A deadline prevents a stalled audio callback from leaving the indicator on.
 class AudioActivity {
 public:
     using Clock = std::chrono::steady_clock;
@@ -44,4 +42,4 @@ private:
     std::atomic<int64_t> active_until_{0};
 };
 
-} // namespace parties::client
+}

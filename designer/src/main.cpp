@@ -1,6 +1,3 @@
-// RmlUI Designer — entry point
-// Usage: rmlui_designer [path/to/file.rml] [options]
-
 #include "designer_app.h"
 
 #include <cstdio>
@@ -19,7 +16,6 @@
 #pragma comment(lib, "shcore.lib")
 
 int main(int argc, char* argv[]) {
-	// Enable per-monitor DPI awareness
 	SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
 	std::string initial_file;
@@ -34,7 +30,6 @@ int main(int argc, char* argv[]) {
 	float density = 0.0f;
 	bool manager_visible = true;
 
-	// Parse command line
 	for (int i = 1; i < argc; i++) {
 		if (std::strcmp(argv[i], "--asset-dir") == 0 && i + 1 < argc) {
 			asset_dirs.push_back(argv[++i]);
@@ -130,12 +125,9 @@ int main(int argc, char* argv[]) {
 		return 1;
 	}
 
-	// Add extra asset directories from command line
 	for (auto& d : asset_dirs)
 		app.AddAssetFolder(d);
 
-	// Configure models before loading the document. Previously --vars was loaded
-	// afterwards, leaving the preview bound to stale/missing variables.
 	if (!fixture.empty()) {
 		app.SetAutoLoadBindVars(false);
 		app.ConfigurePartiesFixture(fixture);

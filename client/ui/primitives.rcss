@@ -1,8 +1,3 @@
-/* Low-level RmlUI controls
-   Native form elements and renderer pseudo-elements used by screen modules. */
-
-/* ── Form elements ─────────────────────────────────── */
-
 input.text,
 input.password {
     display: block;
@@ -75,8 +70,6 @@ input.password:focus {
     margin-top: 6dp;
 }
 
-/* ── CSS-drawn close icon (reusable X) ─────────────── */
-
 .close-icon {
     display: block;
     position: relative;
@@ -122,8 +115,6 @@ input.password:focus {
     letter-spacing: 0.5dp;
 }
 
-/* ── Device list ──────────────────────────────────── */
-
 .device-list {
     display: flex;
     flex-direction: column;
@@ -147,8 +138,6 @@ input.password:focus {
     background-color: #232840;
     color: #6EECD4;
 }
-
-/* ── Toggle switches ──────────────────────────────── */
 
 .settings-toggle {
     display: flex;
@@ -179,8 +168,6 @@ input.password:focus {
     color: #A0A8C0;
     font-size: 14dp;
 }
-
-/* ── Sliders ──────────────────────────────────────── */
 
 .slider-row {
     display: flex;
@@ -243,8 +230,6 @@ input.range sliderarrowinc {
     width: 0dp;
 }
 
-/* ── Voice level meter ────────────────────────────── */
-
 .vad-settings {
     display: flex;
     flex-direction: column;
@@ -277,8 +262,6 @@ input.range sliderarrowinc {
     border-radius: 1dp;
 }
 
-/* ── Push-to-Talk keybind ──────────────────────────── */
-
 .ptt-settings {
     display: block;
 }
@@ -307,8 +290,6 @@ input.range sliderarrowinc {
 .keybind-btn:hover {
     border-color: #6EECD4;
 }
-
-/* ── Scrollbar ─────────────────────────────────────── */
 
 scrollbarvertical {
     width: 4dp;

@@ -15,7 +15,7 @@ namespace parties::client {
 namespace {
 
 ChannelUser FixtureUser(const char* name, int id, bool speaking = false,
-                        bool muted = false, bool streaming = false, int role = 3)
+                        bool muted = false, bool streaming = false, Role role = Role::User)
 {
     ChannelUser user;
     user.name = name;
@@ -77,7 +77,7 @@ std::vector<uint8_t> MockStreamFrame(int variant)
     return pixels;
 }
 
-} // namespace
+}
 
 bool IsUIFixtureScenario(const std::string& scenario)
 {
@@ -122,7 +122,7 @@ void PopulateUIFixture(AppCore& core, const std::string& scenario, bool macos)
     lobby.can_manage_channels = true;
     lobby.can_manage_roles = true;
     lobby.can_kick = true;
-    lobby.my_role = 0;
+    lobby.my_role = Role::Owner;
     lobby.voice_volume = 1.0f;
     lobby.secondary_volume = 0.82f;
     lobby.music_send_volume = 0.72f;
@@ -138,9 +138,9 @@ void PopulateUIFixture(AppCore& core, const std::string& scenario, bool macos)
     lobby.ptt_delay = 250.0f;
     lobby.ptt_delay_text = "250 ms";
     lobby.share_bitrate = 8.0f;
-    lobby.share_fps = 2;
-    lobby.share_codec = 1;
-    lobby.share_scale = 0;
+    lobby.share_fps = ShareFrameRate::Fps60;
+    lobby.share_codec = ShareCodec::H265;
+    lobby.share_scale = ShareScale::Source;
     lobby.mobile_show_content = !disconnected;
 
     ChannelInfo general;
@@ -148,8 +148,8 @@ void PopulateUIFixture(AppCore& core, const std::string& scenario, bool macos)
     general.name = "General";
     general.max_users = 64;
     general.users = {
-        FixtureUser("tuxick", 1, false, false, false, 0),
-        FixtureUser("IceTroll", 2, true, false, false, 1),
+        FixtureUser("tuxick", 1, false, false, false, Role::Owner),
+        FixtureUser("IceTroll", 2, true, false, false, Role::Admin),
         FixtureUser("ivan", 3, false, false, true),
         FixtureUser("Sara", 4), FixtureUser("Maks", 5, false, true),
         FixtureUser("android", 6), FixtureUser("Noah", 7)
@@ -175,9 +175,9 @@ void PopulateUIFixture(AppCore& core, const std::string& scenario, bool macos)
                                                        {"AirPods Pro", 1}};
     lobby.selected_capture = 0;
     lobby.selected_playback = 0;
-    lobby.mute_key = macos ? 1 : 0;
-    lobby.deafen_key = macos ? 1 : 0;
-    lobby.ptt_key = macos ? 1 : 0;
+    lobby.mute_key_assigned = macos;
+    lobby.deafen_key_assigned = macos;
+    lobby.ptt_key_assigned = macos;
     lobby.mute_key_name = macos ? "⌘⇧M" : "Not available on iOS";
     lobby.deafen_key_name = macos ? "⌘⇧D" : "Not available on iOS";
     lobby.ptt_key_name = macos ? "Space" : "Not available on iOS";
@@ -249,7 +249,8 @@ void PopulateUIFixture(AppCore& core, const std::string& scenario, bool macos)
     } else if (scenario == "share" || scenario == "audio-share" ||
                scenario == "native-share-picker" || scenario == "native-audio-picker") {
         lobby.router.go(DocumentRoute::SharePicker);
-        lobby.share_picker_mode = (scenario == "audio-share" || scenario == "native-audio-picker") ? 1 : 0;
+        lobby.share_picker_mode = (scenario == "audio-share" || scenario == "native-audio-picker")
+            ? SharePickerMode::ApplicationAudio : SharePickerMode::Screen;
         lobby.use_native_picker = macos;
         lobby.share_monitor_targets = Rml::Vector<ShareTarget>{{"Studio Display", 0, true, "share-target-0"}};
         lobby.share_application_targets = Rml::Vector<ShareTarget>{
@@ -308,7 +309,7 @@ void PopulateUIFixture(AppCore& core, const std::string& scenario, bool macos)
     if (scenario == "member") {
         lobby.menu_user_id = 2;
         lobby.menu_user_name = "IceTroll";
-        lobby.menu_user_role = 1;
+        lobby.menu_user_role = Role::Admin;
         lobby.menu_user_volume = 0.86f;
         lobby.menu_user_music_volume = 0.64f;
         lobby.menu_user_compress = true;
@@ -348,4 +349,4 @@ void ApplyUIFixtureDocument(Rml::ElementDocument* document, const std::string& s
     }
 }
 
-} // namespace parties::client
+}

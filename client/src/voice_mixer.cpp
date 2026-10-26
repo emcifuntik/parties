@@ -23,12 +23,10 @@ VoiceMixer::UserStream& VoiceMixer::get_or_create_stream(UserId user_id) {
     stream.decoder.init_decoder(audio::SAMPLE_RATE, audio::CHANNELS);
     stream.initialized = true;
     stream.pcm_buf.resize(audio::OPUS_FRAME_SIZE, 0.0f);
-    stream.pcm_pos = audio::OPUS_FRAME_SIZE; // Empty — will trigger decode on first read
+    stream.pcm_pos = audio::OPUS_FRAME_SIZE;
     return stream;
 }
 
-// Signed distance from a to b in uint16_t sequence space.
-// Positive means b is ahead of a.
 static int16_t seq_diff(uint16_t a, uint16_t b) {
     return static_cast<int16_t>(b - a);
 }
@@ -41,22 +39,18 @@ void VoiceMixer::push_packet(UserId user_id, uint16_t seq, const uint8_t* opus_d
         is_new = (streams_.find(user_id) == streams_.end());
         auto& stream = get_or_create_stream(user_id);
 
-        // First packet establishes the sequence baseline
         if (!stream.has_seq) {
             stream.next_seq = seq;
             stream.has_seq = true;
         }
 
-        // Discard packets that are too old (already played)
         if (seq_diff(stream.next_seq, seq) < 0)
             return;
 
-        // Find insertion index (sorted by seq). Search from the back since
-        // packets typically arrive roughly in order.
         size_t insert_idx = stream.packet_queue.size();
         for (size_t i = stream.packet_queue.size(); i > 0; --i) {
             int16_t d = seq_diff(stream.packet_queue[i - 1].seq, seq);
-            if (d == 0) return;  // duplicate
+            if (d == 0) return;
             if (d > 0) {
                 insert_idx = i;
                 break;
@@ -67,10 +61,6 @@ void VoiceMixer::push_packet(UserId user_id, uint16_t seq, const uint8_t* opus_d
         stream.packet_queue.insert(stream.packet_queue.begin() + insert_idx,
                                    {seq, {opus_data, opus_data + opus_len}});
 
-        // Keep the newest bounded window. An eviction is intentional catch-up,
-        // not network loss: concealing the evicted slot would leave the queue
-        // full, so every subsequent arrival would evict the next owed packet
-        // and trap a continuous stream in FEC/PLC until reconnecting.
         if (stream.packet_queue.size() > MAX_JITTER_PACKETS) {
             stream.packet_queue.pop_front();
             const uint16_t front = stream.packet_queue.front().seq;
@@ -82,30 +72,14 @@ void VoiceMixer::push_packet(UserId user_id, uint16_t seq, const uint8_t* opus_d
         }
     }
 
-    // Notify after releasing mutex so the handler can call set_user_volume etc.
     if (is_new && on_stream_created)
         on_stream_created(user_id);
 }
 
-// Sequence-continuity-aware playout with Opus in-band FEC recovery.
-//
-// Each emitted 20ms slot makes one decoder call and advances next_seq once,
-// except when catching up after a queue overrun or an unrecoverable gap.
-// The only same-packet double-decode is the documented
-// pair — FEC(successor) to fill a lost slot, then a normal decode of that same
-// successor on the next slot — two consecutive decoder calls with nothing between
-// (required for Opus concealment state continuity).
-//
-// next_seq is the sequence number we owe THIS output slot. Buffer gaps come only
-// from real loss/reorder: sequence numbers are contiguous across VAD silence
-// (voice_seq_ only advances when a packet is actually sent), so a talk-spurt pause
-// drains the queue (step 2 underrun) rather than jumping the sequence.
 bool VoiceMixer::decode_frame(UserStream& stream, float* pcm_out, int frame_size) {
 	ZoneScopedN("VoiceMixer::decode_frame");
     if (!stream.initialized) return false;
 
-    // 1. Prime: buffer JITTER_PRE_BUFFER packets before first playback, then start
-    //    the playout clock at the lowest buffered sequence number.
     if (!stream.primed) {
         if (stream.packet_queue.size() < static_cast<size_t>(JITTER_PRE_BUFFER))
             return false;
@@ -113,95 +87,73 @@ bool VoiceMixer::decode_frame(UserStream& stream, float* pcm_out, int frame_size
         stream.next_seq = stream.packet_queue.front().seq;
     }
 
-    // 2. Underrun (empty queue): no successor to recover from — bounded PLC, then
-    //    re-prime. This is also the path a VAD-silence pause takes.
     if (stream.packet_queue.empty()) {
         if (++stream.consecutive_empty <= PLC_MAX_FRAMES) {
-            int d = stream.decoder.decode(nullptr, 0, pcm_out, frame_size, 0);
+            const auto d = stream.decoder.conceal_lost_frame(pcm_out, frame_size);
             ++stream.next_seq;
             ++stats_.plc;
-            return d > 0;
+            return d.value_or(0) > 0;
         }
         stream.primed = false;
         stream.has_seq = false;
         return false;
     }
 
-    // 3. Discard any stale front (older than the slot we owe) WITHOUT decoding —
-    //    never rewind the playout clock. push_packet already rejects these, but a
-    //    prime/underrun reset can transiently leave one.
     while (!stream.packet_queue.empty() &&
            seq_diff(stream.next_seq, stream.packet_queue.front().seq) < 0) {
         stream.packet_queue.pop_front();
     }
     if (stream.packet_queue.empty()) {
         ++stream.consecutive_empty;
-        int d = stream.decoder.decode(nullptr, 0, pcm_out, frame_size, 0);
+        const auto d = stream.decoder.conceal_lost_frame(pcm_out, frame_size);
         ++stream.next_seq;
         ++stats_.plc;
-        return d > 0;
+        return d.value_or(0) > 0;
     }
 
     uint16_t front = stream.packet_queue.front().seq;
-    int16_t gap = seq_diff(stream.next_seq, front);   // 0 = owed frame present; >0 = hole(s)
+    int16_t gap = seq_diff(stream.next_seq, front);
 
-    // 4. Resync valve: a gap this large is not recoverable loss (a voice_seq_ reset
-    //    on reconnect, or a pathological burst). Snap the clock to the next packet.
     if (gap >= RESYNC_GAP) {
         stream.next_seq = front;
         gap = 0;
         ++stats_.resync;
     }
 
-    // 5. In-order: the owed frame is at the front — normal decode and consume.
     if (gap == 0) {
         auto& pkt = stream.packet_queue.front();
-        int d = stream.decoder.decode(pkt.data.data(), static_cast<int>(pkt.data.size()),
-                                      pcm_out, frame_size, 0);
+        const auto d = stream.decoder.decode(pkt.data, pcm_out, frame_size);
         stream.next_seq = pkt.seq + 1;
         stream.packet_queue.pop_front();
         stream.consecutive_empty = 0;
         ++stats_.normal;
-        return d > 0;
+        return d.value_or(0) > 0;
     }
 
-    // 6. Single loss: the owed frame is missing but its immediate successor is the
-    //    front — reconstruct it from the successor's in-band FEC (LBRR). Do NOT pop
-    //    the successor; it is decoded normally on the next slot (step 5), which is
-    //    the required consecutive FEC(succ)→normal(succ) pair for Opus state
-    //    continuity. If a queue overrun evicts the successor before its normal
-    //    decode, push_packet advances to the retained window instead. Opus
-    //    internally PLCs if the packet carried no LBRR.
     if (gap == 1) {
-        auto& succ = stream.packet_queue.front();   // seq == next_seq + 1
-        int d = stream.decoder.decode(succ.data.data(), static_cast<int>(succ.data.size()),
-                                      pcm_out, frame_size, /*decode_fec=*/1);
+        auto& succ = stream.packet_queue.front();
+        const auto d = stream.decoder.recover_from_successor_fec(succ.data, pcm_out, frame_size);
         ++stream.next_seq;
         stream.consecutive_empty = 0;
         ++stats_.fec;
-        return d > 0;
+        return d.value_or(0) > 0;
     }
 
-    // 7. Burst / non-adjacent gap (gap >= 2): the owed frame's successor isn't here
-    //    yet (FEC is 1-deep), so conceal this slot with PLC and advance. As next_seq
-    //    climbs the gap shrinks; the last missing frame before `front` is recovered
-    //    via FEC (step 6), then step 5 resumes. Bound the run, then snap forward.
     if (++stream.consecutive_empty > PLC_MAX_FRAMES) {
         stream.next_seq = front;
         stream.consecutive_empty = 0;
         ++stats_.resync;
         auto& pkt = stream.packet_queue.front();
-        int d = stream.decoder.decode(pkt.data.data(), static_cast<int>(pkt.data.size()),
-                                      pcm_out, frame_size, 0);
+        const auto d = stream.decoder.decode(pkt.data, pcm_out, frame_size);
         stream.next_seq = pkt.seq + 1;
         stream.packet_queue.pop_front();
         ++stats_.normal;
-        return d > 0;
+        return d.value_or(0) > 0;
     }
-    int d = stream.decoder.decode(nullptr, 0, pcm_out, frame_size, 0);
+    const auto d = stream.decoder.conceal_lost_frame(pcm_out, frame_size);
     ++stream.next_seq;
     ++stats_.plc;
-    return d > 0;
+    return d.value_or(0) > 0;
 }
 
 VoiceMixer::DecodeStats VoiceMixer::decode_stats() const {
@@ -217,19 +169,13 @@ void VoiceMixer::mix_output(float* output, int frame_count) {
 
     if (streams_.empty()) return;
 
-    // Each user has an independent PCM cursor. Device callback sizes and join
-    // times need not align to an Opus frame, so consume only its remaining PCM
-    // before decoding the next frame.
     for (auto& [uid, stream] : streams_) {
         int written = 0;
         while (written < frame_count) {
-            // Check if we need to decode a new frame for this user
             if (stream.pcm_pos >= static_cast<size_t>(audio::OPUS_FRAME_SIZE)) {
-                // Need a new decoded frame
                 user_buf_.assign(audio::OPUS_FRAME_SIZE, 0.0f);
                 if (decode_frame(stream, user_buf_.data(), audio::OPUS_FRAME_SIZE)) {
                     stream.pcm_buf = user_buf_;
-                    // Compute RMS for speaking detection
                     float sum = 0.0f;
                     for (int i = 0; i < audio::OPUS_FRAME_SIZE; i++)
                         sum += user_buf_[i] * user_buf_[i];
@@ -246,7 +192,6 @@ void VoiceMixer::mix_output(float* output, int frame_count) {
             const int chunk = std::min(frame_count - written,
                 audio::OPUS_FRAME_SIZE - static_cast<int>(stream.pcm_pos));
 
-            // Per-user compression: adjust gain to normalize this user's level
             if (stream.compress && stream.level > 0.001f) {
                 float target = stream.compress_target * stream.compress_target * stream.compress_target;
                 float desired_gain = target / stream.level;
@@ -255,9 +200,6 @@ void VoiceMixer::mix_output(float* output, int frame_count) {
                 stream.compress_gain += alpha * (desired_gain - stream.compress_gain);
             }
 
-            // Mix this user's decoded PCM into output. The stored volume is the
-            // slider position (0..2); map it through the perceptual curve so the
-            // control feels linear to the ear. Compression gain stays linear.
             float vol = audio::volume_position_to_gain(stream.volume)
                       * (stream.compress ? stream.compress_gain : 1.0f);
             for (int i = 0; i < chunk; i++) {
@@ -268,9 +210,6 @@ void VoiceMixer::mix_output(float* output, int frame_count) {
         }
     }
 
-    // Apply makeup gain (primary voice only — received voice is low at unity)
-    // and the per-mix global volume, then clip. The aux mix skips makeup so its
-    // already-leveled audio (music/sounds) is not artificially boosted.
     const float makeup = apply_makeup_ ? audio::db_to_gain(audio::VOICE_OUTPUT_GAIN_DB) : 1.0f;
     const float master = makeup * audio::volume_position_to_gain(master_volume_);
     for (int i = 0; i < frame_count; i++) {
@@ -323,7 +262,7 @@ void VoiceMixer::set_user_compression(UserId user_id, bool enabled, float target
         it->second.compress = enabled;
         it->second.compress_target = std::clamp(target, 0.0f, 1.0f);
         if (!enabled)
-            it->second.compress_gain = 1.0f; // Reset gain when disabling
+            it->second.compress_gain = 1.0f;
     }
 }
 
@@ -358,4 +297,4 @@ std::vector<UserId> VoiceMixer::get_active_users() const {
     return result;
 }
 
-} // namespace parties::client
+}

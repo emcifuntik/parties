@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <filesystem>
 #include <string>
 #include <thread>
 
@@ -8,6 +9,24 @@
 #include <Windows.h>
 
 namespace parties::client {
+
+enum class UpdateLaunchMode {
+    Normal,
+    CleanupAfterRename,
+    // "--update-replace <old>" is produced only by updaters older than commit
+    // 62571ef, which launched parties_client_new.exe. Kept so those clients can
+    // still finish updating.
+    LegacyReplace,
+};
+
+struct UpdateLaunch {
+    UpdateLaunchMode mode = UpdateLaunchMode::Normal;
+    std::filesystem::path other_exe;
+};
+
+UpdateLaunch parse_update_launch(int argc, char** argv);
+
+enum class UpdateLaunchResult { Continue, ExitWithFailure };
 
 class AutoUpdater {
 public:
@@ -26,17 +45,13 @@ public:
     void start();
     void stop();
 
-    // Call from main thread each frame. Returns true if state changed.
     bool poll();
 
-    // Trigger download. Only valid in UpdateAvailable state.
     void download();
 
-    // Apply update: copy new exe beside current, launch it with --update-replace, exit.
     void apply_and_restart();
 
-    // Handle --update-replace and --update-cleanup args in main().
-    static bool handle_update_args(int argc, char** argv);
+    static UpdateLaunchResult finish_update_launch(const UpdateLaunch& launch);
 
     State state() const { return static_cast<State>(display_state_.load(std::memory_order_relaxed)); }
     const std::string& latest_version() const { return display_version_; }
@@ -49,14 +64,15 @@ private:
     bool verify_signature(const std::wstring& exe_path);
     bool parse_release_json(const std::string& json);
     static bool is_newer(const std::string& remote, const std::string& local);
+    static void finish_cleanup_after_rename(const std::filesystem::path& old_exe);
+    static UpdateLaunchResult run_legacy_replace_migration(const std::filesystem::path& old_exe);
     static std::string http_get(const std::wstring& host, const std::wstring& path, const wchar_t* accept = nullptr);
     static bool http_download(const std::wstring& url, const std::wstring& dest_path,
                               std::atomic<int>& pct_out, std::atomic<bool>& cancel);
 
     std::thread thread_;
-    HANDLE wake_event_ = nullptr;  // manual-reset event for interruptible sleep
+    HANDLE wake_event_ = nullptr;
 
-    // All shared state is atomic — no mutex needed
     std::atomic<int>  state_{static_cast<int>(State::Idle)};
     std::atomic<bool> state_changed_{false};
     std::atomic<bool> stop_requested_{false};
@@ -64,15 +80,13 @@ private:
     std::atomic<int>  download_pct_{0};
     std::atomic<bool> download_cancel_{false};
 
-    // Written only by background thread, read by main thread only after state_changed_
-    std::string version_;         // latest remote version string
-    std::string download_url_;    // asset download URL
-    std::wstring download_path_;  // temp zip path after download
+    std::string version_;
+    std::string download_url_;
+    std::wstring download_path_;
 
-    // Main-thread snapshot (updated by poll())
     std::atomic<int> display_state_{static_cast<int>(State::Idle)};
     std::string display_version_;
     std::atomic<int> display_pct_{0};
 };
 
-} // namespace parties::client
+}

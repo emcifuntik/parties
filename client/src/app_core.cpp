@@ -1,4 +1,5 @@
 #include <client/app_core.h>
+#include <client/url.h>
 #ifdef _WIN32
 #include <client/auto_updater.h>
 #endif
@@ -13,6 +14,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -33,8 +35,7 @@
 namespace parties::client {
 
 namespace {
-// Auto-reconnect backoff: 1s, 2s, 4s, 8s, 16s→capped at 15s. `attempts` is the
-// number of failures so far. Parenthesized to dodge the Windows min() macro.
+// Parenthesized to dodge the Windows min() macro.
 int reconnect_backoff_ms(int attempts) {
     const int shift = (std::min)(attempts, 5);
     return (std::min)(15000, 500 * (1 << shift));
@@ -49,29 +50,129 @@ std::string trim_display_name(std::string value) {
     return value;
 }
 
-// Monotonic microseconds for the video send controller / reorder buffers.
+Role role_from_wire(uint8_t raw) {
+    return enum_names_v<Role>.from_persisted_int(raw, Role::User);
+}
+
 int64_t steady_now_us() {
     return std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
-} // namespace
+
+struct ScreenShareStarted {
+    uint32_t sharer_id = 0;
+    bool     late_join_replay = false;
+};
+
+std::optional<ScreenShareStarted> parse_screen_share_started(const uint8_t* data, size_t len) {
+    BinaryReader reader(data, len);
+    ScreenShareStarted started;
+    started.sharer_id = reader.read_u32();
+    if (reader.error()) return std::nullopt;
+    if (reader.has_remaining(sizeof(protocol::AnnouncedShareCodec)))
+        reader.skip<protocol::AnnouncedShareCodec>();
+    if (reader.has_remaining(sizeof(protocol::AnnouncedShareWidth)))
+        reader.skip<protocol::AnnouncedShareWidth>();
+    if (reader.has_remaining(sizeof(protocol::AnnouncedShareHeight)))
+        reader.skip<protocol::AnnouncedShareHeight>();
+    started.late_join_replay = reader.has_remaining(1) && reader.read_u8() != 0;
+    return started;
+}
+}
+
+ReorderOutcome ReorderBuffers::on_frame(UserId sharer, ParsedVideoFrame&& frame, int64_t now_us)
+{
+    std::lock_guard<std::mutex> lock(m_);
+    return buffers_[sharer].on_frame(std::move(frame), now_us);
+}
+
+KeyframeRequest ReorderBuffers::on_aborted(UserId sharer, uint32_t frame_seq)
+{
+    std::lock_guard<std::mutex> lock(m_);
+    return buffers_[sharer].on_frame_aborted(frame_seq);
+}
+
+std::vector<UserId> ReorderBuffers::poll(int64_t now_us)
+{
+    std::vector<UserId> needs_keyframe;
+    std::lock_guard<std::mutex> lock(m_);
+    for (auto& [sharer, buffer] : buffers_)
+        if (buffer.poll(now_us) == KeyframeRequest::Needed) needs_keyframe.push_back(sharer);
+    return needs_keyframe;
+}
+
+bool ReorderBuffers::wants_pli_retry(UserId sharer) const
+{
+    std::lock_guard<std::mutex> lock(m_);
+    const auto it = buffers_.find(sharer);
+    return it != buffers_.end() && it->second.wants_pli_retry();
+}
+
+void ReorderBuffers::erase(UserId sharer)
+{
+    std::lock_guard<std::mutex> lock(m_);
+    buffers_.erase(sharer);
+}
+
+void ReorderBuffers::clear()
+{
+    std::lock_guard<std::mutex> lock(m_);
+    buffers_.clear();
+}
+
+bool PliLimiter::admit_outgoing(UserId target, Clock::time_point now)
+{
+    std::lock_guard<std::mutex> lock(m_);
+    auto [it, inserted] = last_sent_.try_emplace(target, now);
+    if (inserted) return true;
+    if (now - it->second < std::chrono::milliseconds(VIDEO_PLI_COOLDOWN_MS)) return false;
+    it->second = now;
+    return true;
+}
+
+bool PliLimiter::admit_incoming(Clock::time_point now)
+{
+    std::lock_guard<std::mutex> lock(m_);
+    if (last_incoming_ &&
+        now - *last_incoming_ < std::chrono::milliseconds(VIDEO_KEYFRAME_REQUEST_COOLDOWN_MS))
+        return false;
+    last_incoming_ = now;
+    return true;
+}
+
+void PliLimiter::clear()
+{
+    std::lock_guard<std::mutex> lock(m_);
+    last_sent_.clear();
+    last_incoming_.reset();
+}
 
 AppCore::AppCore() = default;
-AppCore::~AppCore() { stop_query_thread(); }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// init / shutdown
-// ─────────────────────────────────────────────────────────────────────────────
+AppCore::~AppCore() { shutdown(); }
 
 bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml::Context* rml_context)
 {
     bridge_ = std::move(bridge);
 
+    if (const auto* multi = multi_stream_video();
+        multi && (!multi->start_stream || !multi->stop_stream || !multi->wants_pli_retry)) {
+        LOG_ERROR("Multi-stream video bridge is missing a hook");
+        return false;
+    }
+
+    StreamPipController::Presenter presenter;
+    if (bridge_.pip) {
+        presenter.show = bridge_.pip->show;
+        presenter.hide = bridge_.pip->hide;
+    }
+    presenter.stream_moved = [this](UserId id) { send_pli(id); };
+    pip_.attach(&model_, std::move(presenter));
+    model_.pip_supported = bridge_.pip.has_value();
+
     if (!settings_.open(settings_path)) {
         LOG_ERROR("Failed to open settings: {}", settings_path);
     }
 
-    // Wire audio subsystems
     audio_.set_mixer(&mixer_);
     audio_.set_aux_mixer(&aux_mixer_);
     audio_.set_stream_player(&stream_audio_player_);
@@ -83,12 +184,9 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
         pkt[0] = protocol::VOICE_PACKET_TYPE;
         std::memcpy(pkt.data() + 1, &seq, 2);
         std::memcpy(pkt.data() + 3, data, len);
-        net_.send_data(pkt.data(), pkt.size(), /*priority=*/true);   // voice ahead of everything else
+        net_.send_data(pkt.data(), pkt.size(), DatagramPriority::AheadOfVideo);
     };
 
-    // Secondary/auxiliary stream (VOICE2): same wire shape as voice, its own
-    // sequence space. Not gated by mute (mute is for the mic) but still requires
-    // being authenticated and in a channel.
     audio_.on_secondary_encoded_frame = [this](const uint8_t* data, size_t len) {
         if (!authenticated_ || current_channel_ == 0) return;
         uint16_t seq = voice2_seq_++;
@@ -96,12 +194,9 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
         pkt[0] = protocol::VOICE2_PACKET_TYPE;
         std::memcpy(pkt.data() + 1, &seq, 2);
         std::memcpy(pkt.data() + 3, data, len);
-        net_.send_data(pkt.data(), pkt.size(), /*priority=*/true);   // voice ahead of everything else
+        net_.send_data(pkt.data(), pkt.size(), DatagramPriority::AheadOfVideo);
     };
 
-    // Wire net callbacks
-    // on_disconnected fires on the MsQuic worker thread, but on_disconnect_cleanup
-    // mutates the RmlUi data model — marshal it to the main thread (tick()).
     net_.on_disconnected = [this]() { disconnect_pending_.store(true, std::memory_order_release); };
 
     net_.on_data_received = [this](const uint8_t* data, size_t len) {
@@ -109,7 +204,6 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
         uint8_t type = data[0];
 
         if (type == protocol::VOICE_PACKET_TYPE) {
-            // [type(1)][sender_id(4)][seq(2)][opus(N)]
             if (len < 8) return;
             uint32_t sender_id;
             std::memcpy(&sender_id, data + 1, 4);
@@ -118,8 +212,6 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
             std::memcpy(&seq, data + 5, 2);
             mixer_.push_packet(sender_id, seq, data + 7, len - 7);
         } else if (type == protocol::VOICE2_PACKET_TYPE) {
-            // Secondary stream — identical layout to VOICE: [type(1)][sender_id(4)][seq(2)][opus(N)].
-            // Routed into the aux mixer (no makeup/normalization, own volume).
             if (len < 8) return;
             uint32_t sender_id;
             std::memcpy(&sender_id, data + 1, 4);
@@ -128,52 +220,30 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
             std::memcpy(&seq, data + 5, 2);
             aux_mixer_.push_packet(sender_id, seq, data + 7, len - 7);
         } else if (type == protocol::VIDEO_FRAME_PACKET_TYPE) {
-            // [type(1)][sender_id(4)][fn(4)][ts(4)][flags(1)][w(2)][h(2)][codec(1)][data(N)]
-            if (len < 19) return;
+            if (len < VIDEO_RELAY_PREFIX_BYTES) return;
             uint32_t sender_id;
             std::memcpy(&sender_id, data + 1, 4);
             if (sender_id == user_id_) return;
-            if (on_video_frame_received)
-                on_video_frame_received(sender_id, data + 5, len - 5);
+            auto frame = ParsedVideoFrame::parse(
+                std::vector<uint8_t>(data + VIDEO_RELAY_PREFIX_BYTES, data + len));
+            if (frame && on_video_frame_received)
+                on_video_frame_received(sender_id, std::move(*frame));
         } else if (type == protocol::STREAM_AUDIO_PACKET_TYPE) {
-            // [type(1)][sender_id(4)][opus(N)]
             if (len < 6) return;
             uint32_t sender_id;
             std::memcpy(&sender_id, data + 1, 4);
             if (sender_id == user_id_) return;
-            // When watching several shares in the grid the server forwards audio
-            // for all of them, but StreamAudioPlayer is a single decoder/jitter
-            // queue — feeding it two senders would corrupt decoding. So we play
-            // only the focused (primary) stream's audio. Per-sharer screen-share
-            // audio mixing would need a StreamAudioPlayer-per-sharer (TODO).
             if (sender_id == viewing_sharer_)
                 stream_audio_player_.push_packet(data + 5, len - 5);
         } else if (type == protocol::VIDEO_CONTROL_TYPE) {
-            // A viewer (via the server) asks for a keyframe. Viewers retry PLIs
-            // every VIDEO_PLI_RETRY_MS and the server coalesces per sharer, so
-            // gate the forced keyframe to one per VIDEO_KEYFRAME_REQUEST_COOLDOWN_MS.
-            if (len >= 2 && data[1] == protocol::VIDEO_CTL_PLI && bridge_.request_keyframe) {
-                bool allowed = false;
-                {
-                    std::lock_guard<std::mutex> lock(pli_mutex_);
-                    const auto now = std::chrono::steady_clock::now();
-                    if (now - keyframe_request_last_ >=
-                        std::chrono::milliseconds(VIDEO_KEYFRAME_REQUEST_COOLDOWN_MS)) {
-                        keyframe_request_last_ = now;
-                        allowed = true;
-                    }
-                }
-                if (allowed) bridge_.request_keyframe();
-            }
+            if (len >= 2 &&
+                static_cast<protocol::VideoControl>(data[1]) == protocol::VideoControl::Pli &&
+                bridge_.request_keyframe &&
+                pli_.admit_incoming(std::chrono::steady_clock::now()))
+                bridge_.request_keyframe();
         }
     };
 
-    // Screen-share send accounting (MsQuic worker thread, lock-free): the
-    // transport reports the exact byte count of every finished video send;
-    // send_video_frame added the same count when the send call succeeded.
-    net_.on_video_bytes_completed = [this](size_t bytes) { video_sender_.on_completed(bytes); };
-
-    // Per-frame video streams from a 1.2+ server (MsQuic worker thread).
     net_.on_video_stream_frame = [this](uint32_t sender_id, std::vector<uint8_t>&& frame) {
         route_video_stream_frame(sender_id, std::move(frame));
     };
@@ -181,25 +251,19 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
         route_video_stream_aborted(sender_id, frame_seq, have_seq);
     };
 
-    // Fires on the MsQuic worker thread — don't touch sqlite here. Stash the
-    // bytes; tick() persists them on the main thread.
     net_.on_resumption_ticket = [this](const uint8_t* ticket, size_t len) {
         std::lock_guard<std::mutex> lock(pending_ticket_mutex_);
         pending_resumption_ticket_.assign(ticket, ticket + len);
         pending_ticket_dirty_ = true;
     };
 
-    // Stream creation runs on the QUIC worker. Apply only the main-thread-loaded
-    // cache here; Settings/SQLite is deliberately never touched from this path.
     mixer_.on_stream_created = [this](UserId uid) { apply_cached_user_audio_prefs(uid); };
     aux_mixer_.on_stream_created = [this](UserId uid) { apply_cached_user_audio_prefs(uid); };
 
-    // Setup model callbacks
     setup_model_callbacks();
     setup_chat_model_callbacks();
     setup_server_model_callbacks();
 
-    // Initialize models with RmlUi context
     if (!server_model_.init(rml_context)) {
         LOG_ERROR("server_model init failed");
         return false;
@@ -213,7 +277,6 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
         return false;
     }
 
-    // Initialize audio
     audio_.init();
     stream_audio_player_.init();
 
@@ -244,16 +307,11 @@ void AppCore::shutdown()
     settings_.close();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Per-frame tick
-// ─────────────────────────────────────────────────────────────────────────────
-
 void AppCore::tick()
 {
     if (disconnect_pending_.exchange(false, std::memory_order_acquire))
         on_disconnect_cleanup();
 
-    // Persist a resumption ticket received on the QUIC worker thread.
     {
         std::vector<uint8_t> ticket;
         {
@@ -268,9 +326,6 @@ void AppCore::tick()
                                              ticket.data(), ticket.size());
     }
 
-    // Server-list status polling runs only while the lobby is visible. Wake the
-    // worker on the transition so returning to the launcher never waits for the
-    // periodic refresh interval.
     const bool lobby_visible = !authenticated_;
     const bool was_lobby_visible = lobby_visible_.exchange(
         lobby_visible, std::memory_order_relaxed);
@@ -280,8 +335,6 @@ void AppCore::tick()
 
     if (awaiting_connection_) poll_connecting();
 
-    // Auto-reconnect: fire the next attempt once the backoff timer elapses and
-    // we aren't already mid-connect.
     if (reconnecting_ && !awaiting_connection_ && !authenticated_ &&
         std::chrono::steady_clock::now() >= reconnect_next_attempt_) {
         attempt_reconnect();
@@ -292,11 +345,9 @@ void AppCore::tick()
     flush_pending_prefs();
     apply_sleep_inhibit(authenticated_ && current_channel_ != 0);
 
-    // Screen-share housekeeping: sender congestion control, receive-side
-    // reorder timeouts and PLI retries. All cheap no-ops when idle.
     feed_video_sender_stats();
     video_sender_.tick(steady_now_us());
-    poll_video_reorder_buffers();
+    for (UserId id : reorder_.poll(steady_now_us())) send_pli(id);
     retry_pending_plis();
 
 #ifdef _WIN32
@@ -311,7 +362,6 @@ void AppCore::tick()
     }
 #endif
 
-    // Process completed file downloads on main thread
     {
         std::vector<CompletedDownload> downloads;
         {
@@ -347,7 +397,6 @@ void AppCore::tick()
         }
     }
 
-    // Send keepalive ping every 2 seconds while connected
     if (authenticated_) {
         auto now = std::chrono::steady_clock::now();
         auto since_last = std::chrono::duration_cast<std::chrono::milliseconds>(now - ping_last_send_).count();
@@ -359,7 +408,6 @@ void AppCore::tick()
         }
     }
 
-    // Stream FPS counter (updated once per second)
     auto now = std::chrono::steady_clock::now();
     float elapsed = std::chrono::duration<float>(now - stream_fps_last_update_).count();
     if (elapsed >= 1.0f) {
@@ -371,10 +419,7 @@ void AppCore::tick()
         stream_fps_last_update_ = now;
     }
 
-    // Update local mic level indicator
     if (authenticated_ && current_channel_ != 0) {
-        // The VAD threshold is expressed in the perceptual 0..1 domain, so the
-        // UI meter must use the same domain rather than raw RMS.
         float lvl = audio::rms_to_perceptual(audio_.voice_level());
         if (std::abs(lvl - model_.voice_level) > 0.01f) {
             model_.voice_level = lvl;
@@ -382,16 +427,9 @@ void AppCore::tick()
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Idle sleep inhibit — keep the monitor awake for the duration of a call
-// ─────────────────────────────────────────────────────────────────────────────
-
 void AppCore::apply_sleep_inhibit(bool wanted)
 {
-    const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
-
-    switch (sleep_inhibitor_.update(wanted, now_ms)) {
+    switch (sleep_inhibitor_.update(wanted, std::chrono::steady_clock::now())) {
     case SleepInhibitAction::Acquire:
         if (bridge_.set_keep_awake) bridge_.set_keep_awake(true);
         break;
@@ -402,10 +440,6 @@ void AppCore::apply_sleep_inhibit(bool wanted)
         break;
     }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// load_saved_prefs — call from platform init after AppCore::init()
-// ─────────────────────────────────────────────────────────────────────────────
 
 void AppCore::load_saved_prefs()
 {
@@ -458,7 +492,11 @@ void AppCore::load_saved_prefs()
     }
 
     v = pref("audio.stream_volume");
-    if (!v.empty()) { float vol = std::strtof(v.c_str(), nullptr); stream_audio_player_.set_volume(vol); model_.stream_volume = vol; }
+    if (!v.empty()) {
+        const float vol = std::clamp(std::strtof(v.c_str(), nullptr), 0.0f, 2.0f);
+        stream_audio_player_.set_volume(vol);
+        model_.stream_volume = vol;
+    }
 
     v = pref("audio.voice_volume");
     if (!v.empty()) { float vol = std::strtof(v.c_str(), nullptr); mixer_.set_master_volume(vol); model_.voice_volume = vol; }
@@ -479,16 +517,8 @@ void AppCore::load_saved_prefs()
     v = pref("video.share_bitrate");
     if (!v.empty()) model_.share_bitrate = std::strtof(v.c_str(), nullptr);
 
-    v = pref("video.share_fps");
-    if (!v.empty()) model_.share_fps = std::atoi(v.c_str());
+    model_.apply_share_encoding(load_share_encoding(settings_));
 
-    v = pref("video.share_codec");
-    if (!v.empty()) model_.share_codec = std::atoi(v.c_str());
-
-    v = pref("video.share_scale");
-    if (!v.empty()) model_.share_scale = std::atoi(v.c_str());
-
-    // Restore saved device by name
     v = pref("audio.capture_device");
     if (!v.empty()) {
         for (size_t i = 0; i < capture_devs.size(); i++) {
@@ -510,11 +540,9 @@ void AppCore::load_saved_prefs()
             }
         }
     }
-}
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Identity
-// ─────────────────────────────────────────────────────────────────────────────
+    if (bridge_.on_audio_devices_published) bridge_.on_audio_devices_published();
+}
 
 void AppCore::load_or_generate_identity(const std::string& username_hint)
 {
@@ -525,11 +553,7 @@ void AppCore::load_or_generate_identity(const std::string& username_hint)
         public_key_  = identity->public_key;
         has_identity_ = true;
     } else {
-        // No saved identity (or legacy identity without seed phrase) —
-        // show onboarding modal so the user can generate/restore.
         if (identity) {
-            // Legacy identity with no seed phrase — discard it so the user
-            // gets a fresh identity with a proper seed phrase backup.
             settings_.delete_identity();
         }
         has_identity_ = false;
@@ -550,15 +574,23 @@ void AppCore::load_or_generate_identity(const std::string& username_hint)
 
 void AppCore::generate_identity()
 {
-    seed_phrase_ = parties::generate_seed_phrase();
-    parties::derive_keypair(seed_phrase_, secret_key_, public_key_);
+    auto phrase = parties::generate_seed_phrase();
+    if (!phrase) {
+        LOG_ERROR("Failed to generate a seed phrase: the system random source is unavailable");
+        return;
+    }
+    const SecretKey sk = parties::secret_key_from_phrase_sha256(*phrase);
+    const auto pk = parties::public_key_of(sk);
+    if (!pk) {
+        LOG_ERROR("Failed to derive public key");
+        return;
+    }
+    seed_phrase_ = std::move(*phrase);
+    secret_key_ = sk;
+    public_key_ = *pk;
     has_identity_ = true;
     settings_.save_identity(seed_phrase_, secret_key_, public_key_);
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Server list
-// ─────────────────────────────────────────────────────────────────────────────
 
 void AppCore::refresh_server_list()
 {
@@ -578,7 +610,6 @@ void AppCore::refresh_server_list()
             entry.initials = Rml::String(s.name.substr(0, 1));
         else
             entry.initials = "?";
-        // Color index from simple name hash (0-4)
         uint32_t hash = 0;
         for (char c : s.name) hash = hash * 31 + static_cast<uint8_t>(c);
         entry.color_index = static_cast<int>(hash % 5);
@@ -589,33 +620,25 @@ void AppCore::refresh_server_list()
         std::to_string(n) + (n == 1 ? " party" : " parties"));
     server_model_.servers.notify();
 
-    // Publish targets for the background polling thread and request a re-merge
-    // of any last-known status onto the freshly rebuilt entries.
     {
         std::lock_guard<std::mutex> lock(query_targets_mutex_);
         query_targets_.clear();
         for (auto& s : saved)
             query_targets_.push_back({ s.id, s.host, static_cast<uint16_t>(s.port) });
     }
-    // Sticky notification: this also works when refresh_server_list() runs
-    // between the worker's initial empty pass and its first wait.
     query_wake_.request();
     query_results_dirty_.store(true, std::memory_order_release);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Server-list query polling
-// ─────────────────────────────────────────────────────────────────────────────
-
 void AppCore::start_query_thread()
 {
-    if (query_thread_run_.exchange(true)) return;  // already running
+    if (query_thread_run_.exchange(true)) return;
     query_thread_ = std::thread([this] { query_thread_loop(); });
 }
 
 void AppCore::stop_query_thread()
 {
-    if (!query_thread_run_.exchange(false)) return;  // not running
+    if (!query_thread_run_.exchange(false)) return;
     query_wake_.stop();
     if (query_thread_.joinable()) query_thread_.join();
 }
@@ -624,9 +647,6 @@ void AppCore::query_thread_loop()
 {
     using namespace std::chrono;
     while (query_thread_run_.load(std::memory_order_relaxed)) {
-        // The first refresh_server_list() publishes targets and wakes this wait,
-        // so the initial packet is immediate without racing into a duplicate
-        // query when the worker starts after the targets were already stored.
         if (!query_wake_.wait_for_next(milliseconds(3000)))
             break;
 
@@ -673,9 +693,6 @@ void AppCore::apply_query_results()
             ? Rml::String(std::to_string(r.cur) + " / " + std::to_string(r.max))
             : Rml::String();
 
-        // Keep the saved name until the query gives us the server's real name;
-        // once online with a non-empty name, switch the display to it (and the
-        // derived initials/gradient). Falls back to the saved name when offline.
         Rml::String name     = entry.name;
         Rml::String initials = entry.initials;
         if (r.online && !r.name.empty()) {
@@ -697,10 +714,6 @@ void AppCore::apply_query_results()
     if (changed) server_model_.servers.notify();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Connection flow
-// ─────────────────────────────────────────────────────────────────────────────
-
 void AppCore::do_connect()
 {
     if (!has_identity_) {
@@ -708,7 +721,6 @@ void AppCore::do_connect()
         return;
     }
 
-    // Manual connect supersedes any in-flight auto-reconnect.
     cancel_reconnect();
 
     username_ = trim_display_name(std::string(server_model_.login_username));
@@ -741,7 +753,6 @@ void AppCore::poll_connecting()
         awaiting_connection_ = false;
         net_.disconnect();
         if (reconnecting_) {
-            // Stay silent in the lobby banner; schedule the next attempt.
             reconnect_attempts_++;
             const int delay_ms = reconnect_backoff_ms(reconnect_attempts_);
             reconnect_next_attempt_ = std::chrono::steady_clock::now()
@@ -769,9 +780,7 @@ void AppCore::finish_connect()
     // so the fingerprint is empty. The session ticket is scoped to the server
     // that issued it, so a successful resumption confirms identity. We already
     // have the fingerprint stored in the TOFU database from the initial handshake.
-    if (fp.empty()) {
-        // PSK resumption — server already trusted (ticket wouldn't exist otherwise)
-    } else {
+    if (!fp.empty()) {
         auto result = settings_.check_fingerprint(server_host_, server_port_, fp);
 
         if (result == Settings::TofuResult::Mismatch) {
@@ -815,21 +824,16 @@ void AppCore::send_auth_identity()
     writer.write_string(username_);
     writer.write_u64(now);
     writer.write_bytes(sig.data(), sig.size());
-    // Use the cached server password (set by do_connect on a fresh login and by
-    // attempt_reconnect from saved settings) — the UI field is cleared/empty
-    // during an auto-reconnect, so we can't read it here.
     writer.write_string(server_password_);
 
     net_.send_message(protocol::ControlMessageType::AUTH_IDENTITY,
                       writer.data().data(), writer.data().size());
 
-    // Clear password from the UI field after sending
     server_model_.login_password = "";
 }
 
 void AppCore::on_disconnect_cleanup()
 {
-    // Capture pre-reset state needed to decide whether (and how) to reconnect.
     const bool was_authenticated = authenticated_;
     const ChannelId prev_channel = current_channel_;
 
@@ -842,28 +846,14 @@ void AppCore::on_disconnect_cleanup()
     awaiting_connection_ = false;
     awaiting_channel_join_ = false;
     pending_channel_id_ = 0;
-    // Per-connection counters/timers — reset so a reconnect starts clean
-    // rather than resuming sequence numbers / pending pings from the dead link.
     voice_seq_ = 0;
     ping_pending_ = false;
     tofu_pending_ = false;
     server_protocol_version_ = protocol::PROTOCOL_VERSION_ASSUMED_LEGACY;
 
-    // Screen-share state: sender controller (the transport reported or
-    // canceled every outstanding send by now, so the byte count is zeroed as
-    // well — reset() alone keeps it), receive reorder buffers and the PLI /
-    // keyframe-request cooldowns.
-    video_sender_.reset();
-    video_sender_.clear_outstanding();
-    {
-        std::lock_guard<std::mutex> lock(reorder_mutex_);
-        reorder_buffers_.clear();
-    }
-    {
-        std::lock_guard<std::mutex> lock(pli_mutex_);
-        pli_last_sent_.clear();
-        keyframe_request_last_ = {};
-    }
+    video_sender_.on_connection_lost();
+    reorder_.clear();
+    pli_.clear();
 
     audio_.stop();
     mixer_.clear();
@@ -889,7 +879,7 @@ void AppCore::on_disconnect_cleanup()
     model_.audio_share_target_name = "";
     model_.router.reset();
     model_.show_create_channel = false;
-    model_.my_role = 3;
+    model_.my_role = Role::User;
     model_.can_manage_channels = false;
     chat_model_.can_manage_channels = false;
     model_.can_kick = false;
@@ -897,7 +887,6 @@ void AppCore::on_disconnect_cleanup()
     model_.admin_message = "";
     model_.dirty_all();
 
-    // Clear chat state
     pending_uploads_.clear();
     {
         std::lock_guard<std::mutex> lock(downloads_mutex_);
@@ -920,16 +909,10 @@ void AppCore::on_disconnect_cleanup()
     server_model_.login_error         = "";
     server_model_.login_status        = "";
 
-    // ── Decide whether to auto-reconnect ────────────────────────────────────
     if (intentional_disconnect_) {
-        // User/explicit teardown — do not reconnect.
         cancel_reconnect();
         intentional_disconnect_ = false;
     } else if (was_authenticated && connecting_server_id_ != 0) {
-        // Unexpected drop while connected. Guard against reconnect loops: if a
-        // freshly re-authenticated session drops again almost immediately
-        // (e.g. a duplicate-login kicking us straight back out), count it as a
-        // "flap" and give up after a few rather than ping-ponging forever.
         const auto session_dur = std::chrono::steady_clock::now() - auth_success_time_;
         if (session_dur < std::chrono::seconds(5)) {
             if (++reconnect_flaps_ >= 4) {
@@ -953,8 +936,6 @@ void AppCore::on_disconnect_cleanup()
         server_model_.reconnect_status = "Connection lost — reconnecting…";
         LOG_WARN("Connection lost; auto-reconnect armed (channel {})", prev_channel);
     } else if (reconnecting_) {
-        // A reconnect attempt failed before authentication completed.
-        // Schedule the next attempt with capped exponential backoff.
         reconnect_attempts_++;
         const int delay_ms = reconnect_backoff_ms(reconnect_attempts_);
         reconnect_next_attempt_ = std::chrono::steady_clock::now()
@@ -986,8 +967,6 @@ void AppCore::cancel_reconnect()
 
 void AppCore::attempt_reconnect()
 {
-    // Reload saved credentials for the server we were connected to. They
-    // persist in settings across the disconnect cleanup.
     const SavedServer* match = nullptr;
     auto saved = settings_.get_saved_servers();
     for (auto& srv : saved) {
@@ -1011,7 +990,6 @@ void AppCore::attempt_reconnect()
     auto ticket = settings_.load_resumption_ticket(server_host_, server_port_);
     if (!net_.connect(server_host_, server_port_,
                       ticket.empty() ? nullptr : ticket.data(), ticket.size())) {
-        // connect() failed synchronously — schedule the next attempt.
         reconnect_attempts_++;
         const int delay_ms = reconnect_backoff_ms(reconnect_attempts_);
         reconnect_next_attempt_ = std::chrono::steady_clock::now()
@@ -1025,10 +1003,6 @@ void AppCore::attempt_reconnect()
     rejoin_pending_      = (reconnect_channel_ != 0);
     server_model_.reconnect_status = "Reconnecting…";
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Channel operations
-// ─────────────────────────────────────────────────────────────────────────────
 
 void AppCore::join_channel(ChannelId id)
 {
@@ -1094,13 +1068,6 @@ void AppCore::leave_channel()
     model_.router.go(DocumentRoute::Room);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Screen share helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Single-select watch (replace whatever we were watching with just `id`). Used
-// by single-decoder platforms (macOS/iOS) and as the "focus" action. On a
-// multi-stream platform a sharer card / chip instead routes through add_watch.
 void AppCore::watch_sharer(UserId id)
 {
     if (id == 0) { stop_watching(); return; }
@@ -1115,29 +1082,40 @@ void AppCore::watch_sharer(UserId id)
         model_.show_voice_channel(static_cast<int>(current_channel_));
         return;
     }
-
-    // Tear down the previous single stream (server sub + decoder), keep at most one.
-    if (viewing_sharer_ != 0 && viewing_sharer_ != id && bridge_.stop_video_stream)
-        bridge_.stop_video_stream(viewing_sharer_);
-    {
-        std::lock_guard<std::mutex> lock(watched_mutex_);
-        watched_.clear();
-        watched_.insert(id);
-    }
-    viewing_sharer_ = id;
-    awaiting_keyframe_ = true;
-    if (bridge_.start_video_stream) bridge_.start_video_stream(id);
-
-    uint32_t id32 = id;   // legacy single-select wire form ([target] only)
-    net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_VIEW,
-                      reinterpret_cast<const uint8_t*>(&id32), 4);
-    send_pli(id);
-    model_.viewing_sharer_id = static_cast<int>(id);
-    rebuild_watched_model();
+    begin_single_watch(id);
 }
 
-// Add one more stream to the grid (additive on multi-stream platforms; falls
-// back to single-select where only one hardware decoder exists).
+void AppCore::begin_single_watch(UserId sharer)
+{
+    viewing_sharer_ = sharer;
+    awaiting_keyframe_ = true;
+    uint32_t id32 = sharer;
+    net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_VIEW,
+                      reinterpret_cast<const uint8_t*>(&id32), 4);
+    send_pli(sharer);
+    set_single_watched(sharer);
+}
+
+void AppCore::end_single_watch()
+{
+    viewing_sharer_ = 0;
+    awaiting_keyframe_ = false;
+    uint32_t zero = 0;
+    net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_VIEW,
+                      reinterpret_cast<const uint8_t*>(&zero), 4);
+    set_single_watched(0);
+}
+
+SingleWatchAdmit AppCore::admit_single_watch_frame(UserId sender, const VideoFrameHeader& header)
+{
+    if (sender != viewing_sharer_.load()) return SingleWatchAdmit::NotWatched;
+    if (header.keyframe) {
+        awaiting_keyframe_ = false;
+        return SingleWatchAdmit::Decode;
+    }
+    return awaiting_keyframe_.load() ? SingleWatchAdmit::DropUntilKeyframe : SingleWatchAdmit::Decode;
+}
+
 void AppCore::add_watch(UserId id)
 {
     if (id == 0) return;
@@ -1146,7 +1124,8 @@ void AppCore::add_watch(UserId id)
             return sharer.id == static_cast<int>(id);
         }))
         return;
-    if (!multi_stream()) { watch_sharer(id); return; }
+    auto* multi = multi_stream_video();
+    if (!multi) { watch_sharer(id); return; }
 
     bool added;
     {
@@ -1154,16 +1133,15 @@ void AppCore::add_watch(UserId id)
         added = watched_.insert(id).second;
     }
     if (!added) {
-        // Reopen an existing subscription when its viewer was hidden by chat.
         model_.show_voice_channel(static_cast<int>(current_channel_));
         return;
     }
-    BinaryWriter w; w.write_u32(id); w.write_u8(1);   // additive subscribe
+    BinaryWriter w; w.write_u32(id); w.write_u8(1);
     net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_VIEW,
                       w.data().data(), w.data().size());
-    if (bridge_.start_video_stream) bridge_.start_video_stream(id);
+    multi->start_stream(id);
     send_pli(id);
-    viewing_sharer_ = id;   // most-recently-added is the "primary" (fullscreen focus)
+    viewing_sharer_ = id;
     model_.viewing_sharer_id = static_cast<int>(id);
     rebuild_watched_model();
 }
@@ -1178,11 +1156,11 @@ void AppCore::remove_watch(UserId id)
     }
     if (!was_watching) return;
 
-    BinaryWriter w; w.write_u32(id); w.write_u8(0);   // additive unsubscribe
+    BinaryWriter w; w.write_u32(id); w.write_u8(0);
     net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_VIEW,
                       w.data().data(), w.data().size());
-    if (bridge_.stop_video_stream) bridge_.stop_video_stream(id);
-    erase_reorder_buffer(id);
+    if (auto* multi = multi_stream_video()) multi->stop_stream(id);
+    reorder_.erase(id);
 
     if (empty_now) {
         viewing_sharer_ = 0;
@@ -1217,6 +1195,52 @@ void AppCore::set_single_watched(UserId id)
     rebuild_watched_model();
 }
 
+std::unordered_set<UserId> AppCore::watched_snapshot() const
+{
+    std::lock_guard<std::mutex> lock(watched_mutex_);
+    return watched_;
+}
+
+void AppCore::open_pip(UserId id)
+{
+    if (!pip_.open(id, watched_snapshot())) return;
+    viewing_sharer_ = id;
+    model_.viewing_sharer_id = static_cast<int>(id);
+    model_.stream_fullscreen = false;
+}
+
+void AppCore::toggle_pip(UserId id)
+{
+    if (id != 0 && pip_.stream() == id) close_pip(PipCloseReason::UserClosed);
+    else                                open_pip(id);
+}
+
+void AppCore::close_pip(PipCloseReason reason)
+{
+    pip_.close(reason);
+}
+
+void AppCore::return_from_pip()
+{
+    const UserId id = pip_.stream();
+    pip_.close(PipCloseReason::ReturnedToMain);
+    if (id != 0 && is_watching(id)) {
+        viewing_sharer_ = id;
+        model_.viewing_sharer_id = static_cast<int>(id);
+        model_.router.go(DocumentRoute::Streams);
+        model_.mobile_show_content = true;
+    }
+    if (bridge_.show_main_window) bridge_.show_main_window();
+}
+
+void AppCore::set_stream_volume(float volume)
+{
+    volume = std::isfinite(volume) ? std::clamp(volume, 0.0f, 2.0f) : model_.stream_volume.get();
+    model_.stream_volume = volume;
+    stream_audio_player_.set_volume(volume);
+    save_pref_debounced("audio.stream_volume", std::to_string(volume));
+}
+
 bool AppCore::is_watching(UserId id) const
 {
     std::lock_guard<std::mutex> lock(watched_mutex_);
@@ -1231,33 +1255,27 @@ void AppCore::stop_watching()
         to_stop.assign(watched_.begin(), watched_.end());
         watched_.clear();
     }
-    for (UserId id : to_stop)
-        if (bridge_.stop_video_stream) bridge_.stop_video_stream(id);
-    {
-        std::lock_guard<std::mutex> lock(reorder_mutex_);
-        reorder_buffers_.clear();
-    }
+    if (auto* multi = multi_stream_video())
+        for (UserId id : to_stop) multi->stop_stream(id);
+    reorder_.clear();
 
-    uint32_t zero = 0;   // target 0 = unsubscribe from everyone (both wire forms)
+    uint32_t zero = 0;
     net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_VIEW,
                       reinterpret_cast<const uint8_t*>(&zero), 4);
     viewing_sharer_ = 0;
     awaiting_keyframe_ = false;
     model_.viewing_sharer_id = 0;
-    // Leaving the stream view must also drop fullscreen, or the window stays
-    // borderless-fullscreen with nothing to show (the app.cpp tick syncs the OS
-    // window fullscreen to this flag).
     model_.stream_fullscreen = false;
     if (bridge_.clear_video_element)
         bridge_.clear_video_element();
     rebuild_watched_model();
 }
 
-// Refresh model_.watched (grid cells) + sharers[].watching flags from watched_.
 void AppCore::rebuild_watched_model()
 {
     std::unordered_set<UserId> w;
     { std::lock_guard<std::mutex> lock(watched_mutex_); w = watched_; }
+    pip_.reconcile(w);
 
     auto& sharers = model_.sharers.silent();
     auto& wv = model_.watched.silent();
@@ -1284,76 +1302,50 @@ void AppCore::rebuild_watched_model()
     }
 }
 
-// Single PLI funnel. Callers: watch start (main), the decode gate on a
-// discontinuity (decode/MsQuic thread), the reorder buffer on a lost frame
-// (MsQuic thread, under reorder_mutex_) and retry_pending_plis() (main).
-// Lock order: reorder_mutex_ -> pli_mutex_, never the reverse; this function
-// must therefore never touch reorder_mutex_ or watched_mutex_.
-// PLIs stay on the reliable stream 1 and are not part of the video send
-// accounting (see NetClient::send_video).
 void AppCore::send_pli(UserId target)
 {
     if (target == 0 || target == user_id_) return;
-    {
-        std::lock_guard<std::mutex> lock(pli_mutex_);
-        const auto now = std::chrono::steady_clock::now();
-        auto it = pli_last_sent_.find(target);
-        if (it != pli_last_sent_.end() &&
-            now - it->second < std::chrono::milliseconds(VIDEO_PLI_COOLDOWN_MS))
-            return;
-        pli_last_sent_[target] = now;
-    }
+    if (!pli_.admit_outgoing(target, std::chrono::steady_clock::now())) return;
     uint8_t pkt[6];
     pkt[0] = protocol::VIDEO_CONTROL_TYPE;
-    pkt[1] = protocol::VIDEO_CTL_PLI;
+    pkt[1] = static_cast<uint8_t>(protocol::VideoControl::Pli);
     std::memcpy(pkt + 2, &target, 4);
-    net_.send_video(pkt, sizeof(pkt), true);
+    net_.send_stream1_record(pkt, sizeof(pkt));
 }
 
-// tick(): while a watched stream is still waiting for a keyframe, keep asking.
-// send_pli's cooldown turns this into one PLI per VIDEO_PLI_RETRY_MS.
 void AppCore::retry_pending_plis()
 {
     std::vector<UserId> ids;
     {
         std::lock_guard<std::mutex> lock(watched_mutex_);
-        if (watched_.empty()) return;   // idle: no allocation
+        if (watched_.empty()) return;
         ids.assign(watched_.begin(), watched_.end());
     }
+    const auto* multi = multi_stream_video();
     for (UserId id : ids) {
-        bool awaiting_ingress = false;
-        {
-            std::lock_guard<std::mutex> lock(reorder_mutex_);
-            const auto it = reorder_buffers_.find(id);
-            awaiting_ingress = it != reorder_buffers_.end() && it->second.needs_keyframe();
-        }
-        const bool awaiting = awaiting_ingress || (bridge_.stream_awaiting_keyframe
-            ? bridge_.stream_awaiting_keyframe(id)
-            : (awaiting_keyframe_.load(std::memory_order_relaxed) &&
-               viewing_sharer_.load(std::memory_order_relaxed) == id));
-        if (awaiting) send_pli(id);
+        const bool decoder_waits = multi
+            ? multi->wants_pli_retry(id)
+            : awaiting_keyframe_.load(std::memory_order_relaxed) &&
+              viewing_sharer_.load(std::memory_order_relaxed) == id;
+        if (reorder_.wants_pli_retry(id) || decoder_waits) send_pli(id);
     }
 }
 
 void AppCore::clear_all_sharers()
 {
-    // Tear down any active decoders (channel left / disconnected). No server
-    // unsubscribe is sent — the channel/connection is already gone.
     std::vector<UserId> to_stop;
     {
         std::lock_guard<std::mutex> lock(watched_mutex_);
         to_stop.assign(watched_.begin(), watched_.end());
         watched_.clear();
     }
-    for (UserId id : to_stop)
-        if (bridge_.stop_video_stream) bridge_.stop_video_stream(id);
-    {
-        std::lock_guard<std::mutex> lock(reorder_mutex_);
-        reorder_buffers_.clear();
-    }
+    if (auto* multi = multi_stream_video())
+        for (UserId id : to_stop) multi->stop_stream(id);
+    reorder_.clear();
 
     viewing_sharer_ = 0;
     awaiting_keyframe_ = false;
+    pip_.reconcile({});
     active_sharers_.clear();
     model_.clear_channel_sharers();
     model_.watched.silent().clear();
@@ -1365,58 +1357,24 @@ void AppCore::clear_all_sharers()
     model_.router.leave_streams();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Screen-share sender (encode / capture / main threads)
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Share start (main thread): the frame counter restarts and the controller is
-// seeded with the user's target. This is the only place besides
-// on_disconnect_cleanup that resets video_frame_number_ — a mid-share reset
-// would look like a backward jump to every viewer's reorder buffer.
-void AppCore::reset_video_sender(uint32_t target_bitrate_bps)
+void AppCore::begin_video_share(uint32_t ceiling_bitrate_bps)
 {
     video_frame_number_.store(0, std::memory_order_relaxed);
     VideoSendControllerConfig cfg;
-    cfg.target_bitrate_bps = std::clamp(target_bitrate_bps, VIDEO_MIN_BITRATE, VIDEO_MAX_BITRATE);
-    // The adaptation floor can never sit above the user's ceiling.
-    cfg.min_bitrate_bps = (std::min)(cfg.min_bitrate_bps, cfg.target_bitrate_bps);
-    video_sender_.reset(cfg);
+    cfg.ceiling_bitrate_bps = std::clamp(ceiling_bitrate_bps, VIDEO_MIN_BITRATE, VIDEO_MAX_BITRATE);
+    cfg.floor_bitrate_bps = (std::min)(cfg.floor_bitrate_bps, cfg.ceiling_bitrate_bps);
+    video_sender_.start_share(cfg);
     LOG_INFO("Video sender reset: target {} kbps, {} transport",
-             cfg.target_bitrate_bps / 1000,
+             cfg.ceiling_bitrate_bps / 1000,
              protocol::protocol_supports_frame_streams(server_protocol_version_)
                  ? "per-frame streams" : "legacy stream 1");
 }
 
-// UI slider (main thread). Reaches the encoder only through
-// take_video_bitrate_update() on the encode thread.
-void AppCore::set_video_target_bitrate(uint32_t target_bitrate_bps)
+void AppCore::set_video_ceiling_bitrate(uint32_t bps)
 {
-    video_sender_.set_target_bitrate(
-        std::clamp(target_bitrate_bps, VIDEO_MIN_BITRATE, VIDEO_MAX_BITRATE));
+    video_sender_.set_ceiling_bitrate(std::clamp(bps, VIDEO_MIN_BITRATE, VIDEO_MAX_BITRATE));
 }
 
-// Capture thread (WGC free-threaded callback): atomics only.
-bool AppCore::video_admit_frame()
-{
-    return video_sender_.admit_frame(steady_now_us());
-}
-
-std::optional<uint32_t> AppCore::take_video_bitrate_update()
-{
-    return video_sender_.take_bitrate_update();
-}
-
-bool AppCore::take_video_keyframe_request()
-{
-    return video_sender_.take_keyframe_request();
-}
-
-// Encode thread. Accounting rule (mirrored in net_client_msquic.cpp): after a
-// send call returns true we add the exact byte count the transport hands to
-// StreamSend — per-frame stream: 1 + header + payload; stream 1:
-// 4 + [type + header] + payload — and the transport reports the same count
-// back through on_video_bytes_completed. A failed call queued nothing, so it
-// is a send failure (frame lost, keyframe requested) and nothing is added.
 AppCore::VideoSendResult AppCore::send_video_frame(const uint8_t* encoded, size_t len, bool keyframe,
                                                    uint16_t width, uint16_t height, VideoCodecId codec)
 {
@@ -1426,40 +1384,14 @@ AppCore::VideoSendResult AppCore::send_video_frame(const uint8_t* encoded, size_
 
     VideoFrameHeader hdr;
     hdr.frame_seq = result.frame_seq;
-    hdr.timestamp = result.frame_seq;
-    hdr.flags     = keyframe ? VIDEO_FLAG_KEYFRAME : 0;
+    hdr.keyframe  = keyframe;
     hdr.width     = width;
     hdr.height    = height;
-    hdr.codec     = static_cast<uint8_t>(codec);
+    hdr.codec     = codec;
 
-    // Charge the bytes BEFORE handing them to MsQuic and undo on a synchronous
-    // failure. The transport's SEND_COMPLETE (which reports exactly the same
-    // count, canceled or not) can run on the worker thread before a send call
-    // returns — e.g. an asynchronous stream-start failure cancels the queued
-    // send immediately — and a completion that lands before its enqueue would
-    // clamp at zero and leave the counter permanently over-counted.
-    size_t accounted = 0;
-    if (protocol::protocol_supports_frame_streams(server_protocol_version_)) {
-        uint8_t h[VIDEO_FRAME_HEADER_SIZE];
-        hdr.write(h);
-        accounted = 1 + sizeof(h) + len;
-        video_sender_.on_enqueued(accounted);
-        result.sent = net_.send_video_frame_stream(h, sizeof(h), encoded, len);
-    } else {
-        uint8_t pkt[1 + VIDEO_FRAME_HEADER_SIZE];
-        pkt[0] = protocol::VIDEO_FRAME_PACKET_TYPE;
-        hdr.write(pkt + 1);
-        accounted = 4 + sizeof(pkt) + len;
-        video_sender_.on_enqueued(accounted);
-        result.sent = net_.send_video_parts(pkt, sizeof(pkt), encoded, len);
-    }
-
-    if (!result.sent) {
-        // Nothing was queued and no SEND_COMPLETE will ever report it: take the
-        // charge back, then record the failure (window flag + keyframe request).
-        video_sender_.on_completed(accounted);
-        video_sender_.on_send_failed(accounted);
-    }
+    result.sent = net_.send_video_frame(protocol::video_transport_for(server_protocol_version_),
+                                        hdr, {encoded, len}, video_sender_.accounting());
+    if (!result.sent) video_sender_.accounting().on_send_failed();
 
     if (keyframe)
         LOG_DEBUG("Video keyframe {} ({} bytes, {}x{}) {}", result.frame_seq, len, width, height,
@@ -1469,99 +1401,42 @@ AppCore::VideoSendResult AppCore::send_video_frame(const uint8_t* encoded, size_
     return result;
 }
 
-// tick(): QUIC connection statistics -> AIMD loss/RTT input. Only while
-// something is (or was just) being sent — the GetParam round-trips to the
-// MsQuic worker, so it is not worth doing when idle.
 void AppCore::feed_video_sender_stats()
 {
     if (!authenticated_) return;
     if (!model_.is_sharing.get() && video_sender_.outstanding_bytes() <= 0) return;
     const NetClient::ConnectionStats st = net_.connection_stats();
     if (!st.valid) return;
-    video_sender_.on_connection_stats(steady_now_us(), st.min_rtt_us ? st.min_rtt_us : st.rtt_us,
-                                      st.suspected_lost_packets,
-                                      st.spurious_lost_packets,
-                                      st.sent_packets);
+    video_sender_.on_path_counters({
+        .rtt_us = st.min_rtt_us ? st.min_rtt_us : st.rtt_us,
+        .cumulative_suspected_lost_packets = st.suspected_lost_packets,
+        .cumulative_spurious_lost_packets = st.spurious_lost_packets,
+        .cumulative_sent_packets = st.sent_packets,
+    });
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Screen-share receive: per-frame streams -> reorder buffer -> decode path
-// ─────────────────────────────────────────────────────────────────────────────
-//
-// Lock order: reorder_mutex_ -> pli_mutex_ (the reorder buffer's `lost`
-// callback calls send_pli while reorder_mutex_ is held), never the reverse.
-// The deliver callback runs on_video_frame_received under reorder_mutex_ too,
-// so the platform frame handler must not call back into watch mutation
-// (remove_watch / stop_watching / clear_all_sharers); it may call send_pli.
-
-// MsQuic worker thread.
-void AppCore::route_video_stream_frame(uint32_t sender_id, std::vector<uint8_t>&& frame)
+void AppCore::route_video_stream_frame(UserId sender, std::vector<uint8_t>&& wire)
 {
-    if (sender_id == user_id_ || !is_watching(sender_id)) return;
-    VideoFrameHeader hdr;
-    if (!VideoFrameHeader::parse(frame.data(), frame.size(), hdr)) return;
-
-    const int64_t now = steady_now_us();
-    const VideoFrameReorderBuffer::DeliverFn deliver =
-        [this, sender_id](const VideoFrameHeader&, std::vector<uint8_t>&& f) {
-            if (on_video_frame_received) on_video_frame_received(sender_id, f.data(), f.size());
-        };
-    const VideoFrameReorderBuffer::LostFn lost =
-        [this, sender_id](uint32_t) { send_pli(sender_id); };
-
-    std::lock_guard<std::mutex> lock(reorder_mutex_);
-    reorder_buffers_[sender_id].on_frame(hdr, std::move(frame), now, deliver, lost);
+    if (sender == user_id_ || !is_watching(sender)) return;
+    auto frame = ParsedVideoFrame::parse(std::move(wire));
+    if (!frame) return;
+    dispatch_video(sender, reorder_.on_frame(sender, std::move(*frame), steady_now_us()));
 }
 
-// MsQuic worker thread.
-void AppCore::route_video_stream_aborted(uint32_t sender_id, uint32_t frame_seq, bool have_seq)
+void AppCore::dispatch_video(UserId sender, ReorderOutcome&& outcome)
 {
-    if (sender_id == user_id_ || !is_watching(sender_id)) return;
-    if (!have_seq) {
-        // Nothing arrived, not even the header: we cannot tell which frame is
-        // gone, so just ask for a fresh reference.
-        send_pli(sender_id);
-        return;
-    }
-    const int64_t now = steady_now_us();
-    const VideoFrameReorderBuffer::DeliverFn deliver =
-        [this, sender_id](const VideoFrameHeader&, std::vector<uint8_t>&& f) {
-            if (on_video_frame_received) on_video_frame_received(sender_id, f.data(), f.size());
-        };
-    const VideoFrameReorderBuffer::LostFn lost =
-        [this, sender_id](uint32_t) { send_pli(sender_id); };
-
-    std::lock_guard<std::mutex> lock(reorder_mutex_);
-    reorder_buffers_[sender_id].on_frame_aborted(frame_seq, now, deliver, lost);
+    if (on_video_frame_received)
+        for (auto& frame : outcome.deliver)
+            on_video_frame_received(sender, std::move(frame));
+    if (outcome.keyframe == KeyframeRequest::Needed) send_pli(sender);
 }
 
-// Main thread (tick): timer-driven give-up on gaps at the tail.
-void AppCore::poll_video_reorder_buffers()
+void AppCore::route_video_stream_aborted(UserId sender, uint32_t frame_seq, bool have_seq)
 {
-    std::lock_guard<std::mutex> lock(reorder_mutex_);
-    if (reorder_buffers_.empty()) return;
-    const int64_t now = steady_now_us();
-    for (auto& [sender_id, buffer] : reorder_buffers_) {
-        const UserId id = sender_id;
-        const VideoFrameReorderBuffer::DeliverFn deliver =
-            [this, id](const VideoFrameHeader&, std::vector<uint8_t>&& f) {
-                if (on_video_frame_received) on_video_frame_received(id, f.data(), f.size());
-            };
-        const VideoFrameReorderBuffer::LostFn lost =
-            [this, id](uint32_t) { send_pli(id); };
-        buffer.poll(now, deliver, lost);
-    }
+    if (sender == user_id_ || !is_watching(sender)) return;
+    if (!have_seq || reorder_.on_aborted(sender, frame_seq) == KeyframeRequest::Needed)
+        send_pli(sender);
 }
-
-void AppCore::erase_reorder_buffer(UserId sharer_id)
-{
-    std::lock_guard<std::mutex> lock(reorder_mutex_);
-    reorder_buffers_.erase(sharer_id);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Voice state
-// ─────────────────────────────────────────────────────────────────────────────
 
 void AppCore::send_voice_state()
 {
@@ -1572,10 +1447,6 @@ void AppCore::send_voice_state()
     };
     net_.send_message(protocol::ControlMessageType::VOICE_STATE_UPDATE, payload, 2);
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Network message dispatch
-// ─────────────────────────────────────────────────────────────────────────────
 
 void AppCore::process_server_messages()
 {
@@ -1607,7 +1478,7 @@ void AppCore::handle_server_message(protocol::ControlMessageType type,
     case protocol::ControlMessageType::SCREEN_SHARE_STOPPED:
         on_screen_share_stopped(data, len); break;
     case protocol::ControlMessageType::SCREEN_SHARE_DENIED:
-        on_screen_share_denied(data, len); break;
+        on_screen_share_denied(); break;
     case protocol::ControlMessageType::SCREEN_SHARE_VIEWER:
         on_screen_share_viewer(data, len); break;
     case protocol::ControlMessageType::ADMIN_RESULT:
@@ -1640,20 +1511,13 @@ void AppCore::handle_server_message(protocol::ControlMessageType type,
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Protocol handlers
-// ─────────────────────────────────────────────────────────────────────────────
-
 void AppCore::on_auth_response(const uint8_t* data, size_t len)
 {
     BinaryReader reader(data, len);
     user_id_ = reader.read_u32();
-    uint8_t session_token[32];
-    reader.read_bytes(session_token, 32);
-    role_ = reader.read_u8();
+    reader.skip<protocol::ReservedSessionToken>();
+    role_ = role_from_wire(reader.read_u8());
     std::string server_name = reader.read_string();
-    // Trailing since 1.2: the server's protocol version. Absent on older
-    // servers, which then keep receiving video on the legacy stream 1.
     server_protocol_version_ = reader.remaining() >= 2
         ? reader.read_u16()
         : protocol::PROTOCOL_VERSION_ASSUMED_LEGACY;
@@ -1673,10 +1537,7 @@ void AppCore::on_auth_response(const uint8_t* data, size_t len)
     server_password_.clear();
     refresh_server_list();
 
-    if (bridge_.on_authenticated) bridge_.on_authenticated();
-
     model_.server_name          = Rml::String(server_name);
-    // Compute server initials and color
     if (server_name.size() >= 2)
         model_.server_initials = Rml::String(server_name.substr(0, 2));
     else if (!server_name.empty())
@@ -1693,17 +1554,16 @@ void AppCore::on_auth_response(const uint8_t* data, size_t len)
     model_.is_connected         = true;
     if (bridge_.play_sound) bridge_.play_sound(SoundPlayer::Effect::ServerConnected);
     model_.my_role              = role_;
-    model_.can_manage_channels  = (role_ <= static_cast<int>(parties::Role::Moderator));
+    model_.can_manage_channels  = (role_ <= Role::Moderator);
     chat_model_.can_manage_channels = model_.can_manage_channels;
-    model_.can_kick             = (role_ <= static_cast<int>(parties::Role::Moderator));
-    model_.can_manage_roles     = (role_ <= static_cast<int>(parties::Role::Admin));
+    model_.can_kick             = (role_ <= Role::Moderator);
+    model_.can_manage_roles     = (role_ <= Role::Admin);
 
     server_model_.connected_server_id = connecting_server_id_;
     server_model_.show_login          = false;
     server_model_.login_error         = "";
     server_model_.login_status        = "";
 
-    // Populate audio device lists
     auto caps = audio_.get_capture_devices();
     auto& cap_devices = model_.capture_devices.silent();
     cap_devices.clear();
@@ -1716,8 +1576,8 @@ void AppCore::on_auth_response(const uint8_t* data, size_t len)
         play_devices.push_back({Rml::String(d.name), d.index});
     model_.capture_devices.notify();
     model_.playback_devices.notify();
+    if (bridge_.on_audio_devices_published) bridge_.on_audio_devices_published();
 
-    // ── Auto-reconnect: rejoin the last voice channel and clear the banner ──
     if (rejoin_pending_) {
         rejoin_pending_ = false;
         const ChannelId ch = reconnect_channel_;
@@ -1727,7 +1587,6 @@ void AppCore::on_auth_response(const uint8_t* data, size_t len)
             join_channel(ch);
         }
     } else {
-        // A fresh, manual login — make sure no stale reconnect state lingers.
         cancel_reconnect();
     }
 }
@@ -1748,10 +1607,9 @@ void AppCore::on_channel_list(const uint8_t* data, size_t len)
         uint32_t ch_id    = reader.read_u32();
         std::string name  = reader.read_string();
         uint32_t max_u    = reader.read_u32();
-        uint32_t sort_ord = reader.read_u32();
+        reader.skip<protocol::ChannelSortOrder>();
         uint32_t user_cnt = reader.read_u32();
         if (reader.error()) break;
-        (void)sort_ord;
 
         ChannelInfo ch;
         ch.id         = static_cast<int>(ch_id);
@@ -1762,8 +1620,6 @@ void AppCore::on_channel_list(const uint8_t* data, size_t len)
         auto it = old_users.find(ch.id);
         if (it != old_users.end()) {
             ch.users = std::move(it->second);
-            // For our current channel, user list is authoritative;
-            // for other channels, trust the server's count
             if (static_cast<uint32_t>(ch.id) == current_channel_)
                 ch.user_count = static_cast<int>(ch.users.size());
         }
@@ -1783,7 +1639,7 @@ void AppCore::on_channel_user_list(const uint8_t* data, size_t len)
     for (uint32_t i = 0; i < count; i++) {
         uint32_t uid      = reader.read_u32();
         std::string uname = reader.read_string();
-        uint8_t urole     = reader.read_u8();
+        Role urole        = role_from_wire(reader.read_u8());
         uint8_t muted     = reader.read_u8();
         uint8_t deaf      = reader.read_u8();
         if (reader.error()) break;
@@ -1813,9 +1669,6 @@ void AppCore::on_channel_user_list(const uint8_t* data, size_t len)
     if (awaiting_channel_join_ && pending_channel_id_ == channel_id) {
         awaiting_channel_join_ = false;
 
-        // The server already removed our old subscriptions before this join
-        // acknowledgement. Drop the old channel's decoders and UI entries before
-        // processing the new channel's SCREEN_SHARE_STARTED replay messages.
         if (current_channel_ != channel_id) {
             if (model_.is_sharing && bridge_.stop_screen_share)
                 bridge_.stop_screen_share();
@@ -1827,7 +1680,6 @@ void AppCore::on_channel_user_list(const uint8_t* data, size_t len)
             clear_all_sharers();
         }
 
-        // Remove self from old channel
         if (current_channel_ != 0 && current_channel_ != channel_id) {
             for (auto& ch : channels) {
                 if (ch.id == static_cast<int>(current_channel_)) {
@@ -1866,13 +1718,12 @@ void AppCore::on_user_joined(const uint8_t* data, size_t len)
     uint32_t uid        = reader.read_u32();
     std::string uname   = reader.read_string();
     uint32_t channel_id = reader.read_u32();
-    uint8_t urole       = reader.has_remaining(1) ? reader.read_u8() : 3;
+    Role urole          = reader.has_remaining(1) ? role_from_wire(reader.read_u8()) : Role::User;
     if (reader.error()) return;
 
     auto& channels = model_.channels.silent();
     for (auto& ch : channels) {
         if (ch.id == static_cast<int>(channel_id)) {
-            // Remove existing entry for this user (handles identity takeover / rejoin)
             auto& ul = ch.users;
             ul.erase(std::remove_if(ul.begin(), ul.end(),
                 [uid](const ChannelUser& cu) { return cu.id == static_cast<int>(uid); }),
@@ -1951,16 +1802,16 @@ void AppCore::on_user_role_changed(const uint8_t* data, size_t len)
 {
     BinaryReader reader(data, len);
     uint32_t uid      = reader.read_u32();
-    uint8_t new_role  = reader.read_u8();
+    Role new_role     = role_from_wire(reader.read_u8());
     if (reader.error()) return;
 
     if (uid == user_id_) {
         role_                   = new_role;
         model_.my_role          = new_role;
-        model_.can_manage_channels = (new_role <= static_cast<int>(parties::Role::Moderator));
+        model_.can_manage_channels = (new_role <= Role::Moderator);
         chat_model_.can_manage_channels = model_.can_manage_channels;
-        model_.can_kick            = (new_role <= static_cast<int>(parties::Role::Moderator));
-        model_.can_manage_roles    = (new_role <= static_cast<int>(parties::Role::Admin));
+        model_.can_kick            = (new_role <= Role::Moderator);
+        model_.can_manage_roles    = (new_role <= Role::Admin);
     }
     auto& channels = model_.channels.silent();
     for (auto& ch : channels)
@@ -1972,21 +1823,11 @@ void AppCore::on_user_role_changed(const uint8_t* data, size_t len)
 
 void AppCore::on_screen_share_started(const uint8_t* data, size_t len)
 {
-    // [sharer(4)][codec(1)][width(2)][height(2)][replay(1)] — only the sharer
-    // id is required; the rest are optional trailing fields (replay since 1.2:
-    // 1 = join-time replay of an already running share, 0/absent = live start).
-    BinaryReader reader(data, len);
-    uint32_t sharer_id = reader.read_u32();
-    if (reader.error()) return;
-    const uint8_t  codec  = reader.has_remaining(1) ? reader.read_u8()  : 0;
-    const uint16_t width  = reader.has_remaining(2) ? reader.read_u16() : 0;
-    const uint16_t height = reader.has_remaining(2) ? reader.read_u16() : 0;
-    const uint8_t  replay = reader.has_remaining(1) ? reader.read_u8()  : 0;
-    (void)codec; (void)width; (void)height;
+    const auto started = parse_screen_share_started(data, len);
+    if (!started) return;
 
-    // Ignore delayed/irrelevant notifications from a channel we have left.
-    if (!model_.add_channel_sharer(static_cast<int>(sharer_id))) return;
-    if (sharer_id != user_id_ && replay == 0 && bridge_.play_sound)
+    if (!model_.add_channel_sharer(static_cast<int>(started->sharer_id))) return;
+    if (started->sharer_id != user_id_ && !started->late_join_replay && bridge_.play_sound)
         bridge_.play_sound(SoundPlayer::Effect::StreamStarted);
     rebuild_watched_model();
 }
@@ -1999,22 +1840,19 @@ void AppCore::on_screen_share_stopped(const uint8_t* data, size_t len)
 
     model_.remove_channel_sharer(static_cast<int>(sharer_id));
 
-    // If we were watching this sharer, tear that stream down; otherwise just
-    // refresh the model so the (now-gone) sharer drops out of the grid/chips.
     if (is_watching(static_cast<UserId>(sharer_id)))
         remove_watch(static_cast<UserId>(sharer_id));
     else
         rebuild_watched_model();
 }
 
-void AppCore::on_screen_share_denied(const uint8_t* /*data*/, size_t /*len*/)
+void AppCore::on_screen_share_denied()
 {
     model_.is_sharing = false;
     if (bridge_.stop_screen_share) bridge_.stop_screen_share();
     LOG_WARN("Screen share denied by server");
 }
 
-// SCREEN_SHARE_VIEWER (1.2+, sharer only): [viewer(4)][watching(1)].
 void AppCore::on_screen_share_viewer(const uint8_t* data, size_t len)
 {
     BinaryReader reader(data, len);
@@ -2029,12 +1867,11 @@ void AppCore::on_screen_share_viewer(const uint8_t* data, size_t len)
 void AppCore::on_admin_result(const uint8_t* data, size_t len)
 {
     BinaryReader reader(data, len);
-    uint8_t ok      = reader.read_u8();
+    reader.skip<protocol::AdminResultStatus>();
     std::string msg = reader.read_string();
     if (!msg.empty()) {
         model_.admin_message = Rml::String(msg);
     }
-    (void)ok;
 }
 
 void AppCore::on_server_error(const uint8_t* data, size_t len)
@@ -2047,9 +1884,6 @@ void AppCore::on_server_error(const uint8_t* data, size_t len)
 
     LOG_ERROR("Server error [{}]: {}", code_raw, msg);
 
-    // Terminal, server-initiated disconnects (admin kick, or being replaced by
-    // a login from elsewhere) arrive as an error immediately followed by a
-    // transport drop. Mark the upcoming drop intentional so we don't fight it.
     if (authenticated_ &&
         (code == protocol::ServerErrorCode::Kicked ||
          code == protocol::ServerErrorCode::Replaced)) {
@@ -2064,10 +1898,6 @@ void AppCore::on_server_error(const uint8_t* data, size_t len)
         server_model_.login_status = "";
     }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Voice and secondary audio activity (independent of microphone mute)
-// ─────────────────────────────────────────────────────────────────────────────
 
 void AppCore::update_speaking_state()
 {
@@ -2128,10 +1958,6 @@ void AppCore::update_speaking_state()
     if (changed) model_.channels.notify();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Preference helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
 void AppCore::apply_user_audio_prefs(UserId user_id)
 {
     bool cached = false;
@@ -2140,8 +1966,6 @@ void AppCore::apply_user_audio_prefs(UserId user_id)
         cached = user_audio_prefs_.find(user_id) != user_audio_prefs_.end();
     }
     if (cached) {
-        // Already loaded, including any newer debounced UI edit that has not
-        // reached SQLite yet.
         apply_cached_user_audio_prefs(user_id);
         return;
     }
@@ -2198,10 +2022,6 @@ void AppCore::flush_pending_prefs(bool force)
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Model callbacks
-// ─────────────────────────────────────────────────────────────────────────────
-
 void AppCore::setup_model_callbacks()
 {
     model_.on_disconnect_server = [this]() { disconnect_intentionally(); };
@@ -2211,7 +2031,6 @@ void AppCore::setup_model_callbacks()
     model_.on_toggle_mute = [this]() {
         bool muted = !model_.is_muted;
         model_.is_muted = muted;
-        // Effective audio mute: manually muted, or deafened, or PTT idle
         audio_.set_muted(muted || model_.is_deafened);
         auto& channels = model_.channels.silent();
         for (auto& ch : channels)
@@ -2227,11 +2046,9 @@ void AppCore::setup_model_callbacks()
         bool deafened = !model_.is_deafened;
         audio_.set_deafened(deafened);
         model_.is_deafened = deafened;
-        // Deafen implies mute at the audio level
         if (deafened) {
             audio_.set_muted(true);
         } else {
-            // Restore: only unmute audio if not manually muted (and not PTT-idle)
             audio_.set_muted(model_.is_muted);
         }
         auto& channels = model_.channels.silent();
@@ -2283,8 +2100,6 @@ void AppCore::setup_model_callbacks()
     model_.on_toggle_ptt = [this]() {
         model_.ptt_enabled = !model_.ptt_enabled;
         settings_.set_pref("audio.ptt", model_.ptt_enabled ? "1" : "0");
-        // PTT on: start with mic muted (key not held yet)
-        // PTT off: restore audio mute to match manual mute state
         audio_.set_muted(model_.is_muted || model_.is_deafened || model_.ptt_enabled);
     };
     model_.on_ptt_bind         = [this]() { model_.ptt_binding = true; };
@@ -2296,33 +2111,45 @@ void AppCore::setup_model_callbacks()
         model_.deafen_binding = true; model_.mute_binding = false; model_.ptt_binding = false;
     };
 
-    model_.on_toggle_share = [this]() {
-        if (model_.is_sharing) {
-            if (bridge_.stop_screen_share) bridge_.stop_screen_share();
-        } else {
-            if (bridge_.open_share_picker) bridge_.open_share_picker();
-        }
+    auto toggle_share = [this](std::function<void()> start) {
+        return [this, start = std::move(start)]() {
+            if (model_.is_sharing) {
+                if (bridge_.stop_screen_share) bridge_.stop_screen_share();
+            } else if (start) {
+                start();
+            }
+        };
     };
-    model_.on_toggle_audio_share = [this]() {
-        if (model_.is_audio_sharing) {
-            if (bridge_.stop_audio_share) bridge_.stop_audio_share();
-        } else {
-            if (bridge_.open_audio_share_picker) bridge_.open_audio_share_picker();
-        }
+    auto toggle_audio_share = [this](std::function<void()> start) {
+        return [this, start = std::move(start)]() {
+            if (model_.is_audio_sharing) {
+                if (bridge_.stop_audio_share) bridge_.stop_audio_share();
+            } else if (start) {
+                start();
+            }
+        };
     };
-    model_.on_cancel_share = [this]() {
-        model_.router.back();
-    };
+    auto router_back = [this]() { model_.router.back(); };
+    if (const auto* picker = std::get_if<PickerShareFlow>(&bridge_.share)) {
+        model_.on_toggle_share       = toggle_share(picker->open_picker);
+        model_.on_toggle_audio_share = toggle_audio_share(picker->open_audio_picker);
+        model_.on_cancel_share       = picker->cancel_picker;
+    } else if (const auto* native = std::get_if<NativeShareFlow>(&bridge_.share)) {
+        model_.on_toggle_share       = toggle_share(native->start_native_share);
+        model_.on_toggle_audio_share = toggle_audio_share(native->start_native_audio_share);
+        model_.on_start_native_share = native->start_native_share;
+        model_.on_cancel_share       = router_back;
+    } else {
+        model_.on_cancel_share       = router_back;
+    }
 
     model_.on_watch_sharer  = [this](int id) { add_watch(static_cast<UserId>(id)); };
     model_.on_toggle_watch  = [this](int id) { toggle_watch(static_cast<UserId>(id)); };
     model_.on_select_sharer = [this](int id) { watch_sharer(static_cast<UserId>(id)); };
     model_.on_stop_watching = [this]()       { stop_watching(); };
 
-    model_.on_stream_volume_changed = [this](float v) {
-        stream_audio_player_.set_volume(v);
-        save_pref_debounced("audio.stream_volume", std::to_string(v));
-    };
+    model_.on_toggle_stream_pip  = [this](int id) { toggle_pip(static_cast<UserId>(id)); };
+    model_.on_stream_volume_changed = [this](float v) { set_stream_volume(v); };
 
     model_.on_notification_volume_changed = [this](float v) {
         if (bridge_.set_notification_volume) bridge_.set_notification_volume(v);
@@ -2345,7 +2172,6 @@ void AppCore::setup_model_callbacks()
     };
 #endif
 
-    // Admin operations
     model_.on_create_channel = [this]() {
         if (!authenticated_) return;
         std::string name(model_.new_channel_name);
@@ -2375,7 +2201,7 @@ void AppCore::setup_model_callbacks()
         model_.show_rename_channel = false;
     };
 
-    model_.on_show_user_menu = [this](int user_id, std::string name, int user_role) {
+    model_.on_show_user_menu = [this](int user_id, std::string name, Role user_role) {
         if (!authenticated_ || static_cast<uint32_t>(user_id) == user_id_) return;
         apply_user_audio_prefs(static_cast<UserId>(user_id));
         model_.menu_user_id            = user_id;
@@ -2411,7 +2237,7 @@ void AppCore::setup_model_callbacks()
         }
     };
 
-    model_.on_set_user_role = [this](int user_id, int new_role) {
+    model_.on_set_user_role = [this](int user_id, Role new_role) {
         if (!authenticated_) return;
         BinaryWriter w;
         w.write_u32(static_cast<uint32_t>(user_id));
@@ -2464,7 +2290,6 @@ void AppCore::setup_model_callbacks()
         if (bridge_.show_channel_menu) bridge_.show_channel_menu(channel_id, name);
     };
 
-    // Identity backup/import
     model_.on_show_seed_phrase = [this]() {
         if (!has_identity_) return;
         if (model_.show_seed_phrase) {
@@ -2508,15 +2333,20 @@ void AppCore::setup_model_callbacks()
         SecretKey sk{}; PublicKey pk{}; std::string sp;
 
         if (input.size() == 64 && parties::secret_key_from_hex(input, sk)) {
-            if (!parties::derive_pubkey(sk, pk)) {
+            const auto derived = parties::public_key_of(sk);
+            if (!derived) {
                 model_.import_error = "Failed to derive public key";
                 return;
             }
+            pk = *derived;
         } else if (parties::validate_seed_phrase(input)) {
-            if (!parties::derive_keypair(input, sk, pk)) {
+            sk = parties::secret_key_from_phrase_sha256(input);
+            const auto derived = parties::public_key_of(sk);
+            if (!derived) {
                 model_.import_error = "Failed to derive keypair";
                 return;
             }
+            pk = *derived;
             sp = input;
         } else {
             model_.import_error = "Enter a 12-word seed phrase or 64-char hex private key.";
@@ -2544,9 +2374,6 @@ void AppCore::setup_model_callbacks()
         model_.import_phrase = "";
         model_.import_error  = "";
     };
-
-    // on_select_share_target and on_start_native_share are platform-specific;
-    // set by Windows / macOS platform code after init().
 }
 
 void AppCore::setup_server_model_callbacks()
@@ -2698,8 +2525,12 @@ void AppCore::setup_server_model_callbacks()
     };
 
     server_model_.on_generate_identity = [this]() {
-        std::string phrase = parties::generate_seed_phrase();
-        server_model_.seed_phrase       = Rml::String(phrase);
+        auto phrase = parties::generate_seed_phrase();
+        if (!phrase) {
+            LOG_ERROR("Failed to generate a seed phrase: the system random source is unavailable");
+            return;
+        }
+        server_model_.seed_phrase       = Rml::String(*phrase);
         server_model_.show_onboarding   = true;
         server_model_.show_restore      = false;
         server_model_.show_key_import   = false;
@@ -2707,10 +2538,12 @@ void AppCore::setup_server_model_callbacks()
 
     server_model_.on_save_identity = [this]() {
         std::string phrase(server_model_.seed_phrase);
-        SecretKey sk{}; PublicKey pk{};
-        if (!parties::derive_keypair(phrase, sk, pk)) {
+        const SecretKey sk = parties::secret_key_from_phrase_sha256(phrase);
+        const auto derived = parties::public_key_of(sk);
+        if (!derived) {
             LOG_ERROR("Failed to derive keypair"); return;
         }
+        const PublicKey pk = *derived;
         if (!settings_.save_identity(phrase, sk, pk)) {
             LOG_ERROR("Failed to save identity"); return;
         }
@@ -2728,11 +2561,13 @@ void AppCore::setup_server_model_callbacks()
             server_model_.login_error = "Invalid seed phrase";
             return;
         }
-        SecretKey sk{}; PublicKey pk{};
-        if (!parties::derive_keypair(phrase, sk, pk)) {
+        const SecretKey sk = parties::secret_key_from_phrase_sha256(phrase);
+        const auto derived = parties::public_key_of(sk);
+        if (!derived) {
             server_model_.login_error = "Failed to derive keypair";
             return;
         }
+        const PublicKey pk = *derived;
         if (!settings_.save_identity(phrase, sk, pk)) {
             server_model_.login_error = "Failed to save identity";
             return;
@@ -2760,15 +2595,17 @@ void AppCore::setup_server_model_callbacks()
 
     server_model_.on_import_key = [this]() {
         std::string hex(server_model_.import_key_hex);
-        SecretKey sk{}; PublicKey pk{};
+        SecretKey sk{};
         if (!parties::secret_key_from_hex(hex, sk)) {
             server_model_.login_error = "Invalid private key. Must be 64 hex characters.";
             return;
         }
-        if (!parties::derive_pubkey(sk, pk)) {
+        const auto derived = parties::public_key_of(sk);
+        if (!derived) {
             server_model_.login_error = "Failed to derive public key";
             return;
         }
+        const PublicKey pk = *derived;
         if (!settings_.save_identity("", sk, pk)) {
             server_model_.login_error = "Failed to save identity";
             return;
@@ -2810,14 +2647,10 @@ void AppCore::setup_server_model_callbacks()
     };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Chat model callbacks
-
 void AppCore::setup_chat_model_callbacks()
 {
     chat_model_.on_select_channel = [this](int channel_id) {
         chat_model_.active_channel = channel_id;
-        // Find channel name
         auto& tchannels = chat_model_.text_channels.silent();
         for (auto& tc : tchannels) {
             if (tc.id == channel_id) {
@@ -2833,20 +2666,13 @@ void AppCore::setup_chat_model_callbacks()
         chat_model_.show_search = false;
         chat_model_.show_pinned = false;
 
-        // Show chat while keeping the voice connection intact. The document
-        // router guarantees this replaces settings/room/stream presentation.
         model_.router.go(DocumentRoute::Chat);
-        // On iOS the connected shell is sidebar-first. Selecting a text
-        // channel must also reveal the main pane, just like selecting a room;
-        // otherwise the route changes correctly but remains hidden behind the
-        // full-width channel sidebar.
         model_.mobile_show_content = true;
 
-        // Request history
         BinaryWriter writer;
         writer.write_u32(static_cast<uint32_t>(channel_id));
-        writer.write_u64(0); // latest
-        writer.write_u16(30);
+        writer.write_u64(protocol::CHAT_BEFORE_ID_LATEST);
+        writer.write_u16(protocol::CHAT_PAGE_SIZE);
         net_.send_message(protocol::ControlMessageType::CHAT_HISTORY_REQ,
                          writer.data().data(), writer.data().size());
     };
@@ -2857,7 +2683,6 @@ void AppCore::setup_chat_model_callbacks()
         bool has_files = !chat_model_.pending_files.get().empty();
         if (!has_text && !has_files) return;
 
-        // Read pending files into memory before sending
         pending_uploads_.clear();
         for (auto& pf : chat_model_.pending_files.get()) {
             std::ifstream in(std::string(pf.path), std::ios::binary | std::ios::ate);
@@ -2876,9 +2701,9 @@ void AppCore::setup_chat_model_callbacks()
         writer.write_string(has_text ? std::string(chat_model_.compose_text) : std::string());
         writer.write_u8(static_cast<uint8_t>(pending_uploads_.size()));
         for (auto& pu : pending_uploads_) {
-            writer.write_string(pu.path);  // file_name
-            writer.write_u64(static_cast<uint64_t>(pu.data.size()));  // file_size
-            writer.write_string("application/octet-stream");  // mime
+            writer.write_string(pu.path);
+            writer.write_u64(static_cast<uint64_t>(pu.data.size()));
+            writer.write_string("application/octet-stream");
         }
         net_.send_message(protocol::ControlMessageType::CHAT_SEND,
                          writer.data().data(), writer.data().size());
@@ -2895,7 +2720,7 @@ void AppCore::setup_chat_model_callbacks()
         BinaryWriter writer;
         writer.write_u32(static_cast<uint32_t>(chat_model_.active_channel));
         writer.write_u64(static_cast<uint64_t>(chat_model_.messages.get().front().id));
-        writer.write_u16(30);
+        writer.write_u16(protocol::CHAT_PAGE_SIZE);
         net_.send_message(protocol::ControlMessageType::CHAT_HISTORY_REQ,
                          writer.data().data(), writer.data().size());
     };
@@ -2933,8 +2758,8 @@ void AppCore::setup_chat_model_callbacks()
         BinaryWriter writer;
         writer.write_u32(static_cast<uint32_t>(chat_model_.active_channel));
         writer.write_string(std::string(chat_model_.search_query));
-        writer.write_u64(0); // latest
-        writer.write_u16(30);
+        writer.write_u64(protocol::CHAT_BEFORE_ID_LATEST);
+        writer.write_u16(protocol::CHAT_PAGE_SIZE);
         net_.send_message(protocol::ControlMessageType::CHAT_SEARCH,
                          writer.data().data(), writer.data().size());
     };
@@ -2965,12 +2790,10 @@ void AppCore::setup_chat_model_callbacks()
     };
 
     chat_model_.on_open_url = [](const std::string& url) {
-        // Validate URL starts with http(s) to prevent command injection
-        if (url.find("http://") != 0 && url.find("https://") != 0) return;
+        if (!is_http_url(url)) return;
 #ifdef _WIN32
         ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 #elif defined(__APPLE__)
-        // Use fork+exec to avoid shell injection
         if (fork() == 0) { execlp("open", "open", url.c_str(), nullptr); _exit(1); }
 #else
         if (fork() == 0) { execlp("xdg-open", "xdg-open", url.c_str(), nullptr); _exit(1); }
@@ -2992,7 +2815,6 @@ void AppCore::setup_chat_model_callbacks()
             // Single file: file_buf is full path
             // Multi-select: file_buf is dir\0file1\0file2\0\0
             if (ofn.nFileOffset > 0 && file_buf[ofn.nFileOffset - 1] == '\0') {
-                // Multi-select
                 std::string dir(file_buf);
                 char* p = file_buf + dir.size() + 1;
                 while (*p) {
@@ -3011,7 +2833,6 @@ void AppCore::setup_chat_model_callbacks()
                     p += strlen(p) + 1;
                 }
             } else {
-                // Single file
                 fs::path fpath(file_buf);
                 PendingFile pf;
                 pf.name = Rml::String(fpath.filename().string());
@@ -3035,14 +2856,10 @@ void AppCore::setup_chat_model_callbacks()
     };
 
     net_.on_file_downloaded = [this](uint64_t attachment_id, std::vector<uint8_t> data) {
-        // Push to queue — processed on main thread in tick()
         std::lock_guard<std::mutex> lock(downloads_mutex_);
         completed_downloads_.push_back({attachment_id, std::move(data)});
     };
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Chat protocol handlers
 
 static Rml::String format_timestamp(uint64_t unix_ts) {
     auto t = static_cast<std::time_t>(unix_ts);
@@ -3050,7 +2867,6 @@ static Rml::String format_timestamp(uint64_t unix_ts) {
     if (!tm) return "";
     char buf[32];
     std::strftime(buf, sizeof(buf), "%I:%M %p", tm);
-    // Remove leading zero from hour: "09:32 AM" -> "9:32 AM"
     if (buf[0] == '0')
         return Rml::String(buf + 1);
     return Rml::String(buf);
@@ -3100,7 +2916,6 @@ static Rml::String make_initials(const Rml::String& name) {
     if (name.empty()) return "?";
     Rml::String result;
     result += static_cast<char>(std::toupper(static_cast<unsigned char>(name[0])));
-    // Find second word start
     auto sp = name.find(' ');
     if (sp != Rml::String::npos && sp + 1 < name.size())
         result += static_cast<char>(std::toupper(static_cast<unsigned char>(name[sp + 1])));
@@ -3121,9 +2936,10 @@ static Rml::Vector<TextSegment> split_text_with_urls(const Rml::String& text) {
     Rml::Vector<TextSegment> segments;
     size_t pos = 0;
     while (pos < text.size()) {
-        size_t http_pos = text.find("http://", pos);
-        size_t https_pos = text.find("https://", pos);
-        size_t url_start = (std::min)(http_pos, https_pos);
+        size_t url_start = text.find("http", pos);
+        while (url_start != Rml::String::npos &&
+               !is_http_url(std::string_view(text).substr(url_start)))
+            url_start = text.find("http", url_start + 1);
         if (url_start == Rml::String::npos) {
             if (pos < text.size())
                 segments.push_back({text.substr(pos), false});
@@ -3131,12 +2947,10 @@ static Rml::Vector<TextSegment> split_text_with_urls(const Rml::String& text) {
         }
         if (url_start > pos)
             segments.push_back({text.substr(pos, url_start - pos), false});
-        // Find URL end (whitespace or end of string)
         size_t url_end = url_start;
         while (url_end < text.size() && text[url_end] != ' ' && text[url_end] != '\n'
                && text[url_end] != '\r' && text[url_end] != '\t')
             url_end++;
-        // Strip trailing punctuation that's likely not part of URL
         while (url_end > url_start && (text[url_end - 1] == '.' || text[url_end - 1] == ','
                || text[url_end - 1] == ')' || text[url_end - 1] == ';'))
             url_end--;
@@ -3148,11 +2962,16 @@ static Rml::Vector<TextSegment> split_text_with_urls(const Rml::String& text) {
     return segments;
 }
 
-static ChatMessage parse_chat_message(BinaryReader& reader, uint32_t my_user_id = 0) {
-    ChatMessage msg;
+struct ParsedChatMessage {
+    ChatMessage message;
+    ChannelId   channel_id = 0;
+};
+
+static ParsedChatMessage parse_chat_message(BinaryReader& reader, uint32_t my_user_id) {
+    ParsedChatMessage parsed;
+    ChatMessage& msg = parsed.message;
     msg.id = static_cast<int64_t>(reader.read_u64());
-    uint32_t channel_id = reader.read_u32();
-    (void)channel_id;
+    parsed.channel_id = reader.read_u32();
     msg.sender_id = static_cast<int>(reader.read_u32());
     msg.sender_name = Rml::String(reader.read_string());
     msg.initials = make_initials(msg.sender_name);
@@ -3175,7 +2994,6 @@ static ChatMessage parse_chat_message(BinaryReader& reader, uint32_t my_user_id 
         att.file_ext = file_extension_upper(att.file_name);
         uint64_t fsize = reader.read_u64();
 
-        // Format size
         if (fsize < 1024)
             att.size_str = Rml::String(std::to_string(fsize) + " B");
         else if (fsize < 1024 * 1024)
@@ -3183,13 +3001,12 @@ static ChatMessage parse_chat_message(BinaryReader& reader, uint32_t my_user_id 
         else
             att.size_str = Rml::String(std::format("{:.1f} MB", fsize / (1024.0 * 1024.0)));
 
-        std::string mime = reader.read_string(); // mime_type
-        (void)mime;
+        reader.skip<protocol::AttachmentMime>();
         att.uploaded = reader.read_u8() != 0;
         msg.attachments.push_back(std::move(att));
     }
 
-    return msg;
+    return parsed;
 }
 
 void AppCore::on_chat_channel_list(const uint8_t* data, size_t len) {
@@ -3203,7 +3020,7 @@ void AppCore::on_chat_channel_list(const uint8_t* data, size_t len) {
         TextChannel tc;
         tc.id = static_cast<int>(reader.read_u32());
         tc.name = Rml::String(reader.read_string());
-        reader.read_u32(); // sort_order
+        reader.skip<protocol::ChannelSortOrder>();
         channels.push_back(std::move(tc));
     }
     chat_model_.text_channels.notify();
@@ -3211,17 +3028,10 @@ void AppCore::on_chat_channel_list(const uint8_t* data, size_t len) {
 
 void AppCore::on_chat_message(const uint8_t* data, size_t len) {
     BinaryReader reader(data, len);
-    auto msg = parse_chat_message(reader, user_id_);
+    auto [msg, channel_id] = parse_chat_message(reader, user_id_);
     if (reader.error()) return;
 
-    // Read channel_id from the message for routing (it's at offset 8)
-    BinaryReader peek(data, len);
-    peek.read_u64(); // msg_id
-    uint32_t channel_id = peek.read_u32();
-
-    // If this is our message and we have pending uploads, upload file data now
     if (msg.sender_id == static_cast<int>(user_id_) && !pending_uploads_.empty()) {
-        // Match pending uploads to attachment IDs by index
         size_t upload_count = (std::min)(pending_uploads_.size(), msg.attachments.size());
         for (size_t i = 0; i < upload_count; i++) {
             net_.upload_file(static_cast<uint64_t>(msg.attachments[i].id),
@@ -3233,13 +3043,9 @@ void AppCore::on_chat_message(const uint8_t* data, size_t len) {
 
     if (static_cast<int>(channel_id) == chat_model_.active_channel) {
         auto& msgs = chat_model_.messages.silent();
-        // Check if this is an update to an existing message (e.g., pin state change)
         bool found = false;
         for (auto& m : msgs) {
             if (m.id == msg.id) {
-                // The server sends the complete message on updates. Replace the
-                // complete view model as well, otherwise text, has_url and the
-                // nested segment array can describe different message versions.
                 m = std::move(msg);
                 found = true;
                 break;
@@ -3247,18 +3053,16 @@ void AppCore::on_chat_message(const uint8_t* data, size_t len) {
         }
         if (!found)
             msgs.push_back(std::move(msg));
-        // Keep at most 30 messages displayed
-        if (msgs.size() > 30) {
+        if (msgs.size() > protocol::CHAT_PAGE_SIZE) {
             msgs.erase(
                 msgs.begin(),
                 msgs.begin() +
-                    static_cast<int>(msgs.size() - 30));
+                    static_cast<int>(msgs.size() - protocol::CHAT_PAGE_SIZE));
             chat_model_.has_more_history = true;
         }
         assign_date_labels(msgs);
         chat_model_.messages.notify();
     } else {
-        // Mark channel as unread
         auto& channels = chat_model_.text_channels.silent();
         for (auto& tc : channels) {
             if (tc.id == static_cast<int>(channel_id)) {
@@ -3280,13 +3084,11 @@ void AppCore::on_chat_history_resp(const uint8_t* data, size_t len) {
     if (static_cast<int>(channel_id) != chat_model_.active_channel)
         return;
 
-    // Parse messages
     Rml::Vector<ChatMessage> batch;
     for (uint16_t i = 0; i < count && !reader.error(); i++)
-        batch.push_back(parse_chat_message(reader, user_id_));
+        batch.push_back(parse_chat_message(reader, user_id_).message);
 
     auto& msgs = chat_model_.messages.silent();
-    // Prepend to existing messages (batch is oldest-first from server)
     if (!batch.empty()) {
         batch.insert(batch.end(), msgs.begin(), msgs.end());
         msgs = std::move(batch);
@@ -3315,27 +3117,27 @@ void AppCore::on_chat_message_deleted(const uint8_t* data, size_t len) {
 
 void AppCore::on_chat_search_resp(const uint8_t* data, size_t len) {
     BinaryReader reader(data, len);
-    reader.read_u32(); // channel_id
+    reader.skip<ChannelId>();
     uint16_t count = reader.read_u16();
     if (reader.error()) return;
 
     auto& results = chat_model_.search_results.silent();
     results.clear();
     for (uint16_t i = 0; i < count && !reader.error(); i++)
-        results.push_back(parse_chat_message(reader, user_id_));
+        results.push_back(parse_chat_message(reader, user_id_).message);
     chat_model_.search_results.notify();
 }
 
 void AppCore::on_chat_pinned_resp(const uint8_t* data, size_t len) {
     BinaryReader reader(data, len);
-    reader.read_u32(); // channel_id
+    reader.skip<ChannelId>();
     uint16_t count = reader.read_u16();
     if (reader.error()) return;
 
     auto& pinned = chat_model_.pinned_messages.silent();
     pinned.clear();
     for (uint16_t i = 0; i < count && !reader.error(); i++)
-        pinned.push_back(parse_chat_message(reader, user_id_));
+        pinned.push_back(parse_chat_message(reader, user_id_).message);
     chat_model_.pinned_messages.notify();
 }
 
@@ -3345,7 +3147,6 @@ void AppCore::on_chat_file_ready(const uint8_t* data, size_t len) {
     uint64_t attachment_id = reader.read_u64();
     if (reader.error()) return;
 
-    // Update attachment status in displayed messages
     auto& msgs = chat_model_.messages.silent();
     for (auto& msg : msgs) {
         if (msg.id == static_cast<int64_t>(message_id)) {
@@ -3361,4 +3162,4 @@ void AppCore::on_chat_file_ready(const uint8_t* data, size_t len) {
     chat_model_.messages.notify();
 }
 
-} // namespace parties::client
+}

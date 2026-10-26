@@ -57,4 +57,16 @@ inline IOSAudioRoutes BuildIOSAudioRoutes(const std::vector<IOSAudioPort>& avail
     return result;
 }
 
-} // namespace parties::client
+enum class IOSAudioRouteDirection { Input, Output };
+
+inline bool ios_route_already_active(const IOSAudioRoutes& routes, int index,
+    IOSAudioRouteDirection direction)
+{
+    const bool input = direction == IOSAudioRouteDirection::Input;
+    const auto& choices = input ? routes.inputs : routes.outputs;
+    if (index < 0 || index >= static_cast<int>(choices.size())) return false;
+    return index == (input ? routes.selected_input : routes.selected_output)
+        || choices[static_cast<size_t>(index)].kind == IOSAudioRouteKind::CurrentOutput;
+}
+
+}

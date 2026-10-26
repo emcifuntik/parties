@@ -5,7 +5,6 @@
 namespace parties::client {
 
 void ServerListModel::build(rml::Builder& b) {
-    // Register struct + array (array AFTER its element struct).
     b.register_struct<ServerEntry>([](auto& s) {
         s.member("id",            &ServerEntry::id)
          .member("name",          &ServerEntry::name)
@@ -20,7 +19,6 @@ void ServerListModel::build(rml::Builder& b) {
     });
     b.register_array<Rml::Vector<ServerEntry>>();
 
-    // Bind variables.
     b.bind("servers",          servers)
      .bind("party_count_text", party_count_text)
      .bind("global_name",      global_name)
@@ -58,16 +56,13 @@ void ServerListModel::build(rml::Builder& b) {
      .bind("fingerprint",      fingerprint)
      .bind("has_identity",     has_identity);
 
-    // Event callbacks. Property assignments inside these lambdas auto-dirty.
     b.on_event("server_mousedown", [this](Rml::Event& event, const Rml::VariantList& args) {
         if (args.empty()) return;
         int id = args[0].Get<int>();
         int button = event.GetParameter<int>("button", 0);
         if (button == 0) {
-            // Left click → connect
             if (on_connect_server) on_connect_server(id);
         } else if (button == 1) {
-            // Right click → native context menu
             if (on_show_server_menu) on_show_server_menu(id);
         }
     });
@@ -179,4 +174,4 @@ void ServerListModel::build(rml::Builder& b) {
     });
 }
 
-} // namespace parties::client
+}

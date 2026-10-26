@@ -71,31 +71,40 @@ const char* cuda_error(const CudaApi& api, CUresult result) {
         return text;
     return "CUDA_ERROR_UNKNOWN";
 }
-} // namespace
+
+constexpr int cuvid_result(CuvidCallbackResult result) {
+    return static_cast<int>(result);
+}
+
+constexpr CuvidCallbackResult kFramePresented = CuvidCallbackResult::Continue;
+constexpr CuvidCallbackResult kPresentationDroppedKeepDecoding = CuvidCallbackResult::Continue;
+constexpr CuvidCallbackResult kNoConsumerKeepDecoding = CuvidCallbackResult::Continue;
+constexpr CuvidSurfaceCount kIgnoredSequenceKeepDecoding =
+    cuvid_result(CuvidCallbackResult::Continue);
+constexpr CuvidSurfaceCount kSequenceFailed = cuvid_result(CuvidCallbackResult::Abort);
+}
 
 struct NvdecCudaInteropState : std::enable_shared_from_this<NvdecCudaInteropState> {
-    struct Slot {
-        // The opaque NVDEC backing is a native CUDA array. In particular, it is
-        // not a D3D12 NV12 texture imported into CUDA: the opaque decoder layout
-        // is driver-private and is not required to match any DXGI plane layout.
+    struct ExportedPlane {
         ComPtr<ID3D12Resource> resource;
-        ComPtr<ID3D12Resource> luma_resource;
-        ComPtr<ID3D12Resource> chroma_resource;
         CUexternalMemory external_memory = nullptr;
         CUmipmappedArray mipmapped_array = nullptr;
         CUarray array = nullptr;
-        bool owns_cuda_array = false;
-        CUarray decoded_luma_array = nullptr;
-        CUarray decoded_chroma_array = nullptr;
-        CUexternalMemory luma_external_memory = nullptr;
-        CUmipmappedArray luma_mipmapped_array = nullptr;
-        CUarray luma_array = nullptr;
-        CUexternalMemory chroma_external_memory = nullptr;
-        CUmipmappedArray chroma_mipmapped_array = nullptr;
-        CUarray chroma_array = nullptr;
-        CUsurfObject surface = 0;
-        // Protects only the exported textures, never the private decode array.
-        std::atomic<bool> in_use{false};
+    };
+
+    struct Slot {
+        struct DecodeSurface {
+            CUarray array = nullptr;
+            CUarray luma = nullptr;
+            CUarray chroma = nullptr;
+        } decode;
+        struct Presentation {
+            ExportedPlane rgba;
+            CUsurfObject rgba_surface = 0;
+            ExportedPlane luma;
+            ExportedPlane chroma;
+            std::atomic<bool> leased{false};
+        } presentation;
     };
 
     struct Lease {
@@ -111,7 +120,7 @@ struct NvdecCudaInteropState : std::enable_shared_from_this<NvdecCudaInteropStat
     };
 
     CudaApi api{};
-    CUcontext context = nullptr;
+    CudaContextRef context;
     CUstream stream = nullptr;
     CUmodule module = nullptr;
     CUfunction kernel = nullptr;
@@ -123,11 +132,10 @@ struct NvdecCudaInteropState : std::enable_shared_from_this<NvdecCudaInteropStat
     uint32_t height = 0;
     uint64_t next_fence_value = 0;
     InteropSurfaceMode surface_mode = InteropSurfaceMode::None;
-    bool owns_context = false;
 
     ~NvdecCudaInteropState() {
         if (!context) return;
-        if (api.cuCtxPushCurrent(context) == CUDA_SUCCESS) {
+        if (api.cuCtxPushCurrent(context->get()) == CUDA_SUCCESS) {
             if (stream) api.cuStreamSynchronize(stream);
             destroy_slots();
             if (ready_semaphore) api.cuDestroyExternalSemaphore(ready_semaphore);
@@ -141,27 +149,22 @@ struct NvdecCudaInteropState : std::enable_shared_from_this<NvdecCudaInteropStat
         stream = nullptr;
         ready_fence.Reset();
         d3d12_device.Reset();
-        if (owns_context) api.cuCtxDestroy(context);
-        context = nullptr;
+    }
+
+    void destroy_plane(ExportedPlane& plane) {
+        if (plane.mipmapped_array) api.cuMipmappedArrayDestroy(plane.mipmapped_array);
+        if (plane.external_memory) api.cuDestroyExternalMemory(plane.external_memory);
     }
 
     void destroy_slots() {
         for (auto& slot : slots) {
             if (!slot) continue;
-            if (slot->surface) api.cuSurfObjectDestroy(slot->surface);
-            if (slot->luma_mipmapped_array)
-                api.cuMipmappedArrayDestroy(slot->luma_mipmapped_array);
-            if (slot->luma_external_memory)
-                api.cuDestroyExternalMemory(slot->luma_external_memory);
-            if (slot->chroma_mipmapped_array)
-                api.cuMipmappedArrayDestroy(slot->chroma_mipmapped_array);
-            if (slot->chroma_external_memory)
-                api.cuDestroyExternalMemory(slot->chroma_external_memory);
-            if (slot->owns_cuda_array && slot->array)
-                api.cuArrayDestroy(slot->array);
-            else if (slot->mipmapped_array)
-                api.cuMipmappedArrayDestroy(slot->mipmapped_array);
-            if (slot->external_memory) api.cuDestroyExternalMemory(slot->external_memory);
+            auto& presentation = slot->presentation;
+            if (presentation.rgba_surface) api.cuSurfObjectDestroy(presentation.rgba_surface);
+            destroy_plane(presentation.luma);
+            destroy_plane(presentation.chroma);
+            if (slot->decode.array) api.cuArrayDestroy(slot->decode.array);
+            destroy_plane(presentation.rgba);
             slot.reset();
         }
         slots.clear();
@@ -228,7 +231,7 @@ struct NvdecCudaInteropState : std::enable_shared_from_this<NvdecCudaInteropStat
         const auto create_start = DiagnosticClock::now();
         uint64_t destroy_us = 0;
         for (const auto& slot : slots) {
-            if (slot && slot->in_use.load(std::memory_order_acquire)) {
+            if (slot && slot->presentation.leased.load(std::memory_order_acquire)) {
                 LOG_WARN("CUDA/D3D12 interop: delaying resize while a render surface is in flight");
                 return false;
             }
@@ -264,7 +267,10 @@ struct NvdecCudaInteropState : std::enable_shared_from_this<NvdecCudaInteropStat
 
         slots.resize(count);
         for (auto& destination : slots) {
-            auto slot = std::make_unique<Slot>();
+            destination = std::make_unique<Slot>();
+            Slot* slot = destination.get();
+            auto& decode_surface = slot->decode;
+            auto& rgba = slot->presentation.rgba;
             CUresult result = CUDA_SUCCESS;
             if (opaque_nv12) {
                 CUDA_ARRAY3D_DESCRIPTOR decode_desc{};
@@ -275,15 +281,14 @@ struct NvdecCudaInteropState : std::enable_shared_from_this<NvdecCudaInteropStat
                 decode_desc.NumChannels = 3;
                 decode_desc.Flags = CUDA_ARRAY3D_SURFACE_LDST |
                                     CUDA_ARRAY3D_VIDEO_ENCODE_DECODE;
-                result = api.cuArray3DCreate(&slot->array, &decode_desc);
+                result = api.cuArray3DCreate(&decode_surface.array, &decode_desc);
                 if (result == CUDA_SUCCESS) {
-                    slot->owns_cuda_array = true;
                     result = api.cuArrayGetPlane(
-                        &slot->decoded_luma_array, slot->array, 0);
+                        &decode_surface.luma, decode_surface.array, 0);
                 }
                 if (result == CUDA_SUCCESS) {
                     result = api.cuArrayGetPlane(
-                        &slot->decoded_chroma_array, slot->array, 1);
+                        &decode_surface.chroma, decode_surface.array, 1);
                 }
             } else {
                 const auto allocation =
@@ -291,7 +296,7 @@ struct NvdecCudaInteropState : std::enable_shared_from_this<NvdecCudaInteropStat
                 HRESULT hr = d3d12_device->CreateCommittedResource(
                     &heap, D3D12_HEAP_FLAG_SHARED, &desc,
                     D3D12_RESOURCE_STATE_COMMON, nullptr,
-                    IID_PPV_ARGS(&slot->resource));
+                    IID_PPV_ARGS(&rgba.resource));
                 if (FAILED(hr)) {
                     LOG_WARN("CUDA/D3D12 interop: output texture creation failed: 0x{:08x}",
                              static_cast<unsigned int>(hr));
@@ -301,7 +306,7 @@ struct NvdecCudaInteropState : std::enable_shared_from_this<NvdecCudaInteropStat
 
                 HANDLE shared_resource = nullptr;
                 hr = d3d12_device->CreateSharedHandle(
-                    slot->resource.Get(), nullptr, GENERIC_ALL, nullptr,
+                    rgba.resource.Get(), nullptr, GENERIC_ALL, nullptr,
                     &shared_resource);
                 if (FAILED(hr)) {
                     destroy_slots();
@@ -314,7 +319,7 @@ struct NvdecCudaInteropState : std::enable_shared_from_this<NvdecCudaInteropStat
                 memory_desc.size = allocation.SizeInBytes;
                 memory_desc.flags = CUDA_EXTERNAL_MEMORY_DEDICATED;
                 result = api.cuImportExternalMemory(
-                    &slot->external_memory, &memory_desc);
+                    &rgba.external_memory, &memory_desc);
                 CloseHandle(shared_resource);
 
                 CUDA_EXTERNAL_MEMORY_MIPMAPPED_ARRAY_DESC array_desc{};
@@ -327,17 +332,18 @@ struct NvdecCudaInteropState : std::enable_shared_from_this<NvdecCudaInteropStat
                 array_desc.numLevels = 1;
                 if (result == CUDA_SUCCESS) {
                     result = api.cuExternalMemoryGetMappedMipmappedArray(
-                        &slot->mipmapped_array, slot->external_memory, &array_desc);
+                        &rgba.mipmapped_array, rgba.external_memory, &array_desc);
                 }
                 if (result == CUDA_SUCCESS) {
                     result = api.cuMipmappedArrayGetLevel(
-                        &slot->array, slot->mipmapped_array, 0);
+                        &rgba.array, rgba.mipmapped_array, 0);
                 }
                 if (result == CUDA_SUCCESS) {
                     CUDA_RESOURCE_DESC surface_desc{};
                     surface_desc.resType = CU_RESOURCE_TYPE_ARRAY;
-                    surface_desc.res.array.hArray = slot->array;
-                    result = api.cuSurfObjectCreate(&slot->surface, &surface_desc);
+                    surface_desc.res.array.hArray = rgba.array;
+                    result = api.cuSurfObjectCreate(
+                        &slot->presentation.rgba_surface, &surface_desc);
                 }
             }
             if (result != CUDA_SUCCESS) {
@@ -350,10 +356,7 @@ struct NvdecCudaInteropState : std::enable_shared_from_this<NvdecCudaInteropStat
             if (opaque_nv12) {
                 auto create_plane = [&](uint32_t plane_width, uint32_t plane_height,
                                         DXGI_FORMAT format, unsigned int channels,
-                                        ComPtr<ID3D12Resource>& plane_resource,
-                                        CUexternalMemory& plane_external_memory,
-                                        CUmipmappedArray& plane_mipmapped_array,
-                                        CUarray& plane_array, const char* plane_name) {
+                                        ExportedPlane& plane, const char* plane_name) {
                     D3D12_RESOURCE_DESC plane_desc = desc;
                     plane_desc.Width = plane_width;
                     plane_desc.Height = plane_height;
@@ -365,7 +368,7 @@ struct NvdecCudaInteropState : std::enable_shared_from_this<NvdecCudaInteropStat
                     HRESULT plane_hr = d3d12_device->CreateCommittedResource(
                         &heap, D3D12_HEAP_FLAG_SHARED, &plane_desc,
                         D3D12_RESOURCE_STATE_COMMON, nullptr,
-                        IID_PPV_ARGS(&plane_resource));
+                        IID_PPV_ARGS(&plane.resource));
                     if (FAILED(plane_hr)) {
                         LOG_WARN("CUDA/D3D12 interop: {} texture creation failed: 0x{:08x}",
                                  plane_name, static_cast<unsigned int>(plane_hr));
@@ -374,7 +377,7 @@ struct NvdecCudaInteropState : std::enable_shared_from_this<NvdecCudaInteropStat
 
                     HANDLE shared_plane = nullptr;
                     plane_hr = d3d12_device->CreateSharedHandle(
-                        plane_resource.Get(), nullptr, GENERIC_ALL, nullptr, &shared_plane);
+                        plane.resource.Get(), nullptr, GENERIC_ALL, nullptr, &shared_plane);
                     if (FAILED(plane_hr)) return false;
 
                     CUDA_EXTERNAL_MEMORY_HANDLE_DESC plane_memory_desc{};
@@ -383,7 +386,7 @@ struct NvdecCudaInteropState : std::enable_shared_from_this<NvdecCudaInteropStat
                     plane_memory_desc.size = plane_allocation.SizeInBytes;
                     plane_memory_desc.flags = CUDA_EXTERNAL_MEMORY_DEDICATED;
                     CUresult plane_result = api.cuImportExternalMemory(
-                        &plane_external_memory, &plane_memory_desc);
+                        &plane.external_memory, &plane_memory_desc);
                     CloseHandle(shared_plane);
 
                     CUDA_EXTERNAL_MEMORY_MIPMAPPED_ARRAY_DESC plane_array_desc{};
@@ -396,12 +399,12 @@ struct NvdecCudaInteropState : std::enable_shared_from_this<NvdecCudaInteropStat
                     plane_array_desc.numLevels = 1;
                     if (plane_result == CUDA_SUCCESS) {
                         plane_result = api.cuExternalMemoryGetMappedMipmappedArray(
-                            &plane_mipmapped_array, plane_external_memory,
+                            &plane.mipmapped_array, plane.external_memory,
                             &plane_array_desc);
                     }
                     if (plane_result == CUDA_SUCCESS) {
                         plane_result = api.cuMipmappedArrayGetLevel(
-                            &plane_array, plane_mipmapped_array, 0);
+                            &plane.array, plane.mipmapped_array, 0);
                     }
                     if (plane_result != CUDA_SUCCESS) {
                         LOG_WARN("CUDA/D3D12 interop: {} surface mapping failed: {} ({})",
@@ -413,18 +416,14 @@ struct NvdecCudaInteropState : std::enable_shared_from_this<NvdecCudaInteropStat
                 };
 
                 if (!create_plane(new_width, new_height, DXGI_FORMAT_R8_UNORM, 1,
-                                  slot->luma_resource, slot->luma_external_memory,
-                                  slot->luma_mipmapped_array, slot->luma_array, "luma") ||
+                                  slot->presentation.luma, "luma") ||
                     !create_plane((new_width + 1u) / 2u, (new_height + 1u) / 2u,
                                   DXGI_FORMAT_R8G8_UNORM, 2,
-                                  slot->chroma_resource, slot->chroma_external_memory,
-                                  slot->chroma_mipmapped_array, slot->chroma_array,
-                                  "chroma")) {
+                                  slot->presentation.chroma, "chroma")) {
                     destroy_slots();
                     return false;
                 }
             }
-            destination = std::move(slot);
         }
         width = new_width;
         height = new_height;
@@ -439,7 +438,7 @@ struct NvdecCudaInteropState : std::enable_shared_from_this<NvdecCudaInteropStat
         for (auto& slot : slots) {
             if (!slot) continue;
             bool expected = false;
-            if (slot->in_use.compare_exchange_strong(
+            if (slot->presentation.leased.compare_exchange_strong(
                     expected, true, std::memory_order_acq_rel))
                 return slot.get();
         }
@@ -447,14 +446,14 @@ struct NvdecCudaInteropState : std::enable_shared_from_this<NvdecCudaInteropStat
     }
 
     void release_slot(Slot* slot) {
-        if (slot) slot->in_use.store(false, std::memory_order_release);
+        if (slot) slot->presentation.leased.store(false, std::memory_order_release);
     }
 
-    std::vector<CUarray> arrays() const {
+    std::vector<CUarray> decode_arrays() const {
         std::vector<CUarray> result;
         result.reserve(slots.size());
         for (const auto& slot : slots)
-            result.push_back(slot ? slot->array : nullptr);
+            result.push_back(slot ? slot->decode.array : nullptr);
         return result;
     }
 
@@ -480,33 +479,23 @@ NvdecDecoder::NvdecDecoder() = default;
 NvdecDecoder::~NvdecDecoder() {
     if (!cu_ctx_ && !parser_ && !decoder_ && !pinned_nv12_) return;
 
-    if (cu_ctx_) {
-        if (!context_lost_) {
-            cuda_.cuCtxPushCurrent(cu_ctx_);
+    if (cu_ctx_ && !context_lost_) {
+        cuda_.cuCtxPushCurrent(cu_ctx_->get());
 
-            if (parser_) cuvid_.cuvidDestroyVideoParser(parser_);
-            if (decoder_) cuvid_.cuvidDestroyDecoder(decoder_);
-            if (pinned_nv12_) cuda_.cuMemFreeHost(pinned_nv12_);
+        if (parser_) cuvid_.cuvidDestroyVideoParser(parser_);
+        if (decoder_) cuvid_.cuvidDestroyDecoder(decoder_);
+        if (pinned_nv12_) cuda_.cuMemFreeHost(pinned_nv12_);
 
-            CUcontext dummy;
-            cuda_.cuCtxPopCurrent(&dummy);
-        }
-        if (interop_) {
-            // Frame owners can outlive the decoder. The interop state keeps the
-            // CUDA context, shared resources, and imported fence alive until
-            // the last renderer-held surface is released.
-            interop_->owns_context = true;
-        } else {
-            cuda_.cuCtxDestroy(cu_ctx_);
-        }
+        CUcontext dummy;
+        cuda_.cuCtxPopCurrent(&dummy);
     }
 
-    cu_ctx_ = nullptr;
     parser_ = nullptr;
     decoder_ = nullptr;
     pinned_nv12_ = nullptr;
     pinned_nv12_size_ = 0;
     interop_.reset();
+    cu_ctx_.reset();
     initialized_ = false;
     context_lost_ = false;
     native_interop_active_ = false;
@@ -566,11 +555,13 @@ bool NvdecDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height,
         return false;
     }
 
-    res = cuda_.cuCtxCreate(&cu_ctx_, CU_CTX_SCHED_AUTO, cu_device);
+    CUcontext created_context = nullptr;
+    res = cuda_.cuCtxCreate(&created_context, CU_CTX_SCHED_AUTO, cu_device);
     if (res != CUDA_SUCCESS) {
         LOG_ERROR("cuCtxCreate failed: {}", (int)res);
         return false;
     }
+    cu_ctx_ = std::make_shared<const CudaContextOwner>(cuda_.cuCtxDestroy, created_context);
 
     if (render_device) {
         auto interop = std::make_shared<NvdecCudaInteropState>();
@@ -594,8 +585,7 @@ bool NvdecDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height,
         LOG_ERROR("{} not supported (res={}, supported={})",
                   codec_name(codec), (int)res, (int)caps.bIsSupported);
         interop_.reset();
-        cuda_.cuCtxDestroy(cu_ctx_);
-        cu_ctx_ = nullptr;
+        cu_ctx_.reset();
         return false;
     }
 
@@ -603,13 +593,11 @@ bool NvdecDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height,
         LOG_ERROR("Resolution {}x{} exceeds max {}x{}",
                   width, height, caps.nMaxWidth, caps.nMaxHeight);
         interop_.reset();
-        cuda_.cuCtxDestroy(cu_ctx_);
-        cu_ctx_ = nullptr;
+        cu_ctx_.reset();
         return false;
     }
 
-    opaque_output_capable_ = cuvid_.cuvidRegisterDecodeSurfaces &&
-        cuvid_.cuvidDecodePictureAsync &&
+    opaque_output_capable_ = cuvid_.opaque_output.has_value() &&
         (caps.nOutputFormatMask &
          (1u << static_cast<unsigned int>(cudaVideoSurfaceFormat_NV12_Opaque))) != 0;
     if (render_device && !opaque_output_capable_) {
@@ -623,7 +611,7 @@ bool NvdecDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height,
     CUVIDPARSERPARAMS parser_params{};
     parser_params.CodecType = cuvid_codec;
     parser_params.ulMaxNumDecodeSurfaces = 10;
-    parser_params.ulMaxDisplayDelay = 0;  // No B-frames in our stream, display immediately
+    parser_params.ulMaxDisplayDelay = 0;
     parser_params.pUserData = this;
     parser_params.pfnSequenceCallback = handle_sequence;
     parser_params.pfnDecodePicture = handle_decode;
@@ -633,8 +621,7 @@ bool NvdecDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height,
     if (res != CUDA_SUCCESS) {
         LOG_ERROR("cuvidCreateVideoParser failed: {}", (int)res);
         interop_.reset();
-        cuda_.cuCtxDestroy(cu_ctx_);
-        cu_ctx_ = nullptr;
+        cu_ctx_.reset();
         return false;
     }
 
@@ -660,7 +647,7 @@ bool NvdecDecoder::decode(const uint8_t* data, size_t len, int64_t timestamp) {
     callback_failed_ = false;
 
     const auto context_push_start = DiagnosticClock::now();
-    CUresult res = cuda_.cuCtxPushCurrent(cu_ctx_);
+    CUresult res = cuda_.cuCtxPushCurrent(cu_ctx_->get());
     packet_diagnostics_.context_push_us = elapsed_us(context_push_start);
     if (res != CUDA_SUCCESS) {
         collect_packet_diagnostics_ = false;
@@ -671,9 +658,6 @@ bool NvdecDecoder::decode(const uint8_t* data, size_t len, int64_t timestamp) {
     }
 
     CUVIDSOURCEDATAPACKET pkt{};
-    // Each decode() call carries exactly one access unit, so ENDOFPICTURE lets
-    // the parser emit the picture right away instead of waiting for the next
-    // packet to prove the picture is complete (one frame interval of latency).
     pkt.flags = CUVID_PKT_TIMESTAMP | CUVID_PKT_ENDOFPICTURE;
     pkt.payload_size = static_cast<unsigned long>(len);
     pkt.payload = data;
@@ -700,8 +684,6 @@ bool NvdecDecoder::decode(const uint8_t* data, size_t len, int64_t timestamp) {
         return false;
     }
 
-    // CUVID can return CUDA_SUCCESS even when a decode/display callback failed.
-    // Preserve that failure so the client resets the broken reference chain.
     if (callback_failed_) {
         LOG_ERROR("NVDEC parser callback failed; decoder requires a fresh keyframe");
         initialized_ = false;
@@ -763,7 +745,7 @@ void NvdecDecoder::flush() {
     ZoneScopedN("NvdecDecoder::flush");
     if (!initialized_ || context_lost_) return;
 
-    if (cuda_.cuCtxPushCurrent(cu_ctx_) != CUDA_SUCCESS) return;
+    if (cuda_.cuCtxPushCurrent(cu_ctx_->get()) != CUDA_SUCCESS) return;
 
     CUVIDSOURCEDATAPACKET pkt{};
     pkt.flags = CUVID_PKT_ENDOFSTREAM;
@@ -779,29 +761,29 @@ DecoderInfo NvdecDecoder::info() const {
 
 int NvdecDecoder::handle_sequence(void* user, CUVIDEOFORMAT* fmt) {
     auto* decoder = static_cast<NvdecDecoder*>(user);
-    if (decoder->callback_failed_) return 0;
-    const int result = decoder->on_sequence(fmt);
-    decoder->callback_failed_ |= result <= 0;
+    if (decoder->callback_failed_) return kSequenceFailed;
+    const CuvidSurfaceCount result = decoder->on_sequence(fmt);
+    decoder->callback_failed_ |= result <= kSequenceFailed;
     return result;
 }
 
 int NvdecDecoder::handle_decode(void* user, CUVIDPICPARAMS* pic) {
     auto* decoder = static_cast<NvdecDecoder*>(user);
-    if (decoder->callback_failed_) return 0;
-    const int result = decoder->on_decode(pic);
-    decoder->callback_failed_ |= result <= 0;
-    return result;
+    if (decoder->callback_failed_) return cuvid_result(CuvidCallbackResult::Abort);
+    const CuvidCallbackResult result = decoder->on_decode(pic);
+    decoder->callback_failed_ |= result == CuvidCallbackResult::Abort;
+    return cuvid_result(result);
 }
 
 int NvdecDecoder::handle_display(void* user, CUVIDPARSERDISPINFO* info) {
     auto* decoder = static_cast<NvdecDecoder*>(user);
-    if (decoder->callback_failed_) return 0;
-    const int result = decoder->on_display(info);
-    decoder->callback_failed_ |= result <= 0;
-    return result;
+    if (decoder->callback_failed_) return cuvid_result(CuvidCallbackResult::Abort);
+    const CuvidCallbackResult result = decoder->on_display(info);
+    decoder->callback_failed_ |= result == CuvidCallbackResult::Abort;
+    return cuvid_result(result);
 }
 
-int NvdecDecoder::on_sequence(CUVIDEOFORMAT* fmt) {
+CuvidSurfaceCount NvdecDecoder::on_sequence(CUVIDEOFORMAT* fmt) {
     ZoneScopedN("NvdecDecoder::on_sequence");
     if (collect_packet_diagnostics_)
         ++packet_diagnostics_.sequence_callbacks;
@@ -811,11 +793,9 @@ int NvdecDecoder::on_sequence(CUVIDEOFORMAT* fmt) {
     if (fmt->coded_width == 0 || fmt->coded_height == 0 ||
         fmt->chroma_format > cudaVideoChromaFormat_444) {
         LOG_ERROR("Ignoring invalid sequence header");
-        return 1;
+        return kIgnoredSequenceKeepDecoding;
     }
 
-    // Compute the actual output dimensions (may differ from coded_width/height
-    // if the stream specifies a display/crop area).
     uint32_t target_w = fmt->coded_width;
     uint32_t target_h = fmt->coded_height;
     uint32_t crop_x = 0;
@@ -830,12 +810,6 @@ int NvdecDecoder::on_sequence(CUVIDEOFORMAT* fmt) {
         target_h = fmt->display_area.bottom - fmt->display_area.top;
     }
 
-    // Repeated sequence headers are normal, particularly for AV1 keyframes.
-    // The parser only requires at least min_num_decode_surfaces. Our optional
-    // headroom is not part of that contract and can be truncated by NVDEC's
-    // 32-surface registration limit. Requiring min + headroom here made reuse
-    // permanently impossible near that limit and rebuilt the decoder every
-    // frame, turning a sub-millisecond parse into a ~250 ms stall.
     const detail::NvdecSequenceState state{
         decoder_ != nullptr, width_, height_, native_texture_width_,
         native_texture_height_, native_crop_x_, native_crop_y_, bit_depth_,
@@ -881,11 +855,9 @@ int NvdecDecoder::on_sequence(CUVIDEOFORMAT* fmt) {
 
     bool is_10bit = fmt->bit_depth_luma_minus8 > 0;
     if (is_10bit) {
-        // DecodedFrame currently exposes byte NV12 and the CUDA conversion
-        // kernel is deliberately 8-bit. Never reinterpret P016 as NV12.
         LOG_ERROR("NVDEC 10-bit output is not supported by the current frame contract");
         native_interop_active_ = false;
-        return 0;
+        return kSequenceFailed;
     }
     const uint32_t legacy_surface_count = fmt->min_num_decode_surfaces + 4;
     const bool opaque_api_available = interop_ && opaque_output_capable_ &&
@@ -926,11 +898,6 @@ int NvdecDecoder::on_sequence(CUVIDEOFORMAT* fmt) {
         }
     }
     if (opaque_api_available && opaque_slots_ready) {
-        // Opaque output bypasses NVDEC's post-processing/output stage and writes
-        // straight into the registered coded-size CUarrays. In particular, the
-        // decoder must not be asked to crop to display_area here: doing so makes
-        // its idea of the NV12 plane layout differ from the D3D12 resource whose
-        // plane offsets are derived from coded_width/coded_height.
         create_info.ulTargetWidth = fmt->coded_width;
         create_info.ulTargetHeight = fmt->coded_height;
         create_info.display_area = {};
@@ -942,12 +909,12 @@ int NvdecDecoder::on_sequence(CUVIDEOFORMAT* fmt) {
         if (collect_packet_diagnostics_)
             packet_diagnostics_.decoder_create_us += elapsed_us(create_start);
         if (res == CUDA_SUCCESS) {
-            auto decode_arrays = interop_->arrays();
+            auto decode_arrays = interop_->decode_arrays();
             CUVIDREGISTERDECODESURFACESINFO register_info{};
             register_info.ulNumDecodeSurfaces = static_cast<unsigned int>(decode_arrays.size());
             register_info.pDecodeSurfaces = decode_arrays.data();
             const auto register_start = DiagnosticClock::now();
-            res = cuvid_.cuvidRegisterDecodeSurfaces(decoder_, &register_info);
+            res = cuvid_.opaque_output->cuvidRegisterDecodeSurfaces(decoder_, &register_info);
             if (collect_packet_diagnostics_)
                 packet_diagnostics_.surface_register_us += elapsed_us(register_start);
         }
@@ -971,8 +938,6 @@ int NvdecDecoder::on_sequence(CUVIDEOFORMAT* fmt) {
     }
 
     if (!decoder_) {
-        // The mapped legacy path still goes through NVDEC post-processing, so
-        // retain its visible-size crop/scaling behavior.
         create_info.ulTargetWidth = target_w;
         create_info.ulTargetHeight = target_h;
         create_info.display_area = {};
@@ -992,7 +957,7 @@ int NvdecDecoder::on_sequence(CUVIDEOFORMAT* fmt) {
             packet_diagnostics_.decoder_create_us += elapsed_us(create_start);
         if (res != CUDA_SUCCESS) {
             LOG_ERROR("cuvidCreateDecoder failed: {}", static_cast<int>(res));
-            return 0;
+            return kSequenceFailed;
         }
         num_decode_surfaces_ = legacy_surface_count;
         if (interop_) {
@@ -1024,10 +989,10 @@ int NvdecDecoder::on_sequence(CUVIDEOFORMAT* fmt) {
             packet_diagnostics_.pinned_alloc_us += elapsed_us(allocation_start);
     }
 
-    return static_cast<int>(num_decode_surfaces_);
+    return static_cast<CuvidSurfaceCount>(num_decode_surfaces_);
 }
 
-int NvdecDecoder::on_decode(CUVIDPICPARAMS* pic) {
+CuvidCallbackResult NvdecDecoder::on_decode(CUVIDPICPARAMS* pic) {
     ZoneScopedN("NvdecDecoder::on_decode");
     if (collect_packet_diagnostics_) {
         ++packet_diagnostics_.decode_callbacks;
@@ -1035,28 +1000,25 @@ int NvdecDecoder::on_decode(CUVIDPICPARAMS* pic) {
     }
     AccumulatedTimer callback_timer(
         collect_packet_diagnostics_, &packet_diagnostics_.decode_callback_us);
-    if (!decoder_) return 0;
+    if (!decoder_) return CuvidCallbackResult::Abort;
 
-    if (stop_token_.stop_requested()) return 0;
+    if (stop_token_.stop_requested()) return CuvidCallbackResult::Abort;
 
-    // Decode/reference arrays are private CUDA resources. The renderer owns
-    // separate exported plane copies, so it must never block reference decode.
-    // All decode and copy operations share interop_->stream and stay ordered.
     const auto submit_start = DiagnosticClock::now();
     CUresult res = opaque_output_active_
-        ? cuvid_.cuvidDecodePictureAsync(decoder_, pic, interop_->stream)
+        ? cuvid_.opaque_output->cuvidDecodePictureAsync(decoder_, pic, interop_->stream)
         : cuvid_.cuvidDecodePicture(decoder_, pic);
     if (collect_packet_diagnostics_)
         packet_diagnostics_.decode_submit_us += elapsed_us(submit_start);
     if (res != CUDA_SUCCESS) {
         LOG_ERROR("{} failed: {}", opaque_output_active_
                   ? "cuvidDecodePictureAsync" : "cuvidDecodePicture", (int)res);
-        return 0;
+        return CuvidCallbackResult::Abort;
     }
-    return 1;
+    return CuvidCallbackResult::Continue;
 }
 
-int NvdecDecoder::on_display(CUVIDPARSERDISPINFO* disp_info) {
+CuvidCallbackResult NvdecDecoder::on_display(CUVIDPARSERDISPINFO* disp_info) {
     ZoneScopedN("NvdecDecoder::on_display");
     if (collect_packet_diagnostics_) {
         ++packet_diagnostics_.display_callbacks;
@@ -1065,7 +1027,7 @@ int NvdecDecoder::on_display(CUVIDPARSERDISPINFO* disp_info) {
     }
     AccumulatedTimer callback_timer(
         collect_packet_diagnostics_, &packet_diagnostics_.display_callback_us);
-    if (!decoder_ || !disp_info || !on_decoded) return 1;
+    if (!decoder_ || !disp_info || !on_decoded) return kNoConsumerKeepDecoding;
 
     CUVIDPROCPARAMS proc{};
     proc.progressive_frame = disp_info->progressive_frame;
@@ -1077,32 +1039,25 @@ int NvdecDecoder::on_display(CUVIDPARSERDISPINFO* disp_info) {
         if (!interop_ || interop_->surface_mode != InteropSurfaceMode::OpaqueNV12 ||
             interop_->slots.empty()) {
             LOG_ERROR("NVDEC opaque display callback has no registered surface pool");
-            return 0;
+            return CuvidCallbackResult::Abort;
         }
 
         const auto source_index = static_cast<size_t>(disp_info->picture_index);
         if (source_index >= interop_->slots.size() || !interop_->slots[source_index]) {
             LOG_ERROR("NVDEC opaque display surface {} is outside the registered pool",
                       disp_info->picture_index);
-            return 0;
+            return CuvidCallbackResult::Abort;
         }
-        auto* source = interop_->slots[source_index].get();
-        // Export to any free presentation slot, independently of the decoder's
-        // reference-surface index. A hidden/stalled renderer may retain every
-        // exported texture: skip presentation in that case, but keep decoding
-        // so releasing a lease resumes live output without another keyframe.
+        const auto& source = interop_->slots[source_index]->decode;
         auto* slot = interop_->acquire_slot();
-        if (!slot) return 1;
+        if (!slot) return kPresentationDroppedKeepDecoding;
+        auto& presentation = slot->presentation;
 
-        // SDK 13.1 opaque output is a private block-linear CUDA layout, not a
-        // portable DXGI multi-plane layout. Copy the two decoded planes with the
-        // GPU copy engine into ordinary R8/RG8 shared textures. RmlUI samples
-        // these as NV12 directly; there is still no RGB conversion or host copy.
         CUDA_MEMCPY2D luma_copy{};
         luma_copy.srcMemoryType = CU_MEMORYTYPE_ARRAY;
-        luma_copy.srcArray = source->decoded_luma_array;
+        luma_copy.srcArray = source.luma;
         luma_copy.dstMemoryType = CU_MEMORYTYPE_ARRAY;
-        luma_copy.dstArray = slot->luma_array;
+        luma_copy.dstArray = presentation.luma.array;
         luma_copy.WidthInBytes = interop_->width;
         luma_copy.Height = interop_->height;
         const auto copy_start = DiagnosticClock::now();
@@ -1111,9 +1066,9 @@ int NvdecDecoder::on_display(CUVIDPARSERDISPINFO* disp_info) {
 
         CUDA_MEMCPY2D chroma_copy{};
         chroma_copy.srcMemoryType = CU_MEMORYTYPE_ARRAY;
-        chroma_copy.srcArray = source->decoded_chroma_array;
+        chroma_copy.srcArray = source.chroma;
         chroma_copy.dstMemoryType = CU_MEMORYTYPE_ARRAY;
-        chroma_copy.dstArray = slot->chroma_array;
+        chroma_copy.dstArray = presentation.chroma.array;
         chroma_copy.WidthInBytes = interop_->width;
         chroma_copy.Height = (interop_->height + 1u) / 2u;
         if (copy_result == CUDA_SUCCESS) {
@@ -1127,7 +1082,7 @@ int NvdecDecoder::on_display(CUVIDPARSERDISPINFO* disp_info) {
             LOG_ERROR("NVDEC opaque chroma copy failed: {} ({})",
                       static_cast<int>(copy_result),
                       cuda_error(interop_->api, copy_result));
-            return 0;
+            return CuvidCallbackResult::Abort;
         }
 
         const uint64_t ready_value = ++interop_->next_fence_value;
@@ -1143,7 +1098,7 @@ int NvdecDecoder::on_display(CUVIDPARSERDISPINFO* disp_info) {
             LOG_ERROR("NVDEC opaque D3D12 fence signal failed: {} ({})",
                       static_cast<int>(signal_result),
                       cuda_error(interop_->api, signal_result));
-            return 0;
+            return CuvidCallbackResult::Abort;
         }
 
         DecodedFrame frame{};
@@ -1152,8 +1107,8 @@ int NvdecDecoder::on_display(CUVIDPARSERDISPINFO* disp_info) {
         frame.timestamp = disp_info->timestamp;
         frame.nv12 = true;
         frame.native_rgba = false;
-        frame.native_d3d12_resource = slot->luma_resource.Get();
-        frame.native_d3d12_chroma_resource = slot->chroma_resource.Get();
+        frame.native_d3d12_resource = presentation.luma.resource.Get();
+        frame.native_d3d12_chroma_resource = presentation.chroma.resource.Get();
         frame.native_d3d12_fence = interop_->ready_fence.Get();
         frame.native_fence_value = ready_value;
         frame.native_d3d12_state = D3D12_RESOURCE_STATE_COMMON;
@@ -1166,7 +1121,7 @@ int NvdecDecoder::on_display(CUVIDPARSERDISPINFO* disp_info) {
         on_decoded(frame);
         if (collect_packet_diagnostics_)
             packet_diagnostics_.deliver_us += elapsed_us(deliver_start);
-        return 1;
+        return kFramePresented;
     }
 
     unsigned long long dev_ptr = 0;
@@ -1179,7 +1134,7 @@ int NvdecDecoder::on_display(CUVIDPARSERDISPINFO* disp_info) {
         packet_diagnostics_.map_us += elapsed_us(map_start);
     if (res != CUDA_SUCCESS) {
         LOG_ERROR("cuvidMapVideoFrame64 failed: {}", (int)res);
-        return 0;
+        return CuvidCallbackResult::Abort;
     }
 
     if (native_interop_active_ && interop_ &&
@@ -1190,16 +1145,14 @@ int NvdecDecoder::on_display(CUVIDPARSERDISPINFO* disp_info) {
             packet_diagnostics_.output_path = "mapped-rgba";
         auto* slot = interop_->acquire_slot();
         if (!slot) {
-            // The render queue still owns every ring slot. Dropping this frame
-            // keeps decode latency bounded instead of stalling the receive path.
             const auto unmap_start = DiagnosticClock::now();
             cuvid_.cuvidUnmapVideoFrame64(decoder_, dev_ptr);
             if (collect_packet_diagnostics_)
                 packet_diagnostics_.unmap_us += elapsed_us(unmap_start);
-            return 1;
+            return kPresentationDroppedKeepDecoding;
         }
 
-        CUsurfObject surface = slot->surface;
+        CUsurfObject surface = slot->presentation.rgba_surface;
         CUdeviceptr source = static_cast<CUdeviceptr>(dev_ptr);
         uint32_t source_pitch = pitch;
         uint32_t output_width = width_;
@@ -1245,7 +1198,7 @@ int NvdecDecoder::on_display(CUVIDPARSERDISPINFO* disp_info) {
                       static_cast<int>(res), cuda_error(interop_->api, res));
             context_lost_ = true;
             initialized_ = false;
-            return 0;
+            return CuvidCallbackResult::Abort;
         }
 
         DecodedFrame frame{};
@@ -1254,7 +1207,7 @@ int NvdecDecoder::on_display(CUVIDPARSERDISPINFO* disp_info) {
         frame.timestamp = disp_info->timestamp;
         frame.nv12 = false;
         frame.native_rgba = true;
-        frame.native_d3d12_resource = slot->resource.Get();
+        frame.native_d3d12_resource = slot->presentation.rgba.resource.Get();
         frame.native_d3d12_fence = interop_->ready_fence.Get();
         frame.native_fence_value = ready_value;
         frame.native_owner = interop_->make_owner(slot);
@@ -1262,7 +1215,7 @@ int NvdecDecoder::on_display(CUVIDPARSERDISPINFO* disp_info) {
         on_decoded(frame);
         if (collect_packet_diagnostics_)
             packet_diagnostics_.deliver_us += elapsed_us(deliver_start);
-        return 1;
+        return kFramePresented;
     }
 
     if (collect_packet_diagnostics_)
@@ -1313,7 +1266,7 @@ int NvdecDecoder::on_display(CUVIDPARSERDISPINFO* disp_info) {
 
     if (!copied_to_host) {
         LOG_ERROR("NVDEC pinned-host fallback has no complete output frame");
-        return 0;
+        return CuvidCallbackResult::Abort;
     }
 
     uint32_t y_size = width_ * height_;
@@ -1333,7 +1286,7 @@ int NvdecDecoder::on_display(CUVIDPARSERDISPINFO* disp_info) {
     on_decoded(frame);
     if (collect_packet_diagnostics_)
         packet_diagnostics_.deliver_us += elapsed_us(deliver_start);
-    return 1;
+    return kFramePresented;
 }
 
-} // namespace parties::encdec::nvidia
+}

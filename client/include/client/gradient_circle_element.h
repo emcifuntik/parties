@@ -5,9 +5,6 @@
 
 namespace parties::client {
 
-// Custom RmlUi element that renders a circle filled with a seed-based gradient.
-// Usage in RML: <gradient_circle seed="somehashstring" class="my-circle" />
-// The gradient colors are deterministically generated from the seed string.
 class GradientCircleElement : public Rml::Element {
 public:
     explicit GradientCircleElement(const Rml::String& tag);
@@ -24,9 +21,7 @@ private:
     void ReleaseResources();
     void RebuildGeometry();
 
-    // Generate RGBA color from HSV (h: 0-360, s/v: 0-1)
     static Rml::ColourbPremultiplied HsvToRgb(float h, float s, float v, uint8_t a = 255);
-    // Deterministic hash
     static uint32_t HashString(const Rml::String& s);
 
     Rml::CompiledGeometryHandle geom_ = 0;
@@ -36,4 +31,4 @@ private:
     bool dirty_ = true;
 };
 
-} // namespace parties::client
+}

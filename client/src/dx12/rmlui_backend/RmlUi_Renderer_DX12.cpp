@@ -1253,7 +1253,8 @@ void RenderInterface_DX12::EndFrame()
 		const Gfx::FramebufferData& fb_active = m_manager_render_layer.GetTopLayer();
 		const Gfx::FramebufferData& fb_postprocess = m_manager_render_layer.GetPostprocessPrimary();
 
-		if (fb_active.Get_Texture() && fb_postprocess.Get_Texture())
+		m_is_last_frame_retained = fb_active.Get_Texture() && fb_postprocess.Get_Texture();
+		if (m_is_last_frame_retained)
 		{
 			ID3D12Resource* p_msaa_texture{};
 			ID3D12Resource* p_postprocess_texture{};
@@ -1397,43 +1398,88 @@ void RenderInterface_DX12::EndFrame()
 
 		RMLUI_DX_MARKER_END(m_p_command_graphics_list);
 
-		RMLUI_DX_VERIFY_MSG(m_p_command_graphics_list->Close(), "failed to Close");
+		SubmitAndPresent();
+	}
+}
 
-		ID3D12CommandList* const lists[] = {m_p_command_graphics_list};
+bool RenderInterface_DX12::RepeatLastFrame()
+{
+	RMLUI_ZoneScopedN("DirectX 12 - RepeatLastFrame");
+	if (!m_is_last_frame_retained || !m_p_command_graphics_list)
+		return false;
 
-		if (m_p_command_queue)
-		{
-			m_p_command_queue->ExecuteCommandLists(_countof(lists), lists);
-		}
+	TextureHandleType* p_handle_postprocess_texture = m_manager_render_layer.GetPostprocessPrimary().Get_Texture();
+	ID3D12Resource* p_resource_backbuffer = m_backbuffers_resources.at(m_current_back_buffer_index);
+	if (!p_handle_postprocess_texture || !p_resource_backbuffer)
+		return false;
+	ID3D12Resource* p_postprocess_texture = static_cast<D3D12MA::Allocation*>(p_handle_postprocess_texture->Get_Resource())->GetResource();
 
-		UINT sync_interval = m_is_use_vsync ? 1 : 0;
-		UINT present_flags = (m_is_use_tearing && !m_is_use_vsync) ? DXGI_PRESENT_ALLOW_TEARING : 0;
+	RMLUI_DX_MARKER_BEGIN(m_p_command_graphics_list, "RepeatLastFrame");
 
-		const HRESULT present_result = m_p_swapchain->Present(sync_interval, present_flags);
-		if (FAILED(present_result) && m_p_device)
-		{
-			const HRESULT removed_reason = m_p_device->GetDeviceRemovedReason();
-			Rml::Log::Message(Rml::Log::Type::LT_ERROR,
-				"[DirectX 12] Present failed (HRESULT=0x%08lx, device_removed_reason=0x%08lx)",
-				static_cast<unsigned long>(present_result), static_cast<unsigned long>(removed_reason));
-		}
-		RMLUI_DX_VERIFY_MSG(present_result, "failed to Present");
+	D3D12_RESOURCE_BARRIER barriers[2]{};
+	barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+	barriers[0].Transition.pResource = p_postprocess_texture;
+	barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+	barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+	barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+	barriers[1].Transition.pResource = p_resource_backbuffer;
+	barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+	barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+	m_p_command_graphics_list->ResourceBarrier(2, barriers);
 
-		auto fence_value = Signal(m_current_back_buffer_index);
+	m_p_command_graphics_list->CopyResource(p_resource_backbuffer, p_postprocess_texture);
+
+	for (auto& barrier : barriers)
+		std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
+	m_p_command_graphics_list->ResourceBarrier(2, barriers);
+
+	m_manager_render_layer.EndFrame();
+
+	RMLUI_DX_MARKER_END(m_p_command_graphics_list);
+
+	SubmitAndPresent();
+	return true;
+}
+
+void RenderInterface_DX12::SubmitAndPresent()
+{
+	RMLUI_DX_VERIFY_MSG(m_p_command_graphics_list->Close(), "failed to Close");
+
+	ID3D12CommandList* const lists[] = {m_p_command_graphics_list};
+
+	if (m_p_command_queue)
+	{
+		m_p_command_queue->ExecuteCommandLists(_countof(lists), lists);
+	}
+
+	UINT sync_interval = m_is_use_vsync ? 1 : 0;
+	UINT present_flags = (m_is_use_tearing && !m_is_use_vsync) ? DXGI_PRESENT_ALLOW_TEARING : 0;
+
+	const HRESULT present_result = m_p_swapchain->Present(sync_interval, present_flags);
+	if (FAILED(present_result) && m_p_device)
+	{
+		const HRESULT removed_reason = m_p_device->GetDeviceRemovedReason();
+		Rml::Log::Message(Rml::Log::Type::LT_ERROR,
+			"[DirectX 12] Present failed (HRESULT=0x%08lx, device_removed_reason=0x%08lx)",
+			static_cast<unsigned long>(present_result), static_cast<unsigned long>(removed_reason));
+	}
+	RMLUI_DX_VERIFY_MSG(present_result, "failed to Present");
+
+	auto fence_value = Signal(m_current_back_buffer_index);
 
 #ifdef RMLUI_DX_DEBUG
-		Rml::Log::Message(Rml::Log::Type::LT_DEBUG, "[DirectX-12] current allocated constant buffers per draw (for frame[%d]): %zu",
-			m_current_back_buffer_index, m_constant_buffer_count_per_frame[m_current_back_buffer_index]);
+	Rml::Log::Message(Rml::Log::Type::LT_DEBUG, "[DirectX-12] current allocated constant buffers per draw (for frame[%d]): %zu",
+		m_current_back_buffer_index, m_constant_buffer_count_per_frame[m_current_back_buffer_index]);
 #endif
 
-		m_constant_buffer_count_per_frame[m_current_back_buffer_index] = 0;
+	m_constant_buffer_count_per_frame[m_current_back_buffer_index] = 0;
 
-		m_current_back_buffer_index = (uint32_t)m_p_swapchain->GetCurrentBackBufferIndex();
+	m_current_back_buffer_index = (uint32_t)m_p_swapchain->GetCurrentBackBufferIndex();
 
-		WaitForFenceValue(m_current_back_buffer_index);
-		Update_PendingForDeletion_Geometry();
-		m_backbuffers_fence_values[m_current_back_buffer_index] = fence_value + 1;
-	}
+	WaitForFenceValue(m_current_back_buffer_index);
+	Update_PendingForDeletion_Geometry();
+	m_backbuffers_fence_values[m_current_back_buffer_index] = fence_value + 1;
+
 }
 
 void RenderInterface_DX12::Clear()
@@ -1484,6 +1530,7 @@ bool RenderInterface_DX12::SetViewport(int viewport_width, int viewport_height)
 		const int previous_width = m_width;
 		const int previous_height = m_height;
 		m_is_viewport_valid = false;
+		m_is_last_frame_retained = false;
 		Flush();
 
 		if (m_p_depthstencil_resource)

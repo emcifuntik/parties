@@ -1,6 +1,3 @@
-// Windows auto-updater — checks GitHub Releases for updates, downloads, and
-// spawns a batch script to replace the exe and restart.
-
 #include <client/auto_updater.h>
 #include <parties/version.h>
 #include <parties/log.h>
@@ -19,18 +16,12 @@
 #include <fstream>
 #include <string>
 
-// Link libs are set via CMakeLists.txt (winhttp, wintrust, crypt32)
-
 namespace parties::client {
 
-static constexpr int CHECK_INTERVAL_SECONDS = 15 * 60; // 15 minutes
+static constexpr int CHECK_INTERVAL_SECONDS = 15 * 60;
 static constexpr const char* GITHUB_OWNER = "emcifuntik";
 static constexpr const char* GITHUB_REPO  = "parties";
 static constexpr const wchar_t* USER_AGENT = L"Parties-Updater/1.0";
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────────────────────
 
 static std::wstring to_wide(const std::string& s) {
     if (s.empty()) return {};
@@ -40,7 +31,6 @@ static std::wstring to_wide(const std::string& s) {
     return w;
 }
 
-// Parse GitHub release JSON and extract tag_name, prerelease, and the matching asset URL
 struct ReleaseInfo {
     std::string tag_name;
     std::string asset_url;
@@ -72,12 +62,8 @@ static bool parse_github_release(const std::string& json, const std::string& exp
             return true;
         }
     }
-    return false; // asset not found
+    return false;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// HTTP helpers (WinHTTP, synchronous)
-// ─────────────────────────────────────────────────────────────────────────────
 
 std::string AutoUpdater::http_get(const std::wstring& host, const std::wstring& path,
                                   const wchar_t* accept) {
@@ -94,15 +80,12 @@ std::string AutoUpdater::http_get(const std::wstring& host, const std::wstring& 
                                             accept_types, WINHTTP_FLAG_SECURE);
     if (!hRequest) { WinHttpCloseHandle(hConnect); WinHttpCloseHandle(hSession); return {}; }
 
-    // Enable TLS 1.2+
     DWORD protocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3;
     WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURE_PROTOCOLS, &protocols, sizeof(protocols));
 
-    // Follow redirects
     DWORD redirect = WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS;
     WinHttpSetOption(hRequest, WINHTTP_OPTION_REDIRECT_POLICY, &redirect, sizeof(redirect));
 
-    // Add Accept header
     std::wstring headers;
     if (accept) {
         headers = L"Accept: ";
@@ -117,7 +100,6 @@ std::string AutoUpdater::http_get(const std::wstring& host, const std::wstring& 
         return {};
     }
 
-    // Check status
     DWORD status = 0, status_size = sizeof(status);
     WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                         WINHTTP_HEADER_NAME_BY_INDEX, &status, &status_size, WINHTTP_NO_HEADER_INDEX);
@@ -126,7 +108,6 @@ std::string AutoUpdater::http_get(const std::wstring& host, const std::wstring& 
         return {};
     }
 
-    // Read body
     std::string body;
     DWORD available = 0;
     while (WinHttpQueryDataAvailable(hRequest, &available) && available > 0) {
@@ -144,7 +125,6 @@ std::string AutoUpdater::http_get(const std::wstring& host, const std::wstring& 
 
 bool AutoUpdater::http_download(const std::wstring& url, const std::wstring& dest_path,
                                 std::atomic<int>& pct_out, std::atomic<bool>& cancel) {
-    // Parse URL components
     URL_COMPONENTS uc{};
     uc.dwStructSize = sizeof(uc);
     wchar_t host[256]{}, path[2048]{};
@@ -182,7 +162,6 @@ bool AutoUpdater::http_download(const std::wstring& url, const std::wstring& des
         return false;
     }
 
-    // Get content length for progress
     DWORD content_len = 0, cl_size = sizeof(content_len);
     WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
                         WINHTTP_HEADER_NAME_BY_INDEX, &content_len, &cl_size, WINHTTP_NO_HEADER_INDEX);
@@ -215,10 +194,6 @@ bool AutoUpdater::http_download(const std::wstring& url, const std::wstring& des
            (content_len == 0 || total_read == content_len);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Authenticode verification
-// ─────────────────────────────────────────────────────────────────────────────
-
 bool AutoUpdater::verify_signature(const std::wstring& exe_path) {
     WINTRUST_FILE_INFO fi{};
     fi.cbStruct = sizeof(fi);
@@ -236,19 +211,14 @@ bool AutoUpdater::verify_signature(const std::wstring& exe_path) {
 
     LONG result = WinVerifyTrust(nullptr, &policy, &wd);
 
-    // Close
     wd.dwStateAction = WTD_STATEACTION_CLOSE;
     WinVerifyTrust(nullptr, &policy, &wd);
 
     return result == ERROR_SUCCESS;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Core logic
-// ─────────────────────────────────────────────────────────────────────────────
-
 AutoUpdater::AutoUpdater() {
-    wake_event_ = CreateEventW(nullptr, TRUE, FALSE, nullptr); // manual-reset
+    wake_event_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
 }
 
 AutoUpdater::~AutoUpdater() {
@@ -271,7 +241,7 @@ bool AutoUpdater::poll() {
     if (!state_changed_.load(std::memory_order_acquire)) return false;
     state_changed_.store(false, std::memory_order_relaxed);
     display_state_.store(state_.load(std::memory_order_relaxed), std::memory_order_relaxed);
-    display_version_ = version_;  // safe: only written by bg thread before setting state_changed_
+    display_version_ = version_;
     display_pct_.store(download_pct_.load(std::memory_order_relaxed), std::memory_order_relaxed);
     return true;
 }
@@ -375,7 +345,6 @@ bool AutoUpdater::download_asset() {
     state_changed_.store(true, std::memory_order_release);
     download_pct_.store(0, std::memory_order_relaxed);
 
-    // Download to temp
     wchar_t temp[MAX_PATH];
     GetTempPathW(MAX_PATH, temp);
     std::wstring zip_path = std::wstring(temp) + L"parties-update-v" + to_wide(ver) + L".zip";
@@ -390,13 +359,11 @@ bool AutoUpdater::download_asset() {
         return false;
     }
 
-    // Extract zip to verify contents
     std::wstring extract_dir = std::wstring(temp) + L"parties-update-extract";
     std::error_code ec;
     std::filesystem::remove_all(extract_dir, ec);
     std::filesystem::create_directories(extract_dir, ec);
 
-    // Use PowerShell to extract
     std::wstring ps_cmd = L"powershell -NoProfile -Command \"Expand-Archive -Force '"
                           + zip_path + L"' '" + extract_dir + L"'\"";
     STARTUPINFOW si{}; si.cb = sizeof(si);
@@ -412,7 +379,6 @@ bool AutoUpdater::download_asset() {
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
 
-    // Find the exe in the extracted directory
     std::wstring exe_path = extract_dir + L"\\parties_client.exe";
     if (!std::filesystem::exists(exe_path)) {
         LOG_ERROR("[Updater] parties_client.exe not found in update zip");
@@ -423,7 +389,6 @@ bool AutoUpdater::download_asset() {
         return false;
     }
 
-    // Verify Authenticode signature
     if (!verify_signature(exe_path)) {
         LOG_ERROR("[Updater] Update exe failed Authenticode signature verification");
         std::filesystem::remove_all(extract_dir, ec);
@@ -443,20 +408,17 @@ bool AutoUpdater::download_asset() {
 }
 
 void AutoUpdater::apply_and_restart() {
-    // Stop the background thread before ExitProcess
     stop();
 
     if (state_.load(std::memory_order_relaxed) != static_cast<int>(State::ReadyToInstall)) return;
     std::wstring zip_path = download_path_;
 
-    // Get current exe path
     wchar_t exe_buf[MAX_PATH];
     GetModuleFileNameW(nullptr, exe_buf, MAX_PATH);
     std::filesystem::path current_exe{exe_buf};
     std::filesystem::path old_exe = current_exe;
     old_exe.replace_extension(L".old.exe");
 
-    // Find the extracted exe in temp
     wchar_t temp[MAX_PATH];
     GetTempPathW(MAX_PATH, temp);
     std::filesystem::path extract_dir = std::filesystem::path{temp} / "parties-update-extract";
@@ -469,116 +431,109 @@ void AutoUpdater::apply_and_restart() {
 
     std::error_code ec;
 
-    // Step 1: Delete any leftover .old.exe from a previous update
     std::filesystem::remove(old_exe, ec);
 
-    // Step 2: Rename ourselves: parties_client.exe -> parties_client.old.exe
-    // (Windows allows renaming a running exe!)
+    // Windows allows renaming a running exe.
     std::filesystem::rename(current_exe, old_exe, ec);
     if (ec) {
         LOG_ERROR("[Updater] Failed to rename self to .old: {}", ec.message());
         return;
     }
 
-    // Step 3: Move the new exe into place as parties_client.exe
     std::filesystem::copy_file(extracted, current_exe, std::filesystem::copy_options::overwrite_existing, ec);
     if (ec) {
         LOG_ERROR("[Updater] Failed to place new exe: {}", ec.message());
-        // Restore: rename .old back
         std::filesystem::rename(old_exe, current_exe, ec);
         return;
     }
 
-    // Clean up extract dir and zip
     std::filesystem::remove_all(extract_dir, ec);
     DeleteFileW(zip_path.c_str());
 
     LOG_INFO("[Updater] Launching updated exe with --update-cleanup");
     spdlog::default_logger()->flush();
 
-    // Step 4: Launch the NEW exe with --update-cleanup to delete .old on startup
     std::wstring args = L"--update-cleanup \"" + old_exe.wstring() + L"\"";
     ShellExecuteW(nullptr, L"open", current_exe.wstring().c_str(), args.c_str(), nullptr, SW_SHOWNORMAL);
 
     ExitProcess(0);
 }
 
-bool AutoUpdater::handle_update_args(int argc, char** argv) {
-    std::string mode, target;
+UpdateLaunch parse_update_launch(int argc, char** argv) {
+    UpdateLaunch launch;
     for (int i = 1; i < argc; i++) {
         if (std::string(argv[i]) == "--update-cleanup" && i + 1 < argc) {
-            mode = "cleanup"; target = argv[++i];
+            launch = {UpdateLaunchMode::CleanupAfterRename, argv[++i]};
         } else if (std::string(argv[i]) == "--update-replace" && i + 1 < argc) {
-            // Backward compat: old updater launched us as _new.exe with --update-replace
-            mode = "replace"; target = argv[++i];
+            launch = {UpdateLaunchMode::LegacyReplace, argv[++i]};
         }
     }
-    if (mode.empty()) return false;
+    return launch;
+}
 
-    if (mode == "cleanup") {
-        // Delete the .old.exe (or legacy _new.exe) left from the update
-        std::filesystem::path old_file{target};
-        for (int attempt = 0; attempt < 10; attempt++) {
-            std::error_code ec;
-            if (std::filesystem::remove(old_file, ec)) break;
-            Sleep(500);
-        }
-        return false; // continue normal startup
+UpdateLaunchResult AutoUpdater::finish_update_launch(const UpdateLaunch& launch) {
+    switch (launch.mode) {
+    case UpdateLaunchMode::Normal:
+        return UpdateLaunchResult::Continue;
+    case UpdateLaunchMode::CleanupAfterRename:
+        finish_cleanup_after_rename(launch.other_exe);
+        return UpdateLaunchResult::Continue;
+    case UpdateLaunchMode::LegacyReplace:
+        return run_legacy_replace_migration(launch.other_exe);
     }
+    return UpdateLaunchResult::Continue;
+}
 
-    if (mode == "replace") {
-        // Legacy path: we are parties_client_new.exe, old exe is at target.
-        // Delete old, copy ourselves there, relaunch with --update-cleanup.
-        std::filesystem::path old_exe{target};
-        wchar_t self_buf[MAX_PATH];
-        GetModuleFileNameW(nullptr, self_buf, MAX_PATH);
-        std::filesystem::path self{self_buf};
-
-        for (int i = 0; i < 20; i++) {
-            std::error_code ec;
-            if (std::filesystem::remove(old_exe, ec)) break;
-            Sleep(500);
-        }
-
+void AutoUpdater::finish_cleanup_after_rename(const std::filesystem::path& old_exe) {
+    for (int attempt = 0; attempt < 10; attempt++) {
         std::error_code ec;
-        std::filesystem::copy_file(self, old_exe, std::filesystem::copy_options::overwrite_existing, ec);
-        if (ec) {
-            MessageBoxA(nullptr, ("Update failed: " + ec.message()).c_str(), "Parties Update", MB_OK | MB_ICONERROR);
-            return true;
-        }
+        if (std::filesystem::remove(old_exe, ec)) break;
+        Sleep(500);
+    }
+}
 
-        std::wstring args = L"--update-cleanup \"" + self.wstring() + L"\"";
-        ShellExecuteW(nullptr, L"open", old_exe.wstring().c_str(), args.c_str(), nullptr, SW_SHOWNORMAL);
-        ExitProcess(0);
+UpdateLaunchResult AutoUpdater::run_legacy_replace_migration(const std::filesystem::path& old_exe) {
+    wchar_t self_buf[MAX_PATH];
+    GetModuleFileNameW(nullptr, self_buf, MAX_PATH);
+    std::filesystem::path self{self_buf};
+
+    for (int i = 0; i < 20; i++) {
+        std::error_code ec;
+        if (std::filesystem::remove(old_exe, ec)) break;
+        Sleep(500);
     }
 
-    return false;
+    std::error_code ec;
+    std::filesystem::copy_file(self, old_exe, std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) {
+        MessageBoxA(nullptr, ("Update failed: " + ec.message()).c_str(), "Parties Update", MB_OK | MB_ICONERROR);
+        return UpdateLaunchResult::ExitWithFailure;
+    }
+
+    std::wstring args = L"--update-cleanup \"" + self.wstring() + L"\"";
+    ShellExecuteW(nullptr, L"open", old_exe.wstring().c_str(), args.c_str(), nullptr, SW_SHOWNORMAL);
+    ExitProcess(0);
 }
 
 void AutoUpdater::thread_func() {
-    // Initial check
     check_for_update();
 
     while (!stop_requested_.load(std::memory_order_relaxed)) {
-        // Check if download was requested
         if (download_requested_.exchange(false, std::memory_order_acquire)) {
             download_asset();
             continue;
         }
 
-        // Sleep for CHECK_INTERVAL_SECONDS, interruptible via wake_event_
         WaitForSingleObject(wake_event_, CHECK_INTERVAL_SECONDS * 1000);
         ResetEvent(wake_event_);
 
         if (stop_requested_.load(std::memory_order_relaxed)) break;
 
-        // Check if download was requested during sleep
         if (download_requested_.exchange(false, std::memory_order_acquire)) {
             download_asset();
             continue;
         }
 
-        // Periodic re-check (only if not already found an update)
         int s = state_.load(std::memory_order_relaxed);
         if (s == static_cast<int>(State::UpdateAvailable) ||
             s == static_cast<int>(State::Downloading) ||
@@ -590,4 +545,4 @@ void AutoUpdater::thread_func() {
     }
 }
 
-} // namespace parties::client
+}

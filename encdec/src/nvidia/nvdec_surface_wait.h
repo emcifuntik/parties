@@ -31,4 +31,4 @@ SurfaceWaitResult wait_for_surface_release(
         : SurfaceWaitResult::TimedOut;
 }
 
-} // namespace parties::encdec::nvidia::detail
+}

@@ -163,7 +163,6 @@ bool CheckControlLayout() {
     std::ostringstream contents;
     contents << stream.rdbuf();
     const auto source = contents.str();
-    // Keep the production cascade, including platform rules and typography.
     const auto head = source.substr(0, source.find("</head>") + 7);
     bool success = true;
     struct Profile { bool ios; Rml::Vector2i viewport; float scale; };
@@ -431,7 +430,7 @@ bool CheckIOSPageBackTransitions() {
     return success;
 }
 
-} // namespace
+}
 
 int main() {
 	bool success = CheckTypographyContract();

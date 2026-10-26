@@ -2,6 +2,13 @@
 
 namespace parties {
 
+static_assert(enum_names_v<Role>.name(Role::Moderator) == "moderator");
+static_assert(enum_names_v<Role>.parse("admin") == Role::Admin);
+static_assert(!enum_names_v<Role>.parse("root"));
+static_assert(enum_names_v<Role>.from_persisted_int(3, Role::Owner) == Role::User);
+static_assert(enum_names_v<Role>.from_persisted_int(-1, Role::User) == Role::User);
+static_assert(enum_names_v<Role>.from_persisted_int(4, Role::User) == Role::User);
+
 uint32_t default_permissions(Role role) {
     switch (role) {
         case Role::Owner:     return DEFAULT_OWNER_PERMS;
@@ -21,8 +28,7 @@ bool has_permission(Role role, Permission perm,
 }
 
 bool can_moderate(Role actor, Role target) {
-    // Can only moderate users with strictly lower rank (higher numeric value)
     return static_cast<uint8_t>(actor) < static_cast<uint8_t>(target);
 }
 
-} // namespace parties
+}

@@ -14,11 +14,9 @@
 
 namespace parties::encdec::libhevc {
 
-// Helper to cast opaque handle to iv_obj_t*
 static inline iv_obj_t* obj(void* p) { return static_cast<iv_obj_t*>(p); }
 
-// Allocation callbacks for libhevc
-static void* hevc_aligned_alloc(void* /*ctx*/, WORD32 alignment, WORD32 size) {
+static void* hevc_aligned_alloc(void*, WORD32 alignment, WORD32 size) {
 #ifdef _WIN32
     return _aligned_malloc(static_cast<size_t>(size), static_cast<size_t>(alignment));
 #else
@@ -29,7 +27,7 @@ static void* hevc_aligned_alloc(void* /*ctx*/, WORD32 alignment, WORD32 size) {
 #endif
 }
 
-static void hevc_aligned_free(void* /*ctx*/, void* ptr) {
+static void hevc_aligned_free(void*, void* ptr) {
 #ifdef _WIN32
     _aligned_free(ptr);
 #else
@@ -49,11 +47,10 @@ LibhevcDecoder::~LibhevcDecoder() {
     }
 }
 
-bool LibhevcDecoder::init(VideoCodecId codec, uint32_t /*width*/, uint32_t /*height*/) {
+bool LibhevcDecoder::init(VideoCodecId codec, uint32_t, uint32_t) {
     if (codec != VideoCodecId::H265)
         return false;
 
-    // Create decoder
     ihevcd_cxa_create_ip_t create_ip = {};
     ihevcd_cxa_create_op_t create_op = {};
 
@@ -66,7 +63,7 @@ bool LibhevcDecoder::init(VideoCodecId codec, uint32_t /*width*/, uint32_t /*hei
     create_ip.s_ivd_create_ip_t.pv_mem_ctxt = nullptr;
     create_ip.u4_enable_frame_info = 0;
     create_ip.u4_keep_threads_active = 0;
-    create_ip.u4_enable_yuv_formats = 0;  // default YUV420
+    create_ip.u4_enable_yuv_formats = 0;
 
     create_op.s_ivd_create_op_t.u4_size = sizeof(create_op);
 
@@ -83,10 +80,8 @@ bool LibhevcDecoder::init(VideoCodecId codec, uint32_t /*width*/, uint32_t /*hei
     obj(codec_obj_)->pv_fxns = reinterpret_cast<void*>(&ihevcd_cxa_api_function);
     obj(codec_obj_)->u4_size = sizeof(iv_obj_t);
 
-    // Set number of decode threads
     set_num_cores();
 
-    // Start in frame decode mode
     set_decode_mode(IVD_DECODE_FRAME);
 
     LOG_INFO("H.265 software decoder initialized");
@@ -104,7 +99,7 @@ bool LibhevcDecoder::set_decode_mode(int mode) {
         static_cast<IVD_VIDEO_DECODE_MODE_T>(mode);
     ctl_ip.s_ivd_ctl_set_config_ip_t.e_frm_skip_mode = IVD_SKIP_NONE;
     ctl_ip.s_ivd_ctl_set_config_ip_t.e_frm_out_mode = IVD_DISPLAY_FRAME_OUT;
-    ctl_ip.s_ivd_ctl_set_config_ip_t.u4_disp_wd = 0;  // no stride override
+    ctl_ip.s_ivd_ctl_set_config_ip_t.u4_disp_wd = 0;
 
     ctl_op.s_ivd_ctl_set_config_op_t.u4_size = sizeof(ctl_op);
 
@@ -130,11 +125,9 @@ bool LibhevcDecoder::decode(const uint8_t* data, size_t len, int64_t timestamp) 
     ZoneScopedN("LibhevcDecoder::decode");
     if (!codec_obj_) return false;
 
-    // Ensure output buffers are allocated (start with a reasonable size,
-    // will reallocate if resolution changes)
     if (y_buf_.empty()) {
         buf_width_ = 1920;
-        buf_height_ = 1088;  // aligned to 64
+        buf_height_ = 1088;
         size_t y_size = static_cast<size_t>(buf_width_) * buf_height_;
         size_t uv_size = y_size / 4;
         y_buf_.resize(y_size);
@@ -171,10 +164,8 @@ bool LibhevcDecoder::decode(const uint8_t* data, size_t len, int64_t timestamp) 
         IV_API_CALL_STATUS_T status = ihevcd_cxa_api_function(
             obj(codec_obj_), &dec_ip, &dec_op);
 
-        // Check if resolution changed — need to reallocate buffers
         if (status != IV_SUCCESS &&
             (op->u4_error_code & 0xFF) == IVD_RES_CHANGED) {
-            // Get new buffer info
             ihevcd_cxa_ctl_getbufinfo_ip_t buf_ip = {};
             ihevcd_cxa_ctl_getbufinfo_op_t buf_op = {};
             buf_ip.s_ivd_ctl_getbufinfo_ip_t.u4_size = sizeof(buf_ip);
@@ -191,7 +182,6 @@ bool LibhevcDecoder::decode(const uint8_t* data, size_t len, int64_t timestamp) 
                 v_buf_.resize(info.u4_min_out_buf_size[2]);
             }
 
-            // Reset and retry
             ihevcd_cxa_ctl_reset_ip_t rst_ip = {};
             ihevcd_cxa_ctl_reset_op_t rst_op = {};
             rst_ip.s_ivd_ctl_reset_ip_t.u4_size = sizeof(rst_ip);
@@ -202,14 +192,13 @@ bool LibhevcDecoder::decode(const uint8_t* data, size_t len, int64_t timestamp) 
 
             set_num_cores();
             set_decode_mode(IVD_DECODE_FRAME);
-            continue;  // retry with same data
+            continue;
         }
 
         UWORD32 consumed = op->u4_num_bytes_consumed;
         if (consumed == 0 && status != IV_SUCCESS)
-            break;  // fatal or no progress
+            break;
 
-        // Deliver decoded frame
         if (op->u4_output_present && on_decoded) {
             iv_yuv_buf_t& disp = op->s_disp_frm_buf;
             DecodedFrame f{};
@@ -227,7 +216,6 @@ bool LibhevcDecoder::decode(const uint8_t* data, size_t len, int64_t timestamp) 
         ptr += consumed;
         bytes_remaining -= consumed;
 
-        // If decoder consumed 0 bytes but succeeded (buffering), stop
         if (consumed == 0)
             break;
     }
@@ -238,7 +226,6 @@ bool LibhevcDecoder::decode(const uint8_t* data, size_t len, int64_t timestamp) 
 void LibhevcDecoder::drain_flush() {
     if (!codec_obj_) return;
 
-    // Keep calling decode with null input to drain buffered frames
     while (true) {
         ihevcd_cxa_video_decode_ip_t dec_ip = {};
         ihevcd_cxa_video_decode_op_t dec_op = {};
@@ -286,7 +273,6 @@ void LibhevcDecoder::flush() {
     ZoneScopedN("LibhevcDecoder::flush");
     if (!codec_obj_) return;
 
-    // Set flush mode
     ivd_ctl_flush_ip_t flush_ip = {};
     ivd_ctl_flush_op_t flush_op = {};
     flush_ip.u4_size = sizeof(flush_ip);
@@ -297,7 +283,6 @@ void LibhevcDecoder::flush() {
     if (ihevcd_cxa_api_function(obj(codec_obj_), &flush_ip, &flush_op) != IV_SUCCESS)
         return;
 
-    // Drain all buffered frames
     drain_flush();
 }
 
@@ -305,4 +290,4 @@ DecoderInfo LibhevcDecoder::info() const {
     return {Backend::Libhevc, VideoCodecId::H265};
 }
 
-} // namespace parties::encdec::libhevc
+}

@@ -1,15 +1,8 @@
-/* Typography
-   This is the only stylesheet allowed to define font families, sizes, weights,
-   line heights, letter spacing, or text transforms. Components choose a
-   semantic class and only own layout and colour. */
-
 body {
     font-family: Inter;
     font-size: 14dp;
     color: var(--color-text);
 }
-
-/* ── Typography ────────────────────────────────────── */
 
 h1 {
     font-size: 22dp;
@@ -56,7 +49,6 @@ h2 {
     margin-top: 6dp;
 }
 
-/* Semantic roles --------------------------------------------------------- */
 .ui-display {
     font-size: 38dp;
     font-weight: bold;
@@ -92,9 +84,7 @@ h2 {
     font-weight: normal;
     line-height: 17dp;
 }
-/* Composer padding centers this line box while keeping the caret text-sized. */
 input.compose-input.ui-body { font-size: 14dp; line-height: 20dp; }
-/* Single-line search fields use their full content height as the line box. */
 .platform-desktop input.chat-search-input.ui-body { font-size: 14dp; line-height: 32dp; }
 .platform-ios input.chat-search-input.ui-body { font-size: 14dp; line-height: 42dp; }
 .party-connect-form input.ui-body { line-height: 36dp; }
@@ -157,8 +147,6 @@ input.compose-input.ui-body { font-size: 14dp; line-height: 20dp; }
     line-height: 13dp;
 }
 
-/* Legacy compatibility. These selectors keep existing documents on the same
-   scale while touched markup is migrated to the semantic roles above. */
 .settings-overlay { font-size: 12dp; font-weight: normal; }
 .settings-nav-title,
 .settings-page-title { font-size: 20dp; font-weight: bold; line-height: 24dp; }
@@ -176,7 +164,6 @@ select.settings-device-select selectbox option:checked { font-weight: bold; }
 .settings-vad-foot { font-size: 10dp; font-weight: normal; line-height: 14dp; }
 .settings-test-output,
 .settings-ptt-delay-value { font-size: 12dp; font-weight: bold; line-height: 16dp; }
-.settings-keycap,
 .settings-secondary-action,
 .settings-danger-action,
 .share-codec-btn,

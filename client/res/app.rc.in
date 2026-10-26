@@ -1,9 +1,7 @@
 #include <winres.h>
 
-// Application icon
 1 ICON "@ICON_PATH@"
 
-// Version information
 VS_VERSION_INFO VERSIONINFO
     FILEVERSION    @RC_VERSION_MAJOR@, @RC_VERSION_MINOR@, @RC_VERSION_PATCH@, @RC_VERSION_BUILD@
     PRODUCTVERSION @RC_VERSION_MAJOR@, @RC_VERSION_MINOR@, @RC_VERSION_PATCH@, @RC_VERSION_BUILD@
@@ -37,5 +35,4 @@ BEGIN
     END
 END
 
-// Application manifest (DPI awareness, common controls v6, UTF-8)
 CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "app.manifest"

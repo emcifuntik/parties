@@ -25,8 +25,6 @@
 
 namespace parties {
 
-// ── Request ──
-
 std::vector<uint8_t> build_server_query_request(uint32_t token) {
     std::vector<uint8_t> req(SERVER_QUERY_REQUEST_SIZE, 0);
     std::memcpy(req.data(), SERVER_QUERY_MAGIC, sizeof(SERVER_QUERY_MAGIC));
@@ -51,8 +49,6 @@ uint32_t server_query_request_token(const uint8_t* data, size_t len) {
            (static_cast<uint32_t>(p[2]) << 16) |
            (static_cast<uint32_t>(p[3]) << 24);
 }
-
-// ── Reply ──
 
 std::vector<uint8_t> build_server_query_reply(uint32_t token, const ServerQueryInfo& info) {
     BinaryWriter w;
@@ -80,7 +76,7 @@ bool parse_server_query_reply(const uint8_t* data, size_t len,
 
     BinaryReader r(data, len);
     uint8_t marker[sizeof(SERVER_QUERY_REPLY_MARKER)];
-    r.read_bytes(marker, sizeof(marker));   // already validated above
+    r.read_bytes(marker, sizeof(marker));
 
     uint32_t token = r.read_u32();
     if (token != expected_token) return false;
@@ -98,15 +94,13 @@ bool parse_server_query_reply(const uint8_t* data, size_t len,
     return true;
 }
 
-// ── Client helper ──
-
 std::optional<ServerQueryInfo> query_server(const std::string& host, uint16_t port,
                                              int timeout_ms) {
     char portstr[16];
     std::snprintf(portstr, sizeof(portstr), "%u", static_cast<unsigned>(port));
 
     addrinfo hints{};
-    hints.ai_family   = AF_UNSPEC;       // IPv4 or IPv6
+    hints.ai_family   = AF_UNSPEC;
     hints.ai_socktype = SOCK_DGRAM;
     hints.ai_protocol = IPPROTO_UDP;
 
@@ -161,4 +155,4 @@ std::optional<ServerQueryInfo> query_server(const std::string& host, uint16_t po
     return result;
 }
 
-} // namespace parties
+}

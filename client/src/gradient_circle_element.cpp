@@ -9,10 +9,9 @@
 
 namespace parties::client {
 
-// Circle approximation: 32-segment fan + center vertex = 33 vertices, 96 indices
 static constexpr int SEGMENTS = 32;
-static constexpr int NUM_VERTS = SEGMENTS + 1;   // center + rim
-static constexpr int NUM_INDICES = SEGMENTS * 3;  // triangle fan
+static constexpr int NUM_VERTS = SEGMENTS + 1;
+static constexpr int NUM_INDICES = SEGMENTS * 3;
 
 GradientCircleElement::GradientCircleElement(const Rml::String& tag)
     : Rml::Element(tag) {}
@@ -45,7 +44,6 @@ Rml::ColourbPremultiplied GradientCircleElement::HsvToRgb(float h, float s, floa
     uint8_t r = to_byte(r1 + m);
     uint8_t g = to_byte(g1 + m);
     uint8_t b = to_byte(b1 + m);
-    // Premultiply
     return Rml::ColourbPremultiplied(
         static_cast<uint8_t>(r * a / 255),
         static_cast<uint8_t>(g * a / 255),
@@ -90,11 +88,9 @@ void GradientCircleElement::RebuildGeometry() {
     cached_w_ = w;
     cached_h_ = h;
 
-    // Generate two gradient colors from seed
     uint32_t hash = HashString(seed_);
     float hue1 = static_cast<float>(hash % 360);
     float hue2 = static_cast<float>((hash / 360) % 360);
-    // Ensure hues are at least 40 degrees apart for visual contrast
     if (std::fabs(hue2 - hue1) < 40.0f)
         hue2 = std::fmod(hue1 + 90.0f + static_cast<float>((hash >> 16) % 180), 360.0f);
 
@@ -106,11 +102,9 @@ void GradientCircleElement::RebuildGeometry() {
     float rx = cx;
     float ry = cy;
 
-    // Build triangle fan: vertex 0 = center, vertices 1..SEGMENTS = rim
     Rml::Vertex vertices[NUM_VERTS] = {};
     int indices[NUM_INDICES] = {};
 
-    // Center vertex: blend of both colors
     Rml::ColourbPremultiplied center_color(
         static_cast<uint8_t>((color1.red + color2.red) / 2),
         static_cast<uint8_t>((color1.green + color2.green) / 2),
@@ -118,7 +112,6 @@ void GradientCircleElement::RebuildGeometry() {
         255);
     vertices[0] = {{cx, cy}, center_color, {0.5f, 0.5f}};
 
-    // Gradient direction: bottom to top (dy = -1)
     float grad_dx = 0.0f;
     float grad_dy = -1.0f;
 
@@ -127,8 +120,7 @@ void GradientCircleElement::RebuildGeometry() {
         float px = cx + rx * std::cos(angle);
         float py = cy + ry * std::sin(angle);
 
-        // Gradient blend: project rim point onto gradient direction (-1 to 1) → 0 to 1
-        float nx = (px - cx) / rx;  // normalized -1..1
+        float nx = (px - cx) / rx;
         float ny = (py - cy) / ry;
         float t = (nx * grad_dx + ny * grad_dy) * 0.5f + 0.5f;
 
@@ -140,7 +132,6 @@ void GradientCircleElement::RebuildGeometry() {
         vertices[i + 1] = {{px, py}, c, {0, 0}};
     }
 
-    // Triangle fan indices
     for (int i = 0; i < SEGMENTS; ++i) {
         indices[i * 3 + 0] = 0;
         indices[i * 3 + 1] = i + 1;
@@ -173,4 +164,4 @@ void GradientCircleElement::OnRender() {
     ri->RenderGeometry(geom_, offset, 0);
 }
 
-} // namespace parties::client
+}

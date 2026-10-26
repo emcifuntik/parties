@@ -2,8 +2,6 @@
 
 #include <RmlUi/Core/SystemInterface.h>
 
-// iOS system interface for RmlUi.
-// Provides: GetElapsedTime, clipboard via UIPasteboard, keyboard activation.
 class SystemInterface_iOS : public Rml::SystemInterface {
 public:
     SystemInterface_iOS();

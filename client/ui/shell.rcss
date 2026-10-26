@@ -1,8 +1,3 @@
-/* Application shell
-   Window chrome, connected navigation, sidebar and persistent user controls. */
-
-/* ── Custom titlebar ─────────────────────────────────── */
-
 .titlebar {
     display: flex;
     flex: none;
@@ -34,8 +29,6 @@
     font-size: 12dp;
     font-weight: bold;
 }
-
-/* ── Update pill in titlebar ────────────────────────── */
 
 .titlebar-update {
     display: block;
@@ -126,8 +119,6 @@
 #titlebar-maximize { window-action: maximize; }
 #titlebar-close    { window-action: close; }
 
-/* ── macOS titlebar ──────────────────────────────────── */
-
 .titlebar-center {
     display: none;
 }
@@ -148,12 +139,8 @@
     gap: 8dp;
 }
 
-/* Mobile navigation is hidden by default. Platform-specific layout belongs
-   to mobile.rcss, not the shared shell. */
 .mobile-back-bar { display: none; }
 .mobile-back-context { display: none; }
-
-/* ── Titlebar button icons (CSS-drawn) ───────────── */
 
 .tb-icon-minimize {
     display: block;
@@ -203,15 +190,11 @@
     background-color: #ffffff;
 }
 
-/* ── App content (below titlebar) ──────────────────── */
-
 .app-content {
     display: flex;
     flex-direction: row;
     flex: 1;
 }
-
-/* ── Server icon strip ────────────────────────────── */
 
 .server-strip {
     display: flex;
@@ -287,8 +270,6 @@
     font-weight: bold;
 }
 
-/* ── Sidebar ──────────────────────────────────────── */
-
 .sidebar {
     display: flex;
     flex-direction: column;
@@ -354,8 +335,6 @@ gradient_circle.server-header-gradient {
     background-color: #1F2438;
     opacity: 1;
 }
-
-/* ── Channel list ──────────────────────────────────── */
 
 .channel-section {
     display: flex;
@@ -441,8 +420,6 @@ gradient_circle.server-header-gradient {
     border-radius: 100dp;
 }
 
-/* ── Sidebar separator ────────────────────────────── */
-
 .sidebar-separator {
     display: block;
     flex: none;
@@ -450,8 +427,6 @@ gradient_circle.server-header-gradient {
     background-color: #1F2438;
     margin: 8dp 16dp;
 }
-
-/* ── Chat items ──────────────────────────────────── */
 
 .chat-item {
     display: flex;
@@ -501,8 +476,6 @@ gradient_circle.server-header-gradient {
     flex: none;
     height: 20dp;
 }
-
-/* ── Channel users (under channel) ────────────────── */
 
 .channel-user-item {
     display: flex;
@@ -598,8 +571,6 @@ gradient_circle.user-dot {
     color: #7CC4FA;
     background-color: #7CC4FA20;
 }
-
-/* ── User island (bottom of sidebar, single card) ──── */
 
 .user-island {
     display: flex;
@@ -703,8 +674,6 @@ gradient_circle.user-avatar {
     color: #6B7394;
 }
 
-/* ── Main content ─────────────────────────────────── */
-
 .main-content {
     display: flex;
     flex-direction: column;
@@ -712,8 +681,6 @@ gradient_circle.user-avatar {
     background-color: #0F1117;
 }
 
-/* Current visual treatment for the shell. */
-/* Foundation */
 body {
     font-size: 14dp;
     color: var(--color-text);
@@ -738,7 +705,6 @@ body {
 .titlebar-btn { background-color: #0B0E13; }
 .titlebar-btn:hover { background-color: #171C25; }
 
-/* Connected shell */
 .sidebar {
     width: 286dp;
     background-color: #0D1118;

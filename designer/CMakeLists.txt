@@ -7,7 +7,6 @@ set(DESIGNER_SOURCES
     src/file_watcher.cpp
     src/embedded_fonts.cpp
 
-    # Reuse from client
 	${CMAKE_SOURCE_DIR}/client/src/lobby_model.cpp
 	${CMAKE_SOURCE_DIR}/client/src/context_window_model.cpp
 	${CMAKE_SOURCE_DIR}/client/src/server_list_model.cpp
@@ -21,20 +20,21 @@ add_executable(rmlui_designer ${DESIGNER_SOURCES})
 
 target_include_directories(rmlui_designer PRIVATE
     ${CMAKE_SOURCE_DIR}/client/include
-    ${CMAKE_SOURCE_DIR}/client/src          # RmlUi_RenderInterface_Extended.h
-    ${CMAKE_SOURCE_DIR}/common/include      # parties/profiler.h (no-op stubs)
+    ${CMAKE_SOURCE_DIR}/client/src
+    ${CMAKE_SOURCE_DIR}/common/include
 )
 
 target_link_libraries(rmlui_designer PRIVATE
     RmlUi::RmlUi
     RmlUi::Debugger
+    rapidjson
+    parties_video_policy
     parties_rmlui_dx12_backend
     d3d12 dxgi d3dcompiler dcomp dwmapi
 )
 
 target_link_options(rmlui_designer PRIVATE /MANIFEST:NO)
 
-# #embed dependencies — recompile when embedded font files change
 file(GLOB DESIGNER_EMBED_FONTS ${CMAKE_SOURCE_DIR}/client/ui/fonts/*.ttf)
 set_source_files_properties(src/embedded_fonts.cpp PROPERTIES
     OBJECT_DEPENDS "${DESIGNER_EMBED_FONTS}"

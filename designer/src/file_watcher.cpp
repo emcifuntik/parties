@@ -10,11 +10,9 @@ FileWatcher::FileWatcher() = default;
 FileWatcher::~FileWatcher() { Clear(); }
 
 bool FileWatcher::AddDirectory(const std::string& path) {
-	// Check not already watched
 	for (auto& d : dirs_)
 		if (d->path == path) return true;
 
-	// Convert to wide string
 	int wlen = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
 	std::wstring wpath(wlen - 1, L'\0');
 	MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wpath.data(), wlen);
@@ -61,11 +59,12 @@ void FileWatcher::Clear() {
 }
 
 void FileWatcher::IssueRead(WatchedDir& wd) {
+	constexpr BOOL watch_subtree = TRUE;
 	ResetEvent(wd.overlapped.hEvent);
 	wd.pending = ReadDirectoryChangesW(
 		wd.dir_handle,
 		wd.buffer, sizeof(wd.buffer),
-		TRUE, // watch subtree
+		watch_subtree,
 		FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_SIZE,
 		nullptr,
 		&wd.overlapped,
@@ -76,7 +75,6 @@ bool FileWatcher::IsRelevantExtension(const std::wstring& filename) {
 	auto dot = filename.rfind(L'.');
 	if (dot == std::wstring::npos) return false;
 	std::wstring ext = filename.substr(dot);
-	// Lowercase
 	for (auto& c : ext) c = static_cast<wchar_t>(towlower(static_cast<wint_t>(c)));
 	return ext == L".rml" || ext == L".rcss" || ext == L".ttf" || ext == L".otf" ||
 	       ext == L".png" || ext == L".jpg" || ext == L".jpeg" || ext == L".svg" || ext == L".tga" ||
@@ -92,15 +90,13 @@ void FileWatcher::Poll() {
 
 		DWORD bytes = 0;
 		if (!GetOverlappedResult(d->dir_handle, &d->overlapped, &bytes, FALSE))
-			continue; // not ready yet
+			continue;
 
-		// Parse FILE_NOTIFY_INFORMATION chain
 		if (bytes > 0 && callback_) {
 			auto* fni = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(d->buffer);
 			for (;;) {
 				std::wstring wname(fni->FileName, fni->FileNameLength / sizeof(WCHAR));
 				if (IsRelevantExtension(wname)) {
-					// Convert to UTF-8
 					std::string full = d->path + "\\";
 					int u8len = WideCharToMultiByte(CP_UTF8, 0, wname.c_str(), -1, nullptr, 0, nullptr, nullptr);
 					std::string u8name(u8len - 1, '\0');
@@ -114,9 +110,8 @@ void FileWatcher::Poll() {
 			}
 		}
 
-		// Re-issue
 		IssueRead(*d);
 	}
 }
 
-} // namespace designer
+}

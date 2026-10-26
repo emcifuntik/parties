@@ -1,4 +1,5 @@
 #import "PartiesStatusItemController.h"
+#include "test_skip.h"
 
 #include <cstdio>
 
@@ -46,7 +47,7 @@ int main()
             [window close];
             [window release];
             std::fprintf(stderr, "A macOS menu bar is required for this test\n");
-            return 77;
+            return kSkipExitCode;
         }
         check(!window.visible, "closing in tray mode did not hide the window");
         NSMenuItem* item = [[controller trayModeMenuItem] retain];

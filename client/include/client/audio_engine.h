@@ -41,17 +41,10 @@ public:
     void set_aux_mixer(VoiceMixer* mixer) { aux_mixer_ = mixer; }
     void set_stream_player(StreamAudioPlayer* player) { stream_player_ = player; }
 
-    // Called when an encoded voice frame is ready to send
     std::function<void(const uint8_t*, size_t)> on_encoded_frame;
 
-    // Called when an encoded SECONDARY-stream (VOICE2) frame is ready to send.
     std::function<void(const uint8_t*, size_t)> on_secondary_encoded_frame;
 
-    // Feed mono 48 kHz PCM into the secondary/auxiliary stream. Buffers to 20 ms
-    // Opus frames, encodes in the music profile (NO denoise/AEC/VAD/normalize —
-    // raw, already-leveled program audio), and emits via on_secondary_encoded_frame.
-    // Intended for future karaoke / channel-join-sound / plugin sources. Safe to
-    // call from any single producer thread; calls are serialized internally.
     void push_secondary_pcm(const float* pcm, int frame_count);
     void set_secondary_send_volume(float volume);
     bool is_secondary_transmitting() const { return secondary_activity_.active(); }
@@ -59,15 +52,12 @@ public:
         return secondary_send_volume_.load(std::memory_order_relaxed);
     }
 
-    // Mute/unmute
     void set_muted(bool muted) { muted_ = muted; if (muted) transmitting_ = false; }
     bool is_muted() const { return muted_; }
 
-    // Deafen
     void set_deafened(bool deafened) { deafened_ = deafened; }
     bool is_deafened() const { return deafened_; }
 
-    // Device enumeration
     std::vector<DeviceInfo> get_capture_devices() const;
     std::vector<DeviceInfo> get_playback_devices() const;
     int default_capture_index() const { return default_capture_; }
@@ -81,26 +71,20 @@ public:
     bool set_capture_device(int index);
     bool set_playback_device(int index);
 
-    // Denoise toggle
     void set_denoise_enabled(bool enabled) { denoise_enabled_ = enabled; }
     bool is_denoise_enabled() const { return denoise_enabled_; }
 
-    // Voice normalization (playback)
     void set_normalize_enabled(bool enabled) { normalize_enabled_ = enabled; }
     void set_normalize_target(float target) { normalize_target_ = target; }
 
-    // Echo cancellation
     void set_aec_enabled(bool enabled) { echo_canceller_.set_enabled(enabled); }
     bool is_aec_enabled() const { return echo_canceller_.is_enabled(); }
 
-    // Voice activation detection
     void set_vad_enabled(bool enabled) { vad_enabled_ = enabled; }
     void set_vad_threshold(float threshold) { vad_threshold_ = threshold; }
 
-    // Current mic input level (0..1, updated per frame)
     float voice_level() const { return voice_level_; }
 
-    // True when audio is actually being sent (VAD gate passed)
     bool is_transmitting() const { return transmitting_; }
 
 private:
@@ -116,18 +100,15 @@ private:
     void uninit_devices();
     bool reconfigure_devices(int capture_index, int playback_index);
 
-    // miniaudio context (owns device enumeration)
     ma_context context_{};
     bool context_initialized_ = false;
 
-    // Separate capture and playback devices (avoids duplex resampling issues)
     ma_device capture_device_{};
     ma_device playback_device_{};
     bool capture_initialized_ = false;
     bool playback_initialized_ = false;
     bool running_ = false;
 
-    // Device selection (-1 = system default)
     int selected_capture_ = -1;
     int selected_playback_ = -1;
     int default_capture_ = 0;
@@ -137,30 +118,24 @@ private:
     std::vector<std::string> capture_names_;
     std::vector<std::string> playback_names_;
 
-    // RNNoise denoiser
     DenoiseState* rnn_ = nullptr;
 
     EchoCanceller echo_canceller_;
 
-    // Opus encoder
     OpusCodec encoder_;
 
-    // Secondary-stream (VOICE2) Opus encoder + its own 20ms accumulation buffer,
-    // guarded by a mutex since the producer thread is external/arbitrary.
     OpusCodec secondary_encoder_;
     bool secondary_encoder_ready_ = false;
     std::mutex secondary_mutex_;
-    std::vector<float> secondary_buf_;   // accumulates to OPUS_FRAME_SIZE
+    std::vector<float> secondary_buf_;
     size_t secondary_pos_ = 0;
     uint8_t secondary_opus_buf_[audio::MAX_OPUS_PACKET];
     std::atomic<float> secondary_send_volume_{1.0f};
     AudioActivity secondary_activity_;
 
-    // Capture accumulation buffer
     std::vector<float> capture_buf_;
     size_t capture_pos_ = 0;
 
-    // Encode accumulation buffer (2 RNNoise frames -> 20ms Opus)
     float encode_buf_[audio::OPUS_FRAME_SIZE];
     size_t encode_pos_ = 0;
 
@@ -180,12 +155,10 @@ private:
     std::atomic<float> voice_level_{0.0f};
     std::atomic<bool>  transmitting_{false};
 
-    // Normalization gain smoothing (used in audio callback)
     float current_gain_ = 1.0f;
 
-    // VAD hold timer (frames to keep transmitting after voice drops below threshold)
     int vad_hold_frames_ = 0;
-    static constexpr int VAD_HOLD_COUNT = 30; // ~300ms at 10ms frames
+    static constexpr int VAD_HOLD_COUNT = 30;
 };
 
-} // namespace parties::client
+}

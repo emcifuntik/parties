@@ -99,7 +99,7 @@ std::string driver_version(const LUID& luid) {
            std::to_string(LOWORD(low));
 }
 
-} // namespace
+}
 
 void log_windows_system_diagnostics() {
     using RtlGetVersionFn = LONG(WINAPI*)(PRTL_OSVERSIONINFOW);
@@ -179,4 +179,4 @@ void log_windows_system_diagnostics() {
         LOG_WARN("DXGI diagnostics: no display adapters were enumerated");
 }
 
-} // namespace parties::client
+}

@@ -8,7 +8,6 @@
 
 namespace parties::server {
 
-// Helper: get env var or empty string
 static std::string env(const char* name) {
 #ifdef _MSC_VER
     char* buf = nullptr;
@@ -28,7 +27,6 @@ static std::string env(const char* name) {
 Config Config::load(const std::string& toml_path) {
     Config cfg;
 
-    // ── Load TOML file (if present) ──
     std::ifstream test(toml_path);
     if (!test.good()) {
         LOG_WARN("{} not found, using defaults", toml_path);
@@ -47,7 +45,7 @@ Config Config::load(const std::string& toml_path) {
                 cfg.listen_ip      = toml::find_or(s, "listen_ip", cfg.listen_ip);
                 cfg.port           = static_cast<uint16_t>(toml::find_or(s, "port", static_cast<int>(cfg.port)));
                 cfg.max_clients    = toml::find_or(s, "max_clients", cfg.max_clients);
-                cfg.server_password = toml::find_or(s, "password", cfg.server_password);
+                cfg.server_password = SecretString(toml::find_or(s, "password", std::string{}));
             }
 
             if (data.contains("tls")) {
@@ -93,7 +91,6 @@ Config Config::load(const std::string& toml_path) {
         }
     }
 
-    // ── Environment variable overrides (highest priority) ──
     auto e = env("PARTIES_SERVER_NAME");
     if (!e.empty()) cfg.server_name = e;
 
@@ -107,7 +104,7 @@ Config Config::load(const std::string& toml_path) {
     if (!e.empty()) cfg.max_clients = std::stoi(e);
 
     e = env("PARTIES_PASSWORD");
-    if (!e.empty()) cfg.server_password = e;
+    if (!e.empty()) cfg.server_password = SecretString(e);
 
     e = env("PARTIES_CERT_FILE");
     if (!e.empty()) cfg.cert_file = e;
@@ -118,7 +115,6 @@ Config Config::load(const std::string& toml_path) {
     e = env("PARTIES_DB_PATH");
     if (!e.empty()) cfg.db_path = e;
 
-    // Comma-separated list of Ed25519 fingerprints
     e = env("PARTIES_ROOT_FINGERPRINTS");
     if (!e.empty()) {
         cfg.root_fingerprints.clear();
@@ -141,4 +137,4 @@ Config Config::load(const std::string& toml_path) {
     return cfg;
 }
 
-} // namespace parties::server
+}

@@ -240,7 +240,6 @@ typedef struct _CUVIDDECODECREATEINFO
     unsigned long Reserved2[3];                /**< Reserved for future use - set to zero */
 } CUVIDDECODECREATEINFO;
 
-// Video Codec SDK 13.1 external opaque decode-surface registration ABI.
 typedef struct _CUVIDREGISTERDECODESURFACESINFO
 {
     unsigned int ulNumDecodeSurfaces;

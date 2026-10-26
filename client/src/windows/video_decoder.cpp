@@ -21,10 +21,8 @@ bool VideoDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height,
     suppressed_slow_decodes_ = 0;
 
     if (!hardware_disabled_) {
-        // Full chain: NVDEC → AMF → dav1d/MFT
         decoder_ = encdec::create_decoder(codec, width, height, render_device);
     } else {
-        // Software only (after GPU context loss)
         decoder_ = encdec::create_software_decoder(codec, width, height);
     }
 
@@ -82,4 +80,4 @@ const char* VideoDecoder::backend_name() const {
     return "none";
 }
 
-} // namespace parties::client
+}

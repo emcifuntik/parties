@@ -1,24 +1,21 @@
 #pragma once
 
-#include <string>
+#include <optional>
+#include <string_view>
 
 namespace parties {
 
-// Check if launched as a crashpad handler subprocess.
-// Must be called at the very start of main(), before any other code.
-// Returns true if this process IS the handler (and has already exited via exit()).
-// Returns false if normal app startup should continue.
-bool crash_reporter_is_crashpad_handler(int argc, char* argv[]);
+class LogSession;
 
-// Initialize Sentry crash reporting.
-// Does nothing if Sentry is not linked or dsn is null/empty.
-// Call once at startup, before any other initialization.
-void crash_reporter_init(const char* dsn, const char* exe_path = nullptr);
+class CrashReporterSession {
+public:
+    CrashReporterSession(const LogSession& log, std::optional<std::string_view> dsn);
+    ~CrashReporterSession();
+    CrashReporterSession(const CrashReporterSession&) = delete;
+    CrashReporterSession& operator=(const CrashReporterSession&) = delete;
 
-// Set user identity after authentication succeeds.
-void crash_reporter_set_user(const std::string& user_id, const std::string& display_name);
+private:
+    bool active_ = false;
+};
 
-// Flush events and shut down. Call at shutdown.
-void crash_reporter_shutdown();
-
-} // namespace parties
+}

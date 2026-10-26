@@ -82,6 +82,11 @@ void BinaryReader::read_bytes(uint8_t* out, size_t len) {
     pos_ += len;
 }
 
+void BinaryReader::skip_bytes(size_t len) {
+    if (!has_remaining(len)) { error_ = true; return; }
+    pos_ += len;
+}
+
 bool BinaryReader::has_remaining(size_t bytes) const {
     return pos_ + bytes <= len_;
 }
@@ -90,4 +95,4 @@ size_t BinaryReader::remaining() const {
     return len_ - pos_;
 }
 
-} // namespace parties
+}

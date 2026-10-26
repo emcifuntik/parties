@@ -1,7 +1,3 @@
-/* Reusable UI components
-   Appearance and interaction states are shared; platform modules own density and placement. */
-
-/* Page headers ----------------------------------------------------------- */
 .ui-header {
     display: flex;
     height: var(--header-height);
@@ -43,7 +39,6 @@
     gap: var(--space-1);
 }
 
-/* Buttons ---------------------------------------------------------------- */
 .ui-button {
     display: flex;
     width: auto;
@@ -145,7 +140,6 @@
     padding-bottom: 12dp;
 }
 
-/* Range input ------------------------------------------------------------ */
 input.ui-range {
     display: block;
     width: 100%;
@@ -182,7 +176,6 @@ input.ui-range sliderbar:hover { background-color: #E8FFFB; }
 input.ui-range sliderarrowdec,
 input.ui-range sliderarrowinc { width: 0dp; height: 0dp; }
 
-/* Segmented controls ----------------------------------------------------- */
 .ui-segment-group {
     display: flex;
     flex-direction: row;
@@ -209,7 +202,6 @@ input.ui-range sliderarrowinc { width: 0dp; height: 0dp; }
 .ui-segment:hover { background-color: var(--color-surface-hover); color: var(--color-text); }
 .ui-segment.active { background-color: #17312D; color: var(--color-accent); }
 
-/* Cards and dialogs ------------------------------------------------------ */
 .ui-card {
     background-color: var(--color-surface);
     border: 1dp var(--color-border);

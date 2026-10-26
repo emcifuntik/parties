@@ -2,6 +2,8 @@
 #include <RmlUi/Core.h>
 
 #include <cstdio>
+#include <optional>
+#include <string>
 
 namespace {
 class NullRenderer final : public Rml::RenderInterface {
@@ -28,8 +30,6 @@ bool check_voice_navigation(Rml::Context* context, parties::client::LobbyModel& 
     model.add_channel_sharer(carol.id);
     model.on_join_channel = [&](int id) { model.show_voice_channel(id); };
 
-    // Exercise the sidebar event and the room/viewer visibility conditions used
-    // by lobby.rml. Chat retains the voice connection and its media subscriptions.
     auto* document = context->LoadDocumentFromMemory(R"RML(
 <rml><body class="ui-body" data-model="lobby">
 <button class="ui-control" id="voice" data-event-mousedown="channel_mousedown(2, 'Voice')">Voice</button>
@@ -89,7 +89,6 @@ bool check_voice_navigation(Rml::Context* context, parties::client::LobbyModel& 
     model.show_voice_channel(1);
     passed &= check(model.router.is(DocumentRoute::Room), "another channel reopened the old viewer");
 
-    // If every watched stream stops while chat is open, return to the room.
     model.router.go(DocumentRoute::Chat);
     model.watched = Rml::Vector<WatchedStream>{};
     model.watching_count = 0;
@@ -104,7 +103,57 @@ bool check_voice_navigation(Rml::Context* context, parties::client::LobbyModel& 
     model.remove_channel_sharer(carol.id);
     return passed;
 }
-} // namespace
+bool check_role_bindings(Rml::Context* context, parties::client::LobbyModel& model) {
+    using namespace parties::client;
+    ChannelUser admin; admin.id = 44; admin.name = "Ada"; admin.role = parties::Role::Admin;
+    ChannelUser member; member.id = 55; member.name = "Max"; member.role = parties::Role::User;
+    ChannelInfo room; room.id = 9; room.users = {admin, member};
+    model.channels = Rml::Vector<ChannelInfo>{room};
+
+    auto* document = context->LoadDocumentFromMemory(R"RML(
+<rml><body data-model="lobby">
+<div data-for="channel : channels">
+    <div data-for="user : channel.users" data-attr-id="'user-' + user.id"
+         data-event-mousedown="user_mousedown(user.id, user.name, user.role)">
+        <span class="ui-micro" data-attr-id="'admin-' + user.id" data-if="user.role == 1">ADMIN</span>
+    </div>
+</div>
+<button class="ui-control" id="make-mod" data-event-click="set_user_role(2)">Make moderator</button>
+<button class="ui-control" id="make-bogus" data-event-click="set_user_role(9)">Bogus</button>
+</body></rml>)RML");
+    if (!check(document != nullptr, "role document did not load")) return false;
+    document->Show();
+    context->Update();
+    bool passed = true;
+    passed &= check(document->GetElementById("admin-44") && document->GetElementById("admin-44")->IsVisible(),
+        "admin badge hidden for an admin");
+    passed &= check(document->GetElementById("admin-55") && !document->GetElementById("admin-55")->IsVisible(),
+        "admin badge shown for a member");
+
+    int menu_user = 0;
+    parties::Role menu_role = parties::Role::Owner;
+    model.on_show_user_menu = [&](int id, std::string, parties::Role role) { menu_user = id; menu_role = role; };
+    Rml::Dictionary right_click;
+    right_click["button"] = 1;
+    if (auto* row = document->GetElementById("user-44")) row->DispatchEvent("mousedown", right_click);
+    passed &= check(menu_user == 44 && menu_role == parties::Role::Admin, "user menu did not receive the admin role");
+
+    int role_target = 0;
+    std::optional<parties::Role> requested;
+    model.menu_user_id = 55;
+    model.on_set_user_role = [&](int id, parties::Role role) { role_target = id; requested = role; };
+    document->GetElementById("make-bogus")->DispatchEvent("click", {});
+    passed &= check(!requested, "out-of-table role index reached the role callback");
+    document->GetElementById("make-mod")->DispatchEvent("click", {});
+    passed &= check(role_target == 55 && requested == parties::Role::Moderator, "role index 2 did not request moderator");
+
+    document->Close();
+    model.on_show_user_menu = {};
+    model.on_set_user_role = {};
+    model.channels = Rml::Vector<ChannelInfo>{};
+    return passed;
+}
+}
 
 int main() {
     using namespace parties::client;
@@ -139,7 +188,6 @@ int main() {
         passed &= check(!model.add_channel_sharer(11), "delayed old-channel start was accepted");
         passed &= check(model.add_channel_sharer(22) && model.sharers.get().front().name == "Bob", "new-channel replay failed");
 
-        // A stale sidebar badge must not make another channel's stream clickable.
         model.channels.silent()[0].users[0].streaming = true;
         int watched_id = 0;
         model.on_watch_sharer = [&](int id) { watched_id = id; };
@@ -165,6 +213,8 @@ int main() {
         model.clear_channel_sharers();
         model.current_channel = 0;
         passed &= check(!model.add_channel_sharer(11) && !model.add_channel_sharer(22), "share was accepted outside a channel");
+
+        passed &= check_role_bindings(context, model);
     }
     Rml::RemoveContext("channel-streams");
     Rml::Shutdown();

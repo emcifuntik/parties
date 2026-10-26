@@ -18,7 +18,7 @@ float delayed(const std::vector<float>& signal, int64_t index) {
     return index >= 0 ? signal[static_cast<size_t>(index)] : 0.0f;
 }
 
-} // namespace
+}
 
 int main() {
     using parties::audio::FRAME_SIZE;
@@ -49,8 +49,6 @@ int main() {
     float left_filtered = 0.0f;
     float right_filtered = 0.0f;
     for (size_t i = 0; i < total_samples; ++i) {
-        // Independent, mildly band-limited speaker signals exercise both AEC
-        // reference channels without presenting an unrealistically white input.
         left_filtered = 0.72f * left_filtered + 0.28f * next_noise(left_rng);
         right_filtered = 0.64f * right_filtered + 0.36f * next_noise(right_rng);
         left[i] = left_filtered * 0.55f;
@@ -86,8 +84,6 @@ int main() {
                 microphone[i] += near_end[source];
         }
 
-        // Exercise arbitrary callback boundaries: the production playback
-        // callback is not guaranteed to hand us exactly one AEC frame.
         constexpr size_t split = 173;
         canceller.push_playback(playback.data(), split);
         canceller.push_playback(playback.data() + split * 2u,
@@ -121,8 +117,6 @@ int main() {
     std::printf("Stereo AEC: input %.6f, output %.6f, attenuation %.2f dB\n",
                 input_rms, output_rms, attenuation_db);
 
-    // This leaves broad headroom for different SpeexDSP build modes while still
-    // catching missing stereo reference, wrong queue alignment, or a dead AEC.
     if (!(output_rms < input_rms * 0.35)) {
         std::fprintf(stderr, "echo attenuation is insufficient\n");
         return 1;

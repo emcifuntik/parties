@@ -1,6 +1,3 @@
-// Minimal CUDA Driver API shim for NVENC/NVDEC dynamic loading.
-// Provides just enough CUDA types so that cuviddec.h / nvcuvid.h can be
-// included without pulling in the full cuda.h (we load nvcuda.dll at runtime).
 #pragma once
 
 #include <cstdint>
@@ -12,14 +9,12 @@
 // CUDA version — must be >= 3020 for 64-bit devptr support in cuviddec.h
 #define CUDA_VERSION 12090
 
-// Calling convention for CUDA driver API functions
 #ifdef _WIN32
 #define CUDAAPI __stdcall
 #else
 #define CUDAAPI
 #endif
 
-// Core CUDA types used by cuviddec.h / nvcuvid.h
 typedef int CUresult;
 typedef int CUdevice;
 typedef void* CUcontext;
@@ -35,7 +30,6 @@ typedef void* CUexternalSemaphore;
 #define CUDA_SUCCESS 0
 #define CU_CTX_SCHED_AUTO 0
 
-// Memory types for CUDA_MEMCPY2D
 typedef enum CUmemorytype_enum {
     CU_MEMORYTYPE_HOST    = 0x01,
     CU_MEMORYTYPE_DEVICE  = 0x02,
@@ -43,7 +37,6 @@ typedef enum CUmemorytype_enum {
     CU_MEMORYTYPE_UNIFIED = 0x04,
 } CUmemorytype;
 
-// Opaque array handle.
 typedef void* CUarray;
 
 // 2D memory copy descriptor — must match cuda.h layout exactly
@@ -68,16 +61,8 @@ typedef struct {
     size_t Height;
 } CUDA_MEMCPY2D;
 
-// Subset of the CUDA external-resource ABI used by the D3D12 interop path.
-// Layout and values match cuda.h from CUDA 12.9; keeping the declarations here
-// preserves the existing runtime-loaded design and does not require users to
-// install the CUDA Toolkit to build or run Parties.
 typedef enum CUarray_format_enum {
     CU_AD_FORMAT_UNSIGNED_INT8 = 0x01,
-    // Video Codec SDK 13.1 opaque NVDEC/NVENC array formats. These values
-    // are part of the CUDA driver ABI (CUDA 13.1) and are intentionally
-    // declared here so the runtime-loaded backend still has no CUDA Toolkit
-    // build dependency.
     CU_AD_FORMAT_P016 = 0xa1,
     CU_AD_FORMAT_NV12 = 0xb0,
 } CUarray_format;

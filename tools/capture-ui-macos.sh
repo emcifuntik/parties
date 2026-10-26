@@ -83,7 +83,6 @@ for scenario in $scenarios; do
         cat "$log_file" >&2
         exit 1
     fi
-    # Native popovers animate separately from the Metal window.
     if [[ "$scenario" == native-* ]]; then sleep 0.5; fi
     if [[ "$scenario" == "native-share-picker" || "$scenario" == "native-audio-picker" ]]; then
         # SCContentSharingPicker is a system-wide overlay, not an application

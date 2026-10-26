@@ -1,7 +1,3 @@
-/* Screen and application sharing, stream viewers and source pickers. */
-
-/* ── Share picker ─────────────────────────────────── */
-
 .share-picker-overlay {
     display: flex;
     flex-direction: column;
@@ -105,8 +101,6 @@
     color: #F0F2F8;
 }
 
-/* ── Screen share ─────────────────────────────────── */
-
 .screen-share-area {
     display: flex;
     flex-direction: column;
@@ -132,10 +126,6 @@ video_frame {
     border-radius: 14dp;
 }
 
-/* Multi-stream viewer grid: tiles each watched share across a row (each cell
-   stretches to full height and splits the width, mirroring the single-stream
-   flex:1 fill). data-for is on .stream-cell itself, so there is no inline
-   wrapper div to collapse the layout. */
 .stream-grid {
     display: flex;
     flex-direction: row;
@@ -163,13 +153,40 @@ video_frame {
 
 .stream-cell-label {
     display: block;
-    flex: none;
+    flex: 1;
+    min-width: 0dp;
     padding: 4dp 2dp;
     color: #9AA3B2;
-    font-size: 12dp;
+    overflow: hidden;
+    white-space: nowrap;
 }
 
-/* Fullscreen stream */
+.stream-cell-footer {
+    display: flex;
+    flex: none;
+    flex-direction: row;
+    align-items: center;
+}
+
+.stream-cell-pip {
+    flex: none;
+    margin: 0dp 8dp 0dp 4dp;
+}
+
+.stream-cell-pip-placeholder {
+    display: flex;
+    flex: 1;
+    width: 100%;
+    min-height: 200dp;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    background-color: #07090D;
+    border: 1dp #FFFFFF0D;
+    border-radius: 14dp;
+    color: var(--color-text-muted);
+}
+
 .screen-share-area.fullscreen {
     position: absolute;
     left: 0dp;
@@ -196,8 +213,6 @@ video_frame {
 .screen-share-area.fullscreen video_frame {
     border-radius: 0dp;
 }
-
-/* ── Sharer tab bar ──────────────────────────────── */
 
 .sharer-tabs {
     display: flex;
@@ -246,8 +261,6 @@ video_frame {
     background-color: #EF4444;
 }
 
-/* ── Stream volume control ─────────────────────── */
-
 .stream-volume-control {
     display: flex;
     flex-direction: row;
@@ -276,7 +289,6 @@ video_frame {
     white-space: nowrap;
 }
 
-/* Streams */
 .screen-share-area { padding: 18dp; }
 .screen-share-header {
     min-height: 48dp;
@@ -292,7 +304,6 @@ video_frame {
 .sharer-tab { background-color: #151A23; border-radius: 8dp; }
 .sharer-tab.active { background-color: #17312D; color: #5EEAD4; }
 
-/* Stream layouts ------------------------------------------------------------ */
 .screen-share-area {
     position: relative;
     padding: 0dp 0dp 74dp 0dp;
@@ -364,6 +375,7 @@ input.stream-volume-slider {
 }
 .stream-grid.single .stream-cell { flex-basis: 100%; border-radius: 0dp; }
 .stream-grid.single .stream-cell-video { border-radius: 0dp; }
+.stream-grid.single .stream-cell-pip-placeholder { border-radius: 0dp; }
 .stream-grid.pair .stream-cell { flex-basis: 45%; }
 .stream-grid.trio .stream-cell { flex-basis: 45%; }
 .stream-grid.many .stream-cell { flex-basis: 30%; }
@@ -425,7 +437,6 @@ input.stream-volume-slider {
     .stream-volume-control { width: 108dp; }
 }
 
-/* Share picker -------------------------------------------------------------- */
 .share-picker-overlay {
     position: relative;
     min-height: 0dp;
@@ -520,7 +531,6 @@ input.stream-volume-slider {
     border: 1dp #FFFFFF12;
 }
 
-/* Percentage-sized video surfaces include their borders in the available width. */
 .stream-cell, .stream-cell-video { box-sizing: border-box; }
 .screen-share-area.fullscreen .stream-cell,
 .screen-share-area.fullscreen .stream-cell-video { border-width: 0dp; border-radius: 0dp; }

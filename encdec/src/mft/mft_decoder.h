@@ -1,11 +1,13 @@
 #pragma once
 
 #include <encdec/decoder.h>
+#include "mf_startup.h"
 
 #include <mfapi.h>
 #include <mftransform.h>
 #include <wrl/client.h>
 
+#include <optional>
 #include <vector>
 
 namespace parties::encdec::mft {
@@ -23,6 +25,7 @@ public:
 private:
     void collect_output();
 
+    std::optional<MfStartupGuard> mf_;
     Microsoft::WRL::ComPtr<IMFTransform> mft_;
     bool provides_samples_ = false;
     DWORD out_buf_size_ = 0;
@@ -32,9 +35,8 @@ private:
     uint32_t height_ = 0;
     uint32_t nv12_stride_ = 0;
     bool initialized_ = false;
-    bool mf_started_ = false;  // MFStartup succeeded — MFShutdown owed even if init() failed later
 
     std::vector<uint8_t> i420_buffer_;
 };
 
-} // namespace parties::encdec::mft
+}

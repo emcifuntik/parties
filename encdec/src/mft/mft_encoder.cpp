@@ -15,8 +15,6 @@ using Microsoft::WRL::ComPtr;
 namespace parties::encdec::mft {
 
 MftEncoder::~MftEncoder() {
-    // No early-out on !initialized_: a failed init() may still owe MFShutdown
-    // and have partially constructed members; everything below is null-safe.
     encoder_running_ = false;
     queue_cv_.notify_all();
 
@@ -39,34 +37,23 @@ MftEncoder::~MftEncoder() {
     dxgi_manager_.Reset();
     context_.Reset();
     device_.Reset();
-
-    if (mf_started_)
-        MFShutdown();
 }
 
 bool MftEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
-                       uint32_t input_width, uint32_t input_height,
-                       uint32_t fps, uint32_t bitrate, VideoCodecId preferred_codec) {
+                       uint32_t fps, uint32_t average_bps, VideoCodecId preferred_codec) {
+    if (initialized_) return false;
+
     device_ = device;
     device_->GetImmediateContext(&context_);
     fps_ = fps;
 
-    if (input_width == 0) input_width = width;
-    if (input_height == 0) input_height = height;
-
-    // NV12 requires even dimensions
     width = (width + 1) & ~1u;
     height = (height + 1) & ~1u;
 
-    HRESULT hr = MFStartup(MF_VERSION);
-    if (FAILED(hr)) {
-        LOG_ERROR("MFStartup failed: {:#010x}", hr);
-        return false;
-    }
-    mf_started_ = true;
+    mf_ = MfStartupGuard::start(MfStartupMode::Full);
+    if (!mf_) return false;
 
-    // Create DXGI device manager
-    hr = MFCreateDXGIDeviceManager(&dxgi_reset_token_, &dxgi_manager_);
+    HRESULT hr = MFCreateDXGIDeviceManager(&dxgi_reset_token_, &dxgi_manager_);
     if (FAILED(hr)) {
         LOG_ERROR("MFCreateDXGIDeviceManager failed");
         return false;
@@ -77,7 +64,6 @@ bool MftEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
         return false;
     }
 
-    // Try preferred codec first, then fall back to others
     struct CodecEntry { GUID subtype; VideoCodecId id; };
     CodecEntry all_codecs[] = {
         {MFVideoFormat_AV1,  VideoCodecId::AV1},
@@ -108,12 +94,12 @@ bool MftEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
         return false;
     }
 
-    if (!configure_encoder(width, height, fps, bitrate)) {
+    if (!configure_encoder(width, height, fps, average_bps)) {
         LOG_ERROR("Failed to configure encoder");
         return false;
     }
 
-    if (!create_color_converter(input_width, input_height, width, height)) {
+    if (!create_color_converter(width, height)) {
         LOG_ERROR("Failed to create color converter");
         return false;
     }
@@ -155,7 +141,6 @@ bool MftEncoder::try_create_encoder(const GUID& codec_subtype, VideoCodecId id) 
         return false;
     }
 
-    // Check async mode
     ComPtr<IMFAttributes> attrs;
     hr = encoder_->GetAttributes(&attrs);
 
@@ -178,7 +163,7 @@ bool MftEncoder::try_create_encoder(const GUID& codec_subtype, VideoCodecId id) 
 }
 
 bool MftEncoder::configure_encoder(uint32_t width, uint32_t height,
-                                    uint32_t fps, uint32_t bitrate) {
+                                    uint32_t fps, uint32_t average_bps) {
     GUID subtype;
     switch (codec_) {
         case VideoCodecId::AV1:  subtype = MFVideoFormat_AV1;  break;
@@ -186,21 +171,20 @@ bool MftEncoder::configure_encoder(uint32_t width, uint32_t height,
         case VideoCodecId::H264: subtype = MFVideoFormat_H264; break;
     }
 
-    // Set D3D11 device manager
     HRESULT hr = encoder_->ProcessMessage(
         MFT_MESSAGE_SET_D3D_MANAGER,
         reinterpret_cast<ULONG_PTR>(dxgi_manager_.Get()));
     if (FAILED(hr))
         LOG_ERROR("Failed to set D3D manager: {:#010x}", hr);
 
-    const auto rate_control = make_stream_vbr_rate_control(bitrate, fps);
+    const auto rate_control = make_stream_vbr_rate_control(average_bps, fps);
 
     // Output type (must be set BEFORE input type)
     ComPtr<IMFMediaType> output_type;
     MFCreateMediaType(&output_type);
     output_type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
     output_type->SetGUID(MF_MT_SUBTYPE, subtype);
-    output_type->SetUINT32(MF_MT_AVG_BITRATE, rate_control.average_bitrate);
+    output_type->SetUINT32(MF_MT_AVG_BITRATE, rate_control.average_bps);
     MFSetAttributeSize(output_type.Get(), MF_MT_FRAME_SIZE, width, height);
     MFSetAttributeRatio(output_type.Get(), MF_MT_FRAME_RATE, fps, 1);
     output_type->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
@@ -211,7 +195,6 @@ bool MftEncoder::configure_encoder(uint32_t width, uint32_t height,
         return false;
     }
 
-    // Input type: NV12
     ComPtr<IMFMediaType> input_type;
     MFCreateMediaType(&input_type);
     input_type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
@@ -226,7 +209,6 @@ bool MftEncoder::configure_encoder(uint32_t width, uint32_t height,
         return false;
     }
 
-    // Configure codec properties via ICodecAPI
     ComPtr<ICodecAPI> codec_api;
     if (SUCCEEDED(encoder_.As(&codec_api))) {
         VARIANT var;
@@ -243,19 +225,17 @@ bool MftEncoder::configure_encoder(uint32_t width, uint32_t height,
 
         VariantInit(&var);
         var.vt = VT_UI4;
-        var.ulVal = rate_control.average_bitrate;
+        var.ulVal = rate_control.average_bps;
         codec_api->SetValue(&CODECAPI_AVEncCommonMeanBitRate, &var);
 
         VariantInit(&var);
         var.vt = VT_UI4;
-        var.ulVal = rate_control.peak_bitrate;
+        var.ulVal = rate_control.peak_bps;
         codec_api->SetValue(&CODECAPI_AVEncCommonMaxBitRate, &var);
 
-        // VBV/HRD reservoir in bits: a few frame intervals, so a keyframe
-        // cannot become a multi-second burst on the link.
         VariantInit(&var);
         var.vt = VT_UI4;
-        var.ulVal = rate_control.vbv_buffer_size;
+        var.ulVal = rate_control.vbv_buffer_bits;
         codec_api->SetValue(&CODECAPI_AVEncCommonBufferSize, &var);
 
         VariantInit(&var);
@@ -282,8 +262,7 @@ bool MftEncoder::configure_encoder(uint32_t width, uint32_t height,
     return true;
 }
 
-bool MftEncoder::create_color_converter(uint32_t in_w, uint32_t in_h,
-                                         uint32_t out_w, uint32_t out_h) {
+bool MftEncoder::create_color_converter(uint32_t width, uint32_t height) {
     HRESULT hr = CoCreateInstance(
         CLSID_VideoProcessorMFT, nullptr, CLSCTX_INPROC_SERVER,
         IID_PPV_ARGS(&converter_));
@@ -296,12 +275,11 @@ bool MftEncoder::create_color_converter(uint32_t in_w, uint32_t in_h,
         MFT_MESSAGE_SET_D3D_MANAGER,
         reinterpret_cast<ULONG_PTR>(dxgi_manager_.Get()));
 
-    // Input: BGRA
     ComPtr<IMFMediaType> in_type;
     MFCreateMediaType(&in_type);
     in_type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
     in_type->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_ARGB32);
-    MFSetAttributeSize(in_type.Get(), MF_MT_FRAME_SIZE, in_w, in_h);
+    MFSetAttributeSize(in_type.Get(), MF_MT_FRAME_SIZE, width, height);
 
     hr = converter_->SetInputType(0, in_type.Get(), 0);
     if (FAILED(hr)) {
@@ -309,12 +287,11 @@ bool MftEncoder::create_color_converter(uint32_t in_w, uint32_t in_h,
         return false;
     }
 
-    // Output: NV12
     ComPtr<IMFMediaType> out_type;
     MFCreateMediaType(&out_type);
     out_type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
     out_type->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12);
-    MFSetAttributeSize(out_type.Get(), MF_MT_FRAME_SIZE, out_w, out_h);
+    MFSetAttributeSize(out_type.Get(), MF_MT_FRAME_SIZE, width, height);
 
     hr = converter_->SetOutputType(0, out_type.Get(), 0);
     if (FAILED(hr)) {
@@ -327,7 +304,7 @@ bool MftEncoder::create_color_converter(uint32_t in_w, uint32_t in_h,
 
 void MftEncoder::encoder_loop() {
     TracySetThreadName("MftEncoder");
-    if (!parties::set_current_thread_highest_priority())
+    if (parties::raise_thread_to_highest_normal_priority() == parties::ThreadPriorityChange::Failed)
         LOG_WARN("Failed to set the MFT encoder thread to highest priority");
     while (encoder_running_) {
         ZoneScopedN("MftEncoder::encoder_loop");
@@ -377,9 +354,8 @@ bool MftEncoder::encode(ID3D11Texture2D* bgra_texture, int64_t timestamp_100ns) 
     ZoneScopedN("MftEncoder::encode");
     if (!initialized_) return false;
 
-    int64_t duration = 10'000'000LL / fps_;
+    int64_t duration = TICKS_100NS_PER_SECOND / fps_;
 
-    // Wrap BGRA texture into MF sample
     ComPtr<IMFMediaBuffer> bgra_buffer;
     HRESULT hr = MFCreateDXGISurfaceBuffer(
         __uuidof(ID3D11Texture2D), bgra_texture, 0, FALSE, &bgra_buffer);
@@ -394,7 +370,6 @@ bool MftEncoder::encode(ID3D11Texture2D* bgra_texture, int64_t timestamp_100ns) 
     bgra_sample->SetSampleTime(timestamp_100ns);
     bgra_sample->SetSampleDuration(duration);
 
-    // BGRA → NV12 via Video Processor MFT
     hr = converter_->ProcessInput(0, bgra_sample.Get(), 0);
     if (FAILED(hr)) {
         LOG_ERROR("Converter ProcessInput failed: {:#010x}", hr);
@@ -421,7 +396,6 @@ bool MftEncoder::encode(ID3D11Texture2D* bgra_texture, int64_t timestamp_100ns) 
     nv12_sample->SetSampleTime(timestamp_100ns);
     nv12_sample->SetSampleDuration(duration);
 
-    // Feed NV12 to encoder
     if (async_mode_) {
         {
             std::lock_guard<std::mutex> lock(queue_mutex_);
@@ -507,26 +481,26 @@ void MftEncoder::force_keyframe() {
     force_keyframe_ = true;
 }
 
-void MftEncoder::set_bitrate(uint32_t bitrate) {
+void MftEncoder::set_average_bitrate_bps(uint32_t average_bps) {
     if (!initialized_) return;
 
     ComPtr<ICodecAPI> codec_api;
     if (SUCCEEDED(encoder_.As(&codec_api))) {
-        const auto rate_control = make_stream_vbr_rate_control(bitrate, fps_);
+        const auto rate_control = make_stream_vbr_rate_control(average_bps, fps_);
         VARIANT var;
         VariantInit(&var);
         var.vt = VT_UI4;
-        var.ulVal = rate_control.average_bitrate;
+        var.ulVal = rate_control.average_bps;
         codec_api->SetValue(&CODECAPI_AVEncCommonMeanBitRate, &var);
 
         VariantInit(&var);
         var.vt = VT_UI4;
-        var.ulVal = rate_control.peak_bitrate;
+        var.ulVal = rate_control.peak_bps;
         codec_api->SetValue(&CODECAPI_AVEncCommonMaxBitRate, &var);
 
         VariantInit(&var);
         var.vt = VT_UI4;
-        var.ulVal = rate_control.vbv_buffer_size;
+        var.ulVal = rate_control.vbv_buffer_bits;
         codec_api->SetValue(&CODECAPI_AVEncCommonBufferSize, &var);
     }
 }
@@ -535,4 +509,4 @@ EncoderInfo MftEncoder::info() const {
     return {Backend::MFT, codec_, width_, height_};
 }
 
-} // namespace parties::encdec::mft
+}

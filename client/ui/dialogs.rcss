@@ -1,7 +1,3 @@
-/* Modal backdrops and cross-screen dialogs. */
-
-/* ── Modal overlays ──────────────────────────────── */
-
 .modal-backdrop {
     display: flex;
     position: absolute;
@@ -29,7 +25,6 @@
     border-radius: 14dp;
 }
 
-/* Connect dialog ----------------------------------------------------------- */
 .party-connect-dialog { width: 520dp; padding: 0dp; overflow: hidden; background-color: var(--color-surface); border-color: #FFFFFF1A; border-radius: 18dp; }
 .party-connect-header { display: flex; align-items: center; justify-content: space-between; padding: 22dp 24dp 16dp 24dp; }
 .party-connect-header h1 { margin: 4dp 0dp 0dp 0dp; font-size: 20dp; }

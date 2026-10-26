@@ -16,13 +16,11 @@ bool Check(bool condition, const char* message) {
     return condition;
 }
 
-} // namespace
+}
 
 int main() {
     bool success = true;
 
-    // The production startup order publishes targets immediately after the
-    // worker's first empty pass. Verify that this early signal is sticky.
     ServerQueryWakeEvent early;
     early.request();
     const auto early_start = std::chrono::steady_clock::now();
@@ -30,7 +28,6 @@ int main() {
     const auto early_elapsed = std::chrono::steady_clock::now() - early_start;
     success &= Check(early_elapsed < 100ms, "early request waited for the periodic timeout");
 
-    // Also verify a request wakes a thread that is already waiting.
     ServerQueryWakeEvent waiting;
     std::atomic<bool> continued{false};
     const auto waiting_start = std::chrono::steady_clock::now();

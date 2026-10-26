@@ -18,4 +18,4 @@ inline void register_custom_elements(parties::rml::ElementRegistry& registry) {
     registry.add<SelectableTextElement>("selectable_text");
 }
 
-} // namespace parties::client
+}

@@ -19,7 +19,6 @@ public:
         cv_.notify_one();
     }
 
-    // Non-blocking: returns nullopt if empty
     std::optional<T> try_pop() {
         std::lock_guard<std::mutex> lock(mutex_);
         if (queue_.empty()) return std::nullopt;
@@ -28,7 +27,6 @@ public:
         return item;
     }
 
-    // Blocking: waits until an item is available
     T pop() {
         std::unique_lock<std::mutex> lock(mutex_);
         cv_.wait(lock, [this] { return !queue_.empty(); });
@@ -37,7 +35,6 @@ public:
         return item;
     }
 
-    // Drain all items into a vector (non-blocking)
     std::vector<T> drain() {
         std::lock_guard<std::mutex> lock(mutex_);
         std::vector<T> items;
@@ -60,4 +57,4 @@ private:
     std::deque<T> queue_;
 };
 
-} // namespace parties
+}

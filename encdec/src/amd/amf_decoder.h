@@ -11,12 +11,15 @@
 #include <wrl/client.h>
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace parties::encdec::amd {
 
-struct AmfNativeLifetime;
+class AmfSession;
 struct AmfD3D11InteropState;
+
+enum class FrameConsumed : bool { No, Yes };
 
 class AmfDecoder final : public Decoder {
 public:
@@ -34,12 +37,11 @@ public:
 private:
     bool check_device_health();
     size_t poll_output(bool deliver_frames);
-    bool deliver_output(amf::AMFData* data);
+    FrameConsumed deliver_output(amf::AMFData* data);
     void mark_context_lost(const char* operation, AMF_RESULT result);
 
     amf::AMFFactory* factory_ = nullptr;
-    amf::AMFContext* context_ = nullptr;
-    amf::AMFComponent* decoder_ = nullptr;
+    std::shared_ptr<AmfSession> session_;
     Microsoft::WRL::ComPtr<ID3D11Device> device_;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> device_context_;
     Microsoft::WRL::ComPtr<ID3D12Device> d3d12_device_;
@@ -50,8 +52,7 @@ private:
     bool initialized_ = false;
     bool context_lost_ = false;
     bool native_d3d12_output_ = false;
-    std::shared_ptr<AmfNativeLifetime> native_lifetime_;
     std::shared_ptr<AmfD3D11InteropState> interop_;
 };
 
-} // namespace parties::encdec::amd
+}

@@ -10,9 +10,6 @@ enum class VideoDecodeDecision {
     Discontinuity,
 };
 
-// Sequence gate for an inter-frame decoder. The owner must serialize calls.
-// Any gap invalidates the reference chain, so delta frames are rejected until
-// a fresh keyframe arrives.
 class VideoDecodeGate {
 public:
     VideoDecodeDecision on_frame(uint32_t frame_number, bool keyframe) {
@@ -52,4 +49,4 @@ private:
     bool awaiting_keyframe_ = true;
 };
 
-} // namespace parties::client
+}

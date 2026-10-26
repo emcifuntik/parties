@@ -1,4 +1,5 @@
 #include <client/screen_capture.h>
+#include "test_skip.h"
 #include <roapi.h>
 #include <dwmapi.h>
 
@@ -81,25 +82,24 @@ bool check(bool condition, const char* message) {
     if (!condition) std::fprintf(stderr, "Capture lifecycle: %s\n", message);
     return condition;
 }
-} // namespace
+}
 
 int main(int argc, char** argv) {
     if (argc == 2 && std::string(argv[1]) == "--capture-source") return run_source_window();
     using namespace parties::client;
     const HRESULT apartment = RoInitialize(RO_INIT_MULTITHREADED);
-    if (FAILED(apartment)) return 77;
+    if (FAILED(apartment)) return kSkipExitCode;
     bool passed = true;
     {
         for (int iteration = 0; iteration < 4; ++iteration) {
             auto capture = std::make_shared<ScreenCapture>();
-            if (!capture->init()) return 77;
+            if (!capture->init()) return kSkipExitCode;
             // WGC requires a shown window. Keep the source offscreen and never
             // activate it. A child process matches a captured application exit.
             SourceWindow source;
             const HWND window = source.handle;
             if (!window) return 2;
             CaptureTarget target{CaptureTarget::Type::Window, "Capture source", window};
-            // Match Parties: activate WGC on a temporary MTA startup worker.
             const bool started = std::async(std::launch::async, [&] {
                 const HRESULT worker_apartment = RoInitialize(RO_INIT_MULTITHREADED);
                 if (FAILED(worker_apartment)) return false;
@@ -113,14 +113,10 @@ int main(int argc, char** argv) {
             passed &= check(!capture->target_lost(), "resizing a live source ended capture");
             std::atomic<int> frames{0};
             capture->set_frame_callback([&](ID3D11Texture2D*, uint32_t, uint32_t) { ++frames; });
-            // Do not wait for process teardown: stop as soon as its HWND dies,
-            // while the source may still be running its remaining cleanup.
             DWORD_PTR result = 0;
             passed &= check(SendMessageTimeoutW(window, WM_CLOSE, 0, 0,
                 SMTO_ABORTIFHUNG | SMTO_BLOCK, 3000, &result) != 0, "source window did not close");
             if (!IsWindow(window)) source.handle = nullptr;
-            // Check immediately, without pumping a Closed notification or
-            // waiting for another frame from the now-dead application window.
             passed &= check(capture->target_lost(), "closed source was not detected");
             auto stopped = ScreenCapture::shutdown_async(capture);
             passed &= check(!capture->is_capturing(), "frame delivery remained active during cleanup");
@@ -137,7 +133,7 @@ int main(int argc, char** argv) {
             capture->stop();
             passed &= check(source.close(), "source process did not exit");
             passed &= check(frames.load() == stopped_frames, "callback ran after asynchronous shutdown");
-            if (!capture->init()) return 77;
+            if (!capture->init()) return kSkipExitCode;
             passed &= check(!capture->start(target, 30), "destroyed source was restarted");
             capture->shutdown();
         }
