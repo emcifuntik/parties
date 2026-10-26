@@ -53,6 +53,8 @@ public:
 
 	virtual void EndFrame() {}
 
+	virtual bool RepeatLastFrame() { return false; }
+
 	virtual void* GetD3D12Device() const { return nullptr; }
 
 	virtual void ReleaseRetiredResourcesBetweenFrames() {}

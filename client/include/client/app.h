@@ -8,6 +8,7 @@
 #include <client/rml_elements.h>
 #include <client/stream_audio_capture.h>
 #include <client/context_window_manager.h>
+#include <client/frame_requests.h>
 #include <client/hotkey_binding.h>
 #include <client/win32_power_request.h>
 #include <client/win32_tray.h>
@@ -70,6 +71,7 @@ public:
 
     void defer_resize(int width, int height);
     void defer_dpi(float scale);
+    void request_frame() { frame_requests_.request(); }
 
     // Guards all RmlUi context + data-model access (render thread vs. the
     // message thread's input/tick). Recursive so a modal handler that re-enters
@@ -109,7 +111,9 @@ private:
 
 
     void render_loop();
-    void render_frame();
+    void render_frame(bool counts_toward_fps, bool may_represent);
+    bool has_video_streams();
+    bool update_titlebar(RenderClock::time_point now);
     void sync_video_router();
     VideoFrameRouter::Surfaces video_surfaces();
     void deliver_video_frames(bool grid_visible);
@@ -247,6 +251,8 @@ private:
     std::chrono::steady_clock::time_point fps_last_update_{std::chrono::steady_clock::now()};
     std::chrono::steady_clock::time_point last_render_stall_log_{};
     uint32_t suppressed_render_stalls_ = 0;
+    FrameRequests frame_requests_;
+    RenderClock::time_point next_ui_update_{};
     // Last titlebar strings — SetInnerRML rebuilds the text element (and its
     // render geometry) even for identical content, so skip unchanged updates.
     Rml::String titlebar_fps_last_;

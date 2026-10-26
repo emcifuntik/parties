@@ -185,6 +185,13 @@ void UiManager::render_end() {
     render_interface_->EndFrame();
 }
 
+bool UiManager::repeat_last_frame() {
+	ZoneScopedN("UiManager::repeat_last_frame");
+    if (!frame_started_ || !render_interface_ || !render_interface_->RepeatLastFrame()) return false;
+    frame_started_ = false;
+    return true;
+}
+
 void UiManager::on_resize(int width, int height) {
 	ZoneScopedN("UiManager::on_resize");
     if (width <= 0 || height <= 0) return;

@@ -183,6 +183,12 @@ private:
     Model* owner_;
 };
 
+struct DirtyHook {
+    void (*notify)(void* context) = nullptr;
+    void* context = nullptr;
+};
+inline DirtyHook dirty_hook;
+
 class Model {
 public:
     Model() = default;
@@ -202,10 +208,14 @@ public:
     }
 
     void dirty(const Rml::String& variable) {
-        if (ready_) handle_.DirtyVariable(variable);
+        if (!ready_) return;
+        handle_.DirtyVariable(variable);
+        if (dirty_hook.notify) dirty_hook.notify(dirty_hook.context);
     }
     void dirty_all() {
-        if (ready_) handle_.DirtyAllVariables();
+        if (!ready_) return;
+        handle_.DirtyAllVariables();
+        if (dirty_hook.notify) dirty_hook.notify(dirty_hook.context);
     }
 
     bool ready() const { return ready_; }

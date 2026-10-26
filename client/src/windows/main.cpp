@@ -217,6 +217,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             if (app) {
                 std::lock_guard<std::recursive_mutex> lock(app->ui_mutex());
                 Rml::Debugger::SetVisible(!Rml::Debugger::IsVisible());
+                app->request_frame();
             }
             return 0;
         }
@@ -233,6 +234,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
     if (app && ui && ui->context()) {
         std::lock_guard<std::recursive_mutex> lock(app->ui_mutex());
+        app->request_frame();
         if (app->handle_chat_input(msg, wParam, lParam))
             return 0;
         bool propagating = RmlWin32::WindowProcedure(

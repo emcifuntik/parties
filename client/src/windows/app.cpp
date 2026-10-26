@@ -177,7 +177,10 @@ bool App::handle_chat_input(unsigned int msg, WPARAM wParam, LPARAM lParam) {
 }
 
 App::App() = default;
-App::~App() { shutdown(); }
+App::~App() {
+    shutdown();
+    parties::rml::dirty_hook = {};
+}
 
 bool App::handle_tray_message(UINT message, WPARAM w_param, LPARAM l_param) {
     return tray_.handle_message(message, w_param, l_param);
@@ -185,6 +188,7 @@ bool App::handle_tray_message(UINT message, WPARAM w_param, LPARAM l_param) {
 
 void App::on_window_visibility_changed(bool visible) {
     ui_.on_visibility_change(visible);
+    frame_requests_.request();
     if (!visible) {
         std::lock_guard<std::recursive_mutex> lock(ui_mutex_);
         context_windows_.close();
@@ -193,6 +197,8 @@ void App::on_window_visibility_changed(bool visible) {
 
 bool App::init(HWND hwnd) {
     hwnd_ = hwnd;
+    parties::rml::dirty_hook = {
+        [](void* requests) { static_cast<FrameRequests*>(requests)->request(); }, &frame_requests_};
 
     PlatformBridge bridge;
 
@@ -494,6 +500,7 @@ void App::shutdown() {
     }
 
     render_running_.store(false, std::memory_order_release);
+    frame_requests_.request();
     if (render_thread_.joinable())
         render_thread_.join();
 
@@ -644,8 +651,34 @@ void App::render_loop() {
             }
             continue;
         }
-        render_frame();
+        const auto now = RenderClock::now();
+        const bool titlebar_changed = update_titlebar(now);
+        const bool requested = frame_requests_.take();
+        bool always_dirty = pip_host_ && pip_host_->visible();
+        if (!always_dirty) {
+            std::lock_guard<std::recursive_mutex> lock(ui_mutex_);
+            always_dirty = context_windows_.is_open();
+        }
+        const auto deadline = (std::min)(next_ui_update_, fps_last_update_ + std::chrono::seconds(1));
+        const auto wait = idle_wait_ms(requested || always_dirty || titlebar_changed, now, deadline);
+        // DWM flips an isolated present a varying number of refreshes late, so
+        // while video plays the window presents every refresh, reusing the last
+        // frame when nothing changed.
+        if (wait && !has_video_streams()) {
+            {
+                std::lock_guard<std::recursive_mutex> lock(ui_mutex_);
+                sync_video_router();
+            }
+            frame_requests_.wait(*wait);
+            continue;
+        }
+        render_frame(requested || always_dirty || now >= next_ui_update_, wait.has_value());
     }
+}
+
+bool App::has_video_streams() {
+    std::lock_guard<std::mutex> slock(streams_mutex_);
+    return !video_streams_.empty();
 }
 
 VideoFrameRouter::Surfaces App::video_surfaces() {
@@ -657,6 +690,7 @@ VideoFrameRouter::Surfaces App::video_surfaces() {
 
 void App::sync_video_router() {
     const auto cleared = video_router_.sync(core_.pip_.stream(), video_surfaces());
+    if (cleared.grid || cleared.pip) frame_requests_.request();
     if (cleared.grid) ui_.renderer()->ReleaseRetiredResourcesBetweenFrames();
     if (cleared.pip && pip_host_ && pip_host_->renderer())
         pip_host_->renderer()->ReleaseRetiredResourcesBetweenFrames();
@@ -726,7 +760,37 @@ static Rml::Element* find_share_thumbnail(Rml::ElementDocument* document, int ta
     return document->GetElementById(element_id);
 }
 
-void App::render_frame() {
+bool App::update_titlebar(RenderClock::time_point now) {
+    if (now - fps_last_update_ < std::chrono::seconds(1)) return false;
+    const float elapsed = std::chrono::duration<float>(now - fps_last_update_).count();
+    const int fps = static_cast<int>(fps_frame_count_ / elapsed);
+    fps_frame_count_ = 0;
+    fps_last_update_ = now;
+    if (!doc_) return false;
+    bool changed = false;
+    std::lock_guard<std::recursive_mutex> lock(ui_mutex_);
+    Rml::String fps_text(std::to_string(fps) + " fps");
+    if (fps_text != titlebar_fps_last_) {
+        if (auto* elem = doc_->GetElementById("titlebar-fps")) {
+            elem->SetInnerRML(fps_text);
+            titlebar_fps_last_ = std::move(fps_text);
+            changed = true;
+        }
+    }
+    Rml::String ping_text = core_.model_.is_connected
+        ? Rml::String(std::to_string(core_.model_.ping_ms.get()) + " ms")
+        : Rml::String();
+    if (ping_text != titlebar_ping_last_) {
+        if (auto* elem = doc_->GetElementById("titlebar-ping")) {
+            elem->SetInnerRML(ping_text);
+            titlebar_ping_last_ = std::move(ping_text);
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+void App::render_frame(bool counts_toward_fps, bool may_represent) {
     ZoneScopedN("App::render_frame");
 
     const auto frame_start = std::chrono::steady_clock::now();
@@ -737,8 +801,16 @@ void App::render_frame() {
     }
 
     if (!ui_.render_begin()) {
+        frame_requests_.request();
         Sleep(16);
         return;
+    }
+    if (may_represent) {
+        if (frame_requests_.take()) {
+            counts_toward_fps = true;
+        } else if (ui_.repeat_last_frame()) {
+            return;
+        }
     }
     const auto begin_complete = std::chrono::steady_clock::now();
     {
@@ -746,32 +818,7 @@ void App::render_frame() {
 
         deliver_video_frames(true);
 
-        fps_frame_count_++;
-        auto now_fps = std::chrono::steady_clock::now();
-        float elapsed_fps = std::chrono::duration<float>(now_fps - fps_last_update_).count();
-        if (elapsed_fps >= 1.0f) {
-            int fps = static_cast<int>(fps_frame_count_ / elapsed_fps);
-            fps_frame_count_ = 0;
-            fps_last_update_ = now_fps;
-            if (doc_) {
-                Rml::String fps_text(std::to_string(fps) + " fps");
-                if (fps_text != titlebar_fps_last_) {
-                    if (auto* elem = doc_->GetElementById("titlebar-fps")) {
-                        elem->SetInnerRML(fps_text);
-                        titlebar_fps_last_ = std::move(fps_text);
-                    }
-                }
-                Rml::String ping_text = core_.model_.is_connected
-                    ? Rml::String(std::to_string(core_.model_.ping_ms.get()) + " ms")
-                    : Rml::String();
-                if (ping_text != titlebar_ping_last_) {
-                    if (auto* elem = doc_->GetElementById("titlebar-ping")) {
-                        elem->SetInnerRML(ping_text);
-                        titlebar_ping_last_ = std::move(ping_text);
-                    }
-                }
-            }
-        }
+        if (counts_toward_fps) fps_frame_count_++;
 
         ui_.update();
 
@@ -798,15 +845,16 @@ void App::render_frame() {
                     remaining.push_back(std::move(thumbnail));
                 }
             }
-            if (!remaining.empty()) {
-                std::lock_guard lock(share_thumbnail_mutex_);
-                for (auto& thumbnail : remaining)
-                    pending_share_thumbnails_.push_back(std::move(thumbnail));
-            }
+            std::lock_guard lock(share_thumbnail_mutex_);
+            for (auto& thumbnail : remaining)
+                pending_share_thumbnails_.push_back(std::move(thumbnail));
+            if (!pending_share_thumbnails_.empty()) frame_requests_.request();
         } else if (!core_.model_.router.is(DocumentRoute::SharePicker)) {
             cancel_share_thumbnails();
         }
         ui_.render_body();
+        if (auto* context = ui_.context())
+            next_ui_update_ = ui_update_deadline(RenderClock::now(), context->GetNextUpdateDelay());
     }
     const auto body_complete = std::chrono::steady_clock::now();
     ui_.render_end();
@@ -875,11 +923,13 @@ void App::defer_resize(int width, int height) {
     pending_w_.store(width, std::memory_order_relaxed);
     pending_h_.store(height, std::memory_order_relaxed);
     resize_pending_.store(true, std::memory_order_release);
+    frame_requests_.request();
 }
 
 void App::defer_dpi(float scale) {
     pending_dpi_.store(scale, std::memory_order_relaxed);
     dpi_pending_.store(true, std::memory_order_release);
+    frame_requests_.request();
 }
 
 void App::show_share_picker(bool audio_only) {
@@ -1014,6 +1064,7 @@ void App::share_thumbnail_worker(std::stop_token stop_token) {
             if (generation != share_thumbnail_generation_)
                 break;
             pending_share_thumbnails_.push_back(std::move(pending));
+            frame_requests_.request();
         }
 
         {
@@ -1633,6 +1684,7 @@ void App::on_video_decoded(VideoStream* s, const encdec::DecodedFrame& frame) {
         s->uv_stride = 0;
         s->nv12 = true;
         s->new_frame.store(true, std::memory_order_release);
+        frame_requests_.request();
         return;
     }
 
@@ -1656,6 +1708,7 @@ void App::on_video_decoded(VideoStream* s, const encdec::DecodedFrame& frame) {
         s->nv12 = frame.nv12;
         s->new_frame.store(true, std::memory_order_release);
     }
+    frame_requests_.request();
 }
 
 void App::decode_loop(std::stop_token stop, VideoStream* s) {

@@ -215,6 +215,10 @@ if(BUILD_CLIENT)
 endif()
 
 if(WIN32 AND BUILD_CLIENT)
+    add_executable(parties_frame_requests_test frame_requests_test.cpp)
+    target_include_directories(parties_frame_requests_test PRIVATE ../client/include)
+    add_test(NAME parties_frame_requests COMMAND parties_frame_requests_test)
+
     find_path(AMD_AMF_INCLUDE_DIRS "AMF/core/Result.h" REQUIRED)
     add_executable(parties_amf_decode_state_test amf_decode_state_test.cpp)
     target_include_directories(parties_amf_decode_state_test PRIVATE

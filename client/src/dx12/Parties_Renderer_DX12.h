@@ -23,6 +23,7 @@ public:
 	bool IsFrameActive() const override { return active_frame_.has_value(); }
 	void Clear() override;
 	void EndFrame() override;
+	bool RepeatLastFrame() override;
 	void ReleaseRetiredResourcesBetweenFrames() override;
 	void CaptureNextFrame(std::string output_path);
 	bool LastCaptureSucceeded() const { return last_capture_succeeded_; }

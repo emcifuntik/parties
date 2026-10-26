@@ -36,6 +36,7 @@ public:
     bool render_begin();
     void render_body();
     void render_end();
+    bool repeat_last_frame();
 
     void on_resize(int width, int height);
     void on_minimize();
