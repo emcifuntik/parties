@@ -179,7 +179,7 @@ bool UiManager::render_begin() {
 	ZoneScopedN("UiManager::render_begin");
     frame_started_ = false;
     if (!render_interface_ || !*render_interface_ ||
-        minimized_.load(std::memory_order_acquire)) return false;
+        is_render_suspended()) return false;
     render_interface_->BeginFrame();
     frame_started_ = render_interface_->IsFrameActive();
     return frame_started_;

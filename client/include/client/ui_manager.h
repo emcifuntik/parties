@@ -39,6 +39,7 @@ public:
 
     void on_resize(int width, int height);
     void on_minimize();
+    void on_visibility_change(bool visible) { hidden_.store(!visible, std::memory_order_release); }
     void on_dpi_change(float scale);
 
     Rml::Context* context() { return context_; }
@@ -60,6 +61,9 @@ public:
     ExtendedRenderInterface* renderer() { return render_interface_.get(); }
     float dpi_scale() const { return dpi_scale_; }
     bool is_minimized() const { return minimized_.load(std::memory_order_acquire); }
+    bool is_render_suspended() const {
+        return is_minimized() || hidden_.load(std::memory_order_acquire);
+    }
 
 private:
     std::unique_ptr<ExtendedRenderInterface> render_interface_;
@@ -73,6 +77,7 @@ private:
     bool initialised_ = false;
     // Written by the Win32 message thread and read by the render thread.
     std::atomic<bool> minimized_{false};
+    std::atomic<bool> hidden_{false};
     // Render-thread-only snapshot: once BeginFrame succeeds, the frame must be
     // completed even if a minimize notification arrives midway through it.
     bool frame_started_ = false;
