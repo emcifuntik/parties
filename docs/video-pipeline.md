@@ -15,6 +15,45 @@ that back buffer's retirement list. `RenderInterface_DX12::EndFrame` waits when
 the swap chain returns to the same buffer; only then does the adapter release
 the descriptor, D3D12 resource, AMF surface, or CUDA ring lease.
 
+## Picture-in-picture surfaces
+
+A watched stream has exactly one video surface at a time: its `<video_frame>`
+cell in `#stream-grid`, or the picture-in-picture (PiP) surface. The shared
+`VideoFrameRouter` (`client/include/client/video_frame_router.h`) decides it
+from `StreamPipController::stream()`; platforms never pick a surface
+themselves, so a decoded frame is never uploaded twice.
+
+When the PiP stream changes (open, switch, close), `VideoFrameRouter::sync`
+clears the surface each stream leaves before the next frame is delivered:
+
+- entering PiP: the stream's grid cell is cleared. `data-if` only hides that
+  `<video_frame>` behind the placeholder, so without the clear it would keep its
+  last textures (and on Windows an AMF/NVDEC lease) while hidden;
+- switching or closing: the PiP surface is cleared, so it never shows the
+  previous stream's last frame and, after a close, holds nothing.
+
+`VideoElement` resolves its render interface from its own context: a PiP
+context registers its renderer with
+`VideoElement::RegisterContextRenderInterface`, other contexts use the global
+one. A cleared element therefore releases through the renderer that created
+its textures, and that renderer's retirement rules apply unchanged.
+
+Each move also sends one PLI through the cooldown funnel, so a static screen
+repaints on its new surface instead of staying empty until it changes.
+
+| Platform | PiP surface | Retirement when a stream leaves a surface |
+|----------|-------------|-------------------------------------------|
+| Windows | `<video_frame id="pip-video">` in the PiP window's own RmlUi context and `PartiesRenderInterface_DX12` (same D3D12 device as the decoders; PiP refuses to open otherwise) | The texture, and any AMF/NVDEC ring lease it holds, goes into that renderer's back-buffer retirement bucket. A bucket is normally collected when the renderer presents into the same buffer again, which a hidden main window or a closed PiP window does not do, and NVDEC waits for its leases before reusing a surface. After a clear the render thread therefore calls `ReleaseRetiredResourcesBetweenFrames()` on that renderer (queue idle wait, then every bucket), outside any recorded frame |
+| macOS | `<video_frame>` in the PiP panel's RmlUi context and its own `RenderInterface_Metal` | CPU NV12 planes are copied into the renderer's Metal textures; `ReleaseNV12Texture` frees them at once, and Metal keeps textures referenced by in-flight command buffers alive itself. The `CVPixelBuffer` is released by the decoder callback after the copy |
+| iOS | One `AVSampleBufferDisplayLayer` serves both the inline cell and system PiP (`AVPictureInPictureController` moves that layer) | No RmlUi texture is involved: each `CVPixelBuffer` is wrapped in a `CMSampleBuffer` and enqueued as is. The layer retains only queued and displayed buffers and releases them as newer frames replace them; `flushAndRemoveImage` releases everything when the stream ends or another stream is selected, returning the buffers to the VideoToolbox/dav1d pools |
+
+While the Windows main window is minimized or hidden to the tray, the render
+thread skips the main swap chain but keeps routing and rendering the PiP
+stream (paced by `DwmFlush`). Other streams keep only their newest decoded
+frame until the grid is visible again. On iOS a background timer keeps
+`AppCore::tick` running, because per-frame video streams leave their reorder
+buffers only from the tick.
+
 ## Portable I420 and NV12
 
 Software decoders still return CPU planes. `Dx12VideoConverter` keeps one set
@@ -108,12 +147,12 @@ waited for the next packet before releasing a picture.
 
 | Where | Component | Role |
 |-------|-----------|------|
-| Sharer | `VideoSendController` admission (`common/include/parties/video_send_controller.h`) | Counts bytes handed to QUIC minus bytes acknowledged in `SEND_COMPLETE`. On the WGC capture thread a frame is encoded only when the outstanding bytes imply no more than ~120 ms of queueing beyond the minimum RTT; otherwise the capture frame is skipped. Skipping at capture keeps the reference chain intact because `frame_seq` is stamped after encode. Atomics only, never blocks |
+| Sharer | `VideoSendController` admission (`common/video_policy/include/parties/video_send_controller.h`) | Counts bytes handed to QUIC minus bytes acknowledged in `SEND_COMPLETE`. On the WGC capture thread a frame is encoded only when the outstanding bytes imply no more than ~120 ms of queueing beyond the minimum RTT; otherwise the capture frame is skipped. Skipping at capture keeps the reference chain intact because `frame_seq` is stamped after encode. Atomics only, never blocks |
 | Sharer | `VideoSendController` AIMD bitrate | Evaluated on the main thread in 500 ms windows. A window is congested when its peak queueing delay is >= 80 ms, actual (spurious-corrected) packet loss exceeds 3 %, or any admission, encoder, or send drop occurred in it; after two consecutive congested windows the bitrate is multiplied by 0.8 (not below the 800 kbps floor), and a clean window resets the count. x1.08 after 2 s clean, up to the user target. Encoder reconfigurations are gated to one per 500 ms and a >= 10 % delta, except that the final step onto the user's target (or onto the floor) is always published even when it is smaller than the delta gate. The encoder picks the new bitrate up on the encode thread via `take_bitrate_update()` and a keyframe request via `take_keyframe_request()` |
 | Both hops | Per-frame unidirectional QUIC streams (protocol 1.2) | One stream per encoded frame, `[0x12][header 14 B][encoded]` sharer to server and `[0x12][sender_id][header][encoded]` server to viewer, one `StreamSend` with FIN. A lost packet delays only its frame. Stream 1 stays for pre-1.2 peers and PLI |
-| Server | Per-viewer backlog gate (`common/include/parties/video_backlog.h`) | Outstanding bytes per viewer connection; a frame is dropped as a whole for a viewer whose outstanding bytes exceed `clamp(viewer_rate x (MinRtt + 250 ms) + keyframe_headroom, 64 KB, 2 MB)`, where `viewer_rate` is the sum of the rates of every sharer the viewer is subscribed to (they share one counter), `MinRtt` is sampled from `QUIC_PARAM_CONN_STATISTICS_V2` inside the connection's QUIC callbacks about once per second; the server loop reads an atomic cache (the smoothed RTT already contains the queueing being detected; with send buffering disabled a send completes only on acknowledgement, so the RTT term keeps a long-RTT viewer from being throttled on a lossless link), and `keyframe_headroom` is the largest recent keyframe. After a drop the viewer resumes only at a keyframe, requested from the sharer once per 200 ms per sharer |
+| Server | Per-viewer backlog gate (`common/video_policy/include/parties/video_backlog.h`) | Outstanding bytes per viewer connection; a frame is dropped as a whole for a viewer whose outstanding bytes exceed `clamp(viewer_rate x (MinRtt + 250 ms) + keyframe_headroom, 64 KB, 2 MB)`, where `viewer_rate` is the sum of the rates of every sharer the viewer is subscribed to (they share one counter), `MinRtt` is sampled from `QUIC_PARAM_CONN_STATISTICS_V2` inside the connection's QUIC callbacks about once per second; the server loop reads an atomic cache (the smoothed RTT already contains the queueing being detected; with send buffering disabled a send completes only on acknowledgement, so the RTT term keeps a long-RTT viewer from being throttled on a lossless link), and `keyframe_headroom` is the largest recent keyframe. After a drop the viewer resumes only at a keyframe, requested from the sharer once per 200 ms per sharer |
 | Server | Per-frame ingress guard (`Session::video_ingress_allowed`, `Session::video_in_buffered_bytes`) | Per-frame streams are accepted only from authenticated sessions currently registered as sharers; any other session's unidirectional stream is aborted at start. At most 16 MB may be buffered across one session's unfinished per-frame streams, and the largest `[header][encoded]` a sharer may send is `VIDEO_FRAME_MAX_PAYLOAD_BYTES` (`VIDEO_FRAME_MAX_BYTES` - 5: 4 MB minus the 5-byte forwarding prefix) |
-| Server and viewer | `VideoFrameReorderBuffer` (`common/include/parties/video_frame_reorder.h`) | Per-frame streams complete out of order. The buffer delivers the next expected `frame_seq` immediately, holds newer complete frames for up to 150 ms / 8 frames / 8 MB while an older one is missing, delivers a held keyframe at once, and resets only on an explicit share lifecycle change. Before its first keyframe it holds bounded delta frames without committing a baseline, so a delayed first keyframe is still accepted. Arbitrarily late frames never rewind the active sequence. A gap that is closed by a keyframe is not reported as a loss and sends no PLI: that is how the server resumes a throttled viewer, and the decoder re-anchors on the keyframe. Only a gap resumed at a delta frame (150 ms hold timeout, aborted stream, or buffer overflow) is reported, once, and then the decode gate requests a keyframe through the PLI funnel |
+| Server and viewer | `VideoFrameReorderBuffer` (`common/video_policy/include/parties/video_frame_reorder.h`) | Per-frame streams complete out of order. The buffer delivers the next expected `frame_seq` immediately, holds newer complete frames for up to 150 ms / 8 frames / 8 MB while an older one is missing, delivers a held keyframe at once, and resets only on an explicit share lifecycle change. Before its first keyframe it holds bounded delta frames without committing a baseline, so a delayed first keyframe is still accepted. Arbitrarily late frames never rewind the active sequence. A gap that is closed by a keyframe is not reported as a loss and sends no PLI: that is how the server resumes a throttled viewer, and the decoder re-anchors on the keyframe. Only a gap resumed at a delta frame (150 ms hold timeout, aborted stream, or buffer overflow) is reported, once, and then the decode gate requests a keyframe through the PLI funnel |
 | Viewer | PLI funnel | Single client entry point with a 500 ms cooldown per sharer, retried every 500 ms while a watched stream still awaits a keyframe, subject to the escalation cap described under [Decode backlog policy](#decode-backlog-policy). The self-preview stream never sends PLIs |
 
 Completed ingress frames pass through a separate queue capped at 16 MB per
@@ -156,28 +195,28 @@ The UI bitrate is an average. The old policy (peak 2x average, VBV = 2x average
 bits, i.e. a two-second reservoir) let one keyframe be several hundred kilobytes,
 which on a link close to the average is a stall followed by catch-up. The
 low-latency policy in `encdec/include/encdec/rate_control.h`
-(`make_stream_vbr_rate_control(average, fps)`) expresses the reservoir in frame
+(`make_stream_vbr_rate_control(average_bps, fps)`) expresses the reservoir in frame
 intervals:
 
 | Field | Value |
 |-------|-------|
-| `peak_bitrate` | 1.5 x average |
-| `vbv_buffer_size` | max(4 frame intervals at average, 250 kbit) |
-| `vbv_initial_delay` | = `vbv_buffer_size` |
-| `max_frame_bits` | 6 frame intervals at average (~200 ms of link time at 30 fps), never below `vbv_buffer_size` |
+| `peak_bps` | 1.5 x average (`peak_bps_for`) |
+| `vbv_buffer_bits` | max(4 frame intervals at average, 250 kbit) |
+| `vbv_initial_delay_bits` | = `vbv_buffer_bits` |
+| `max_frame_bits` | 6 frame intervals at average (~200 ms of link time at 30 fps), never below `vbv_buffer_bits` |
 
 Which fields each backend consumes:
 
 | Backend | Fields |
 |---------|--------|
-| NVENC | `average`, `peak`, `vbv_buffer_size`, `vbv_initial_delay` |
-| AMF | `average`, `peak`, `vbv_buffer_size`, `max_frame_bits` (`MAX_AU_SIZE` / `HEVC_MAX_AU_SIZE` / `AV1_MAX_COMPRESSED_FRAME_SIZE`) |
-| MFT | `average`, `peak`, `vbv_buffer_size` (`CODECAPI_AVEncCommonBufferSize`) |
+| NVENC | `average_bps`, `peak_bps`, `vbv_buffer_bits`, `vbv_initial_delay_bits` |
+| AMF | `average_bps`, `peak_bps`, `vbv_buffer_bits`, `max_frame_bits` (`MAX_AU_SIZE` / `HEVC_MAX_AU_SIZE` / `AV1_MAX_COMPRESSED_FRAME_SIZE`) |
+| MFT | `average_bps`, `peak_bps`, `vbv_buffer_bits` (`CODECAPI_AVEncCommonBufferSize`) |
 | VideoToolbox | `average` plus a `DataRateLimits` window derived from `peak` |
 
 Bitrate changes reach the encoder only from the encode thread
-(`AppCore::take_video_bitrate_update()`); the UI slider merely updates the
-controller's target ceiling.
+(`AppCore::video_encode_feedback().take_bitrate_update()`); the UI slider
+merely updates the controller's target ceiling.
 
 ## Fallbacks
 
@@ -204,3 +243,7 @@ NVDEC on the renderer adapter, waits the CUDA-signalled D3D12 fence, reads both
 D3D12 presentation planes, and rejects empty luma or incomplete chroma output. The
 multi-window RmlUI test covers teardown of multiple HWND renderers and validates
 that a packed NV12 resource can be registered as two plane SRVs.
+`parties_stream_pip_model` moves a stream between a grid context and a PiP
+context with separate counting renderers and checks that each surface's
+textures are created and released only by its own renderer, and that a PiP
+frame never reaches the grid.

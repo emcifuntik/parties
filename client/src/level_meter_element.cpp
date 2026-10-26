@@ -6,8 +6,13 @@
 #include <parties/profiler.h>
 
 namespace parties::client {
+namespace {
 
-// ── LevelMeterElement ──────────────────────────────────────────────
+const Rml::ColourbPremultiplied kLevelFillColour(94, 234, 212, 255);
+const Rml::ColourbPremultiplied kThresholdMarkerColour(232, 100, 90, 255);
+constexpr float kThresholdMarkerWidth = 2.0f;
+
+}
 
 LevelMeterElement::LevelMeterElement(const Rml::String& tag)
     : Rml::Element(tag) {}
@@ -19,9 +24,6 @@ LevelMeterElement::~LevelMeterElement() {
 void LevelMeterElement::OnAttributeChange(const Rml::ElementAttributes& changed_attributes) {
     Rml::Element::OnAttributeChange(changed_attributes);
 
-    // Routed RML content may be created and destroyed at any time. Keeping the
-    // meter driven by data-bound attributes makes each instance self-contained
-    // and avoids cached DOM pointers in the platform backends.
     if (changed_attributes.find("level") != changed_attributes.end())
         SetLevel(GetAttribute<float>("level", 0.0f));
     if (changed_attributes.find("threshold") != changed_attributes.end())
@@ -57,22 +59,15 @@ void LevelMeterElement::ReleaseResources() {
 void LevelMeterElement::RebuildGeometry() {
     ReleaseResources();
 
-    // 8 vertices (2 quads), 12 indices (4 triangles)
-    // Quad 0: fill bar (vertices 0-3, green)
-    // Quad 1: threshold marker (vertices 4-7, red)
     Rml::Vertex vertices[8] = {};
     int indices[12] = {
-        0, 1, 2, 0, 2, 3,  // fill bar
-        4, 5, 6, 4, 6, 7,  // threshold marker
+        0, 1, 2, 0, 2, 3,
+        4, 5, 6, 4, 6, 7,
     };
 
-    // Initialize colors
-    Rml::ColourbPremultiplied green(94, 234, 212, 255);  // #5eead4
-    Rml::ColourbPremultiplied red(232, 100, 90, 255);    // #e8645a
-    for (int i = 0; i < 4; ++i) vertices[i].colour = green;
-    for (int i = 4; i < 8; ++i) vertices[i].colour = red;
+    for (int i = 0; i < 4; ++i) vertices[i].colour = kLevelFillColour;
+    for (int i = 4; i < 8; ++i) vertices[i].colour = kThresholdMarkerColour;
 
-    // Positions will be set by UpdateVertices after compile
     auto* ri = Rml::GetRenderInterface();
     if (!ri) return;
     geom_ = ri->CompileGeometry({vertices, 8}, {indices, 12});
@@ -80,7 +75,7 @@ void LevelMeterElement::RebuildGeometry() {
     Rml::Vector2f size = GetBox().GetSize(Rml::BoxArea::Content);
     cached_w_ = size.x;
     cached_h_ = size.y;
-    dirty_ = true;  // force vertex update
+    dirty_ = true;
 }
 
 void LevelMeterElement::UpdateVertices() {
@@ -92,28 +87,21 @@ void LevelMeterElement::UpdateVertices() {
     float w = cached_w_;
     float h = cached_h_;
 
-    // Fill bar: 0 to level_ * width
     float fill_w = level_ * w;
 
-    // Threshold marker: 2dp wide line at threshold_ * width
     float marker_x = threshold_ * w;
-    float marker_w = 2.0f;  // ~2dp
+    float marker_end = marker_x + kThresholdMarkerWidth;
 
     Rml::Vertex vertices[8] = {};
-    Rml::ColourbPremultiplied green(94, 234, 212, 255);
-    Rml::ColourbPremultiplied red(232, 100, 90, 255);
+    vertices[0] = {{0, 0}, kLevelFillColour, {0, 0}};
+    vertices[1] = {{fill_w, 0}, kLevelFillColour, {0, 0}};
+    vertices[2] = {{fill_w, h}, kLevelFillColour, {0, 0}};
+    vertices[3] = {{0, h}, kLevelFillColour, {0, 0}};
 
-    // Fill bar quad
-    vertices[0] = {{0, 0}, green, {0, 0}};
-    vertices[1] = {{fill_w, 0}, green, {0, 0}};
-    vertices[2] = {{fill_w, h}, green, {0, 0}};
-    vertices[3] = {{0, h}, green, {0, 0}};
-
-    // Threshold marker quad
-    vertices[4] = {{marker_x, 0}, red, {0, 0}};
-    vertices[5] = {{marker_x + marker_w, 0}, red, {0, 0}};
-    vertices[6] = {{marker_x + marker_w, h}, red, {0, 0}};
-    vertices[7] = {{marker_x, h}, red, {0, 0}};
+    vertices[4] = {{marker_x, 0}, kThresholdMarkerColour, {0, 0}};
+    vertices[5] = {{marker_end, 0}, kThresholdMarkerColour, {0, 0}};
+    vertices[6] = {{marker_end, h}, kThresholdMarkerColour, {0, 0}};
+    vertices[7] = {{marker_x, h}, kThresholdMarkerColour, {0, 0}};
 
     ext_ri->UpdateGeometryVertices(geom_, {vertices, 8});
     dirty_ = false;
@@ -123,8 +111,6 @@ void LevelMeterElement::OnResize() {
     Rml::Element::OnResize();
     Rml::Vector2f size = GetBox().GetSize(Rml::BoxArea::Content);
     if (size.x != cached_w_ || size.y != cached_h_) {
-        // Size changed — need new geometry (VB might be too small if we ever add more verts)
-        // But since vertex count is fixed, just update positions
         cached_w_ = size.x;
         cached_h_ = size.y;
         dirty_ = true;
@@ -150,4 +136,4 @@ void LevelMeterElement::OnRender() {
     ri->RenderGeometry(geom_, offset, 0);
 }
 
-} // namespace parties::client
+}

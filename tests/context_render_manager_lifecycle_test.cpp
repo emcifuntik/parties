@@ -17,7 +17,7 @@ public:
     void SetScissorRegion(Rml::Rectanglei) override {}
 };
 
-} // namespace
+}
 
 int main() {
     TestRenderInterface renderer;
@@ -47,8 +47,6 @@ int main() {
             return 1;
         }
 
-        // Mirrors an application-owned callback texture: it intentionally survives individual
-        // popup contexts and is released only during global font-engine shutdown.
         (void)shared_font_texture.GetTexture(*current_manager);
         Rml::RemoveContext(name);
     }

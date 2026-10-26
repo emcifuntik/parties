@@ -15,8 +15,7 @@ OpenH264Decoder::~OpenH264Decoder() {
     }
 }
 
-bool OpenH264Decoder::init(VideoCodecId codec, uint32_t /*width*/, uint32_t /*height*/) {
-    // OpenH264 only supports H.264
+bool OpenH264Decoder::init(VideoCodecId codec, uint32_t, uint32_t) {
     if (codec != VideoCodecId::H264)
         return false;
 
@@ -52,7 +51,6 @@ bool OpenH264Decoder::decode(const uint8_t* data, size_t len, int64_t timestamp)
         data, static_cast<int>(len), dst, &buf_info);
 
     if (state != dsErrorFree && state != dsFramePending) {
-        // Non-fatal: OpenH264 can recover from corrupted frames
         return true;
     }
 
@@ -76,7 +74,6 @@ void OpenH264Decoder::flush() {
     ZoneScopedN("OpenH264Decoder::flush");
     if (!decoder_) return;
 
-    // Drain any buffered frames
     unsigned char* dst[3] = {};
     SBufferInfo buf_info = {};
 
@@ -104,4 +101,4 @@ DecoderInfo OpenH264Decoder::info() const {
     return {Backend::OpenH264, VideoCodecId::H264};
 }
 
-} // namespace parties::encdec::openh264
+}

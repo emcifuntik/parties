@@ -43,7 +43,7 @@ NvencEncoder::~NvencEncoder() {
 }
 
 bool NvencEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
-                         uint32_t fps, uint32_t bitrate, VideoCodecId preferred_codec) {
+                         uint32_t fps, uint32_t average_bps, VideoCodecId preferred_codec) {
     ZoneScopedN("NvencEncoder::init");
     if (initialized_) return false;
     if (!load_nvenc(funcs_)) return false;
@@ -90,11 +90,11 @@ bool NvencEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
         return false;
     }
 
-    const auto rate_control = make_stream_vbr_rate_control(bitrate, fps);
+    const auto rate_control = make_stream_vbr_rate_control(average_bps, fps);
     LOG_INFO("Selected codec: {} ({}x{} @ {} fps), VBR average: {} bps, peak: {} bps, VBV: {} bits",
              codec_name(codec_), width, height, fps,
-             rate_control.average_bitrate, rate_control.peak_bitrate,
-             rate_control.vbv_buffer_size);
+             rate_control.average_bps, rate_control.peak_bps,
+             rate_control.vbv_buffer_bits);
 
     GUID encode_guid = (codec_ == VideoCodecId::AV1)  ? NV_ENC_CODEC_AV1_GUID
                      : (codec_ == VideoCodecId::H265) ? NV_ENC_CODEC_HEVC_GUID
@@ -118,20 +118,16 @@ bool NvencEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
     encode_config_ = preset_config.presetCfg;
     encode_config_.version = NV_ENC_CONFIG_VER;
     encode_config_.rcParams.rateControlMode = NV_ENC_PARAMS_RC_VBR;
-    encode_config_.rcParams.averageBitRate = rate_control.average_bitrate;
-    encode_config_.rcParams.maxBitRate = rate_control.peak_bitrate;
-    encode_config_.rcParams.vbvBufferSize = rate_control.vbv_buffer_size;
-    encode_config_.rcParams.vbvInitialDelay = rate_control.vbv_initial_delay;
+    encode_config_.rcParams.averageBitRate = rate_control.average_bps;
+    encode_config_.rcParams.maxBitRate = rate_control.peak_bps;
+    encode_config_.rcParams.vbvBufferSize = rate_control.vbv_buffer_bits;
+    encode_config_.rcParams.vbvInitialDelay = rate_control.vbv_initial_delay_bits;
     encode_config_.rcParams.multiPass = NV_ENC_TWO_PASS_QUARTER_RESOLUTION;
     encode_config_.rcParams.enableMinQP = 0;
     encode_config_.rcParams.enableMaxQP = 0;
     encode_config_.gopLength = fps * (VIDEO_KEYFRAME_INTERVAL_MS / 1000);
     encode_config_.frameIntervalP = 1;
 
-    // Output sequence headers with every keyframe so decoders can join mid-stream.
-    // idrPeriod is set explicitly (instead of relying on the "equal to gopLength
-    // when unset" default) so every GOP boundary is a true IDR/key frame that a
-    // late-joining viewer can start from.
     if (codec_ == VideoCodecId::AV1) {
         encode_config_.encodeCodecConfig.av1Config.repeatSeqHdr = 1;
         encode_config_.encodeCodecConfig.av1Config.idrPeriod = encode_config_.gopLength;
@@ -379,19 +375,17 @@ void NvencEncoder::force_keyframe() {
     force_keyframe_ = true;
 }
 
-void NvencEncoder::set_bitrate(uint32_t bitrate) {
+void NvencEncoder::set_average_bitrate_bps(uint32_t average_bps) {
     if (!initialized_) return;
 
-    // The send controller already coalesces automatic updates. Honor even a
-    // small final step to its floor/ceiling, and explicit user changes.
-    const auto rate_control = make_stream_vbr_rate_control(bitrate, fps_);
-    if (bitrate == encode_config_.rcParams.averageBitRate) return;
+    const auto rate_control = make_stream_vbr_rate_control(average_bps, fps_);
+    if (average_bps == encode_config_.rcParams.averageBitRate) return;
     const auto previous_rate_control = encode_config_.rcParams;
 
-    encode_config_.rcParams.averageBitRate = rate_control.average_bitrate;
-    encode_config_.rcParams.maxBitRate = rate_control.peak_bitrate;
-    encode_config_.rcParams.vbvBufferSize = rate_control.vbv_buffer_size;
-    encode_config_.rcParams.vbvInitialDelay = rate_control.vbv_initial_delay;
+    encode_config_.rcParams.averageBitRate = rate_control.average_bps;
+    encode_config_.rcParams.maxBitRate = rate_control.peak_bps;
+    encode_config_.rcParams.vbvBufferSize = rate_control.vbv_buffer_bits;
+    encode_config_.rcParams.vbvInitialDelay = rate_control.vbv_initial_delay_bits;
 
     NV_ENC_RECONFIGURE_PARAMS reconfig{};
     reconfig.version = NV_ENC_RECONFIGURE_PARAMS_VER;
@@ -405,12 +399,12 @@ void NvencEncoder::set_bitrate(uint32_t bitrate) {
         return;
     }
     LOG_DEBUG("NVENC reconfigured: average {} bps, peak {} bps, VBV {} bits",
-              rate_control.average_bitrate, rate_control.peak_bitrate,
-              rate_control.vbv_buffer_size);
+              rate_control.average_bps, rate_control.peak_bps,
+              rate_control.vbv_buffer_bits);
 }
 
 EncoderInfo NvencEncoder::info() const {
     return {Backend::NVENC, codec_, width_, height_};
 }
 
-} // namespace parties::encdec::nvidia
+}

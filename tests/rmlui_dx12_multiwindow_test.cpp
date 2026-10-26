@@ -39,7 +39,7 @@ struct GpuDiagnostics {
 		return passed;
 	}
 };
-} // namespace
+}
 
 int main(int argc, char**) {
 	Microsoft::WRL::ComPtr<ID3D12Debug> debug;
@@ -67,13 +67,10 @@ int main(int argc, char**) {
 	auto second = std::make_unique<PartiesRenderInterface_DX12>(second_window, settings);
 	if (!*first || !*second) return 3;
 
-	// Repeated minimize/restore notifications can report unchanged dimensions.
-	// They must not be implemented as two synthetic ResizeBuffers calls, and a
-	// real resize must always leave a complete renderable depth-stencil state.
 	first->SetViewport(320, 200);
 	if (!first->IsViewportValid()) return 8;
 	for (int pass = 0; pass < 256; ++pass) {
-		first->SetViewport(320, 200, true);
+		first->SetViewport(320, 200);
 		if (!first->IsViewportValid()) return 8;
 	}
 	first->SetViewport(321, 201);
@@ -81,8 +78,6 @@ int main(int argc, char**) {
 	first->SetViewport(320, 200);
 	if (!first->IsViewportValid()) return 8;
 
-	// Parties' in-tree backend must be able to bind a packed NV12 resource as
-	// two plane SRVs without allocating an intermediate RGBA texture.
 	auto* device = static_cast<ID3D12Device*>(first->GetD3D12Device());
 	GpuDiagnostics diagnostics;
 	device->QueryInterface(IID_PPV_ARGS(&diagnostics.queue));
@@ -103,21 +98,24 @@ int main(int argc, char**) {
 		&nv12_desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&nv12))))
 		return 4;
 	auto owner = std::make_shared<int>(1);
-	const uintptr_t texture = first->GenerateNativeNV12Texture(
-		nv12.Get(), nullptr, owner, nullptr, 0,
-		D3D12_RESOURCE_STATE_COMMON, false, 64, 64);
+	const auto native_frame = [&](ID3D12Resource* resource) {
+		NativeVideoFrame frame;
+		frame.resource = resource;
+		frame.owner = owner;
+		frame.resource_state = D3D12_RESOURCE_STATE_COMMON;
+		frame.visible_width = 64;
+		frame.visible_height = 64;
+		return frame;
+	};
+	const uintptr_t texture = first->GenerateNativeVideoTexture(native_frame(nv12.Get()));
 	if (!texture) return 5;
 	first->ReleaseNV12Texture(texture);
 
 	if (argc > 1) {
-		// Exhaust the shared SRV heap after the resized layer was created but
-		// before EndFrame creates its postprocess framebuffer.
 		first->BeginFrame();
 		first->Clear();
 		std::vector<uintptr_t> held;
-		while (auto handle = first->GenerateNativeNV12Texture(
-			nv12.Get(), nullptr, owner, nullptr, 0,
-			D3D12_RESOURCE_STATE_COMMON, false, 64, 64)) {
+		while (auto handle = first->GenerateNativeVideoTexture(native_frame(nv12.Get()))) {
 			held.push_back(handle);
 			if (held.size() > 10000) return 9;
 		}
@@ -130,8 +128,6 @@ int main(int argc, char**) {
 		if (FAILED(device->GetDeviceRemovedReason())) return 10;
 		if (!diagnostics.check()) return 12;
 
-		// Leave a small working set for two streams and their retired frames,
-		// keeping the rest of the texture descriptor pool occupied during resize.
 		for (int index = 0; index < 16; ++index) {
 			if (held.empty()) return 13;
 			first->ReleaseNV12Texture(held.back());
@@ -155,11 +151,9 @@ int main(int argc, char**) {
 			for (size_t stream = 0; stream < streams.size(); ++stream) {
 				auto* resource = video_frames[stream * 4 + pass % 4].Get();
 				if (!streams[stream]) {
-					streams[stream] = first->GenerateNativeNV12Texture(resource, nullptr, owner,
-						nullptr, 0, D3D12_RESOURCE_STATE_COMMON, false, 64, 64);
+					streams[stream] = first->GenerateNativeVideoTexture(native_frame(resource));
 					if (!streams[stream]) return 17;
-				} else if (!first->UpdateNativeNV12Texture(streams[stream], resource, nullptr, owner,
-					nullptr, 0, D3D12_RESOURCE_STATE_COMMON, false, 64, 64)) return 18;
+				} else if (!first->UpdateNativeVideoTexture(streams[stream], native_frame(resource))) return 18;
 				first->RenderGeometry(geometry, {10.0f + 80.0f * stream, 10.0f}, streams[stream]);
 			}
 			first->EndFrame();
@@ -170,8 +164,6 @@ int main(int argc, char**) {
 		for (auto handle : held) first->ReleaseNV12Texture(handle);
 		held.clear();
 
-		// Exhaust RTVs too. Failed layers must remain balanced and the frame
-		// must still complete, allowing the next resized frame to recover.
 		first->SetViewport(333, 222);
 		first->BeginFrame();
 		if (!first->IsFrameActive()) return 20;
@@ -187,8 +179,7 @@ int main(int argc, char**) {
 			first->EndFrame();
 		}
 		if (FAILED(device->GetDeviceRemovedReason()) || !diagnostics.check()) return 22;
-		while (auto handle = first->GenerateNativeNV12Texture(nv12.Get(), nullptr, owner,
-			nullptr, 0, D3D12_RESOURCE_STATE_COMMON, false, 64, 64)) {
+		while (auto handle = first->GenerateNativeVideoTexture(native_frame(nv12.Get()))) {
 			held.push_back(handle);
 			if (held.size() > full_capacity) return 23;
 		}
@@ -217,9 +208,6 @@ int main(int argc, char**) {
 		}
 	}
 
-	// The two backend instances can share the COM device. Closing either HWND
-	// must release only its own resources and must not assert on the device's
-	// still-live references held by the other renderer.
 	first.reset();
 	first = std::make_unique<PartiesRenderInterface_DX12>(first_window, settings);
 	if (!*first) return 7;

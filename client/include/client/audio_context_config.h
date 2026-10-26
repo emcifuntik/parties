@@ -20,4 +20,4 @@ inline ma_context_config MakeAudioContextConfig()
     return config;
 }
 
-} // namespace parties::client
+}

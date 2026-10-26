@@ -58,4 +58,4 @@ void ContextWindowModel::build(rml::Builder& builder) {
     });
 }
 
-} // namespace parties::client
+}

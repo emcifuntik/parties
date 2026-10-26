@@ -1,4 +1,5 @@
 #include <client/chat_model.h>
+#include <client/url.h>
 
 #include <RmlUi/Core/Element.h>
 #include <RmlUi/Core/Event.h>
@@ -7,7 +8,6 @@
 namespace parties::client {
 
 void ChatModel::build(rml::Builder& b) {
-    // Register struct types — arrays before structs that contain them.
     b.register_struct<TextSegment>([](auto& s) {
         s.member("text",   &TextSegment::text)
          .member("is_url", &TextSegment::is_url);
@@ -54,7 +54,6 @@ void ChatModel::build(rml::Builder& b) {
     });
     b.register_array<Rml::Vector<PendingFile>>();
 
-    // Bind state.
     b.bind("text_channels",          text_channels)
      .bind("active_channel",         active_channel)
      .bind("active_channel_name",    active_channel_name)
@@ -72,7 +71,6 @@ void ChatModel::build(rml::Builder& b) {
      .bind("show_create_text_channel", show_create_text_channel)
      .bind("new_text_channel_name",  new_text_channel_name);
 
-    // Event callbacks.
     b.on("send_message", [this] {
         if (on_send_message) on_send_message();
     });
@@ -121,8 +119,7 @@ void ChatModel::build(rml::Builder& b) {
     });
 
     b.on_args<Rml::String>("open_url", [this](Rml::String url) {
-        // Only open if it looks like a URL
-        if (on_open_url && (url.find("http://") == 0 || url.find("https://") == 0))
+        if (on_open_url && is_http_url(url))
             on_open_url(std::string(url));
     });
 
@@ -157,8 +154,6 @@ void ChatModel::build(rml::Builder& b) {
     b.on_event("compose_keydown", [this](Rml::Event& event, const Rml::VariantList&) {
         if (event.GetParameter("key_identifier", 0) == Rml::Input::KI_RETURN) {
             if (on_send_message) on_send_message();
-            // RmlUi data-value binding may not sync cleared model back to input,
-            // so explicitly clear the input element's value attribute
             if (auto* el = event.GetCurrentElement())
                 el->SetAttribute("value", Rml::String(""));
         }
@@ -171,7 +166,6 @@ void ChatModel::build(rml::Builder& b) {
     });
 
     b.on_event("message_mousedown", [this](Rml::Event& event, const Rml::VariantList& args) {
-        // Right-click (button 1) opens context menu for message actions
         if (event.GetParameter("button", 0) == 1 && !args.empty()) {
             if (on_message_context_menu)
                 on_message_context_menu(args[0].Get<int64_t>());
@@ -179,4 +173,4 @@ void ChatModel::build(rml::Builder& b) {
     });
 }
 
-} // namespace parties::client
+}

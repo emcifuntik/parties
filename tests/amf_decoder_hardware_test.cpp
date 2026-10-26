@@ -1,5 +1,6 @@
 #include "amd/amf_decoder.h"
 #include "openh264/openh264_encoder.h"
+#include "test_skip.h"
 
 #include <d3d11.h>
 #include <d3d12.h>
@@ -36,7 +37,7 @@ bool wait_for_fence(ID3D12Fence* fence, uint64_t value) {
     return result;
 }
 
-} // namespace
+}
 
 int main() {
     ComPtr<ID3D11Device> device;
@@ -106,10 +107,8 @@ int main() {
     {
         AmfDecoder decoder;
         if (!decoder.init(VideoCodecId::H264, width, height, nullptr)) {
-            // CTest treats 77 as skipped. This keeps the deterministic suite green
-            // on machines without AMD hardware while exercising real AMF on AMD CI.
             std::cout << "AMF hardware is unavailable; skipping\n";
-            return 77;
+            return kSkipExitCode;
         }
 
         uint32_t decoded = 0;
@@ -225,9 +224,6 @@ int main() {
             }
         }
     }
-    // Decoder teardown must remain safe while the renderer still retains the
-    // submitted AMF surface for an in-flight back buffer. Exercise the shared
-    // producer fence on a fresh consumer queue after decoder teardown.
     D3D12_COMMAND_QUEUE_DESC queue_desc{};
     queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     ComPtr<ID3D12CommandQueue> queue;

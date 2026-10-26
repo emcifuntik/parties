@@ -4,6 +4,9 @@
 #ifdef SENTRY_COCOA_ENABLED
 #import <Sentry/Sentry.h>
 #import <Sentry/Sentry-Swift.h>
+
+static constexpr double kProductionTracesSampleRate  = 1.0;
+static constexpr double kDevelopmentTracesSampleRate = 1.0;
 #endif
 
 @implementation AppDelegate
@@ -17,16 +20,15 @@
         options.dsn = @SENTRY_DSN_VALUE;
 #ifdef PARTIES_RETAIL
         options.environment = @"production";
+        options.tracesSampleRate = @(kProductionTracesSampleRate);
 #else
         options.environment = @"development";
+        options.tracesSampleRate = @(kDevelopmentTracesSampleRate);
 #endif
         options.enableCrashHandler = YES;
         options.enableAppHangTracking = YES;
         options.enableWatchdogTerminationTracking = YES;
         options.sendDefaultPii = YES;
-
-        // Tracing — lower in production
-        options.tracesSampleRate = @1.0;
     }];
 #endif
 #endif

@@ -1,4 +1,5 @@
 #include <server/database.h>
+#include <parties/protocol.h>
 
 #include <sqlite3.h>
 #include <parties/log.h>
@@ -20,7 +21,6 @@ bool Database::open(const std::string& path) {
         return false;
     }
 
-    // Enable WAL and foreign keys
     exec("PRAGMA journal_mode=WAL;");
     exec("PRAGMA foreign_keys=ON;");
 
@@ -148,8 +148,6 @@ bool Database::create_schema() {
 
     return exec(schema);
 }
-
-// --- Users ---
 
 bool Database::create_user(const PublicKey& pubkey, const std::string& display_name,
                            const std::string& fingerprint, Role role) {
@@ -299,8 +297,6 @@ bool Database::delete_user(UserId id) {
     return ok;
 }
 
-// --- Channels ---
-
 bool Database::create_channel(const std::string& name, int max_users, int sort_order) {
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "INSERT INTO channels (name, max_users, sort_order) VALUES (?, ?, ?)";
@@ -389,8 +385,6 @@ bool Database::rename_channel(ChannelId id, const std::string& new_name) {
     return ok;
 }
 
-// --- Channel permissions ---
-
 bool Database::set_channel_permission(ChannelId channel_id, Role role, uint32_t permissions) {
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "INSERT OR REPLACE INTO channel_permissions (channel_id, role, permission) "
@@ -429,8 +423,6 @@ std::optional<uint32_t> Database::get_channel_permission(ChannelId channel_id, R
     return perm;
 }
 
-// --- Server metadata ---
-
 bool Database::set_meta(const std::string& key, const std::string& value) {
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "INSERT OR REPLACE INTO server_meta (key, value) VALUES (?, ?)";
@@ -464,8 +456,6 @@ std::optional<std::string> Database::get_meta(const std::string& key) {
     sqlite3_finalize(stmt);
     return val;
 }
-
-// --- Text channels ---
 
 bool Database::create_text_channel(const std::string& name, int sort_order) {
     sqlite3_stmt* stmt = nullptr;
@@ -538,8 +528,6 @@ bool Database::delete_text_channel(uint32_t id) {
     return ok;
 }
 
-// --- Messages ---
-
 uint64_t Database::insert_message(uint32_t channel_id, uint32_t sender_id,
                                    const std::string& sender_name, const std::string& text,
                                    uint64_t timestamp) {
@@ -581,8 +569,9 @@ static MessageRow read_message_row(sqlite3_stmt* stmt) {
 std::vector<MessageRow> Database::get_messages(uint32_t channel_id, uint64_t before_id, int limit) {
     sqlite3_stmt* stmt = nullptr;
     const char* sql;
+    const bool latest = before_id == protocol::CHAT_BEFORE_ID_LATEST;
 
-    if (before_id == 0) {
+    if (latest) {
         sql = "SELECT id, channel_id, sender_id, sender_name, text, pinned, created_at "
               "FROM messages WHERE channel_id = ? AND deleted = 0 "
               "ORDER BY id DESC LIMIT ?";
@@ -596,7 +585,7 @@ std::vector<MessageRow> Database::get_messages(uint32_t channel_id, uint64_t bef
         return {};
 
     sqlite3_bind_int(stmt, 1, static_cast<int>(channel_id));
-    if (before_id == 0) {
+    if (latest) {
         sqlite3_bind_int(stmt, 2, limit);
     } else {
         sqlite3_bind_int64(stmt, 2, static_cast<sqlite3_int64>(before_id));
@@ -609,7 +598,6 @@ std::vector<MessageRow> Database::get_messages(uint32_t channel_id, uint64_t bef
 
     sqlite3_finalize(stmt);
 
-    // Results come newest-first from DB; reverse so oldest is first
     std::reverse(result.begin(), result.end());
     return result;
 }
@@ -696,8 +684,9 @@ std::vector<MessageRow> Database::search_messages(uint32_t channel_id, const std
                                                    uint64_t before_id, int limit) {
     sqlite3_stmt* stmt = nullptr;
     const char* sql;
+    const bool latest = before_id == protocol::CHAT_BEFORE_ID_LATEST;
 
-    if (before_id == 0) {
+    if (latest) {
         sql = "SELECT m.id, m.channel_id, m.sender_id, m.sender_name, m.text, m.pinned, m.created_at "
               "FROM messages m JOIN messages_fts f ON m.id = f.rowid "
               "WHERE m.channel_id = ? AND m.deleted = 0 AND messages_fts MATCH ? "
@@ -712,7 +701,7 @@ std::vector<MessageRow> Database::search_messages(uint32_t channel_id, const std
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
         return {};
 
-    if (before_id == 0) {
+    if (latest) {
         sqlite3_bind_int(stmt, 1, static_cast<int>(channel_id));
         sqlite3_bind_text(stmt, 2, query.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_int(stmt, 3, limit);
@@ -731,11 +720,9 @@ std::vector<MessageRow> Database::search_messages(uint32_t channel_id, const std
     return result;
 }
 
-// --- File attachments ---
-
 uint64_t Database::insert_attachment(uint64_t message_id, const std::string& file_name,
                                       int64_t file_size, const std::string& mime_type,
-                                      const std::string& disk_path) {
+                                      const AttachmentStoragePath& disk_path) {
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "INSERT INTO file_attachments (message_id, file_name, file_size, mime_type, disk_path) "
                       "VALUES (?, ?, ?, ?, ?)";
@@ -747,7 +734,7 @@ uint64_t Database::insert_attachment(uint64_t message_id, const std::string& fil
     sqlite3_bind_text(stmt, 2, file_name.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(stmt, 3, file_size);
     sqlite3_bind_text(stmt, 4, mime_type.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 5, disk_path.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, disk_path.relative().c_str(), -1, SQLITE_TRANSIENT);
 
     if (sqlite3_step(stmt) != SQLITE_DONE) {
         sqlite3_finalize(stmt);
@@ -772,6 +759,19 @@ bool Database::mark_attachment_uploaded(uint64_t attachment_id) {
     return ok;
 }
 
+static AttachmentRow read_attachment_row(sqlite3_stmt* stmt) {
+    return AttachmentRow{
+        .id         = static_cast<uint64_t>(sqlite3_column_int64(stmt, 0)),
+        .message_id = static_cast<uint64_t>(sqlite3_column_int64(stmt, 1)),
+        .file_name  = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2)),
+        .file_size  = sqlite3_column_int64(stmt, 3),
+        .mime_type  = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4)),
+        .disk_path  = AttachmentStoragePath::from_database(
+            reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5))),
+        .uploaded   = sqlite3_column_int(stmt, 6) != 0,
+    };
+}
+
 std::optional<AttachmentRow> Database::get_attachment(uint64_t file_id) {
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "SELECT id, message_id, file_name, file_size, mime_type, disk_path, uploaded "
@@ -787,15 +787,7 @@ std::optional<AttachmentRow> Database::get_attachment(uint64_t file_id) {
         return std::nullopt;
     }
 
-    AttachmentRow row;
-    row.id = static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
-    row.message_id = static_cast<uint64_t>(sqlite3_column_int64(stmt, 1));
-    row.file_name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-    row.file_size = sqlite3_column_int64(stmt, 3);
-    row.mime_type = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-    row.disk_path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
-    row.uploaded = sqlite3_column_int(stmt, 6) != 0;
-
+    AttachmentRow row = read_attachment_row(stmt);
     sqlite3_finalize(stmt);
     return row;
 }
@@ -811,23 +803,12 @@ std::vector<AttachmentRow> Database::get_attachments_for_message(uint64_t messag
     sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(message_id));
 
     std::vector<AttachmentRow> result;
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        AttachmentRow row;
-        row.id = static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
-        row.message_id = static_cast<uint64_t>(sqlite3_column_int64(stmt, 1));
-        row.file_name = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
-        row.file_size = sqlite3_column_int64(stmt, 3);
-        row.mime_type = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-        row.disk_path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
-        row.uploaded = sqlite3_column_int(stmt, 6) != 0;
-        result.push_back(std::move(row));
-    }
+    while (sqlite3_step(stmt) == SQLITE_ROW)
+        result.push_back(read_attachment_row(stmt));
 
     sqlite3_finalize(stmt);
     return result;
 }
-
-// --- Retention ---
 
 int Database::purge_old_messages(int days) {
     sqlite3_stmt* stmt = nullptr;
@@ -845,7 +826,6 @@ int Database::purge_old_messages(int days) {
 }
 
 int Database::purge_old_files(int days, const std::string& storage_path) {
-    // Get files to delete
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "SELECT id, disk_path FROM file_attachments "
                       "WHERE created_at < datetime('now', '-' || ? || ' days')";
@@ -855,17 +835,17 @@ int Database::purge_old_files(int days, const std::string& storage_path) {
 
     sqlite3_bind_int(stmt, 1, days);
 
-    std::vector<std::pair<uint64_t, std::string>> files;
+    std::vector<std::pair<uint64_t, AttachmentStoragePath>> files;
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         auto id = static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
         auto path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-        files.emplace_back(id, path);
+        files.emplace_back(id, AttachmentStoragePath::from_database(path));
     }
     sqlite3_finalize(stmt);
 
     int count = 0;
     for (auto& [id, path] : files) {
-        std::filesystem::remove(std::filesystem::path(storage_path) / path);
+        std::filesystem::remove(path.under(storage_path));
         sqlite3_stmt* del = nullptr;
         if (sqlite3_prepare_v2(db_, "DELETE FROM file_attachments WHERE id = ?", -1, &del, nullptr) == SQLITE_OK) {
             sqlite3_bind_int64(del, 1, static_cast<sqlite3_int64>(id));
@@ -906,10 +886,11 @@ int Database::purge_oldest_files(int64_t max_size, const std::string& storage_pa
     int count = 0;
     while (sqlite3_step(stmt) == SQLITE_ROW && total > max_size) {
         auto id = static_cast<uint64_t>(sqlite3_column_int64(stmt, 0));
-        auto path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        auto path = AttachmentStoragePath::from_database(
+            reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1)));
         auto size = sqlite3_column_int64(stmt, 2);
 
-        std::filesystem::remove(std::filesystem::path(storage_path) / path);
+        std::filesystem::remove(path.under(storage_path));
 
         sqlite3_stmt* del = nullptr;
         if (sqlite3_prepare_v2(db_, "DELETE FROM file_attachments WHERE id = ?", -1, &del, nullptr) == SQLITE_OK) {
@@ -926,8 +907,6 @@ int Database::purge_oldest_files(int64_t max_size, const std::string& storage_pa
     return count;
 }
 
-// --- Admin ---
-
 bool Database::has_any_users() {
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "SELECT COUNT(*) FROM users";
@@ -943,4 +922,4 @@ bool Database::has_any_users() {
     return has_users;
 }
 
-} // namespace parties::server
+}

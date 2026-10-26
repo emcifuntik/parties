@@ -25,8 +25,6 @@
 #include <type_traits>
 #include <vector>
 
-// ---- Embedded Metal shader source -----------------------------------------------
-// Compiled at runtime via newLibraryWithSource: — avoids Xcode build phase issues.
 static NSString* const kRmlUiShaderSource = @R"MSL(
 #include <metal_stdlib>
 using namespace metal;
@@ -39,7 +37,7 @@ struct Uniforms {
 
 struct VertexIn {
     float2 position [[attribute(0)]];
-    float4 color    [[attribute(1)]]; // MTLVertexFormatUChar4Normalized → normalized float4
+    float4 color    [[attribute(1)]];
     float2 texcoord [[attribute(2)]];
 };
 
@@ -55,7 +53,7 @@ vertex VertexOut rmlui_vertex(VertexIn in [[stage_in]],
     VertexOut out;
     float2 world_pos     = in.position + u.translation;
     out.clip_position    = u.transform * float4(world_pos, 0.0, 1.0);
-    out.color            = in.color; // already normalized to [0,1] by the vertex fetch unit
+    out.color            = in.color;
     out.texcoord         = in.texcoord;
     return out;
 }
@@ -72,30 +70,25 @@ fragment float4 rmlui_fragment_texture(VertexOut in         [[stage_in]],
     return in.color * tex.sample(samp, in.texcoord);
 }
 
-// ---- NV12 video shader -----------------------------------------------------------
-// Y plane: texture(0) R8Unorm, full resolution
-// UV plane: texture(1) RG8Unorm, half resolution (U=r, V=g)
-// BT.709 limited range YCbCr -> RGB
+float3 bt601_limited_to_rgb(float y, float2 cbcr)
+{
+    const float  Y = (y - 16.0/255.0) * (255.0/219.0);
+    const float2 C = (cbcr - float2(128.0/255.0)) * (255.0/224.0);
+    return float3(Y + 1.402 * C.y,
+                  Y - 0.344136 * C.x - 0.714136 * C.y,
+                  Y + 1.772 * C.x);
+}
+
 fragment float4 rmlui_fragment_nv12(VertexOut in          [[stage_in]],
                                     texture2d<float> y_tex  [[texture(0)]],
                                     texture2d<float> uv_tex [[texture(1)]],
                                     sampler samp            [[sampler(0)]])
 {
-    float  y  = y_tex.sample(samp, in.texcoord).r;
-    float2 uv = uv_tex.sample(samp, in.texcoord).rg;
-
-    // BT.709 limited range offsets/scales
-    float Y  = (y    - 16.0/255.0) * (255.0/219.0);
-    float Cb = (uv.r - 128.0/255.0) * (255.0/224.0);
-    float Cr = (uv.g - 128.0/255.0) * (255.0/224.0);
-
-    float r = Y + 1.5748 * Cr;
-    float g = Y - 0.1873 * Cb - 0.4681 * Cr;
-    float b = Y + 1.8556 * Cb;
-    return in.color * float4(clamp(float3(r, g, b), 0.0, 1.0), 1.0);
+    float  y    = y_tex.sample(samp, in.texcoord).r;
+    float2 cbcr = uv_tex.sample(samp, in.texcoord).rg;
+    return in.color * float4(clamp(bt601_limited_to_rgb(y, cbcr), 0.0, 1.0), 1.0);
 }
 
-// ---- Gradient shader -------------------------------------------------------------
 #define GRADIENT_MAX_STOPS        16
 #define GRADIENT_LINEAR           0
 #define GRADIENT_RADIAL           1
@@ -105,13 +98,13 @@ fragment float4 rmlui_fragment_nv12(VertexOut in          [[stage_in]],
 #define GRADIENT_REPEATING_CONIC  5
 
 struct GradientUniforms {
-    float4 stop_colors[GRADIENT_MAX_STOPS];    // 256 bytes  (offset 0)
-    float  stop_positions[GRADIENT_MAX_STOPS]; //  64 bytes  (offset 256)
-    float2 p;                                  //   8 bytes  (offset 320)
-    float2 v;                                  //   8 bytes  (offset 328)
-    int    func;                               //   4 bytes  (offset 336)
-    int    num_stops;                          //   4 bytes  (offset 340)
-    float2 _pad;                               //   8 bytes  (offset 344) → total 352
+    float4 stop_colors[GRADIENT_MAX_STOPS];
+    float  stop_positions[GRADIENT_MAX_STOPS];
+    float2 p;
+    float2 v;
+    int    func;
+    int    num_stops;
+    float2 _pad;
 };
 
 fragment float4 rmlui_fragment_gradient(VertexOut in [[stage_in]],
@@ -157,17 +150,12 @@ fragment float4 rmlui_fragment_gradient(VertexOut in [[stage_in]],
 
 )MSL";
 
-// ---- Internal data types --------------------------------------------------------
-
 struct Uniforms {
     simd_float4x4 transform;
     simd_float2   translation;
     simd_float2   _padding;
 };
 
-// Tracks real command-buffer use of mutable resources. A slot is only overwritten
-// after every command buffer which referenced it has completed. This avoids both
-// CPU/GPU data races and a global frames-in-flight semaphore.
 struct MetalResourceUse {
     std::mutex mutex;
     std::condition_variable completed;
@@ -194,8 +182,6 @@ static void MarkResourceUsed(const std::shared_ptr<MetalResourceUse>& use,
         ++use->in_flight;
     }
 
-    // Capturing the shared tracker keeps it alive if RmlUi releases the resource
-    // before this command buffer completes. Metal itself retains the bound object.
     const std::shared_ptr<MetalResourceUse> completion_use = use;
     [command_buffer addCompletedHandler:^(id<MTLCommandBuffer>) {
         {
@@ -258,8 +244,6 @@ struct MetalTexture {
     }
 };
 
-// Triple-buffered NV12 texture pair. Slot reuse is tied to actual command-buffer
-// completion, so correctness does not depend on the GPU staying within two frames.
 struct MetalNV12Texture {
     static constexpr int kSlots = 3;
     id<MTLTexture> y_tex[kSlots]  = {nil, nil, nil};
@@ -270,7 +254,7 @@ struct MetalNV12Texture {
     uint32_t slot_height[kSlots] = {};
     uint32_t width  = 0;
     uint32_t height = 0;
-    int slot        = 0;  // most recently written slot; render from here
+    int slot        = 0;
 
     MetalNV12Texture()
     {
@@ -287,17 +271,18 @@ struct MetalNV12Texture {
     }
 };
 
-// Gradient uniforms — layout must match GradientUniforms in the MSL shader exactly.
 #define MAX_GRADIENT_STOPS 16
 struct GradientUniforms {
-    simd_float4 stop_colors[MAX_GRADIENT_STOPS];    // offset   0, 256 bytes
-    float       stop_positions[MAX_GRADIENT_STOPS]; // offset 256,  64 bytes
-    simd_float2 p;                                  // offset 320,   8 bytes
-    simd_float2 v;                                  // offset 328,   8 bytes
-    int         func;                               // offset 336,   4 bytes
-    int         num_stops;                          // offset 340,   4 bytes
-    float       _pad[2];                            // offset 344,   8 bytes → total 352
+    simd_float4 stop_colors[MAX_GRADIENT_STOPS];
+    float       stop_positions[MAX_GRADIENT_STOPS];
+    simd_float2 p;
+    simd_float2 v;
+    int         func;
+    int         num_stops;
+    float       _pad[2];
 };
+static_assert(sizeof(GradientUniforms) == 352);
+static_assert(offsetof(GradientUniforms, p) == 320 && offsetof(GradientUniforms, func) == 336);
 
 enum class GradientFunc : int {
     Linear          = 0,
@@ -312,49 +297,84 @@ struct CompiledShader_Metal {
     GradientUniforms uniforms = {};
 };
 
-// ---- Renderer private data -------------------------------------------------------
+struct StencilClipState {
+    enum class Pass { WriteGeometry, FillViewportThenClearGeometry, IncrementWhereEqual };
+    struct Plan {
+        Pass    pass;
+        uint8_t fill_ref;
+        uint8_t geometry_ref;
+    };
+
+    uint8_t ref = 0;
+
+    Plan plan(Rml::ClipMaskOperation operation)
+    {
+        switch (operation) {
+        case Rml::ClipMaskOperation::Set:
+            return {Pass::WriteGeometry, 0, ++ref};
+        case Rml::ClipMaskOperation::SetInverse:
+            return {Pass::FillViewportThenClearGeometry, ++ref, 0};
+        case Rml::ClipMaskOperation::Intersect:
+            break;
+        }
+        return {Pass::IncrementWhereEqual, 0, ref++};
+    }
+};
+
+struct StencilBindCache {
+    id<MTLDepthStencilState> state = nil;
+    uint32_t reference = 0;
+    bool reference_valid = false;
+
+    void bind(id<MTLRenderCommandEncoder> encoder, id<MTLDepthStencilState> wanted, uint32_t wanted_reference)
+    {
+        if (state != wanted) {
+            [encoder setDepthStencilState:wanted];
+            state = wanted;
+        }
+        if (!reference_valid || reference != wanted_reference) {
+            [encoder setStencilReferenceValue:wanted_reference];
+            reference = wanted_reference;
+            reference_valid = true;
+        }
+    }
+};
 
 struct RenderInterface_Metal::Data {
     id<MTLDevice>              device = nil;
 
-    id<MTLRenderPipelineState> pipeline_color = nil;    // untextured, color writes enabled
-    id<MTLRenderPipelineState> pipeline_texture = nil;  // textured, color writes enabled
-    id<MTLRenderPipelineState> pipeline_stencil = nil;  // untextured, color writes disabled (stencil only)
-    id<MTLRenderPipelineState> pipeline_gradient = nil; // gradient shader (linear/radial/conic)
-    id<MTLRenderPipelineState> pipeline_nv12 = nil;     // NV12 video (Y + UV planes)
+    id<MTLRenderPipelineState> pipeline_color = nil;
+    id<MTLRenderPipelineState> pipeline_texture = nil;
+    id<MTLRenderPipelineState> pipeline_stencil = nil;
+    id<MTLRenderPipelineState> pipeline_gradient = nil;
+    id<MTLRenderPipelineState> pipeline_nv12 = nil;
     id<MTLSamplerState>        sampler = nil;
 
-    // Depth-stencil states
-    id<MTLDepthStencilState>   dss_normal = nil;       // no stencil test/write
-    id<MTLDepthStencilState>   dss_test = nil;         // equal test, no write
-    id<MTLDepthStencilState>   dss_write = nil;        // always pass, replace write
-    id<MTLDepthStencilState>   dss_write_incr = nil;   // equal test, increment write (Intersect)
+    id<MTLDepthStencilState>   dss_normal = nil;
+    id<MTLDepthStencilState>   dss_test = nil;
+    id<MTLDepthStencilState>   dss_write = nil;
+    id<MTLDepthStencilState>   dss_write_incr = nil;
 
     id<MTLCommandBuffer>          current_command_buffer   = nil;
     id<MTLRenderCommandEncoder>   current_encoder          = nil;
 
     int viewport_width  = 0;
     int viewport_height = 0;
-    int viewport_top    = 0;  // Y offset into framebuffer (safe area / Dynamic Island)
+    int viewport_top    = 0;
 
     bool scissor_enabled = false;
     bool scissor_empty = false;
     MTLScissorRect scissor_rect = {0, 0, 1, 1};
 
-    Rml::Matrix4f transform;         // current model transform (identity = nullptr)
+    Rml::Matrix4f transform;
     bool has_transform = false;
 
-    // Clip mask state (stencil-based, incremented per layer to avoid clearing)
-    uint8_t  stencil_ref       = 0;
-    id<MTLDepthStencilState> active_dss = nil;   // current DSS for RenderGeometry
+    StencilClipState clip;
+    id<MTLDepthStencilState> active_dss = nil;
     uint32_t active_stencil_ref = 0;
 
-    // Per-encoder state cache. Metal permits redundant binds, but avoiding them
-    // noticeably reduces Objective-C dispatch overhead for UI-heavy frames.
     id<MTLRenderPipelineState> bound_pipeline = nil;
-    id<MTLDepthStencilState> bound_dss = nil;
-    uint32_t bound_stencil_ref = 0;
-    bool bound_stencil_ref_valid = false;
+    StencilBindCache stencil_binding;
     id<MTLTexture> bound_fragment_texture_0 = nil;
     id<MTLTexture> bound_fragment_texture_1 = nil;
     bool sampler_bound = false;
@@ -365,9 +385,7 @@ struct RenderInterface_Metal::Data {
 
 };
 
-// ---- Helper: build orthographic projection ---------------------------------------
 // RmlUi origin is top-left, +Y down. Metal NDC origin is center, +Y up.
-// We map pixel coords -> NDC by: x' = 2x/W - 1, y' = 1 - 2y/H
 static simd_float4x4 OrthoMatrix(float w, float h)
 {
     RMLUI_ASSERT(w > 0.0f && h > 0.0f);
@@ -391,24 +409,6 @@ static void BindPipeline(id<MTLRenderCommandEncoder> encoder,
     }
 }
 
-static void BindDepthStencil(id<MTLRenderCommandEncoder> encoder,
-                             id<MTLDepthStencilState>& bound_state,
-                             uint32_t& bound_reference,
-                             bool& bound_reference_valid,
-                             id<MTLDepthStencilState> state,
-                             uint32_t reference)
-{
-    if (bound_state != state) {
-        [encoder setDepthStencilState:state];
-        bound_state = state;
-    }
-    if (!bound_reference_valid || bound_reference != reference) {
-        [encoder setStencilReferenceValue:reference];
-        bound_reference = reference;
-        bound_reference_valid = true;
-    }
-}
-
 static void BindFragmentTexture(id<MTLRenderCommandEncoder> encoder,
                                 id<MTLTexture>& bound,
                                 id<MTLTexture> texture,
@@ -429,8 +429,6 @@ static simd_float4x4 RmlMatrixToSimd(const Rml::Matrix4f& m)
             result.columns[col][row] = m[col][row];
     return result;
 }
-
-// ---- Build pipeline states -------------------------------------------------------
 
 static id<MTLRenderPipelineState> BuildPipeline(id<MTLDevice> device,
                                                  id<MTLLibrary> library,
@@ -460,8 +458,6 @@ static id<MTLRenderPipelineState> BuildPipeline(id<MTLDevice> device,
     static_assert(std::is_standard_layout_v<Rml::Vertex>);
     static_assert(sizeof(int) == sizeof(uint32_t));
 
-    // Derive the layout from Rml::Vertex so an upstream layout change fails
-    // loudly instead of silently corrupting vertex fetches.
     MTLVertexDescriptor* vd = [MTLVertexDescriptor new];
     vd.attributes[0].format      = MTLVertexFormatFloat2;
     vd.attributes[0].offset      = offsetof(Rml::Vertex, position);
@@ -485,14 +481,12 @@ static id<MTLRenderPipelineState> BuildPipeline(id<MTLDevice> device,
     MTLRenderPipelineColorAttachmentDescriptor* ca = desc.colorAttachments[0];
     ca.pixelFormat = color_format;
     if (write_color) {
-        // Premultiplied alpha blending
         ca.blendingEnabled             = YES;
         ca.sourceRGBBlendFactor        = MTLBlendFactorOne;
         ca.destinationRGBBlendFactor   = MTLBlendFactorOneMinusSourceAlpha;
         ca.sourceAlphaBlendFactor      = MTLBlendFactorOne;
         ca.destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
     } else {
-        // Stencil-only pipeline: suppress all color output
         ca.writeMask = MTLColorWriteMaskNone;
     }
 
@@ -509,8 +503,6 @@ static id<MTLRenderPipelineState> BuildPipeline(id<MTLDevice> device,
     [desc release];
     return pso;
 }
-
-// ---- Build depth-stencil states -------------------------------------------------
 
 static id<MTLDepthStencilState> BuildDSS(id<MTLDevice> device,
                                           MTLCompareFunction compare,
@@ -535,8 +527,6 @@ static id<MTLDepthStencilState> BuildDSS(id<MTLDevice> device,
     [s release];
     return state;
 }
-
-// ---- Constructor / Destructor ----------------------------------------------------
 
 RenderInterface_Metal::RenderInterface_Metal(id<MTLDevice> device, MTKView* view)
 {
@@ -579,14 +569,12 @@ RenderInterface_Metal::RenderInterface_Metal(id<MTLDevice> device, MTKView* view
           m_data->pipeline_gradient ? "OK" : "FAILED",
           m_data->pipeline_nv12     ? "OK" : "FAILED");
 
-    // Depth-stencil states
     m_data->dss_normal     = BuildDSS(device, MTLCompareFunctionAlways, MTLStencilOperationKeep,           0);
     m_data->dss_test       = BuildDSS(device, MTLCompareFunctionEqual,  MTLStencilOperationKeep,           0);
     m_data->dss_write      = BuildDSS(device, MTLCompareFunctionAlways, MTLStencilOperationReplace,     0xff);
     m_data->dss_write_incr = BuildDSS(device, MTLCompareFunctionEqual,  MTLStencilOperationIncrementClamp, 0xff);
     m_data->active_dss     = m_data->dss_normal;
 
-    // Bilinear sampler
     MTLSamplerDescriptor* sd = [MTLSamplerDescriptor new];
     sd.minFilter    = MTLSamplerMinMagFilterLinear;
     sd.magFilter    = MTLSamplerMinMagFilterLinear;
@@ -637,16 +625,13 @@ bool RenderInterface_Metal::IsFrameActive() const
     return m_data && m_data->current_encoder;
 }
 
-// ---- Frame control ---------------------------------------------------------------
-
-void RenderInterface_Metal::SetViewport(int width, int height, bool /*force*/)
+void RenderInterface_Metal::SetViewport(int width, int height)
 {
     if (!m_data) return;
     m_data->viewport_width  = std::max(width, 0);
     m_data->viewport_height = std::max(height, 0);
     if (m_data->viewport_width > 0 && m_data->viewport_height > 0)
         m_data->projection = OrthoMatrix((float)m_data->viewport_width, (float)m_data->viewport_height);
-    // Reset scissor to full viewport (in framebuffer coords, offset by viewport_top)
     m_data->scissor_rect = {0, (NSUInteger)m_data->viewport_top,
                             (NSUInteger)m_data->viewport_width, (NSUInteger)m_data->viewport_height};
     m_data->scissor_empty = (m_data->viewport_width == 0 || m_data->viewport_height == 0);
@@ -692,7 +677,7 @@ void RenderInterface_Metal::BeginFrame(id<MTLCommandBuffer> command_buffer,
                           "Metal viewport (%d x %d at y=%d) exceeds drawable (%lu x %lu); clamping",
                           m_data->viewport_width, m_data->viewport_height, m_data->viewport_top,
                           (unsigned long)color_texture.width, (unsigned long)color_texture.height);
-        SetViewport(safe_width, safe_height, true);
+        SetViewport(safe_width, safe_height);
     }
 
     m_data->current_command_buffer = command_buffer;
@@ -705,13 +690,11 @@ void RenderInterface_Metal::BeginFrame(id<MTLCommandBuffer> command_buffer,
     if (++m_data->frame == 0)
         ++m_data->frame;
 
-    // Apply viewport — Y origin is offset by viewport_top to push below the Dynamic Island.
     MTLViewport vp = {0, (double)m_data->viewport_top,
                       (double)m_data->viewport_width, (double)m_data->viewport_height,
                       0.0, 1.0};
     [m_data->current_encoder setViewport:vp];
 
-    // Disable scissor initially — full area the viewport occupies in the framebuffer.
     m_data->scissor_enabled = false;
     m_data->scissor_empty = false;
     MTLScissorRect full = {0, (NSUInteger)m_data->viewport_top,
@@ -721,17 +704,13 @@ void RenderInterface_Metal::BeginFrame(id<MTLCommandBuffer> command_buffer,
     m_data->has_transform = false;
     m_data->transform = Rml::Matrix4f::Identity();
 
-    // Reset stencil clip mask state for this frame
-    m_data->stencil_ref       = 0;
+    m_data->clip = {};
     m_data->active_dss        = m_data->dss_normal;
     m_data->active_stencil_ref = 0;
-    [m_data->current_encoder setDepthStencilState:m_data->dss_normal];
-    [m_data->current_encoder setStencilReferenceValue:0];
+    m_data->stencil_binding = {};
+    m_data->stencil_binding.bind(m_data->current_encoder, m_data->dss_normal, 0);
 
     m_data->bound_pipeline = nil;
-    m_data->bound_dss = m_data->dss_normal;
-    m_data->bound_stencil_ref = 0;
-    m_data->bound_stencil_ref_valid = true;
     m_data->bound_fragment_texture_0 = nil;
     m_data->bound_fragment_texture_1 = nil;
     m_data->sampler_bound = false;
@@ -744,8 +723,6 @@ void RenderInterface_Metal::EndFrame()
     m_data->current_encoder = nil;
     m_data->current_command_buffer = nil;
 }
-
-// ---- Geometry --------------------------------------------------------------------
 
 Rml::CompiledGeometryHandle
 RenderInterface_Metal::CompileGeometry(Rml::Span<const Rml::Vertex> vertices,
@@ -796,19 +773,14 @@ void RenderInterface_Metal::RenderGeometry(Rml::CompiledGeometryHandle handle,
 
     id<MTLRenderCommandEncoder> enc = m_data->current_encoder;
 
-    // Apply current clip mask stencil state
     if (m_data->scissor_enabled && m_data->scissor_empty)
         return;
-    BindDepthStencil(enc, m_data->bound_dss, m_data->bound_stencil_ref,
-                     m_data->bound_stencil_ref_valid,
-                     m_data->active_dss, m_data->active_stencil_ref);
+    m_data->stencil_binding.bind(enc, m_data->active_dss, m_data->active_stencil_ref);
 
-    // Choose pipeline
     bool has_texture = (texture != 0);
     BindPipeline(enc, m_data->bound_pipeline,
                  has_texture ? m_data->pipeline_texture : m_data->pipeline_color);
 
-    // Build uniforms
     Uniforms u;
     if (m_data->has_transform) {
         simd_float4x4 model = RmlMatrixToSimd(m_data->transform);
@@ -894,8 +866,6 @@ void RenderInterface_Metal::UpdateGeometryVertices(Rml::CompiledGeometryHandle h
     geo->dynamic = true;
 }
 
-// ---- Textures --------------------------------------------------------------------
-
 static bool GetRGBAByteSize(int width, int height, size_t& byte_size)
 {
     if (width <= 0 || height <= 0)
@@ -938,9 +908,7 @@ Rml::TextureHandle RenderInterface_Metal::LoadTexture(Rml::Vector2i& texture_dim
 {
     if (!m_data) return 0;
 
-    // ── SVG: rasterize with lunasvg ─────────────────────────────────────────
     if (source.size() > 4 && source.substr(source.size() - 4) == ".svg") {
-        // Resolve full path: RmlUi usually provides an absolute path already.
         std::string full = source;
         if (![[NSFileManager defaultManager] fileExistsAtPath:
               [NSString stringWithUTF8String:full.c_str()]]) {
@@ -952,7 +920,6 @@ Rml::TextureHandle RenderInterface_Metal::LoadTexture(Rml::Vector2i& texture_dim
         auto doc = lunasvg::Document::loadFromFile(full);
         if (!doc) return 0;
 
-        // Render at 4× the SVG's logical pixel size, capped at 256px per side.
         float sw = (float)doc->width();
         float sh = (float)doc->height();
         if (sw <= 0) sw = 24.0f;
@@ -975,7 +942,6 @@ Rml::TextureHandle RenderInterface_Metal::LoadTexture(Rml::Vector2i& texture_dim
             {reinterpret_cast<const Rml::byte*>(bdata), byte_size}, texture_dimensions);
     }
 
-    // ── Raster image (PNG/JPG) via platform image class ──────────────────────
     NSString* path = [NSString stringWithUTF8String:source.c_str()];
 #if TARGET_OS_IOS
     UIImage* image = [UIImage imageNamed:path];
@@ -1009,7 +975,6 @@ Rml::TextureHandle RenderInterface_Metal::LoadTexture(Rml::Vector2i& texture_dim
         return 0;
     texture_dimensions = {(int)w, (int)h};
 
-    // Render CGImage into an RGBA bitmap
     size_t pixel_bytes = 0;
     if (!GetRGBAByteSize((int)w, (int)h, pixel_bytes))
         return 0;
@@ -1102,8 +1067,6 @@ void RenderInterface_Metal::ReleaseTexture(Rml::TextureHandle texture_handle)
     delete tex;
 }
 
-// ---- Scissor / Clip --------------------------------------------------------------
-
 void RenderInterface_Metal::EnableScissorRegion(bool enable)
 {
     if (!m_data || !m_data->current_encoder) return;
@@ -1129,7 +1092,6 @@ void RenderInterface_Metal::SetScissorRegion(Rml::Rectanglei region)
         return;
     }
 
-    // Intersect region with [0, 0, vw, vh]
     const int x0_unclamped = std::max(region.Left(), 0);
     const int y0_unclamped = std::max(region.Top(), 0);
     const int x1 = std::min(region.Right(), vw);
@@ -1143,7 +1105,6 @@ void RenderInterface_Metal::SetScissorRegion(Rml::Rectanglei region)
     const int w = m_data->scissor_empty ? 1 : x1 - x0;
     const int h = m_data->scissor_empty ? 1 : y1 - y0;
 
-    // Context Y=0 maps to framebuffer Y=viewport_top, so offset the scissor rect Y.
     m_data->scissor_rect = {(NSUInteger)x0, (NSUInteger)(m_data->viewport_top + y0),
                             (NSUInteger)w, (NSUInteger)h};
 
@@ -1151,29 +1112,18 @@ void RenderInterface_Metal::SetScissorRegion(Rml::Rectanglei region)
         [m_data->current_encoder setScissorRect:m_data->scissor_rect];
 }
 
-// ---- Clip mask (stencil-based) ---------------------------------------------------
-//
-// Strategy: increment stencil_ref instead of clearing each frame.
-//   Set:       stencil_ref++; write stencil_ref where geometry (replace, test=always)
-//   Intersect: write stencil_ref where prev-layer pixels AND geometry (incr, test=equal(prev))
-//   SetInverse: stencil_ref++; fill viewport with stencil_ref, then punch out geometry with 0
-//
-// After each RenderToClipMask, active_stencil_ref is updated so RenderGeometry
-// tests == stencil_ref (passes only inside the clip region).
-
 void RenderInterface_Metal::EnableClipMask(bool enable)
 {
     if (!m_data) return;
     if (enable) {
         m_data->active_dss         = m_data->dss_test;
-        m_data->active_stencil_ref = (uint32_t)m_data->stencil_ref;
+        m_data->active_stencil_ref = m_data->clip.ref;
     } else {
         m_data->active_dss         = m_data->dss_normal;
         m_data->active_stencil_ref = 0;
     }
 }
 
-/// Draw geometry to stencil without color output.
 static void EncodeStencilDraw(id<MTLRenderCommandEncoder> enc,
                                MetalGeometry* geo,
                                Rml::Vector2f translation,
@@ -1184,9 +1134,7 @@ static void EncodeStencilDraw(id<MTLRenderCommandEncoder> enc,
                                id<MTLDepthStencilState> dss,
                                uint32_t ref,
                                id<MTLRenderPipelineState>& bound_pipeline,
-                               id<MTLDepthStencilState>& bound_dss,
-                               uint32_t& bound_stencil_ref,
-                               bool& bound_stencil_ref_valid,
+                               StencilBindCache& stencil_binding,
                                uint64_t frame,
                                id<MTLCommandBuffer> command_buffer,
                                bool skip_draw)
@@ -1194,7 +1142,7 @@ static void EncodeStencilDraw(id<MTLRenderCommandEncoder> enc,
     if (skip_draw)
         return;
     BindPipeline(enc, bound_pipeline, pipeline);
-    BindDepthStencil(enc, bound_dss, bound_stencil_ref, bound_stencil_ref_valid, dss, ref);
+    stencil_binding.bind(enc, dss, ref);
 
     Uniforms u;
     simd_float4x4 proj = OrthoMatrix((float)vp_w, (float)vp_h);
@@ -1222,15 +1170,12 @@ static void EncodeStencilDraw(id<MTLRenderCommandEncoder> enc,
                          frame, command_buffer);
 }
 
-/// Fill the entire viewport with a given stencil reference value (for SetInverse).
 static void FillViewportStencil(id<MTLRenderCommandEncoder> enc,
                                  id<MTLRenderPipelineState> pipeline,
                                  id<MTLDepthStencilState> dss,
                                  uint32_t ref, int vp_w, int vp_h,
                                  id<MTLRenderPipelineState>& bound_pipeline,
-                                 id<MTLDepthStencilState>& bound_dss,
-                                 uint32_t& bound_stencil_ref,
-                                 bool& bound_stencil_ref_valid,
+                                 StencilBindCache& stencil_binding,
                                  bool skip_draw)
 {
     if (skip_draw)
@@ -1244,7 +1189,7 @@ static void FillViewportStencil(id<MTLRenderCommandEncoder> enc,
     };
 
     BindPipeline(enc, bound_pipeline, pipeline);
-    BindDepthStencil(enc, bound_dss, bound_stencil_ref, bound_stencil_ref_valid, dss, ref);
+    stencil_binding.bind(enc, dss, ref);
 
     Uniforms u;
     u.transform   = OrthoMatrix(w, h);
@@ -1260,7 +1205,6 @@ void RenderInterface_Metal::RenderToClipMask(Rml::ClipMaskOperation operation,
                                               Rml::CompiledGeometryHandle handle,
                                               Rml::Vector2f translation)
 {
-    using Rml::ClipMaskOperation;
     if (!m_data || !m_data->current_encoder || !handle) return;
     if (!m_data->pipeline_stencil) return;
 
@@ -1269,52 +1213,39 @@ void RenderInterface_Metal::RenderToClipMask(Rml::ClipMaskOperation operation,
     const int w = m_data->viewport_width, h = m_data->viewport_height;
     const bool skip_draw = m_data->scissor_enabled && m_data->scissor_empty;
 
-    switch (operation) {
-    case ClipMaskOperation::Set:
-        m_data->stencil_ref++;
+    const StencilClipState::Plan plan = m_data->clip.plan(operation);
+    switch (plan.pass) {
+    case StencilClipState::Pass::WriteGeometry:
         EncodeStencilDraw(enc, geo, translation,
                           m_data->has_transform, m_data->transform, w, h,
-                          m_data->pipeline_stencil, m_data->dss_write,
-                          (uint32_t)m_data->stencil_ref,
-                          m_data->bound_pipeline, m_data->bound_dss,
-                          m_data->bound_stencil_ref, m_data->bound_stencil_ref_valid,
+                          m_data->pipeline_stencil, m_data->dss_write, plan.geometry_ref,
+                          m_data->bound_pipeline, m_data->stencil_binding,
                           m_data->frame, m_data->current_command_buffer, skip_draw);
         break;
 
-    case ClipMaskOperation::SetInverse:
-        m_data->stencil_ref++;
-        // Fill viewport with stencil_ref, then punch geometry out with 0
+    case StencilClipState::Pass::FillViewportThenClearGeometry:
         FillViewportStencil(enc, m_data->pipeline_stencil, m_data->dss_write,
-                            (uint32_t)m_data->stencil_ref, w, h,
-                            m_data->bound_pipeline, m_data->bound_dss,
-                            m_data->bound_stencil_ref, m_data->bound_stencil_ref_valid,
+                            plan.fill_ref, w, h,
+                            m_data->bound_pipeline, m_data->stencil_binding,
                             skip_draw);
         EncodeStencilDraw(enc, geo, translation,
                           m_data->has_transform, m_data->transform, w, h,
-                          m_data->pipeline_stencil, m_data->dss_write, 0,
-                          m_data->bound_pipeline, m_data->bound_dss,
-                          m_data->bound_stencil_ref, m_data->bound_stencil_ref_valid,
+                          m_data->pipeline_stencil, m_data->dss_write, plan.geometry_ref,
+                          m_data->bound_pipeline, m_data->stencil_binding,
                           m_data->frame, m_data->current_command_buffer, skip_draw);
         break;
 
-    case ClipMaskOperation::Intersect:
-        // Test equal to current ref, increment to ref+1 where geometry overlaps
+    case StencilClipState::Pass::IncrementWhereEqual:
         EncodeStencilDraw(enc, geo, translation,
                           m_data->has_transform, m_data->transform, w, h,
-                          m_data->pipeline_stencil, m_data->dss_write_incr,
-                          (uint32_t)m_data->stencil_ref,
-                          m_data->bound_pipeline, m_data->bound_dss,
-                          m_data->bound_stencil_ref, m_data->bound_stencil_ref_valid,
+                          m_data->pipeline_stencil, m_data->dss_write_incr, plan.geometry_ref,
+                          m_data->bound_pipeline, m_data->stencil_binding,
                           m_data->frame, m_data->current_command_buffer, skip_draw);
-        m_data->stencil_ref++;
         break;
     }
 
-    // Update the active test reference so RenderGeometry clips to the new layer
-    m_data->active_stencil_ref = (uint32_t)m_data->stencil_ref;
+    m_data->active_stencil_ref = m_data->clip.ref;
 }
-
-// ---- Transform -------------------------------------------------------------------
 
 void RenderInterface_Metal::SetTransform(const Rml::Matrix4f* transform)
 {
@@ -1328,15 +1259,12 @@ void RenderInterface_Metal::SetTransform(const Rml::Matrix4f* transform)
     }
 }
 
-// ---- Shader (gradient) -----------------------------------------------------------
-
 Rml::CompiledShaderHandle RenderInterface_Metal::CompileShader(const Rml::String& name,
                                                                 const Rml::Dictionary& parameters)
 {
     auto* shader = new CompiledShader_Metal();
     GradientUniforms& g = shader->uniforms;
 
-    // Parse the color stop list (common to all gradient types)
     auto load_stops = [&]() -> bool {
         auto it = parameters.find("color_stop_list");
         if (it == parameters.end()) return false;
@@ -1399,7 +1327,7 @@ Rml::CompiledShaderHandle RenderInterface_Metal::CompileShader(const Rml::String
 void RenderInterface_Metal::RenderShader(Rml::CompiledShaderHandle shader_handle,
                                           Rml::CompiledGeometryHandle geometry_handle,
                                           Rml::Vector2f translation,
-                                          Rml::TextureHandle /*texture*/)
+                                          Rml::TextureHandle)
 {
     if (!m_data || !m_data->current_encoder || !shader_handle || !geometry_handle) return;
     if (!m_data->pipeline_gradient) return;
@@ -1410,9 +1338,7 @@ void RenderInterface_Metal::RenderShader(Rml::CompiledShaderHandle shader_handle
     if (m_data->scissor_enabled && m_data->scissor_empty)
         return;
 
-    BindDepthStencil(enc, m_data->bound_dss, m_data->bound_stencil_ref,
-                     m_data->bound_stencil_ref_valid,
-                     m_data->active_dss, m_data->active_stencil_ref);
+    m_data->stencil_binding.bind(enc, m_data->active_dss, m_data->active_stencil_ref);
     BindPipeline(enc, m_data->bound_pipeline, m_data->pipeline_gradient);
 
     Uniforms u;
@@ -1428,7 +1354,6 @@ void RenderInterface_Metal::RenderShader(Rml::CompiledShaderHandle shader_handle
     [enc setVertexBuffer:vertex_buffer offset:0 atIndex:0];
     [enc setVertexBytes:&u length:sizeof(u) atIndex:1];
 
-    // Gradient uniforms in fragment buffer(2)
     [enc setFragmentBytes:&shader->uniforms length:sizeof(GradientUniforms) atIndex:2];
 
     [enc drawIndexedPrimitives:MTLPrimitiveTypeTriangle
@@ -1448,8 +1373,6 @@ void RenderInterface_Metal::ReleaseShader(Rml::CompiledShaderHandle handle)
     delete reinterpret_cast<CompiledShader_Metal*>(handle);
 }
 
-// ---- NV12 video texture ----------------------------------------------------------
-
 static id<MTLTexture> MakeTexture(id<MTLDevice> device,
                                    MTLPixelFormat fmt,
                                    uint32_t width, uint32_t height)
@@ -1468,7 +1391,6 @@ static id<MTLTexture> MakeTexture(id<MTLDevice> device,
     return texture;
 }
 
-// stride parameters are bytes-per-row (as returned by CVPixelBufferGetBytesPerRowOfPlane)
 static void UploadPlane(id<MTLTexture> tex,
                         const uint8_t* data, uint32_t bytes_per_row,
                         uint32_t width, uint32_t height)
@@ -1577,9 +1499,7 @@ void RenderInterface_Metal::RenderNV12Geometry(Rml::CompiledGeometryHandle geome
     if (m_data->scissor_enabled && m_data->scissor_empty)
         return;
 
-    BindDepthStencil(enc, m_data->bound_dss, m_data->bound_stencil_ref,
-                     m_data->bound_stencil_ref_valid,
-                     m_data->active_dss, m_data->active_stencil_ref);
+    m_data->stencil_binding.bind(enc, m_data->active_dss, m_data->active_stencil_ref);
     BindPipeline(enc, m_data->bound_pipeline, m_data->pipeline_nv12);
 
     Uniforms u;

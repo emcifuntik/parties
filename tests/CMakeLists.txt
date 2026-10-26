@@ -6,6 +6,9 @@ if(BUILD_CLIENT)
 endif()
 set_target_properties(toml11::toml11 PROPERTIES INTERFACE_COMPILE_OPTIONS "")
 
+set(PARTIES_TEST_SKIP_EXIT_CODE 77)
+add_compile_definitions(PARTIES_TEST_SKIP_EXIT_CODE=${PARTIES_TEST_SKIP_EXIT_CODE})
+
 add_executable(parties_integration_test
     integration_test.cpp
     ../server/src/server.cpp
@@ -32,7 +35,6 @@ if(WIN32)
     target_link_libraries(parties_integration_test PRIVATE ncrypt.lib crypt32.lib)
 endif()
 
-# ── Voice packet-loss resilience (offline, deterministic) ─────────────────────
 find_package(Opus CONFIG REQUIRED)
 
 add_executable(parties_voice_loss_test
@@ -51,7 +53,6 @@ target_link_libraries(parties_voice_loss_test
         Opus::opus
 )
 
-# ── Secondary/auxiliary audio stream (offline, deterministic) ─────────────────
 add_executable(parties_aux_stream_test
     aux_stream_test.cpp
     ../client/src/voice_mixer.cpp
@@ -68,7 +69,6 @@ target_link_libraries(parties_aux_stream_test
         Opus::opus
 )
 
-# ── RmlUi client tests (offline, deterministic) ─────────────────────────────
 if(BUILD_CLIENT)
     add_executable(parties_ios_back_gesture_test ios_back_gesture_test.cpp)
     target_include_directories(parties_ios_back_gesture_test PRIVATE ../client/include)
@@ -90,18 +90,48 @@ if(BUILD_CLIENT)
     target_include_directories(parties_audio_device_selection_model_test PRIVATE
         ../client/include
         ../common/include)
-    target_link_libraries(parties_audio_device_selection_model_test PRIVATE RmlUi::RmlUi)
+    target_link_libraries(parties_audio_device_selection_model_test PRIVATE RmlUi::RmlUi parties_video_policy)
 
     add_executable(parties_channel_stream_model_test
         channel_stream_model_test.cpp
         ../client/src/lobby_model.cpp)
     target_include_directories(parties_channel_stream_model_test PRIVATE ../client/include ../common/include)
-    target_link_libraries(parties_channel_stream_model_test PRIVATE RmlUi::RmlUi)
+    target_link_libraries(parties_channel_stream_model_test PRIVATE RmlUi::RmlUi parties_video_policy)
     add_test(NAME parties_channel_stream_model COMMAND parties_channel_stream_model_test)
 
     add_executable(parties_context_render_manager_lifecycle_test
         context_render_manager_lifecycle_test.cpp)
     target_link_libraries(parties_context_render_manager_lifecycle_test PRIVATE RmlUi::RmlUi)
+
+    add_executable(parties_svg_multiwindow_test svg_multiwindow_test.cpp)
+    target_link_libraries(parties_svg_multiwindow_test PRIVATE RmlUi::RmlUi)
+    target_compile_definitions(parties_svg_multiwindow_test PRIVATE
+        PARTIES_UI_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../client/ui")
+    add_test(NAME parties_svg_multiwindow COMMAND parties_svg_multiwindow_test)
+
+    add_executable(parties_stream_pip_model_test
+        stream_pip_model_test.cpp
+        ../client/src/lobby_model.cpp
+        ../client/src/stream_pip.cpp
+        ../client/src/video_element.cpp
+        ../client/src/video_frame_router.cpp)
+    target_include_directories(parties_stream_pip_model_test PRIVATE
+        ../client/include ../client/src ../common/include)
+    target_link_libraries(parties_stream_pip_model_test PRIVATE RmlUi::RmlUi parties_video_policy)
+    add_test(NAME parties_stream_pip_model COMMAND parties_stream_pip_model_test)
+
+    add_executable(parties_pip_geometry_test
+        pip_geometry_test.cpp
+        ../client/src/pip_geometry.cpp)
+    target_include_directories(parties_pip_geometry_test PRIVATE ../client/include)
+    add_test(NAME parties_pip_geometry COMMAND parties_pip_geometry_test)
+
+    add_executable(parties_chat_compose_clear_test
+        chat_compose_clear_test.cpp
+        ../client/src/chat_model.cpp)
+    target_include_directories(parties_chat_compose_clear_test PRIVATE ../client/include ../common/include)
+    target_link_libraries(parties_chat_compose_clear_test PRIVATE RmlUi::RmlUi)
+    add_test(NAME parties_chat_compose_clear COMMAND parties_chat_compose_clear_test)
 endif()
 
 if(APPLE AND BUILD_CLIENT AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
@@ -111,7 +141,17 @@ if(APPLE AND BUILD_CLIENT AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
     target_include_directories(parties_macos_status_item_test PRIVATE ../client/src/macos)
     target_link_libraries(parties_macos_status_item_test PRIVATE "-framework AppKit")
     add_test(NAME parties_macos_status_item COMMAND parties_macos_status_item_test)
-    set_tests_properties(parties_macos_status_item PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 15)
+    set_tests_properties(parties_macos_status_item PROPERTIES SKIP_RETURN_CODE ${PARTIES_TEST_SKIP_EXIT_CODE} TIMEOUT 15)
+
+    add_executable(parties_macos_pip_panel_test
+        macos_pip_panel_test.mm
+        ../client/src/macos/PartiesPipPanelController.mm
+        ../client/src/pip_geometry.cpp)
+    target_include_directories(parties_macos_pip_panel_test PRIVATE
+        ../client/src/macos ../client/include)
+    target_link_libraries(parties_macos_pip_panel_test PRIVATE "-framework AppKit")
+    add_test(NAME parties_macos_pip_panel COMMAND parties_macos_pip_panel_test)
+    set_tests_properties(parties_macos_pip_panel PROPERTIES SKIP_RETURN_CODE ${PARTIES_TEST_SKIP_EXIT_CODE} TIMEOUT 15)
 endif()
 
 add_executable(parties_server_query_wake_test server_query_wake_test.cpp)
@@ -126,21 +166,31 @@ target_include_directories(parties_idle_sleep_inhibitor_test PRIVATE ../client/i
 add_executable(parties_video_rate_control_test video_rate_control_test.cpp)
 target_include_directories(parties_video_rate_control_test PRIVATE ../encdec/include)
 
-# ── Screen-share transport policy (offline, deterministic) ───────────────────
-add_executable(parties_video_send_controller_test
-    video_send_controller_test.cpp
-    ../common/src/video_send_controller.cpp
-)
-target_include_directories(parties_video_send_controller_test PRIVATE ../common/include)
+add_executable(parties_video_send_controller_test video_send_controller_test.cpp)
+target_link_libraries(parties_video_send_controller_test PRIVATE parties_video_policy)
 
-add_executable(parties_video_frame_reorder_test
-    video_frame_reorder_test.cpp
-    ../common/src/video_frame_reorder.cpp
-)
-target_include_directories(parties_video_frame_reorder_test PRIVATE ../common/include)
+add_executable(parties_video_frame_reorder_test video_frame_reorder_test.cpp)
+target_link_libraries(parties_video_frame_reorder_test PRIVATE parties_video_policy)
 
 add_executable(parties_video_backlog_test video_backlog_test.cpp)
-target_include_directories(parties_video_backlog_test PRIVATE ../common/include)
+target_link_libraries(parties_video_backlog_test PRIVATE parties_video_policy)
+
+add_executable(parties_video_decode_inbox_test video_decode_inbox_test.cpp)
+target_include_directories(parties_video_decode_inbox_test PRIVATE ../client/include)
+target_link_libraries(parties_video_decode_inbox_test PRIVATE parties_video_policy)
+
+add_executable(parties_share_settings_test share_settings_test.cpp)
+target_include_directories(parties_share_settings_test PRIVATE ../client/include ../common/include)
+target_link_libraries(parties_share_settings_test PRIVATE parties_video_policy)
+
+add_executable(parties_hotkey_binding_test hotkey_binding_test.cpp)
+target_include_directories(parties_hotkey_binding_test PRIVATE ../client/include)
+
+add_executable(parties_auth_replay_guard_test auth_replay_guard_test.cpp)
+target_include_directories(parties_auth_replay_guard_test PRIVATE ../server/include ../common/include)
+
+add_executable(parties_attachment_storage_path_test attachment_storage_path_test.cpp)
+target_include_directories(parties_attachment_storage_path_test PRIVATE ../server/include)
 
 add_executable(parties_application_audio_test
     application_audio_test.cpp
@@ -201,6 +251,16 @@ if(WIN32 AND BUILD_CLIENT)
     target_include_directories(parties_context_window_lifecycle_test PRIVATE ../client/include)
     target_link_libraries(parties_context_window_lifecycle_test PRIVATE user32)
 
+    add_executable(parties_pip_window_lifecycle_test
+        pip_window_lifecycle_test.cpp
+        ../client/src/windows/win32_pip_window.cpp
+        ../client/src/pip_geometry.cpp)
+    target_include_directories(parties_pip_window_lifecycle_test PRIVATE
+        ../client/include ../client/src/windows)
+    target_link_libraries(parties_pip_window_lifecycle_test PRIVATE user32)
+    add_test(NAME parties_pip_window_lifecycle COMMAND parties_pip_window_lifecycle_test)
+    set_tests_properties(parties_pip_window_lifecycle PROPERTIES TIMEOUT 15)
+
     add_executable(parties_win32_single_instance_test win32_single_instance_test.cpp)
     target_include_directories(parties_win32_single_instance_test PRIVATE ../client/include)
     target_link_libraries(parties_win32_single_instance_test PRIVATE user32)
@@ -233,7 +293,7 @@ if(WIN32 AND BUILD_CLIENT)
     target_link_libraries(parties_screen_capture_lifecycle_test PRIVATE
         parties_common d3d11 dxgi windowsapp dwmapi gdi32 user32)
     add_test(NAME parties_screen_capture_lifecycle COMMAND parties_screen_capture_lifecycle_test)
-    set_tests_properties(parties_screen_capture_lifecycle PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 30)
+    set_tests_properties(parties_screen_capture_lifecycle PROPERTIES SKIP_RETURN_CODE ${PARTIES_TEST_SKIP_EXIT_CODE} TIMEOUT 30)
 
     add_executable(parties_rmlui_dx12_multiwindow_test
         rmlui_dx12_multiwindow_test.cpp)
@@ -260,7 +320,11 @@ add_test(NAME parties_video_rate_control COMMAND parties_video_rate_control_test
 add_test(NAME parties_video_send_controller COMMAND parties_video_send_controller_test)
 add_test(NAME parties_video_frame_reorder COMMAND parties_video_frame_reorder_test)
 add_test(NAME parties_video_backlog COMMAND parties_video_backlog_test)
-# Server + two headless clients over real MsQuic on a loopback port.
+add_test(NAME parties_video_decode_inbox COMMAND parties_video_decode_inbox_test)
+add_test(NAME parties_share_settings COMMAND parties_share_settings_test)
+add_test(NAME parties_hotkey_binding COMMAND parties_hotkey_binding_test)
+add_test(NAME parties_auth_replay_guard COMMAND parties_auth_replay_guard_test)
+add_test(NAME parties_attachment_storage_path COMMAND parties_attachment_storage_path_test)
 add_test(NAME parties_integration COMMAND parties_integration_test)
 set_tests_properties(parties_integration PROPERTIES TIMEOUT 120)
 add_test(NAME parties_application_audio_downmix COMMAND parties_application_audio_test)
@@ -269,22 +333,22 @@ if(BUILD_CLIENT)
 endif()
 if(WIN32 AND BUILD_CLIENT)
     add_test(NAME parties_win32_power_request COMMAND parties_win32_power_request_test)
-    set_tests_properties(parties_win32_power_request PROPERTIES SKIP_RETURN_CODE 77)
+    set_tests_properties(parties_win32_power_request PROPERTIES SKIP_RETURN_CODE ${PARTIES_TEST_SKIP_EXIT_CODE})
     add_test(NAME parties_amf_decode_state COMMAND parties_amf_decode_state_test)
     add_test(NAME parties_amf_decoder_hardware COMMAND parties_amf_decoder_hardware_test)
-    set_tests_properties(parties_amf_decoder_hardware PROPERTIES SKIP_RETURN_CODE 77)
+    set_tests_properties(parties_amf_decoder_hardware PROPERTIES SKIP_RETURN_CODE ${PARTIES_TEST_SKIP_EXIT_CODE})
     add_test(NAME parties_nvdec_d3d12_interop COMMAND parties_nvdec_d3d12_interop_test)
-    set_tests_properties(parties_nvdec_d3d12_interop PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 30)
+    set_tests_properties(parties_nvdec_d3d12_interop PROPERTIES SKIP_RETURN_CODE ${PARTIES_TEST_SKIP_EXIT_CODE} TIMEOUT 30)
     add_test(NAME parties_nvdec_d3d12_first_frame COMMAND parties_nvdec_d3d12_interop_test 1)
-    set_tests_properties(parties_nvdec_d3d12_first_frame PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 30)
+    set_tests_properties(parties_nvdec_d3d12_first_frame PROPERTIES SKIP_RETURN_CODE ${PARTIES_TEST_SKIP_EXIT_CODE} TIMEOUT 30)
     add_test(NAME parties_nvdec_retained_h264 COMMAND parties_nvdec_d3d12_interop_test 96 retain)
     add_test(NAME parties_nvdec_retained_av1 COMMAND parties_nvdec_d3d12_interop_test 96 retain av1)
     add_test(NAME parties_nvdec_retained_hevc COMMAND parties_nvdec_d3d12_interop_test 96 retain hevc)
     set_tests_properties(parties_nvdec_retained_h264 parties_nvdec_retained_av1
-        parties_nvdec_retained_hevc PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 30)
+        parties_nvdec_retained_hevc PROPERTIES SKIP_RETURN_CODE ${PARTIES_TEST_SKIP_EXIT_CODE} TIMEOUT 30)
     add_test(NAME parties_nvdec_sequence_policy COMMAND parties_nvdec_sequence_policy_test)
     add_test(NAME parties_dx12_video_converter COMMAND parties_dx12_video_converter_test)
-    set_tests_properties(parties_dx12_video_converter PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 30)
+    set_tests_properties(parties_dx12_video_converter PROPERTIES SKIP_RETURN_CODE ${PARTIES_TEST_SKIP_EXIT_CODE} TIMEOUT 30)
     add_test(NAME parties_context_window_lifecycle COMMAND parties_context_window_lifecycle_test)
     add_test(NAME parties_window_thumbnail COMMAND parties_window_thumbnail_test)
     add_test(NAME parties_rmlui_dx12_multiwindow COMMAND parties_rmlui_dx12_multiwindow_test)

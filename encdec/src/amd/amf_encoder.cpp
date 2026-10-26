@@ -1,5 +1,6 @@
 #include "amf_encoder.h"
 #include "amf_loader.h"
+#include "amf_submit.h"
 #include <encdec/rate_control.h>
 
 #include <AMF/components/VideoEncoderVCE.h>
@@ -13,15 +14,21 @@ namespace parties::encdec::amd {
 
 namespace {
 
-// QueryOutput wait budget: one frame interval rounded up, never below 8 ms
-// so that very high frame rates still give the hardware a chance to finish.
+constexpr int kEncoderSubmitRetries = 8;
+
+bool drop_newest_keep_keyframe_request() {
+    LOG_WARN("AMF encoder remained full after {} retries; dropping newest frame",
+             kEncoderSubmitRetries);
+    return true;
+}
+
 amf_int64 query_timeout_ms_for_fps(uint32_t fps) {
     const uint32_t safe_fps = fps == 0 ? 30u : fps;
     const uint32_t interval_ms = (1000u + safe_fps - 1u) / safe_fps;
     return static_cast<amf_int64>(interval_ms < 8u ? 8u : interval_ms);
 }
 
-} // namespace
+}
 
 AmfEncoder::AmfEncoder() = default;
 
@@ -29,9 +36,6 @@ AmfEncoder::~AmfEncoder() {
     if (!initialized_) return;
 
     if (encoder_) {
-        // Drain is an end-of-stream operation and can block in a driver while
-        // the application is tearing down its capture device. There is no
-        // consumer for delayed output at this point, so terminate directly.
         encoder_->Terminate();
         encoder_->Release();
         encoder_ = nullptr;
@@ -52,7 +56,7 @@ AmfEncoder::~AmfEncoder() {
 }
 
 bool AmfEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
-                       uint32_t fps, uint32_t bitrate, VideoCodecId preferred_codec) {
+                       uint32_t fps, uint32_t average_bps, VideoCodecId preferred_codec) {
     ZoneScopedN("AmfEncoder::init");
     if (initialized_) return false;
 
@@ -102,28 +106,25 @@ bool AmfEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
         return false;
     }
 
-    const auto rate_control = make_stream_vbr_rate_control(bitrate, fps);
+    const auto rate_control = make_stream_vbr_rate_control(average_bps, fps);
     LOG_INFO("Selected encoder codec: {} ({}x{} @ {} fps), VBR average: {} bps, peak: {} bps, VBV: {} bits, max frame: {} bits",
              codec_name(codec_), width, height, fps,
-             rate_control.average_bitrate, rate_control.peak_bitrate,
-             rate_control.vbv_buffer_size, rate_control.max_frame_bits);
+             rate_control.average_bps, rate_control.peak_bps,
+             rate_control.vbv_buffer_bits, rate_control.max_frame_bits);
 
     const amf_int64 average_bitrate =
-        static_cast<amf_int64>(rate_control.average_bitrate);
+        static_cast<amf_int64>(rate_control.average_bps);
     const amf_int64 peak_bitrate =
-        static_cast<amf_int64>(rate_control.peak_bitrate);
+        static_cast<amf_int64>(rate_control.peak_bps);
     const amf_int64 vbv_buffer_size =
-        static_cast<amf_int64>(rate_control.vbv_buffer_size);
+        static_cast<amf_int64>(rate_control.vbv_buffer_bits);
     const amf_int64 max_frame_bits =
         static_cast<amf_int64>(rate_control.max_frame_bits);
     amf_int64 keyframe_period = static_cast<amf_int64>(fps * (VIDEO_KEYFRAME_INTERVAL_MS / 1000));
 
-    // QueryOutput blocks inside AMF for up to one frame interval (floor 8 ms)
-    // so do_encode can collect the frame it just submitted without polling.
     const amf_int64 query_timeout_ms = query_timeout_ms_for_fps(fps);
 
     if (codec_ == VideoCodecId::AV1) {
-        // Static properties (must be set before Init).
         encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_USAGE,
             static_cast<amf_int64>(AMF_VIDEO_ENCODER_AV1_USAGE_LOW_LATENCY));
         encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_QUALITY_PRESET,
@@ -131,7 +132,6 @@ bool AmfEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
         encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_ENCODING_LATENCY_MODE,
             static_cast<amf_int64>(AMF_VIDEO_ENCODER_AV1_ENCODING_LATENCY_MODE_REAL_TIME));
         encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_QUERY_TIMEOUT, query_timeout_ms);
-        // Dynamic properties (initial values; set_bitrate updates the rate ones).
         encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD,
             static_cast<amf_int64>(AMF_VIDEO_ENCODER_AV1_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR));
         encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_TARGET_BITRATE, average_bitrate);
@@ -146,9 +146,6 @@ bool AmfEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
         encoder_->SetProperty(AMF_VIDEO_ENCODER_AV1_HEADER_INSERTION_MODE,
             static_cast<amf_int64>(AMF_VIDEO_ENCODER_AV1_HEADER_INSERTION_MODE_KEY_FRAME_ALIGNED));
     } else if (codec_ == VideoCodecId::H265) {
-        // Static properties (must be set before Init). Note that the HEVC
-        // header lists VBV_BUFFER_SIZE among the static properties, so the
-        // value chosen here is the one that is guaranteed to take effect.
         encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_USAGE,
             static_cast<amf_int64>(AMF_VIDEO_ENCODER_HEVC_USAGE_LOW_LATENCY));
         encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_QUALITY_PRESET,
@@ -158,7 +155,6 @@ bool AmfEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
             static_cast<amf_int64>(AMF_VIDEO_ENCODER_HEVC_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR));
         encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_VBV_BUFFER_SIZE, vbv_buffer_size);
         encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_INITIAL_VBV_BUFFER_FULLNESS, static_cast<amf_int64>(64));
-        // Dynamic properties (initial values; set_bitrate updates the rate ones).
         encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_QUERY_TIMEOUT, query_timeout_ms);
         encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_TARGET_BITRATE, average_bitrate);
         encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_PEAK_BITRATE, peak_bitrate);
@@ -170,13 +166,11 @@ bool AmfEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
         encoder_->SetProperty(AMF_VIDEO_ENCODER_HEVC_HEADER_INSERTION_MODE,
             static_cast<amf_int64>(AMF_VIDEO_ENCODER_HEVC_HEADER_INSERTION_MODE_IDR_ALIGNED));
     } else {
-        // Static properties (must be set before Init).
         encoder_->SetProperty(AMF_VIDEO_ENCODER_USAGE,
             static_cast<amf_int64>(AMF_VIDEO_ENCODER_USAGE_LOW_LATENCY));
         encoder_->SetProperty(AMF_VIDEO_ENCODER_QUALITY_PRESET,
             static_cast<amf_int64>(AMF_VIDEO_ENCODER_QUALITY_PRESET_SPEED));
         encoder_->SetProperty(AMF_VIDEO_ENCODER_LOWLATENCY_MODE, true);
-        // Dynamic properties (initial values; set_bitrate updates the rate ones).
         encoder_->SetProperty(AMF_VIDEO_ENCODER_QUERY_TIMEOUT, query_timeout_ms);
         encoder_->SetProperty(AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD,
             static_cast<amf_int64>(AMF_VIDEO_ENCODER_RATE_CONTROL_METHOD_PEAK_CONSTRAINED_VBR));
@@ -230,8 +224,6 @@ bool AmfEncoder::encode(ID3D11Texture2D* bgra_texture, int64_t timestamp_100ns) 
 bool AmfEncoder::ensure_staging_texture() {
     if (staging_texture_) return true;
 
-    // Registered capture textures are the normal path and are wrapped by AMF
-    // directly. Allocate a copy target only for callers using encode().
     D3D11_TEXTURE2D_DESC desc{};
     desc.Width = width_;
     desc.Height = height_;
@@ -294,18 +286,11 @@ bool AmfEncoder::do_encode(ID3D11Texture2D* texture, int64_t timestamp_100ns) {
         }
     }
 
-    // AMF_INPUT_FULL means ownership has not transferred. Retain and retry the
-    // exact same surface after consuming output; releasing it here used to drop
-    // frames and could also lose a requested IDR.
-    static constexpr int max_submit_retries = 8;
-    for (int retry = 0; retry < max_submit_retries; ++retry) {
+    AmfEncoderSubmit submit = AmfEncoderSubmit::RetrySameSurface;
+    for (int retry = 0; retry < kEncoderSubmitRetries; ++retry) {
         res = encoder_->SubmitInput(surface);
-        if (res == AMF_OK) break;
-        if (res != AMF_INPUT_FULL) {
-            LOG_ERROR("SubmitInput failed: {}", (int)res);
-            surface->Release();
-            return false;
-        }
+        submit = classify_amf_encoder_submit(res);
+        if (submit != AmfEncoderSubmit::RetrySameSurface) break;
 
         amf::AMFData* pending = nullptr;
         const AMF_RESULT output_result = encoder_->QueryOutput(&pending);
@@ -323,18 +308,17 @@ bool AmfEncoder::do_encode(ID3D11Texture2D* texture, int64_t timestamp_100ns) {
     }
     surface->Release();
 
-    if (res != AMF_OK) {
-        LOG_WARN("AMF encoder remained full after {} retries; dropping newest frame",
-                 max_submit_retries);
-        return true;
+    switch (submit) {
+    case AmfEncoderSubmit::Fatal:
+        LOG_ERROR("SubmitInput failed: {}", (int)res);
+        return false;
+    case AmfEncoderSubmit::RetrySameSurface:
+        return drop_newest_keep_keyframe_request();
+    case AmfEncoderSubmit::Accepted:
+        break;
     }
     if (requested_keyframe) force_keyframe_ = false;
 
-    // The QUERY_TIMEOUT property makes QueryOutput block inside AMF for up to
-    // one frame interval, so a single call normally returns the frame just
-    // submitted. Allow at most two extra attempts for a slow encode; if the
-    // frame is still not ready it is collected by the next do_encode call
-    // (AMF queues output), which keeps the encode thread from spinning.
     static constexpr int max_query_attempts = 3;
     amf::AMFData* data = nullptr;
     for (int attempt = 0; attempt < max_query_attempts; ++attempt) {
@@ -393,16 +377,16 @@ void AmfEncoder::force_keyframe() {
     force_keyframe_ = true;
 }
 
-void AmfEncoder::set_bitrate(uint32_t bitrate) {
+void AmfEncoder::set_average_bitrate_bps(uint32_t average_bps) {
     if (!initialized_ || !encoder_) return;
 
-    const auto rate_control = make_stream_vbr_rate_control(bitrate, fps_);
+    const auto rate_control = make_stream_vbr_rate_control(average_bps, fps_);
     const amf_int64 average_bitrate =
-        static_cast<amf_int64>(rate_control.average_bitrate);
+        static_cast<amf_int64>(rate_control.average_bps);
     const amf_int64 peak_bitrate =
-        static_cast<amf_int64>(rate_control.peak_bitrate);
+        static_cast<amf_int64>(rate_control.peak_bps);
     const amf_int64 vbv_buffer_size =
-        static_cast<amf_int64>(rate_control.vbv_buffer_size);
+        static_cast<amf_int64>(rate_control.vbv_buffer_bits);
     const amf_int64 max_frame_bits =
         static_cast<amf_int64>(rate_control.max_frame_bits);
     if (codec_ == VideoCodecId::AV1) {
@@ -424,12 +408,12 @@ void AmfEncoder::set_bitrate(uint32_t bitrate) {
         encoder_->SetProperty(AMF_VIDEO_ENCODER_MAX_AU_SIZE, max_frame_bits);
     }
     LOG_DEBUG("AMF rate control updated: average {} bps, peak {} bps, VBV {} bits, max frame {} bits",
-              rate_control.average_bitrate, rate_control.peak_bitrate,
-              rate_control.vbv_buffer_size, rate_control.max_frame_bits);
+              rate_control.average_bps, rate_control.peak_bps,
+              rate_control.vbv_buffer_bits, rate_control.max_frame_bits);
 }
 
 EncoderInfo AmfEncoder::info() const {
     return {Backend::AMF, codec_, width_, height_};
 }
 
-} // namespace parties::encdec::amd
+}

@@ -1,19 +1,16 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
     <defs>
-        <!-- Background Premium Gradient -->
         <radialGradient id="bgGrad" cx="50%" cy="50%" r="75%">
             <stop offset="0%" stop-color="#161824" />
             <stop offset="100%" stop-color="#0B0C10" />
         </radialGradient>
 
-        <!-- Brand Icon Vibrant Gradient -->
         <linearGradient id="brandGrad" x1="0%" y1="0%" x2="100%" y2="100%">
             <stop offset="0%" stop-color="#FF2A5F" />
             <stop offset="50%" stop-color="#A133FF" />
             <stop offset="100%" stop-color="#00F0FF" />
         </linearGradient>
 
-        <!-- Ambient Glow Filter -->
         <filter id="glowBlur" x="-50%" y="-50%" width="200%" height="200%">
             <feGaussianBlur stdDeviation="48" result="blur" />
         </filter>
@@ -22,16 +19,8 @@
     <!-- App Store Required: Perfect Solid Square Background (No transparency, no rounded corners) -->
     <rect width="512" height="512" fill="url(#bgGrad)" />
 
-    <!-- Ambient Icon Glow -->
     <circle cx="256" cy="256" r="150" fill="#A133FF" opacity="0.35" filter="url(#glowBlur)" />
 
-    <!-- 
-      The P-Tongue / Smile Shape
-      - Top straight line goes completely across the canvas.
-      - The U-shape (tongue/bowl) connects perfectly underneath it.
-      - Designed in one unified path so the neon gradient flows flawlessly.
-      - Perfectly centered vertically and horizontally on the 512x512 canvas.
-    -->
     <path d="M -20,156 
              L 532,156 
              M 136,156 

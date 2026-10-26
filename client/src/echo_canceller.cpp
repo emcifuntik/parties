@@ -24,7 +24,7 @@ void unpack_stereo(uint32_t packed, spx_int16_t& left, spx_int16_t& right) {
     right = std::bit_cast<spx_int16_t>(static_cast<uint16_t>(packed >> 16u));
 }
 
-} // namespace
+}
 
 EchoCanceller::~EchoCanceller() {
     shutdown();
@@ -37,9 +37,6 @@ bool EchoCanceller::init() {
     static_assert(std::atomic<uint32_t>::is_always_lock_free,
                   "AEC reference transport must remain lock-free");
 
-    // One microphone and two independent speaker references. A mono downmix is
-    // insufficient for stereo streams because each speaker has a different
-    // acoustic path to the microphone.
     state_ = speex_echo_state_init_mc(audio::FRAME_SIZE,
                                       audio::SAMPLE_RATE / 5,
                                       1,
@@ -91,7 +88,6 @@ void EchoCanceller::publish_playback_frame() {
     for (size_t i = 0; i < static_cast<size_t>(audio::FRAME_SIZE); ++i)
         reference_queue_[base + i].store(playback_frame_[i], std::memory_order_relaxed);
 
-    // Publish only after every packed stereo sample is visible to capture.
     written_frames_.store(sequence + 1, std::memory_order_release);
 }
 
@@ -149,8 +145,6 @@ bool EchoCanceller::process_capture(float* mono, size_t frame_count) {
     const uint64_t written = written_frames_.load(std::memory_order_acquire);
     if (written <= read_frame_) {
         if (!reference_starved_) {
-            // An xrun or clock discontinuity broke the capture/reference
-            // relationship. Wait for fresh playback and establish delay again.
             reference_starved_ = true;
             delay_frames_remaining_ = 0;
         }
@@ -171,9 +165,6 @@ bool EchoCanceller::process_capture(float* mono, size_t frame_count) {
         return false;
     }
 
-    // Capture was paused long enough for playback to overwrite unread data.
-    // Drop the stale queue and restart alignment instead of feeding a torn or
-    // unrelated reference into the adaptive filter.
     if (written - read_frame_ >= QUEUE_CAPACITY_FRAMES) {
         read_frame_ = written;
         delay_frames_remaining_ = 0;
@@ -195,7 +186,6 @@ bool EchoCanceller::process_capture(float* mono, size_t frame_count) {
                       reference[i * PLAYBACK_CHANNELS + 1]);
     }
 
-    // If playback lapped capture during the copy, do not process a mixed slot.
     const uint64_t written_after = written_frames_.load(std::memory_order_acquire);
     if (written_after - read_frame_ >= QUEUE_CAPACITY_FRAMES) {
         read_frame_ = written_after;
@@ -213,4 +203,4 @@ bool EchoCanceller::process_capture(float* mono, size_t frame_count) {
     return true;
 }
 
-} // namespace parties::client
+}

@@ -2,7 +2,6 @@ cmake_minimum_required(VERSION 3.20)
 project(parties VERSION 0.1.0 LANGUAGES CXX C)
 include(CTest)
 
-# ── Version from git tag ─────────────────────────────────────────────────────
 find_package(Git QUIET)
 if(GIT_FOUND)
     execute_process(
@@ -66,8 +65,6 @@ if(BUILD_IN_RETAIL)
     set(ENABLE_TRACY OFF CACHE BOOL "" FORCE)
 endif()
 option(ENABLE_SENTRY "Enable Sentry crash reporting" OFF)
-# Heap allocation tracker (leak hunting): replaces global new/delete with a
-# size-bucketed, stack-capturing tracking allocator. Windows client only.
 option(PARTIES_ALLOC_TRACKER "Enable heap allocation tracker" OFF)
 set(APPLE_DEVELOPMENT_TEAM "" CACHE STRING "Apple Development Team ID used for signed Apple builds")
 set(SENTRY_DSN_CLIENT "" CACHE STRING "Sentry DSN for the client (per-platform)")
@@ -90,8 +87,6 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "App
     add_compile_options(-Wno-unused-command-line-argument -Wno-c23-extensions)
 endif()
 if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    # Full LTO in Release. clang-cl emits LLVM bitcode which lld-link consumes
-    # directly, so forwarding the Unix -flto option to lld-link is unnecessary.
     add_compile_options($<$<CONFIG:Release>:-flto=full>)
     if(CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
         add_compile_options($<$<CONFIG:Release>:/Zi>)
@@ -101,9 +96,6 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     endif()
 endif()
 
-# Generate dSYM bundles for optimized Xcode builds and archives. Debug builds
-# keep DWARF in the binary, avoiding redundant dsymutil work (and duplicate-map
-# warnings from third-party static archives such as dav1d).
 if(APPLE)
     set(CMAKE_XCODE_ATTRIBUTE_DEBUG_INFORMATION_FORMAT
         "$<$<CONFIG:Debug>:dwarf>$<$<NOT:$<CONFIG:Debug>>:dwarf-with-dsym>")

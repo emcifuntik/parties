@@ -1,11 +1,7 @@
-// macOS application — entry point, window, render loop, and app logic.
-//
-// Mirrors the role of PartiesViewController.mm on iOS, using AppKit instead
-// of UIKit.  NSWindow + MTKView host the Metal-backed RmlUI context.
-
 #import "PartiesAppDelegate.h"
 #import "context_menu_macos.h"
 #import "PartiesStatusItemController.h"
+#import "pip_host_macos.h"
 #import "screen_capture_macos.h"
 #import <encdec/apple/video_encoder_macos.h>
 
@@ -14,15 +10,11 @@
 #import <QuartzCore/QuartzCore.h>
 #import <CoreImage/CoreImage.h>
 
-// RmlUi Metal backend
 #import "../metal/RmlUi_Backend_macOS_Metal.h"
 #import "../metal/RmlUi_Renderer_Metal.h"
 
-// RmlUi core
 #include <RmlUi/Core/Core.h>
 #include <RmlUi/Core/Context.h>
-#include <RmlUi/Core/StyleSheetSpecification.h>
-#include <RmlUi/Core/PropertyDefinition.h>
 #include <RmlUi/Core/ElementDocument.h>
 #include <RmlUi/Core/Factory.h>
 #include <RmlUi/Core/Input.h>
@@ -30,7 +22,6 @@
 #include <RmlUi/Debugger.h>
 #endif
 
-// Parties protocol
 #include <parties/protocol.h>
 #include <parties/types.h>
 #include <parties/serialization.h>
@@ -40,16 +31,20 @@
 #include <parties/permissions.h>
 #include <parties/video_common.h>
 
-// Shared client code
 #include <parties/quic_common.h>
 #include <client/app_core.h>
 #include <client/sound_player.h>
 #include <client/rmlui_backend.h>
 #include <client/video_element.h>
+#include <client/video_frame_router.h>
+#include <client/pip_geometry.h>
 #include <client/gradient_circle_element.h>
 #include <client/custom_elements.h>
+#include <client/rml_shutdown.h>
+#include <client/share_settings.h>
 #include <client/ui_fixture.h>
 #include <client/ui_layout_audit.h>
+#include <client/window_action.h>
 
 #ifdef SENTRY_COCOA_ENABLED
 #import <Sentry/Sentry.h>
@@ -59,7 +54,6 @@
 #include <encdec/apple/VideoDecoderIOS.h>
 
 #ifdef SPARKLE_ENABLED
-// Defined in auto_updater_macos.mm
 extern void macos_updater_init();
 extern void macos_updater_check_now();
 extern void macos_updater_check_in_background();
@@ -68,6 +62,9 @@ extern void macos_updater_check_in_background();
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <optional>
+#include <span>
+#include <utility>
 #include <vector>
 #include <cstring>
 #include <cstdio>
@@ -75,6 +72,21 @@ extern void macos_updater_check_in_background();
 using namespace parties;
 using namespace parties::client;
 using namespace parties::protocol;
+
+#ifdef SENTRY_COCOA_ENABLED
+static constexpr double kProductionTracesSampleRate  = 1.0;
+static constexpr double kDevelopmentTracesSampleRate = 1.0;
+#endif
+
+static MacVideoCodec mac_video_codec(ShareCodec codec)
+{
+    switch (codec) {
+    case ShareCodec::AV1:  return MacVideoCodec::AV1;
+    case ShareCodec::H265: return MacVideoCodec::H265;
+    case ShareCodec::H264: return MacVideoCodec::H264;
+    }
+    return MacVideoCodec::H265;
+}
 
 static std::string macos_ui_fixture_argument()
 {
@@ -85,8 +97,6 @@ static std::string macos_ui_fixture_argument()
     }
     return {};
 }
-
-// ── Key mapping — NSEvent key codes → RmlUi ──────────────────────────────────
 
 static Rml::Input::KeyIdentifier macos_key_to_rml(unsigned short keyCode)
 {
@@ -139,8 +149,8 @@ static Rml::Input::KeyIdentifier macos_key_to_rml(unsigned short keyCode)
     case 0x75: return Rml::Input::KI_DELETE;
     case 0x73: return Rml::Input::KI_HOME;
     case 0x77: return Rml::Input::KI_END;
-    case 0x74: return Rml::Input::KI_PRIOR;   // Page Up
-    case 0x79: return Rml::Input::KI_NEXT;    // Page Down
+    case 0x74: return Rml::Input::KI_PRIOR;
+    case 0x79: return Rml::Input::KI_NEXT;
     default:   return Rml::Input::KI_UNKNOWN;
     }
 }
@@ -153,8 +163,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     if (flags & NSEventModifierFlagOption)  mods |= Rml::Input::KM_ALT;
     return mods;
 }
-
-// ── PartiesView — MTKView subclass that forwards input to RmlUi ───────────────
 
 @interface PartiesView : MTKView
 @property (nonatomic, assign) Rml::Context* rmlContext;
@@ -221,7 +229,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 }
 - (void)rightMouseUp:(NSEvent*)event
 {
-    // The complete secondary click is forwarded from rightMouseDown:.
 }
 
 - (void)scrollWheel:(NSEvent*)event
@@ -257,10 +264,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
 @end
 
-// ── PartiesViewController — drives render loop and app logic ──────────────────
-
 @interface PartiesViewController : NSViewController <MTKViewDelegate>
-// Called by the app delegate before quic_cleanup() to close all MsQuic handles.
 - (void)shutdown;
 - (void)showPreviewNativeUI;
 - (BOOL)trayModeEnabled;
@@ -285,19 +289,14 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     std::unique_ptr<MacOSContextMenuController> _contextMenus;
     id                    _sleepActivity;
 
-    // Embedded file interface (must outlive RmlUi)
     EmbeddedFileInterface _fileInterface;
 
-    // Custom element instancers
     parties::rml::ElementRegistry _elementRegistry;
 
-    // AppCore — all shared connection/audio/model logic
     AppCore _core;
 
-    // Sound effects
     SoundPlayer _soundPlayer;
 
-    // Screen share — sender (macOS-specific)
     std::unique_ptr<ScreenCaptureMac> _capturer;
     std::unique_ptr<ScreenCaptureMac> _audioCapturer;
     std::unique_ptr<VideoEncoderMac>  _encoder;
@@ -308,23 +307,21 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     uint32_t                          _encodeWidth;
     uint32_t                          _encodeHeight;
 
-    // Stream audio — Opus encoder for screen share audio
     parties::OpusCodec                _streamAudioEncoder;
     bool                              _streamAudioReady;
-    std::vector<float>                _audioBuf;    // accumulation buffer
+    std::vector<float>                _audioBuf;
     size_t                            _audioPos;
     uint8_t                           _opusBuf[parties::audio::MAX_OPUS_PACKET];
 
-    // Screen share — receiver (macOS-specific VideoToolbox decoder)
     std::unique_ptr<VideoDecoderIOS>  _decoder;
     bool                              _streamRevealed;
 
-    // FPS counter
+    PartiesPipHost*                   _pipHost;
+    VideoFrameRouter                  _videoRouter;
+
     uint32_t _fpsFrameCount;
     std::chrono::steady_clock::time_point _fpsLastUpdate;
 }
-
-// ── View setup ────────────────────────────────────────────────────────────────
 
 - (void)loadView
 {
@@ -356,7 +353,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
     id<MTLDevice> device = _metalView.device;
 
-    // ── Metal + RmlUi ─────────────────────────────────────────────────────
     _commandQueue = [device newCommandQueue];
     if (!_commandQueue || !Backend::Initialize(device, _metalView)) {
         NSLog(@"[Parties] Failed to initialize the Metal renderer");
@@ -378,9 +374,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     }
     _rmlInitialized = true;
 
-    // Register window-action as no-op to suppress warnings (used on Windows for caption hit-testing)
-    Rml::StyleSheetSpecification::RegisterProperty("window-action", "none", true)
-        .AddParser("keyword", "none, caption, close, minimize, maximize");
+    register_window_action_property();
 
     parties::client::register_custom_elements(_elementRegistry);
 
@@ -406,14 +400,12 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         NSLog(@"[Parties] Failed to initialize the RmlUi debugger");
 #endif
 
-    // ── Fonts ─────────────────────────────────────────────────────────────
     Rml::LoadFontFace("ui/fonts/Inter-Regular.ttf");
     Rml::LoadFontFace("ui/fonts/Inter-Medium.ttf");
     Rml::LoadFontFace("ui/fonts/Inter-Bold.ttf");
     Rml::LoadFontFace("ui/fonts/NotoSans-Regular.ttf", true);
     Rml::LoadFontFace("ui/fonts/NotoSans-Bold.ttf", true);
 
-    // ── App state ─────────────────────────────────────────────────────────
     _sharing         = false;
     _encoderReady    = false;
     _streamRevealed  = false;
@@ -426,7 +418,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         _soundInitialized = true;
     }
 
-    // ── Settings path ─────────────────────────────────────────────────────
     NSString* appSupport = [NSSearchPathForDirectoriesInDomains(
         NSApplicationSupportDirectory, NSUserDomainMask, YES) firstObject];
     NSString* dir = [appSupport stringByAppendingPathComponent:@"Parties"];
@@ -436,7 +427,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
                                                       error:nil];
     NSString* dbPath = [dir stringByAppendingPathComponent:@"parties.db"];
 
-    // ── Build PlatformBridge ──────────────────────────────────────────────
     PartiesViewController* bself = self;
 
     PlatformBridge bridge;
@@ -472,7 +462,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
             if (bself->_core.model_.on_user_compress_changed)
                 bself->_core.model_.on_user_compress_changed(user_id, enabled, target);
         };
-        callbacks.set_role = [bself, user_id](int role) {
+        callbacks.set_role = [bself, user_id](Role role) {
             if (bself->_core.model_.on_set_user_role)
                 bself->_core.model_.on_set_user_role(user_id, role);
         };
@@ -562,16 +552,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
             });
     };
 
-    // macOS goes straight to the system picker. The intermediate RML picker is
-    // useful on Windows, but adds an unnecessary second click on Apple platforms.
-    bridge.open_share_picker = [bself]() { [bself startNativeShare]; };
-    bridge.open_audio_share_picker = [bself]() { [bself startNativeAudioShare]; };
-
-    bridge.on_authenticated = [bself]() {
-        // Open video/audio streams after successful auth
-        bself->_core.net_.open_av_streams();
-    };
-
     bridge.stop_screen_share = [bself]() { [bself stopScreenShare]; };
     bridge.stop_audio_share = [bself]() { [bself stopAudioShare]; };
 
@@ -579,17 +559,29 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         bself->_needsKeyframe = true;
     };
 
-    // Single hardware decoder: the watched stream is still waiting for a
-    // keyframe while awaiting_keyframe_ holds. AppCore::tick() re-sends a PLI
-    // every VIDEO_PLI_RETRY_MS while this returns true.
-    bridge.stream_awaiting_keyframe = [bself](UserId id) {
-        return bself->_core.viewing_sharer_ == id && bself->_core.awaiting_keyframe_;
-    };
-
-    // The viewer is now a data-for grid of per-sharer cells ("screen-share-<id>");
-    // a stream's cell is destroyed by the binding when it drops out of
-    // model_.watched, so there is no single element to clear here.
     bridge.clear_video_element = []() {};
+
+    bridge.video = SingleDecoderVideo{};
+    bridge.share = NativeShareFlow{
+        .start_native_share       = [bself]() { [bself startNativeShare]; },
+        .start_native_audio_share = [bself]() { [bself startNativeAudioShare]; },
+    };
+    bridge.pip = PictureInPicture{
+        .show = [bself](UserId, const std::string& title) {
+            [bself showPictureInPicture:title];
+        },
+        .hide = [bself](UserId, PipCloseReason) {
+            [bself->_pipHost hide];
+            [bself syncVideoRouter];
+        },
+    };
+    bridge.show_main_window = [bself]() {
+        NSWindow* window = bself->_metalView.window;
+        [NSApp unhide:nil];
+        if (window.miniaturized) [window deminiaturize:nil];
+        [window makeKeyAndOrderFront:nil];
+        [NSApp activateIgnoringOtherApps:YES];
+    };
 
     // A call produces no input events, so macOS dims and powers down the display
     // while the user is still talking. An NSProcessInfo activity suppresses the
@@ -610,8 +602,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     };
 
     if (_previewMode) {
-        // Deterministic visual harness: production AppKit shell, Metal backend,
-        // RML document and data models, with no audio, database or network I/O.
         if (!_core.server_model_.init(_rmlContext) ||
             !_core.model_.init(_rmlContext) ||
             !_core.chat_model_.init(_rmlContext)) {
@@ -621,22 +611,18 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         PopulateUIFixture(_core, _previewScenario, true);
         NSLog(@"[Parties] Loaded macOS UI fixture: %s", _previewScenario.c_str());
     } else {
-        // ── Init AppCore ──────────────────────────────────────────────────
         if (!_core.init(std::string(dbPath.UTF8String), std::move(bridge), _rmlContext)) {
             NSLog(@"[Parties] AppCore init failed");
             return;
         }
         _coreInitialized = true;
 
-        // ── Wire macOS-specific model callbacks on top of AppCore defaults ─
         [self installMacOSModelCallbacks];
 
-        // ── Wire video frame reception to local macOS decoder ─────────────
-        _core.on_video_frame_received = [bself](uint32_t sender_id, const uint8_t* data, size_t len) {
-            [bself onVideoFrameData:sender_id data:data len:len];
+        _core.on_video_frame_received = [bself](UserId sender, ParsedVideoFrame&& frame) {
+            [bself onVideoFrame:sender frame:frame];
         };
 
-        // ── Load identity and saved state ─────────────────────────────────
         std::string hostname = NSProcessInfo.processInfo.hostName.UTF8String;
         _core.load_or_generate_identity(hostname);
         _core.load_saved_prefs();
@@ -650,11 +636,8 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         [[NSRunLoop mainRunLoop] addTimer:_logicTimer forMode:NSRunLoopCommonModes];
     }
 
-    // ── UI document ───────────────────────────────────────────────────────
     _doc = _rmlContext->LoadDocument("ui/lobby.rml");
     if (_doc) {
-        // Mark document as macOS platform so RCSS hides Win32 controls and
-        // centres the branding, leaving space for native traffic-light buttons.
         _doc->SetClass("platform-macos", true);
         _doc->SetClass("platform-desktop", true);
         _doc->Show();
@@ -663,7 +646,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         }
     }
 
-    // ── Mouse tracking area ───────────────────────────────────────────────
     NSTrackingArea* area = [[NSTrackingArea alloc]
         initWithRect:_metalView.bounds
              options:NSTrackingMouseMoved
@@ -684,7 +666,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         request.user_id = 2;
         request.name = "IceTroll";
         request.channel_name = "General";
-        request.role = 1;
+        request.role = Role::Admin;
         request.can_manage_roles = true;
         request.can_kick = true;
         request.volume = 0.86f;
@@ -718,8 +700,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     }
 }
 
-// ── MTKViewDelegate ───────────────────────────────────────────────────────────
-
 - (void)mtkView:(MTKView*)view drawableSizeWillChange:(CGSize)size
 {
     if (!_backendInitialized) return;
@@ -752,6 +732,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     if (!_coreInitialized)
         return;
     _core.tick();
+    [self syncVideoRouter];
     BOOL visible = _metalView.window.visible && !_metalView.window.miniaturized && !NSApp.hidden;
     if (!visible && !_metalView.paused && _contextMenus)
         _contextMenus->Close();
@@ -763,7 +744,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 {
     if (!_backendInitialized || !_rmlContext || !_commandQueue) return;
 
-    // Update FPS + ping in titlebar (once per second)
     _fpsFrameCount++;
     auto now_fps = std::chrono::steady_clock::now();
     float elapsed_fps = std::chrono::duration<float>(now_fps - _fpsLastUpdate).count();
@@ -806,42 +786,16 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     [buffer commit];
 }
 
-// ── macOS-specific model callback overrides ───────────────────────────────────
-
 - (void)installMacOSModelCallbacks
 {
     PartiesViewController* bself = self;
 
-    // Override on_toggle_share: macOS uses SCK native picker
-    _core.model_.on_toggle_share = [bself]() {
-        if (bself->_sharing)
-            [bself stopScreenShare];
-        else
-            [bself startNativeShare];
-    };
-    _core.model_.on_toggle_audio_share = [bself]() {
-        if (bself->_core.model_.is_audio_sharing)
-            [bself stopAudioShare];
-        else
-            [bself startNativeAudioShare];
-    };
-
-    // macOS-specific: start native share button in picker overlay
-    _core.model_.on_start_native_share = [bself]() {
-        [bself startNativeShare];
-    };
-
-    // on_select_share_target is Windows-only; clear it if AppCore set it
-    _core.model_.on_select_share_target = nullptr;
-
-    // Override watch/stop watching to manage the local VideoDecoderIOS
     _core.model_.on_watch_sharer = [bself](int id) {
         [bself watchSharer:static_cast<UserId>(id)];
     };
     _core.model_.on_select_sharer = [bself](int id) {
         [bself watchSharer:static_cast<UserId>(id)];
     };
-    // Single hardware decoder: a chip toggle just switches to that single stream.
     _core.model_.on_toggle_watch = [bself](int id) {
         [bself watchSharer:static_cast<UserId>(id)];
     };
@@ -850,31 +804,16 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     };
 }
 
-// ── Video frame routing (macOS VideoToolbox decoder) ─────────────────────────
-
-- (void)onVideoFrameData:(uint32_t)sender_id data:(const uint8_t*)data len:(size_t)len
+- (void)onVideoFrame:(UserId)sender frame:(const ParsedVideoFrame&)frame
 {
-    // data = [fn(4)][ts(4)][flags(1)][w(2)][h(2)][codec(1)][encoded(N)]
-    if (len < 14) return;
-    if (sender_id != _core.viewing_sharer_ || !_decoder) return;
+    if (!_decoder || _core.admit_single_watch_frame(sender, frame.header()) != SingleWatchAdmit::Decode)
+        return;
 
-    uint8_t  flags = data[8];
-    uint16_t w, h;
-    std::memcpy(&w, data + 9,  2);
-    std::memcpy(&h, data + 11, 2);
-    uint8_t codec_id = data[13];
-
-    bool is_keyframe = (flags & VIDEO_FLAG_KEYFRAME) != 0;
-
-    if (_core.awaiting_keyframe_ && !is_keyframe) return;
-    _core.awaiting_keyframe_ = false;
-
-    // Lazy decoder init on first frame
+    const VideoFrameHeader& header = frame.header();
     if (!_decoder->on_decoded) {
-        auto codec = static_cast<VideoCodecId>(codec_id);
-        if (!_decoder->init(codec, w, h)) {
+        if (!_decoder->init(header.codec, header.width, header.height)) {
             std::fprintf(stderr, "[Video] Decoder init failed (codec=%u, %ux%u)\n",
-                         codec_id, w, h);
+                         static_cast<unsigned>(header.codec), header.width, header.height);
             _decoder.reset();
             return;
         }
@@ -887,12 +826,11 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         };
     }
 
-    _decoder->decode(data + 14, len - 14, is_keyframe);
+    _decoder->decode(frame.encoded().data(), frame.encoded().size(), header.keyframe);
 }
 
 - (void)onVideoDecoded:(CVPixelBufferRef)buf
 {
-    // Reveal video area on first frame (deferred from watch_sharer)
     if (!_streamRevealed) {
         _streamRevealed = true;
         _core.model_.dirty("viewing_sharer_id");
@@ -900,10 +838,8 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     _core.stream_frame_count_.fetch_add(1, std::memory_order_relaxed);
 
     if (!_doc) return;
-    // The viewer is a grid of per-sharer cells; route to this sharer's cell.
-    // macOS is single-select, so viewing_sharer_ is the one being watched.
-    std::string elem_id = "screen-share-" + std::to_string(_core.viewing_sharer_.load());
-    auto* el = dynamic_cast<VideoElement*>(_doc->GetElementById(elem_id));
+    [self syncVideoRouter];
+    auto* el = _videoRouter.target(_core.viewing_sharer(), [self videoSurfaces]);
     if (!el) return;
 
     CVPixelBufferLockBaseAddress(buf, kCVPixelBufferLock_ReadOnly);
@@ -921,8 +857,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     CVPixelBufferUnlockBaseAddress(buf, kCVPixelBufferLock_ReadOnly);
 }
 
-// ── Screen share — sender (macOS SCK) ────────────────────────────────────────
-
 - (void)startNativeShare
 {
     NSLog(@"[ScreenShare] startNativeShare");
@@ -935,13 +869,8 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     _nativePickerActive = true;
     PartiesViewController* bself = self;
 
-    static const uint32_t fps_table[] = { 15, 30, 60, 120 };
-    uint32_t capture_fps = fps_table[std::min(_core.model_.share_fps.get(), 3)];
-
-    // User scale (0=Source, 1=x0.75, 2=x0.5, 3=x0.25). ScreenCaptureKit applies
-    // this (and a long-edge cap) on the GPU, so frames arrive at encode size.
-    static const float scale_factors[] = {1.0f, 0.75f, 0.5f, 0.25f};
-    float output_scale = scale_factors[std::max(0, std::min(_core.model_.share_scale.get(), 3))];
+    uint32_t capture_fps = frames_per_second(_core.model_.share_fps.get());
+    float output_scale = scale_factor(_core.model_.share_scale.get());
 
     _capturer->pick_and_start(capture_fps, output_scale, false, [bself](bool success) {
         NSLog(@"[ScreenShare] pick_and_start callback: success=%d", success);
@@ -959,8 +888,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     _encoder      = std::make_unique<VideoEncoderMac>();
     _encoderReady = false;
 
-    // The controller's configuration/window state is owned by the main thread.
-    _core.reset_video_sender(static_cast<uint32_t>(_core.model_.share_bitrate * 1000000.0f));
+    _core.begin_video_share(static_cast<uint32_t>(_core.model_.share_bitrate * 1000000.0f));
 
     PartiesViewController* bself = self;
     _capturer->on_frame = [bself](CVPixelBufferRef buf, uint32_t w, uint32_t h) {
@@ -968,18 +896,9 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
         if (!bself->_encoderReady) {
             uint32_t bitrate = (uint32_t)(bself->_core.model_.share_bitrate * 1000000.0f);
-            static const uint32_t fps_table[] = { 15, 30, 60, 120 };
-            uint32_t fps = fps_table[std::min(bself->_core.model_.share_fps.get(), 3)];
+            uint32_t fps = frames_per_second(bself->_core.model_.share_fps.get());
+            MacVideoCodec mac_codec = mac_video_codec(bself->_core.model_.share_codec.get());
 
-            // Codec selection: 0=AV1, 1=H265, 2=H264
-            MacVideoCodec mac_codec = (bself->_core.model_.share_codec == 0) ? MacVideoCodec::AV1
-                                    : (bself->_core.model_.share_codec == 2) ? MacVideoCodec::H264
-                                                                             : MacVideoCodec::H265;
-
-            // Frames already arrive at the final encode size: ScreenCaptureKit
-            // applies the user scale + long-edge cap on the GPU (see
-            // pick_and_start). Encode the buffer as-is — no CPU downscale. Even
-            // dimensions are guaranteed by the capture config.
             uint32_t enc_w = w & ~1u;
             uint32_t enc_h = h & ~1u;
             if (enc_w < 64) enc_w = 64;
@@ -1006,71 +925,48 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
                 uint16_t fw = (uint16_t)bself->_encodeWidth;
                 uint16_t fh = (uint16_t)bself->_encodeHeight;
 
-                // AppCore builds the wire header, stamps frame_seq, picks the
-                // transport (per-frame stream or stream 1) and accounts the
-                // bytes in the send controller.
                 auto r = bself->_core.send_video_frame(data, len, is_kf, fw, fh, wire_codec);
                 bself->_core.stream_frame_count_.fetch_add(1, std::memory_order_relaxed);
 
-                // Self-preview: feed the encoded frame back to the local decoder
-                // using a private [header(14)][encoded] buffer (never a wire buffer).
-                if (bself->_core.viewing_sharer_ == bself->_core.user_id_ && bself->_decoder) {
+                if (bself->_core.viewing_sharer() == bself->_core.user_id_ && bself->_decoder) {
                     VideoFrameHeader hdr;
                     hdr.frame_seq = r.frame_seq;
-                    hdr.timestamp = r.frame_seq;
-                    hdr.flags     = is_kf ? VIDEO_FLAG_KEYFRAME : 0;
+                    hdr.keyframe  = is_kf;
                     hdr.width     = fw;
                     hdr.height    = fh;
-                    hdr.codec     = static_cast<uint8_t>(wire_codec);
-
-                    std::vector<uint8_t> preview(VIDEO_FRAME_HEADER_SIZE + len);
-                    hdr.write(preview.data());
-                    std::memcpy(preview.data() + VIDEO_FRAME_HEADER_SIZE, data, len);
-                    [bself onVideoFrameData:bself->_core.user_id_
-                                       data:preview.data()
-                                        len:preview.size()];
+                    hdr.codec     = wire_codec;
+                    [bself onVideoFrame:bself->_core.user_id_
+                                  frame:ParsedVideoFrame::assemble(hdr, std::span<const uint8_t>(data, len))];
                 }
             };
 
             dispatch_async(dispatch_get_main_queue(), ^{
                 bself->_sharing = true;
                 bself->_core.model_.is_sharing = true;
-                // Server expects codec(1) + width(2) + height(2); placeholder values
-                // are updated by SCREEN_SHARE_UPDATE once the encoder produces real dims.
                 uint8_t payload[5] = {};
                 bself->_core.net_.send_message(ControlMessageType::SCREEN_SHARE_START, payload, sizeof(payload));
 
-                // Auto-watch self for local preview
                 [bself watchSharer:bself->_core.user_id_];
             });
         }
 
-        // Encode-thread housekeeping: apply the congestion controller's adapted
-        // bitrate (consumed once per change) and honor a keyframe request
-        // (send failure / PLI that passed the cooldown) via the force flag.
-        if (auto adapted = bself->_core.take_video_bitrate_update())
-            bself->_encoder->set_bitrate(*adapted);
+        if (auto adapted = bself->_core.video_encode_feedback().take_bitrate_update())
+            bself->_encoder->set_average_bitrate_bps(*adapted);
         bool forceKF = bself->_needsKeyframe;
         bself->_needsKeyframe = false;
-        if (bself->_core.take_video_keyframe_request()) forceKF = true;
+        if (bself->_core.video_encode_feedback().take_keyframe_request()) forceKF = true;
 
-        // Backpressure admission: skip this capture frame when the queued and
-        // in-flight bytes already imply too much queueing delay. A skipped
-        // frame costs nothing, but a pending keyframe request must survive it.
-        if (!bself->_core.video_admit_frame()) {
+        if (!bself->_core.video_accounting().admit_frame()) {
             if (forceKF) bself->_needsKeyframe = true;
             return;
         }
 
-        // Frame is already at encode resolution (scaled on the GPU by
-        // ScreenCaptureKit). Encode it directly — no per-frame Core Image pass.
         bself->_encoder->encode(buf, forceKF);
     };
 
-    // Stream audio: init Opus encoder and accumulation buffer (48 kHz, stereo, 20 ms frames)
-    static constexpr int kAudioFrameSize = 960;  // 20ms at 48kHz
+    static constexpr int kAudioFrameSize = 960;
     static constexpr int kAudioChannels  = 2;
-    _streamAudioReady = _streamAudioEncoder.init_encoder(48000, kAudioChannels, 64000);
+    _streamAudioReady = _streamAudioEncoder.init_encoder(48000, kAudioChannels, 64000, std::nullopt);
     _audioBuf.resize(kAudioFrameSize * kAudioChannels, 0.0f);
     _audioPos = 0;
 
@@ -1092,13 +988,12 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
                 input_pos += copy;
 
                 if (bself->_audioPos >= samples_per_opus_frame) {
-                    int encoded = bself->_streamAudioEncoder.encode(
-                        bself->_audioBuf.data(), kAudioFrameSize,
-                        bself->_opusBuf, parties::audio::MAX_OPUS_PACKET);
-                    if (encoded > 0) {
-                        std::vector<uint8_t> pkt(1 + encoded);
+                    const auto encoded = bself->_streamAudioEncoder.encode(
+                        bself->_audioBuf.data(), kAudioFrameSize, std::span<uint8_t>(bself->_opusBuf));
+                    if (encoded) {
+                        std::vector<uint8_t> pkt(1 + *encoded);
                         pkt[0] = STREAM_AUDIO_PACKET_TYPE;
-                        std::memcpy(pkt.data() + 1, bself->_opusBuf, encoded);
+                        std::memcpy(pkt.data() + 1, bself->_opusBuf, *encoded);
                         bself->_core.net_.send_data(pkt.data(), pkt.size());
                     }
                     bself->_audioPos = 0;
@@ -1123,8 +1018,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     _needsKeyframe = false;
     _streamAudioReady = false;
     _audioPos = 0;
-    // video_frame_number_ is owned by AppCore::send_video_frame and is reset
-    // only in reset_video_sender (share start) / on_disconnect_cleanup.
 
     _core.model_.is_sharing = false;
 
@@ -1144,8 +1037,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     _nativePickerActive = true;
     PartiesViewController* bself = self;
 
-    // Audio-only SCK capture requests mono 48 kHz PCM, matching AudioEngine's
-    // secondary VOICE2 encoder without a per-callback allocation or downmix.
     _audioCapturer->on_audio = [bself](const float* samples, uint32_t frame_count) {
         if (!bself->_coreInitialized || !bself->_core.authenticated_ ||
             !bself->_core.model_.is_audio_sharing)
@@ -1183,48 +1074,64 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     _core.model_.audio_share_target_name = "";
 }
 
-// ── Screen share — receiver (macOS) ──────────────────────────────────────────
-
 - (void)watchSharer:(UserId)sharerId
 {
-    _core.viewing_sharer_   = sharerId;
-    _core.awaiting_keyframe_ = true;
     _decoder = std::make_unique<VideoDecoderIOS>();
-    // on_decoded is wired lazily in onVideoFrameData on first frame
-
-    [self sendPLI:sharerId];
-
-    uint32_t id32 = static_cast<uint32_t>(sharerId);
-    _core.net_.send_message(ControlMessageType::SCREEN_SHARE_VIEW,
-                             (const uint8_t*)&id32, sizeof(id32));
-
-    // Populate the viewer grid model with this single stream (single hardware
-    // decoder → exactly one cell, id "screen-share-<id>").
-    _core.set_single_watched(sharerId);
+    _core.begin_single_watch(sharerId);
     _streamRevealed = false;
 }
 
 - (void)stopWatching
 {
-    _core.viewing_sharer_   = 0;
     _decoder.reset();
-    _core.awaiting_keyframe_ = false;
     _streamRevealed = false;
-
-    uint32_t zero = 0;
-    _core.net_.send_message(ControlMessageType::SCREEN_SHARE_VIEW,
-                             (const uint8_t*)&zero, sizeof(zero));
-
-    _core.set_single_watched(0);
+    _core.end_single_watch();
 }
 
-- (void)sendPLI:(UserId)targetId
+- (void)showPictureInPicture:(const std::string&)title
 {
-    // Thin wrapper over the single PLI funnel (per-target cooldown lives there).
-    _core.send_pli(targetId);
+    if (!_pipHost) {
+        PartiesViewController* bself = self;
+        MacPipActions actions;
+        actions.return_to_main = [bself]() { bself->_core.return_from_pip(); };
+        actions.set_volume = [bself](float volume) { bself->_core.set_stream_volume(volume); };
+        actions.close = [bself]() { bself->_core.close_pip(PipCloseReason::UserClosed); };
+        actions.volume = [bself]() { return bself->_core.model_.stream_volume.get(); };
+        actions.load_geometry = [bself]() -> std::optional<PipRect> {
+            const auto saved = bself->_core.settings_.get_pref("window.pip_rect");
+            return saved ? pip_rect_from_string(*saved) : std::nullopt;
+        };
+        actions.save_geometry = [bself](const PipRect& rect) {
+            if (rect.width > 0 && rect.height > 0)
+                bself->_core.settings_.set_pref("window.pip_rect", pip_rect_to_string(rect));
+        };
+        _pipHost = [[PartiesPipHost alloc] initWithDevice:_metalView.device actions:std::move(actions)];
+    }
+    if (![_pipHost showWithTitle:title]) {
+        PartiesViewController* bself = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            bself->_core.close_pip(PipCloseReason::UserClosed);
+        });
+        return;
+    }
+    [self syncVideoRouter];
 }
 
-// ── Shutdown ──────────────────────────────────────────────────────────────────
+- (VideoFrameRouter::Surfaces)videoSurfaces
+{
+    VideoFrameRouter::Surfaces surfaces;
+    surfaces.grid = _doc ? _doc->GetElementById("stream-grid") : nullptr;
+    surfaces.pip = _pipHost ? [_pipHost videoSurface] : nullptr;
+    return surfaces;
+}
+
+// Clears the surface a stream leaves when PiP changes. Metal keeps textures
+// referenced by in-flight command buffers alive itself, so the release done
+// by VideoElement::Clear is immediately safe.
+- (void)syncVideoRouter
+{
+    _videoRouter.sync(_core.pip_.stream(), [self videoSurfaces]);
+}
 
 - (void)shutdown
 {
@@ -1262,15 +1169,17 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         _debuggerInitialized = false;
     }
 #endif
+    [_pipHost releaseDocuments];
     if (_rmlContext) {
         Rml::RemoveContext(_rmlContext->GetName());
         _rmlContext = nullptr;
         _metalView.rmlContext = nullptr;
     }
-    if (_rmlInitialized) {
-        Rml::Shutdown();
-        _rmlInitialized = false;
-    }
+    const auto rml_gone = _rmlInitialized ? shutdown_rml() : rml_not_running();
+    _rmlInitialized = false;
+    [_pipHost destroyWindow:rml_gone];
+    [_pipHost release];
+    _pipHost = nil;
     if (_backendInitialized) {
         Backend::Shutdown();
         _backendInitialized = false;
@@ -1281,13 +1190,11 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
 @end
 
-// ── PartiesAppDelegate ────────────────────────────────────────────────────────
-
 @implementation PartiesAppDelegate {
     NSWindow*              _window;
     PartiesViewController* _viewController;
     PartiesStatusItemController* _statusItemController;
-    bool                   _quicInitialized;
+    std::optional<parties::QuicLibrary> _quic;
     bool                   _previewMode;
 }
 
@@ -1299,13 +1206,14 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         options.dsn = @SENTRY_DSN_VALUE;
 #ifdef PARTIES_RETAIL
         options.environment = @"production";
+        options.tracesSampleRate = @(kProductionTracesSampleRate);
 #else
         options.environment = @"development";
+        options.tracesSampleRate = @(kDevelopmentTracesSampleRate);
 #endif
         options.enableCrashHandler = YES;
         options.enableAppHangTracking = YES;
         options.sendDefaultPii = YES;
-        options.tracesSampleRate = @1.0;
     }];
 #endif
 #endif
@@ -1313,11 +1221,10 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     const std::string fixture = macos_ui_fixture_argument();
     _previewMode = !fixture.empty() && IsUIFixtureScenario(fixture);
     if (!_previewMode) {
-        if (!parties::quic_init()) {
+        if (auto quic = parties::QuicLibrary::open())
+            _quic.emplace(std::move(*quic));
+        else
             NSLog(@"[Parties] Failed to initialize MsQuic");
-        } else {
-            _quicInitialized = true;
-        }
     }
 
     _viewController = [[PartiesViewController alloc] init];
@@ -1341,9 +1248,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
                                           styleMask:style
                                             backing:NSBackingStoreBuffered
                                               defer:NO];
-    // Hide the native title bar while keeping traffic-light buttons.
-    // The content view extends into the title bar area; our RmlUI titlebar
-    // renders the background and the native buttons float on top of it.
     _window.titlebarAppearsTransparent = YES;
     _window.titleVisibility            = NSWindowTitleHidden;
     _window.styleMask                 |= NSWindowStyleMaskFullSizeContentView;
@@ -1373,8 +1277,6 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 #ifdef SPARKLE_ENABLED
     if (!_previewMode) {
         macos_updater_init();
-        // Proactively check shortly after launch so an available update is offered
-        // promptly, rather than only on Sparkle's periodic background schedule.
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             macos_updater_check_in_background();
@@ -1454,7 +1356,10 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
 - (BOOL)applicationShouldHandleReopen:(NSApplication*)sender hasVisibleWindows:(BOOL)hasVisibleWindows
 {
-    if (!hasVisibleWindows && _statusItemController)
+    // A visible picture-in-picture panel counts as a visible window, so judge
+    // the main window itself instead of hasVisibleWindows.
+    const BOOL mainVisible = _window.visible && !_window.miniaturized && !NSApp.hidden;
+    if (!mainVisible && _statusItemController)
         [_statusItemController showWindow:nil];
     return YES;
 }
@@ -1464,10 +1369,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     [_statusItemController release];
     _statusItemController = nil;
     [_viewController shutdown];
-    if (_quicInitialized) {
-        parties::quic_cleanup();
-        _quicInitialized = false;
-    }
+    _quic.reset();
 }
 
 @end

@@ -1,8 +1,3 @@
-// Embedded Inter fonts for the designer's built-in UI.
-// Uses C++23 #embed to include the TTF data directly in the binary.
-// These are loaded during init so the manager window always has fonts,
-// regardless of which asset folders are configured.
-
 #include <RmlUi/Core/Core.h>
 #include <RmlUi/Core/Types.h>
 #include <cstdio>
@@ -42,4 +37,4 @@ void LoadEmbeddedFonts() {
 		std::printf("[Designer] Warning: some embedded fonts failed to load\n");
 }
 
-} // namespace designer
+}

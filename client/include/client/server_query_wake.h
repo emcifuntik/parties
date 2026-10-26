@@ -6,9 +6,6 @@
 
 namespace parties::client {
 
-// Sticky wake event for the connectionless server browser. A request made
-// before the polling thread begins waiting is retained, so a freshly published
-// server list can never fall through to the periodic refresh delay.
 class ServerQueryWakeEvent {
 public:
     void request() {
@@ -28,7 +25,6 @@ public:
         condition_.notify_all();
     }
 
-    // Returns false only after stop(). A timeout is a normal periodic poll.
     bool wait_for_next(std::chrono::milliseconds period) {
         std::unique_lock lock(mutex_);
         condition_.wait_for(lock, period, [this] { return pending_ || stopped_; });
@@ -44,4 +40,4 @@ private:
     bool stopped_ = false;
 };
 
-} // namespace parties::client
+}

@@ -1,5 +1,6 @@
 #include "nvidia/nvdec_decoder.h"
 #include "nvidia/nvenc_encoder.h"
+#include "test_skip.h"
 
 #include <d3d11.h>
 #include <d3d12.h>
@@ -24,8 +25,6 @@ namespace {
 constexpr uint32_t width = 1920;
 constexpr uint32_t height = 1080;
 
-// The default crosses a recurring keyframe boundary. CTest also invokes this
-// executable with one frame to validate the initial surface independently.
 constexpr uint32_t default_frame_count = 31;
 
 struct EncodedFrame {
@@ -42,8 +41,6 @@ bool wait_for_fence(ID3D12Fence* fence, uint64_t value) {
     CloseHandle(event);
     return completed;
 }
-// Read a small exported plane region while retaining its lease. Decoding into
-// private reference arrays must not change any texture still owned by the UI.
 std::vector<uint8_t> snapshot_plane(ID3D12Device* device, ID3D12Resource* resource,
                                     ID3D12Fence* ready, uint64_t ready_value) {
     if (!resource) return {};
@@ -101,7 +98,7 @@ std::vector<uint8_t> snapshot_plane(ID3D12Device* device, ID3D12Resource* resour
     readback->Unmap(0, &written);
     return result;
 }
-} // namespace
+}
 
 int main(int argc, char** argv) {
     const bool retain_surfaces = argc > 2 && std::strcmp(argv[2], "retain") == 0;
@@ -127,7 +124,7 @@ int main(int argc, char** argv) {
     }
     if (!nvidia_adapter) {
         std::cout << "NVIDIA adapter unavailable; skipping\n";
-        return 77;
+        return kSkipExitCode;
     }
 
     ComPtr<ID3D11Device> d3d11_device;
@@ -154,7 +151,7 @@ int main(int argc, char** argv) {
     if (!encoder.init(d3d11_device.Get(), width, height, 30, 1'500'000,
                       test_codec) || encoder.info().codec != test_codec) {
         std::cout << "Requested NVENC codec unavailable; skipping\n";
-        return 77;
+        return kSkipExitCode;
     }
     std::vector<EncodedFrame> encoded;
     encoder.on_encoded = [&encoded](const uint8_t* data, size_t size, bool) {
@@ -189,7 +186,6 @@ int main(int argc, char** argv) {
     std::shared_ptr<void> decoded_owner;
     uint32_t decoded_frames = 0;
     bool decoded_rgba = false;
-    // Model a minimized renderer retaining its textures while decode continues.
     std::vector<std::shared_ptr<void>> retained_owners;
     bool retaining = retain_surfaces;
     uint32_t frames_at_release = 0;
@@ -202,7 +198,7 @@ int main(int argc, char** argv) {
     NvdecDecoder decoder;
     if (!decoder.init(test_codec, width, height, d3d12_device.Get())) {
         std::cout << "NVDEC unavailable; skipping\n";
-        return 77;
+        return kSkipExitCode;
     }
     decoder.on_decoded = [&](const parties::encdec::DecodedFrame& frame) {
             auto* resource = static_cast<ID3D12Resource*>(frame.native_d3d12_resource);

@@ -18,45 +18,36 @@ struct ServerEntry {
     Rml::String host;
     int port = 7800;
     Rml::String last_username;
-    Rml::String initials;   // first 2 chars of name, computed by App
-    int color_index = 0;    // 0-4, derived from name hash for icon color
+    Rml::String initials;
+    int color_index = 0;
 
-    // Live status from the connectionless server query (auto-refreshed while
-    // the lobby is visible). Populated by AppCore's polling thread.
     bool        online = false;
-    Rml::String users_text;     // "3 / 64" when online, empty otherwise
-    bool        locked = false; // password-protected
+    Rml::String users_text;
+    bool        locked = false;
 };
 
 class ServerListModel : public rml::Model {
 public:
-    // --- Bound state (Property<T> auto-dirties on assignment) ---
     rml::Prop<Rml::Vector<ServerEntry>> servers;
-    rml::Prop<Rml::String> party_count_text;  // e.g. "2 parties"
+    rml::Prop<Rml::String> party_count_text;
 
-    // Global profile name shown on the server launcher. This is independent
-    // from the optional nickname override stored for each saved server.
     rml::Prop<Rml::String> global_name;
     rml::Prop<bool>        show_global_name_editor{false};
     rml::Prop<Rml::String> global_name_input;
     rml::Prop<Rml::String> global_name_error;
 
-    // Per-server nickname editor, opened from the saved server context menu.
-    // An empty input resolves to `global_name` when saved/connected.
     rml::Prop<bool>        show_server_nickname_editor{false};
     rml::Prop<int>         server_nickname_server_id{0};
     rml::Prop<Rml::String> server_nickname_server_name;
     rml::Prop<Rml::String> server_nickname_input;
     rml::Prop<Rml::String> server_nickname_error;
 
-    // Add server form. An empty nickname resolves to the global profile name.
     rml::Prop<bool>        show_add_form{false};
     rml::Prop<Rml::String> edit_host;
     rml::Prop<Rml::String> edit_port;
     rml::Prop<Rml::String> edit_nickname;
     rml::Prop<Rml::String> edit_error;
 
-    // Login overlay
     rml::Prop<bool>        show_login{false};
     rml::Prop<bool>        login_show_username{false};
     rml::Prop<Rml::String> login_username;
@@ -64,9 +55,8 @@ public:
     rml::Prop<Rml::String> login_error;
     rml::Prop<Rml::String> login_status;
 
-    // Identity / seed phrase onboarding
     rml::Prop<bool>        show_onboarding{false};
-    rml::Prop<int>         onboarding_step{0};  // 0=path selection, 1=recovery confirmation
+    rml::Prop<int>         onboarding_step{0};
     rml::Prop<bool>        show_restore{false};
     rml::Prop<bool>        show_key_import{false};
     rml::Prop<Rml::String> seed_phrase;
@@ -75,18 +65,14 @@ public:
     rml::Prop<Rml::String> fingerprint;
     rml::Prop<bool>        has_identity{false};
 
-    // Active server tracking
     rml::Prop<int>         connected_server_id{0};
 
-    // Auto-reconnect banner (shown in the lobby while reconnecting)
     rml::Prop<bool>        reconnecting{false};
     rml::Prop<Rml::String> reconnect_status;
 
-    // TOFU certificate warning
     rml::Prop<bool>        show_tofu_warning{false};
-    rml::Prop<Rml::String> tofu_fingerprint;  // new (mismatched) fingerprint
+    rml::Prop<Rml::String> tofu_fingerprint;
 
-    // --- Callbacks (set by App) ---
     std::function<void(int)>  on_connect_server;
     std::function<void(int)>  on_delete_server;
     std::function<void()>     on_save_global_name;
@@ -103,13 +89,13 @@ public:
     std::function<void()>     on_import_key;
     std::function<void()>     on_copy_fingerprint;
     std::function<void()>     on_copy_seed;
-    std::function<void(int)>  on_show_server_menu;  // server_id
-    std::function<void()>     on_tofu_accept;       // trust new certificate
-    std::function<void()>     on_tofu_reject;       // cancel connection
+    std::function<void(int)>  on_show_server_menu;
+    std::function<void()>     on_tofu_accept;
+    std::function<void()>     on_tofu_reject;
 
 protected:
     const char* model_name() const override { return "serverlist"; }
     void build(rml::Builder& b) override;
 };
 
-} // namespace parties::client
+}

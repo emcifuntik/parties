@@ -1,4 +1,3 @@
-// Dynamic loader for NVIDIA Video Codec SDK DLLs.
 #include "nvidia_loader.h"
 
 #include <cstring>
@@ -20,7 +19,6 @@ bool load_nvenc(NV_ENCODE_API_FUNCTION_LIST& funcs) {
 
     if (tried) {
         if (!ok) return false;
-        // Re-fill function list from cached module
     } else {
         tried = true;
         mod = LoadLibraryA("nvEncodeAPI64.dll");
@@ -137,16 +135,19 @@ bool load_cuvid(CuvidApi& api) {
     all_ok &= load_sym(mod, "cuvidGetDecoderCaps", api.cuvidGetDecoderCaps);
     all_ok &= load_sym(mod, "cuvidCreateDecoder", api.cuvidCreateDecoder);
     all_ok &= load_sym(mod, "cuvidDestroyDecoder", api.cuvidDestroyDecoder);
-    // SDK 13.1 opaque-output functions are optional by design. Their absence
-    // is a capability result, not a loader failure.
-    load_sym(mod, "cuvidRegisterDecodeSurfaces", api.cuvidRegisterDecodeSurfaces);
-    load_sym(mod, "cuvidDecodePictureAsync", api.cuvidDecodePictureAsync);
     all_ok &= load_sym(mod, "cuvidDecodePicture", api.cuvidDecodePicture);
     all_ok &= load_sym(mod, "cuvidMapVideoFrame64", api.cuvidMapVideoFrame64);
     all_ok &= load_sym(mod, "cuvidUnmapVideoFrame64", api.cuvidUnmapVideoFrame64);
     all_ok &= load_sym(mod, "cuvidCreateVideoParser", api.cuvidCreateVideoParser);
     all_ok &= load_sym(mod, "cuvidDestroyVideoParser", api.cuvidDestroyVideoParser);
     all_ok &= load_sym(mod, "cuvidParseVideoData", api.cuvidParseVideoData);
+
+    CuvidOpaqueOutputApi opaque_output{};
+    if (load_sym(mod, "cuvidRegisterDecodeSurfaces", opaque_output.cuvidRegisterDecodeSurfaces) &&
+        load_sym(mod, "cuvidDecodePictureAsync", opaque_output.cuvidDecodePictureAsync))
+        api.opaque_output = opaque_output;
+    else
+        api.opaque_output.reset();
 
     if (!all_ok) {
         LOG_ERROR("Failed to load some CUVID functions");
@@ -157,4 +158,4 @@ bool load_cuvid(CuvidApi& api) {
     return true;
 }
 
-} // namespace parties::encdec::nvidia
+}

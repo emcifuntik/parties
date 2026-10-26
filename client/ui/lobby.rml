@@ -17,14 +17,11 @@
 </head>
 <body class="fullscreen">
 
-    <!-- Custom titlebar -->
     <div class="titlebar" id="titlebar-drag">
-        <!-- Windows: logo + name on left -->
         <div class="titlebar-left">
             <svg class="titlebar-logo" src="logo.svg" width="18" height="18" />
             <span class="titlebar-title">parties</span>
         </div>
-        <!-- macOS: logo + name centred (traffic-light buttons live on the left natively) -->
         <div class="titlebar-center">
             <svg class="titlebar-logo" src="logo.svg" width="18" height="18" />
             <span class="titlebar-title">parties</span>
@@ -49,11 +46,9 @@
         </div>
     </div>
 
-    <!-- App content area (below titlebar) -->
     <div class="app-content" data-model="lobby"
          data-class-mobile-content="mobile_show_content">
 
-    <!-- Update pill (absolutely positioned over titlebar) -->
     <div class="titlebar-update" data-if="update_available"
          data-event-click="apply_update"
          data-class-downloading="update_downloading"
@@ -62,18 +57,13 @@
         <span class="update-pill-text" data-if="update_ready">Restart to update</span>
     </div>
 
-    <!-- ============================================================
-         HOME SCREEN — full-screen party tiles (when not connected)
-         ============================================================ -->
     <div class="home-screen" data-if="is_connected == false">
         <div class="home-inner" data-model="serverlist">
-            <!-- Auto-reconnect banner -->
             <div class="reconnect-banner" data-if="reconnecting">
                 <span class="reconnect-spinner"></span>
                 <span class="reconnect-text">{{ reconnect_status }}</span>
             </div>
 
-            <!-- Party grid content -->
             <div class="home-content">
                 <div class="home-toolbar">
                     <div class="home-greeting">
@@ -120,7 +110,6 @@
                             </div>
                         </div>
                     </div>
-                    <!-- Add party card -->
                     <div class="party-card party-card-add" data-event-click="add_server">
                         <div class="party-card-icon party-card-icon-add">
                             <span class="party-card-plus">+</span>
@@ -133,12 +122,6 @@
         </div>
     </div>
 
-    <!-- ============================================================
-         PARTY VIEW — sidebar + main content (when connected)
-         ============================================================ -->
-
-    <!-- Every connected application route uses the same channel sidebar.
-         Settings is the sole exception because it owns a dedicated settings nav. -->
     <div class="sidebar" id="channel-sidebar" data-model="lobby"
          data-if="is_connected && route != 'settings'">
         <div class="server-header ui-header">
@@ -205,14 +188,11 @@
                 </div>
             </div>
 
-            <!-- (text channel creation uses modal below) -->
-
             <div class="chat-spaceholder"></div>
         </div>
 
         <div class="sidebar-bottom">
             <div class="user-island">
-                <!-- User info row -->
                 <div class="user-island-top">
                     <gradient_circle class="user-avatar" data-attr-seed="username" />
                     <div class="user-island-info" data-model="serverlist"
@@ -224,7 +204,6 @@
                         <svg src="icon-settings.svg" width="16" height="16" />
                     </div>
                 </div>
-                <!-- Voice controls (visible when in a channel) -->
                 <div class="voice-btn-row" data-if="current_channel > 0">
                     <div class="voice-btn ui-icon-button" data-class-active="is_muted"
                          data-event-click="toggle_mute">
@@ -255,22 +234,17 @@
         </div>
     </div>
 
-    <!-- Main content -->
     <div class="main-content" data-if="is_connected" data-model="lobby">
-        <!-- Mobile back button (iOS only, shown via CSS) -->
         <div class="mobile-back-bar" data-if="route != 'streams'" data-event-click="mobile_back">
             <span class="mobile-back-arrow"></span>
             <span class="mobile-back-label">Channels</span>
             <span class="mobile-back-context" data-if="route == 'room' && current_channel > 0">{{ current_channel_name }}</span>
         </div>
 
-        <!-- Not connected: empty state -->
         <div class="no-server-state" data-if="is_connected == false">
             <span class="text-muted-msg">Select a server to get started</span>
         </div>
 
-        <!-- Settings is a routed page, not an overlay flag. Only one top-level
-             route can exist, so it cannot render together with chat or room. -->
         <div class="settings-overlay" id="route-settings" data-if="route == 'settings'">
             <div class="settings-nav" id="settings-nav">
                 <div class="settings-nav-title">Settings</div>
@@ -309,7 +283,6 @@
                     </div>
                 </div>
 
-                <!-- Audio & Voice: matches the compact design specification. -->
                 <div class="settings-scroll settings-audio-page" data-if="settings_section == 0">
                     <div class="settings-device-grid">
                         <div class="settings-device-field">
@@ -462,9 +435,9 @@
                         <span>Use the in-app microphone and audio controls instead. iOS does not allow Parties to register system-wide shortcuts.</span>
                     </div>
                     <div class="settings-config-card settings-keybind-list">
-                        <div class="settings-keybind-row"><div class="settings-row-copy"><span class="settings-feature-title">Toggle Mute</span><span class="settings-feature-copy">Mute or restore your microphone</span></div><div class="settings-keycap" data-event-click="mute_bind"><span data-if="mute_binding">Press a key...</span><span data-if="mute_binding == false && mute_key > 0">{{ mute_key_name }}</span><span data-if="mute_binding == false && mute_key == 0">Not set</span></div></div>
-                        <div class="settings-keybind-row"><div class="settings-row-copy"><span class="settings-feature-title">Toggle Deafen</span><span class="settings-feature-copy">Mute all incoming room audio</span></div><div class="settings-keycap" data-event-click="deafen_bind"><span data-if="deafen_binding">Press a key...</span><span data-if="deafen_binding == false && deafen_key > 0">{{ deafen_key_name }}</span><span data-if="deafen_binding == false && deafen_key == 0">Not set</span></div></div>
-                        <div class="settings-keybind-row"><div class="settings-row-copy"><span class="settings-feature-title">Push to Talk</span><span class="settings-feature-copy">Transmit while the assigned shortcut is held</span></div><div class="settings-keycap" data-event-click="ptt_bind"><span data-if="ptt_binding">Press a key...</span><span data-if="ptt_binding == false && ptt_key > 0">{{ ptt_key_name }}</span><span data-if="ptt_binding == false && ptt_key == 0">Not set</span></div></div>
+                        <div class="settings-keybind-row"><div class="settings-row-copy"><span class="settings-feature-title">Toggle Mute</span><span class="settings-feature-copy">Mute or restore your microphone</span></div><div class="settings-keycap ui-control" data-event-click="mute_bind"><span data-if="mute_binding">Press a key...</span><span data-if="mute_binding == false && mute_key_assigned">{{ mute_key_name }}</span><span data-if="mute_binding == false && mute_key_assigned == false">Not set</span></div></div>
+                        <div class="settings-keybind-row"><div class="settings-row-copy"><span class="settings-feature-title">Toggle Deafen</span><span class="settings-feature-copy">Mute all incoming room audio</span></div><div class="settings-keycap ui-control" data-event-click="deafen_bind"><span data-if="deafen_binding">Press a key...</span><span data-if="deafen_binding == false && deafen_key_assigned">{{ deafen_key_name }}</span><span data-if="deafen_binding == false && deafen_key_assigned == false">Not set</span></div></div>
+                        <div class="settings-keybind-row"><div class="settings-row-copy"><span class="settings-feature-title">Push to Talk</span><span class="settings-feature-copy">Transmit while the assigned shortcut is held</span></div><div class="settings-keycap ui-control" data-event-click="ptt_bind"><span data-if="ptt_binding">Press a key...</span><span data-if="ptt_binding == false && ptt_key_assigned">{{ ptt_key_name }}</span><span data-if="ptt_binding == false && ptt_key_assigned == false">Not set</span></div></div>
                         <div class="settings-keybind-delay" data-if="ptt_enabled"><div class="settings-slider-heading"><span class="settings-feature-title">Push-to-talk release delay</span><span class="settings-meta-value">{{ ptt_delay_text }}</span></div><input type="range" class="settings-wide-slider ui-range" min="0" max="1000" step="50" data-value="ptt_delay" data-event-change="ptt_delay_changed" /></div>
                     </div>
                 </div>
@@ -481,7 +454,6 @@
             </div>
         </div>
 
-        <!-- Share target picker -->
         <div class="share-picker-overlay" data-if="route == 'share-picker'">
             <div class="share-picker-header ui-header">
                 <div class="share-picker-heading">
@@ -561,7 +533,6 @@
             </div>
         </div>
 
-        <!-- Channel content (voice) -->
         <div class="channel-content" data-if="route == 'room' || route == 'streams'">
             <div class="channel-header room-channel-header ui-header" data-if="route == 'room' && current_channel > 0">
                 <div class="channel-heading">
@@ -574,8 +545,6 @@
                 <span class="ui-heading-page">Choose a channel</span>
                 <span class="channel-empty-description ui-body">Select a room or chat from the channel list to get started.</span>
             </div>
-            <!-- Voice stage. The existing channel collection remains the single
-                 source of truth; this is only a second, purpose-built view of it. -->
             <div class="voice-stage" data-if="route == 'room' && current_channel > 0 && watching_count == 0">
                 <div data-for="ch : channels" data-if="ch.id == current_channel" class="voice-stage-room">
                     <div class="voice-stage-summary">
@@ -608,10 +577,6 @@
                 </div>
             </div>
 
-            <!-- Active stream viewer grid (watching one or more sharers).
-                 The chips toggle individual sharers in/out of the grid; each
-                 watched stream renders as a <video_frame> cell whose stable id
-                 ("screen-share-<id>") the platform layer pushes frames to. -->
             <div class="screen-share-area" data-if="route == 'streams' && watching_count > 0"
                  data-class-fullscreen="stream_fullscreen">
                 <div class="screen-share-header ui-header">
@@ -650,11 +615,25 @@
                      data-class-many="watching_count > 3">
                     <div class="stream-cell" data-for="w : watched">
                         <video_frame class="stream-cell-video"
+                                     data-if="w.id != pip_stream_id"
                                      data-attr-id="w.element_id"
                                      data-attr-streamid="w.id"
                                      data-event-dblclick="toggle_stream_fullscreen"
                                      data-event-click="stream_tap_fullscreen" />
-                        <div class="stream-cell-label">{{ w.name }}</div>
+                        <div class="stream-cell-pip-placeholder" data-if="w.id == pip_stream_id">
+                            <span class="ui-body">Playing in picture-in-picture</span>
+                        </div>
+                        <div class="stream-cell-footer">
+                            <span class="stream-cell-label ui-body">{{ w.name }}</span>
+                            <div class="stream-cell-pip ui-icon-button"
+                                 data-if="pip_supported"
+                                 data-attr-id="'stream-pip-' + w.id"
+                                 data-event-click="toggle_stream_pip(w.id)"
+                                 data-attr-title="w.id == pip_stream_id ? 'Exit picture-in-picture' : 'Picture-in-picture'">
+                                <svg src="icon-pip.svg" width="18" height="18" data-if="w.id != pip_stream_id" />
+                                <svg src="icon-pip-exit.svg" width="18" height="18" data-if="w.id == pip_stream_id" />
+                            </div>
+                        </div>
                     </div>
                 </div>
                 <div class="stream-call-dock">
@@ -683,12 +662,9 @@
 
         </div>
 
-        <!-- Chat is a routed page. The nested chat model owns data only, never
-             document visibility, so settings and chat cannot overlap. -->
         <div class="route-page route-chat" id="route-chat" data-if="route == 'chat'">
         <div class="chat-content" data-model="chat" data-if="active_channel > 0">
 
-            <!-- Header -->
             <div class="chat-header ui-header">
                 <div class="chat-header-left">
                     <svg class="chat-header-icon" src="icon-chat.svg" width="18" height="18" />
@@ -704,7 +680,6 @@
                 </div>
             </div>
 
-            <!-- Search bar -->
             <div class="chat-search-bar" data-if="show_search">
                 <input type="text" class="chat-search-input ui-input ui-body"
                        data-value="search_query"
@@ -712,7 +687,6 @@
                        placeholder="Search messages..." />
             </div>
 
-            <!-- Pinned messages panel -->
             <div class="chat-pinned-panel" data-if="show_pinned">
                 <div class="chat-pinned-header">
                     <span class="ui-item-title">Pinned Messages</span>
@@ -737,7 +711,6 @@
                 </div>
             </div>
 
-            <!-- Search results (shown when search is active) -->
             <div class="chat-messages" data-if="show_search">
                 <div data-for="sr : search_results" class="msg-row">
                     <div class="msg-avatar-wrap">
@@ -755,7 +728,6 @@
                 </div>
             </div>
 
-            <!-- Message list (hidden during search) -->
             <div class="chat-messages" id="chat-messages" data-if="show_search == false">
                 <div class="chat-welcome">
                     <div class="chat-welcome-icon">
@@ -810,7 +782,6 @@
                 </div>
             </div>
 
-            <!-- Compose area -->
             <div class="chat-compose">
                 <div class="pending-files" data-if="pending_files.size > 0">
                     <div data-for="pf : pending_files">
@@ -840,11 +811,10 @@
         </div>
     </div>
 
-    </div><!-- /main-content -->
+    </div>
 
-    </div><!-- /app-content -->
+    </div>
 
-    <!-- User context menu (non-blocking, RmlUi overlay) -->
     <div class="user-menu-backdrop" data-model="lobby" data-if="show_user_menu">
         <div class="user-menu-popup">
             <div class="user-menu-header ui-popup-header">
@@ -917,7 +887,6 @@
         </div>
     </div>
 
-    <!-- TOFU certificate warning modal -->
     <div class="modal-backdrop" data-model="serverlist" data-if="show_tofu_warning">
         <div class="modal-box ui-dialog">
             <h1 class="warning-title">Certificate Changed</h1>
@@ -931,8 +900,6 @@
         </div>
     </div>
 
-    <!-- Global launcher profile name. Per-server nicknames are edited from the
-         saved server context menu and remain independent from this value. -->
     <div class="modal-backdrop" data-model="serverlist" data-if="show_global_name_editor">
         <div class="modal-box name-editor-dialog ui-dialog">
             <h1>Change Display Name</h1>
@@ -945,7 +912,6 @@
         </div>
     </div>
 
-    <!-- Per-server nickname, opened from the saved party context menu. -->
     <div class="modal-backdrop" data-model="serverlist" data-if="show_server_nickname_editor">
         <div class="modal-box name-editor-dialog ui-dialog">
             <h1>Change Server Nickname</h1>
@@ -959,7 +925,6 @@
         </div>
     </div>
 
-    <!-- Login modal for password-protected or not-yet-queried servers. -->
     <div class="modal-backdrop" data-model="serverlist" data-if="show_login">
         <div class="modal-box ui-dialog">
             <h1>Connect</h1>
@@ -981,7 +946,6 @@
         </div>
     </div>
 
-    <!-- Seed phrase onboarding modal (first launch) -->
     <div class="modal-backdrop onboarding-backdrop" data-model="serverlist" data-if="show_onboarding">
         <div class="onboarding-shell">
             <div class="onboarding-story">
@@ -1071,7 +1035,6 @@
         </div>
     </div>
 
-    <!-- Add server modal -->
     <div class="modal-backdrop" data-model="serverlist" data-if="show_add_form">
         <div class="modal-box party-connect-dialog ui-dialog">
             <div class="party-connect-header">
@@ -1097,7 +1060,6 @@
         </div>
     </div>
 
-    <!-- Create channel modal -->
     <div class="modal-backdrop" data-model="lobby" data-if="show_create_channel">
         <div class="modal-box ui-dialog">
             <h1>Create Channel</h1>
@@ -1110,7 +1072,6 @@
         </div>
     </div>
 
-    <!-- Create text channel modal -->
     <div class="modal-backdrop" data-model="chat" data-if="show_create_text_channel">
         <div class="modal-box ui-dialog">
             <h1>Create Text Channel</h1>
@@ -1123,7 +1084,6 @@
         </div>
     </div>
 
-    <!-- Rename channel modal -->
     <div class="modal-backdrop" data-model="lobby" data-if="show_rename_channel">
         <div class="modal-box ui-dialog">
             <h1>Rename Channel</h1>

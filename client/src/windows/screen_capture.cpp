@@ -2,7 +2,6 @@
 #include <parties/profiler.h>
 #include <parties/log.h>
 
-// WinRT / Windows Graphics Capture headers
 #include <winrt/base.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Metadata.h>
@@ -44,9 +43,7 @@ namespace {
 // critical system interaction serialized; frame delivery remains concurrent.
 std::mutex g_wgc_session_setup_mutex;
 
-} // namespace
-
-// ─── Helper: Win32 D3D11 device → WinRT IDirect3DDevice ─────────────────────
+}
 
 static IDirect3DDevice CreateWinRTDevice(ID3D11Device* d3dDevice) {
     ComPtr<IDXGIDevice> dxgiDevice;
@@ -57,8 +54,6 @@ static IDirect3DDevice CreateWinRTDevice(ID3D11Device* d3dDevice) {
 
     return inspectable.as<IDirect3DDevice>();
 }
-
-// ─── Helper: create capture item ─────────────────────────────────────────────
 
 static GraphicsCaptureItem CreateItemForWindow(HWND hwnd) {
     auto interop = winrt::get_activation_factory<
@@ -84,13 +79,8 @@ static GraphicsCaptureItem CreateItemForMonitor(HMONITOR hmon) {
     return item;
 }
 
-// ─── One-shot WGC thumbnails ─────────────────────────────────────────────────
-
 namespace {
 
-// The picker captures every application from one background thread. Reusing a
-// D3D11 device avoids recreating an adapter/device for every card while keeping
-// the live stream capture session completely independent.
 struct ThumbnailCaptureContext {
     HRESULT apartment_result = E_FAIL;
     ComPtr<ID3D11Device> device;
@@ -200,8 +190,6 @@ static CaptureThumbnail ReadThumbnailTexture(
     result.source = CaptureThumbnail::Source::WindowsGraphicsCapture;
     result.rgba.resize(static_cast<size_t>(thumb_width) * thumb_height * 4);
 
-    // Bilinear sampling happens only for the 320x180 picker texture. It avoids
-    // uploading a full-sized window to RmlUi and keeps text/icon previews crisp.
     for (uint32_t y = 0; y < thumb_height; ++y) {
         const double source_y = ((static_cast<double>(y) + 0.5) * source_height /
                                  thumb_height) - 0.5;
@@ -312,7 +300,6 @@ static CaptureThumbnail CaptureWindowThumbnailWgc(ThumbnailCaptureContext& captu
                         frame.Close();
                     }
                 } catch (...) {
-                    // The target may disappear between enumeration and capture.
                 }
 
                 {
@@ -337,9 +324,6 @@ static CaptureThumbnail CaptureWindowThumbnailWgc(ThumbnailCaptureContext& captu
         CaptureThumbnail result;
         {
             std::unique_lock lock(state->mutex);
-            // A composited frame normally arrives in one refresh interval. The
-            // bounded wait prevents a protected/hung target from stalling every
-            // card that follows it in the picker.
             state->ready.wait_for(lock, std::chrono::milliseconds(350),
                                   [&state] { return state->complete; });
             if (state->complete)
@@ -359,7 +343,7 @@ static CaptureThumbnail CaptureWindowThumbnailWgc(ThumbnailCaptureContext& captu
     }
 }
 
-} // namespace
+}
 
 struct ScreenCapture::ThumbnailSession::Impl {
     ThumbnailCaptureContext capture_context;
@@ -369,8 +353,6 @@ ScreenCapture::ThumbnailSession::ThumbnailSession()
     : impl_(std::make_unique<Impl>()) {}
 
 ScreenCapture::ThumbnailSession::~ThumbnailSession() = default;
-
-// ─── Pimpl holding WinRT capture state ───────────────────────────────────────
 
 struct ScreenCapture::Impl {
     // Revoked WinRT events can already be queued. Keep their guard alive after
@@ -387,8 +369,6 @@ struct ScreenCapture::Impl {
     event_token frame_arrived_token{};
     event_token closed_token{};
 };
-
-// ─── ScreenCapture implementation ────────────────────────────────────────────
 
 ScreenCapture::ScreenCapture() = default;
 
@@ -410,7 +390,6 @@ bool ScreenCapture::init() {
         DXGI_ADAPTER_DESC1 desc{};
         adapter->GetDesc1(&desc);
 
-        // Check if this adapter has any active outputs (monitors connected)
         ComPtr<IDXGIOutput> output;
         bool has_outputs = (adapter->EnumOutputs(0, &output) != DXGI_ERROR_NOT_FOUND);
 
@@ -420,7 +399,6 @@ bool ScreenCapture::init() {
         adapter.Reset();
     }
 
-    // Create D3D11 device on the adapter with outputs (or default if none found)
     D3D_FEATURE_LEVEL feature_level;
     UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
     HRESULT hr;
@@ -524,24 +502,19 @@ std::vector<CaptureTarget> ScreenCapture::enumerate_windows() {
 
         if (!IsWindowVisible(hwnd)) return TRUE;
 
-        // Skip cloaked windows (UWP suspended, virtual desktops)
         BOOL cloaked = FALSE;
         DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked));
         if (cloaked) return TRUE;
 
-        // Skip windows with no title
         int len = GetWindowTextLengthW(hwnd);
         if (len == 0) return TRUE;
 
-        // Skip tool windows
         LONG exStyle = GetWindowLong(hwnd, GWL_EXSTYLE);
         if (exStyle & WS_EX_TOOLWINDOW) return TRUE;
 
-        // Get window title
         std::wstring title(len + 1, L'\0');
         GetWindowTextW(hwnd, title.data(), len + 1);
 
-        // Convert to UTF-8
         int utf8_len = WideCharToMultiByte(CP_UTF8, 0, title.c_str(), -1, nullptr, 0, nullptr, nullptr);
         std::string name(utf8_len - 1, '\0');
         WideCharToMultiByte(CP_UTF8, 0, title.c_str(), -1, name.data(), utf8_len, nullptr, nullptr);
@@ -574,7 +547,6 @@ std::vector<CaptureTarget> ScreenCapture::enumerate_monitors() {
             target.type = CaptureTarget::Type::Monitor;
             target.name = info.szDevice;
 
-            // Append resolution
             int w = rect->right - rect->left;
             int h = rect->bottom - rect->top;
             target.name += " (" + std::to_string(w) + "x" + std::to_string(h) + ")";
@@ -632,9 +604,6 @@ CaptureThumbnail ScreenCapture::ThumbnailSession::capture(const CaptureTarget& t
             return result;
         source_width = bounds.right - bounds.left;
         source_height = bounds.bottom - bounds.top;
-        // A window DC captures the actual target surface without copying the
-        // desktop around it. Some protected surfaces may still decline capture;
-        // the picker retains a clear fallback for those targets.
         source_dc = GetWindowDC(source_window);
     }
 
@@ -716,7 +685,6 @@ bool ScreenCapture::start(const CaptureTarget& target, uint32_t target_fps) {
     frame_count_ = 0;
 
     try {
-        // Create capture item
         if (target.type == CaptureTarget::Type::Window) {
             impl_->item = CreateItemForWindow(static_cast<HWND>(target.handle));
         } else {
@@ -728,8 +696,6 @@ bool ScreenCapture::start(const CaptureTarget& target, uint32_t target_fps) {
         height_ = static_cast<uint32_t>(size.Height);
         const auto max_frame_time = std::chrono::milliseconds(1000 / target_fps);
 
-        // Set this before subscribing: a close during startup must not be
-        // overwritten by a successful return from StartCapture below.
         capturing_.store(true, std::memory_order_release);
         impl_->closed_token = impl_->item.Closed(
             [state = impl_->callbacks](GraphicsCaptureItem const&, winrt::Windows::Foundation::IInspectable const&) {
@@ -740,14 +706,12 @@ bool ScreenCapture::start(const CaptureTarget& target, uint32_t target_fps) {
                 state->owner->capturing_.store(false, std::memory_order_release);
             });
 
-        // 3 buffers: compositor holds 1, callback holds 1, 1 spare.
         impl_->frame_pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
             impl_->winrt_device,
             DirectXPixelFormat::B8G8R8A8UIntNormalized,
             3,
             size);
 
-        // Subscribe to frame arrived events
         impl_->frame_arrived_token = impl_->frame_pool.FrameArrived(
             [this, state = impl_->callbacks, max_frame_time](Direct3D11CaptureFramePool const& sender,
                    winrt::Windows::Foundation::IInspectable const&) {
@@ -763,7 +727,7 @@ bool ScreenCapture::start(const CaptureTarget& target, uint32_t target_fps) {
                 // Software frame rate limiting for older Windows without MinUpdateInterval
                 if (!frame_limited_) {
                     auto now = std::chrono::steady_clock::now();
-                    auto limit = max_frame_time * 9 / 10;  // 90% of target interval
+                    auto limit = max_frame_time * 9 / 10;
                     if (now - last_frame_time_ < limit) {
                         frame.Close();
                         return;
@@ -775,7 +739,6 @@ bool ScreenCapture::start(const CaptureTarget& target, uint32_t target_fps) {
                 uint32_t w = static_cast<uint32_t>(content_size.Width);
                 uint32_t h = static_cast<uint32_t>(content_size.Height);
 
-                // Get D3D11 texture from WinRT surface
                 auto surface = frame.Surface();
                 auto access = surface.as<
                     ::Windows::Graphics::DirectX::Direct3D11::IDirect3DDxgiInterfaceAccess>();
@@ -786,7 +749,6 @@ bool ScreenCapture::start(const CaptureTarget& target, uint32_t target_fps) {
 
                 frame_count_++;
 
-                // Update dimensions if changed — recreate pool and skip this frame
                 if (w != width_ || h != height_) {
                     LOG_WARN("size changed: {}x{} -> {}x{}",
                                  width_, height_, w, h);
@@ -809,7 +771,6 @@ bool ScreenCapture::start(const CaptureTarget& target, uint32_t target_fps) {
                 frame.Close();
             });
 
-        // Create and start capture session
         impl_->session = impl_->frame_pool.CreateCaptureSession(impl_->item);
 
         // Remove yellow border and disable cursor compositing (Win10 2004+)
@@ -873,14 +834,11 @@ void ScreenCapture::set_frame_callback(std::function<void(ID3D11Texture2D*, uint
 void ScreenCapture::stop() {
     ZoneScopedN("ScreenCapture::stop");
     if (!impl_) return;
-    // Closed clears capturing_ too, but its session and event subscriptions
-    // still need cleanup. Drain callbacks before releasing encoder resources.
     stop_frame_delivery();
     {
         std::lock_guard lock(impl_->callbacks->mutex);
         impl_->callbacks->owner = nullptr;
     }
-    // Each cleanup is independent: one failed RPC must not skip the others.
     try { if (impl_->frame_pool) impl_->frame_pool.FrameArrived(impl_->frame_arrived_token); } catch (...) {}
     try { if (impl_->session) impl_->session.Close(); } catch (...) {}
     try { if (impl_->frame_pool) impl_->frame_pool.Close(); } catch (...) {}
@@ -903,4 +861,4 @@ void ScreenCapture::stop_frame_delivery() {
     on_frame_ = nullptr;
 }
 
-} // namespace parties::client
+}

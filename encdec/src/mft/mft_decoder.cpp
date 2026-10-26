@@ -17,12 +17,10 @@ MftDecoder::~MftDecoder() {
         mft_->ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0);
         mft_.Reset();
     }
-    if (mf_started_)
-        MFShutdown();
 }
 
 bool MftDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height) {
-    // MFT decoder handles H.264 and H.265 only
+    if (initialized_) return false;
     if (codec == VideoCodecId::AV1)
         return false;
 
@@ -30,25 +28,20 @@ bool MftDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height) {
     width_ = width;
     height_ = height;
 
-    HRESULT hr = MFStartup(MF_VERSION, MFSTARTUP_LITE);
-    if (FAILED(hr)) {
-        LOG_ERROR("MFStartup failed: {:#010x}", hr);
-        return false;
-    }
-    mf_started_ = true;
+    mf_ = MfStartupGuard::start(MfStartupMode::Lite);
+    if (!mf_) return false;
 
     GUID subtype = (codec == VideoCodecId::H265) ? MFVideoFormat_HEVC
                                                   : MFVideoFormat_H264;
     const char* name = (codec == VideoCodecId::H265) ? "H.265" : "H.264";
 
-    // Find a synchronous decoder
     MFT_REGISTER_TYPE_INFO input_info = { MFMediaType_Video, subtype };
     IMFActivate** activates = nullptr;
     UINT32 count = 0;
 
-    hr = MFTEnumEx(MFT_CATEGORY_VIDEO_DECODER,
-                   MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER,
-                   &input_info, nullptr, &activates, &count);
+    HRESULT hr = MFTEnumEx(MFT_CATEGORY_VIDEO_DECODER,
+                           MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER,
+                           &input_info, nullptr, &activates, &count);
 
     if (FAILED(hr) || count == 0) {
         LOG_ERROR("No {} decoder found", name);
@@ -65,7 +58,6 @@ bool MftDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height) {
         return false;
     }
 
-    // Set input type (compressed)
     ComPtr<IMFMediaType> in_type;
     MFCreateMediaType(&in_type);
     in_type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
@@ -78,7 +70,6 @@ bool MftDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height) {
         return false;
     }
 
-    // Set output type: enumerate available and pick NV12
     bool output_set = false;
     for (DWORD i = 0; !output_set; i++) {
         ComPtr<IMFMediaType> avail;
@@ -103,7 +94,6 @@ bool MftDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height) {
         return false;
     }
 
-    // Query output stream info
     MFT_OUTPUT_STREAM_INFO stream_info;
     hr = mft_->GetOutputStreamInfo(0, &stream_info);
     if (SUCCEEDED(hr)) {
@@ -143,7 +133,6 @@ void MftDecoder::collect_output() {
 
         if (hr == MF_E_TRANSFORM_STREAM_CHANGE) {
             if (output.pEvents) output.pEvents->Release();
-            // Re-negotiate output type after format change
             for (DWORD i = 0; ; i++) {
                 ComPtr<IMFMediaType> avail;
                 if (FAILED(mft_->GetOutputAvailableType(0, i, &avail))) break;
@@ -183,7 +172,6 @@ void MftDecoder::collect_output() {
                     uint32_t stride = nv12_stride_;
                     if (stride == 0) stride = width_;
 
-                    // Infer stride from buffer size if it doesn't match expected
                     uint32_t expected_tight = width_ * height_ * 3 / 2;
                     if (raw_len > expected_tight && stride == width_) {
                         stride = raw_len * 2 / (height_ * 3);
@@ -197,12 +185,10 @@ void MftDecoder::collect_output() {
 
                     i420_buffer_.resize(y_size + uv_size * 2);
 
-                    // Y plane: copy with stride
                     uint8_t* y_dst = i420_buffer_.data();
                     for (uint32_t row = 0; row < height_; row++)
                         std::memcpy(y_dst + row * width_, raw + row * stride, width_);
 
-                    // Deinterleave NV12 UV -> I420 U + V
                     uint8_t* u_dst = i420_buffer_.data() + y_size;
                     uint8_t* v_dst = u_dst + uv_size;
                     const uint8_t* nv12_uv_base = raw + stride * height_;
@@ -280,4 +266,4 @@ DecoderInfo MftDecoder::info() const {
     return {Backend::MFT, codec_};
 }
 
-} // namespace parties::encdec::mft
+}

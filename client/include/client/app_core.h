@@ -11,6 +11,7 @@
 #include <client/server_query_wake.h>
 #include <client/sound_player.h>
 #include <client/stream_audio_player.h>
+#include <client/stream_pip.h>
 #include <parties/types.h>
 #include <parties/video_common.h>
 #include <parties/video_frame_reorder.h>
@@ -26,6 +27,7 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <variant>
 #include <vector>
 
 namespace Rml { class Context; }
@@ -36,7 +38,7 @@ struct UserContextWindowRequest {
     int user_id = 0;
     std::string name;
     std::string channel_name;
-    int role = 3;
+    Role role = Role::User;
     bool can_manage_roles = false;
     bool can_kick = false;
     float volume = 1.0f;
@@ -44,6 +46,36 @@ struct UserContextWindowRequest {
     bool compression = false;
     float compression_target = 0.8f;
 };
+
+struct MultiStreamVideo {
+    std::function<void(UserId)> start_stream;
+    std::function<void(UserId)> stop_stream;
+    std::function<bool(UserId)> wants_pli_retry;
+};
+
+struct SingleDecoderVideo {};
+
+using VideoPresentation = std::variant<MultiStreamVideo, SingleDecoderVideo>;
+
+struct PictureInPicture {
+    std::function<void(UserId, const std::string& title)> show;
+    std::function<void(UserId, PipCloseReason)>           hide;
+};
+
+struct PickerShareFlow {
+    std::function<void()> open_picker;
+    std::function<void()> open_audio_picker;
+    std::function<void()> cancel_picker;
+};
+
+struct NativeShareFlow {
+    std::function<void()> start_native_share;
+    std::function<void()> start_native_audio_share;
+};
+
+struct NoShareFlow {};
+
+using ShareFlow = std::variant<PickerShareFlow, NativeShareFlow, NoShareFlow>;
 
 struct PlatformBridge {
     std::function<void(const std::string&)>                    copy_to_clipboard;
@@ -53,28 +85,48 @@ struct PlatformBridge {
     std::function<void(int channel_id, const std::string& name)> show_channel_menu;
     std::function<void(int server_id)>                         show_server_menu;
     std::function<void(int64_t message_id)>                    show_message_menu;
-    std::function<void()>                                      open_share_picker;
-    std::function<void()>                                      open_audio_share_picker;
-    std::function<void()>                                      on_authenticated;
     std::function<void()>                                      stop_screen_share;
     std::function<void()>                                      stop_audio_share;
-    // Force the next encoded frame to be a keyframe. AppCore applies the
-    // VIDEO_KEYFRAME_REQUEST_COOLDOWN_MS gate before calling this; may be
-    // invoked on the MsQuic worker thread or the main thread.
     std::function<void()>                                      request_keyframe;
-    // True while the decode pipeline for this watched sharer is still waiting
-    // for a keyframe (Windows: VideoDecodeGate; Apple: awaiting_keyframe_).
-    // AppCore::tick() re-sends a PLI every VIDEO_PLI_RETRY_MS while this holds.
-    std::function<bool(UserId)>                                stream_awaiting_keyframe;
     std::function<void()>                                      clear_video_element;
-    // Per-sharer video decode (set only on platforms with a multi-stream decode
-    // pipeline — i.e. Windows). When start_video_stream is set, the core treats
-    // watching as ADDITIVE (multiple grid streams); when unset (macOS/iOS, single
-    // hardware decoder) watching is single-select.
-    std::function<void(UserId)>                                start_video_stream;
-    std::function<void(UserId)>                                stop_video_stream;
     std::function<void(bool)>                                  set_keep_awake;
+    std::function<void()>                                      show_main_window;
+    std::function<void()>                                      on_audio_devices_published;
+    VideoPresentation                                          video;
+    ShareFlow                                                  share;
+    std::optional<PictureInPicture>                            pip;
 };
+
+// on_frame/on_aborted run only on the connection's MsQuic worker, so frames of
+// one sharer stay ordered after the lock is released for delivery.
+class ReorderBuffers {
+public:
+    [[nodiscard]] ReorderOutcome on_frame(UserId sharer, ParsedVideoFrame&& frame, int64_t now_us);
+    [[nodiscard]] KeyframeRequest on_aborted(UserId sharer, uint32_t frame_seq);
+    [[nodiscard]] std::vector<UserId> poll(int64_t now_us);
+    bool wants_pli_retry(UserId sharer) const;
+    void erase(UserId sharer);
+    void clear();
+
+private:
+    mutable std::mutex m_;
+    std::unordered_map<UserId, VideoFrameReorderBuffer> buffers_;
+};
+
+class PliLimiter {
+public:
+    using Clock = std::chrono::steady_clock;
+    [[nodiscard]] bool admit_outgoing(UserId target, Clock::time_point now);
+    [[nodiscard]] bool admit_incoming(Clock::time_point now);
+    void clear();
+
+private:
+    std::mutex m_;
+    std::unordered_map<UserId, Clock::time_point> last_sent_;
+    std::optional<Clock::time_point> last_incoming_;
+};
+
+enum class SingleWatchAdmit { Decode, DropUntilKeyframe, NotWatched };
 
 class AppCore {
 public:
@@ -86,26 +138,27 @@ public:
     void tick();
     void load_saved_prefs();
 
-    // Platform-provided video frame handler (platform owns decoder)
-    std::function<void(uint32_t sender_id, const uint8_t* data, size_t len)> on_video_frame_received;
+    std::function<void(UserId sender, ParsedVideoFrame&& frame)> on_video_frame_received;
 
-    // Public subsystems
+private:
+    VideoSendController video_sender_;
+
+public:
     NetClient         net_;
     AudioEngine       audio_;
     VoiceMixer        mixer_;
-    VoiceMixer        aux_mixer_{false};   // secondary stream: no voice makeup/normalization
+    VoiceMixer        aux_mixer_{false};
     Settings          settings_;
     LobbyModel        model_;
     ChatModel         chat_model_;
     ServerListModel   server_model_;
     StreamAudioPlayer stream_audio_player_;
 
-    // Shared state
     bool        authenticated_        = false;
     UserId      user_id_              = 0;
-    std::string global_name_;          // launcher profile/default for new servers
+    std::string global_name_;
     std::string username_;
-    int         role_                 = 3;
+    Role        role_                 = Role::User;
     std::string server_host_;
     uint16_t    server_port_          = 7800;
     std::string server_password_;
@@ -119,88 +172,59 @@ public:
     bool        awaiting_channel_join_ = false;
     ChannelId   pending_channel_id_    = 0;
     uint16_t    voice_seq_             = 0;
-    uint16_t    voice2_seq_            = 0;   // secondary (VOICE2) stream sequence
-    // Read on the MsQuic worker thread (video receive) and written on the main
-    // thread (watch/stop) — must be atomic.
-    std::atomic<UserId> viewing_sharer_{0};
-    std::atomic<bool>   awaiting_keyframe_{false};
-    // Sharer frame counter. Owned by AppCore::send_video_frame (stamped and
-    // advanced there, on the encode thread); reset only at share start
-    // (reset_video_sender) and on disconnect — never mid-share, or viewers'
-    // reorder buffers would see a backward jump.
+    uint16_t    voice2_seq_            = 0;
     std::atomic<uint32_t> video_frame_number_{0};
     std::atomic<uint32_t> stream_frame_count_{0};
-    // Protocol version the server reported in AUTH_RESPONSE (1.2+); older
-    // servers report nothing and are assumed PROTOCOL_VERSION_ASSUMED_LEGACY.
     uint16_t    server_protocol_version_ = protocol::PROTOCOL_VERSION_ASSUMED_LEGACY;
 
-    // ── Screen-share sender (shared by Windows/macOS platform code) ─────────
-    // Congestion control: admission on the capture thread + AIMD bitrate.
-    VideoSendController video_sender_;
-
-    // Share start: clear counters, seed the controller with the user's target.
-    void reset_video_sender(uint32_t target_bitrate_bps);
-    // UI slider (main thread). The adapted bitrate never exceeds this.
-    void set_video_target_bitrate(uint32_t target_bitrate_bps);
-    // Capture-thread gate: true = encode this frame. Atomics only.
-    bool video_admit_frame();
-    // Encode thread: bitrate the encoder should switch to (once per change).
-    std::optional<uint32_t> take_video_bitrate_update();
-    // Encode thread: true once when a keyframe must be forced (send failure or
-    // an incoming PLI that passed the cooldown).
-    bool take_video_keyframe_request();
+    void begin_video_share(uint32_t ceiling_bitrate_bps);
+    void set_video_ceiling_bitrate(uint32_t bps);
+    VideoSendAccounting& video_accounting() { return video_sender_.accounting(); }
+    VideoEncodeFeedback& video_encode_feedback() { return video_sender_.encode_feedback(); }
 
     struct VideoSendResult {
-        uint32_t frame_seq = 0;   // sequence stamped into the header (always assigned)
-        bool     sent = false;    // false = frame not queued (not connected / send failed)
+        uint32_t frame_seq = 0;
+        bool     sent = false;
     };
-    // Encode-thread entry point used by the platform encoders. Builds the
-    // 14-byte VideoFrameHeader, stamps frame_seq, picks the transport (per-frame
-    // stream when the server supports it, else stream 1) and accounts the bytes
-    // in video_sender_. Safe to call when not sharing (returns sent=false).
     VideoSendResult send_video_frame(const uint8_t* encoded, size_t len, bool keyframe,
                                      uint16_t width, uint16_t height, VideoCodecId codec);
     std::string tofu_pending_fingerprint_;
     bool        tofu_pending_ = false;
-    // Set on the MsQuic worker thread when the connection drops; the actual
-    // cleanup (which mutates the RmlUi data model) runs on the main thread in tick().
     std::atomic<bool> disconnect_pending_{false};
 
-    // Resumption ticket arrives on the MsQuic worker thread; sqlite (settings_)
-    // is not safe to touch off the main thread, so stash the bytes here and
-    // persist them from tick().
     std::mutex           pending_ticket_mutex_;
     std::vector<uint8_t> pending_resumption_ticket_;
     bool                 pending_ticket_dirty_ = false;
 
-    // ── Auto-reconnect ──────────────────────────────────────────────────────
-    // Set true by intentional disconnects (user action, kick, TOFU reject,
-    // shutdown) so the drop handler knows NOT to reconnect. Cleared after each
-    // disconnect is processed.
     bool        intentional_disconnect_ = false;
-    bool        reconnecting_           = false;  // a reconnect cycle is in progress
-    int         reconnect_attempts_     = 0;      // pre-auth connect failures (backoff)
-    int         reconnect_flaps_        = 0;      // auth-succeeds-then-drops cycles (loop guard)
-    ChannelId   reconnect_channel_      = 0;      // voice channel to rejoin after re-auth
-    bool        rejoin_pending_         = false;  // re-auth succeeded → join reconnect_channel_
+    bool        reconnecting_           = false;
+    int         reconnect_attempts_     = 0;
+    int         reconnect_flaps_        = 0;
+    ChannelId   reconnect_channel_      = 0;
+    bool        rejoin_pending_         = false;
     std::chrono::steady_clock::time_point reconnect_next_attempt_{};
-    std::chrono::steady_clock::time_point auth_success_time_{};  // last successful auth
+    std::chrono::steady_clock::time_point auth_success_time_{};
 
-    // Actions
-    void watch_sharer(UserId id);   // single-select (replace) — used by chips/cards + single-decoder platforms
-    void stop_watching();           // stop watching ALL streams
-    void add_watch(UserId id);      // start watching one more stream (additive when supported)
-    void remove_watch(UserId id);   // stop watching one stream
-    void toggle_watch(UserId id);   // add if not watched, else remove
+    void watch_sharer(UserId id);
+    void stop_watching();
+    void add_watch(UserId id);
+    void remove_watch(UserId id);
+    void toggle_watch(UserId id);
     bool is_watching(UserId id) const;
-    // Force the watched set to exactly {id} (or empty if 0) and refresh the grid
-    // model. For platforms whose watch flow lives in platform code (macOS/iOS,
-    // single hardware decoder) rather than going through add_watch/remove_watch.
     void set_single_watched(UserId id);
+    UserId viewing_sharer() const { return viewing_sharer_.load(); }
+
+    void begin_single_watch(UserId sharer);
+    void end_single_watch();
+    [[nodiscard]] SingleWatchAdmit admit_single_watch_frame(UserId sender, const VideoFrameHeader& header);
     void send_voice_state();
-    // Single PLI funnel: every keyframe request toward a sharer (decode-gate
-    // discontinuity, reorder-buffer loss, tick() retry) goes through here and
-    // is rate-limited per target to VIDEO_PLI_COOLDOWN_MS. Thread-safe.
+
+    StreamPipController pip_;
+    void open_pip(UserId id);
+    void toggle_pip(UserId id);
+    void close_pip(PipCloseReason reason = PipCloseReason::UserClosed);
+    void return_from_pip();
+    void set_stream_volume(float volume);
     void send_pli(UserId target);
     void clear_all_sharers();
     void refresh_server_list();
@@ -209,28 +233,23 @@ public:
     void flush_pending_prefs(bool force = false);
     void load_or_generate_identity(const std::string& username_hint = "");
 
-    // Called each frame — processes network messages from net_.incoming()
     void process_server_messages();
     void handle_server_message(protocol::ControlMessageType type, const uint8_t* data, size_t len);
 
-    // Connection flow
     void do_connect();
     void poll_connecting();
     void finish_connect();
     void send_auth_identity();
     void on_disconnect_cleanup();
 
-    // Auto-reconnect
-    void disconnect_intentionally();   // user/explicit disconnect — no reconnect
-    void attempt_reconnect();          // fire one reconnect attempt (called from tick)
-    void cancel_reconnect();           // abandon the reconnect cycle
+    void disconnect_intentionally();
+    void attempt_reconnect();
+    void cancel_reconnect();
 
-    // Model callbacks (called from init())
     void setup_model_callbacks();
     void setup_chat_model_callbacks();
     void setup_server_model_callbacks();
 
-    // Channel operations (public so platform can call join_channel if needed)
     void join_channel(ChannelId id);
     void leave_channel();
 
@@ -240,37 +259,26 @@ private:
     struct SharerInfo { UserId user_id = 0; std::string name; };
     std::unordered_map<UserId, SharerInfo> active_sharers_;
 
-    // ── Screen-share receive (per-frame streams) ────────────────────────────
-    // One reorder buffer per watched sharer. Fed on the MsQuic worker thread
-    // (net_.on_video_stream_frame / on_video_stream_aborted) and polled from
-    // tick(); guarded by reorder_mutex_. Delivered frames go to
-    // on_video_frame_received with the same [header][encoded] layout the
-    // stream-1 path produces. Erased in remove_watch / stop_watching /
-    // clear_all_sharers / on_disconnect_cleanup.
-    std::mutex reorder_mutex_;
-    std::unordered_map<UserId, VideoFrameReorderBuffer> reorder_buffers_;
-    void route_video_stream_frame(uint32_t sender_id, std::vector<uint8_t>&& frame);
-    void route_video_stream_aborted(uint32_t sender_id, uint32_t frame_seq, bool have_seq);
-    void poll_video_reorder_buffers();
-    void erase_reorder_buffer(UserId sharer_id);
+    std::atomic<UserId> viewing_sharer_{0};
+    std::atomic<bool>   awaiting_keyframe_{false};
 
-    // PLI cooldown per target (send_pli) and keyframe-request cooldown for
-    // incoming PLIs (bridge_.request_keyframe). Both touched from the MsQuic
-    // thread and the main thread; guarded by pli_mutex_.
-    std::mutex pli_mutex_;
-    std::unordered_map<UserId, std::chrono::steady_clock::time_point> pli_last_sent_;
-    std::chrono::steady_clock::time_point keyframe_request_last_{};
-    void retry_pending_plis();          // tick(): re-send while a stream awaits a keyframe
-    void feed_video_sender_stats();     // tick(): QUIC stats -> video_sender_
+    ReorderBuffers reorder_;
+    PliLimiter     pli_;
+    void route_video_stream_frame(UserId sender, std::vector<uint8_t>&& wire);
+    void route_video_stream_aborted(UserId sender, uint32_t frame_seq, bool have_seq);
+    void dispatch_video(UserId sender, ReorderOutcome&& outcome);
+    void retry_pending_plis();
+    void feed_video_sender_stats();
 
-    void on_screen_share_viewer(const uint8_t* data, size_t len);   // SCREEN_SHARE_VIEWER (sound)
+    void on_screen_share_viewer(const uint8_t* data, size_t len);
 
-    // The set of sharers currently being watched (shown in the viewer grid).
-    // Authoritative watch state; mirrored into model_.watched for the UI.
     mutable std::mutex watched_mutex_;
     std::unordered_set<UserId> watched_;
-    bool multi_stream() const { return static_cast<bool>(bridge_.start_video_stream); }
-    void rebuild_watched_model();   // refresh model_.watched + sharers[].watching + counts
+    MultiStreamVideo* multi_stream_video() { return std::get_if<MultiStreamVideo>(&bridge_.video); }
+    bool multi_stream() const { return std::holds_alternative<MultiStreamVideo>(bridge_.video); }
+    void publish_audio_devices();
+    std::unordered_set<UserId> watched_snapshot() const;
+    void rebuild_watched_model();
 
     std::unordered_map<UserId, std::chrono::steady_clock::time_point> voice_last_active_;
 
@@ -288,8 +296,6 @@ private:
     };
     std::mutex user_audio_prefs_mutex_;
     std::unordered_map<UserId, UserAudioPrefs> user_audio_prefs_;
-    // Stream creation happens on the QUIC worker thread. It may only consult
-    // this cache; SQLite access remains on the main thread.
     void apply_cached_user_audio_prefs(UserId user_id);
 
     std::chrono::steady_clock::time_point stream_fps_last_update_{std::chrono::steady_clock::now()};
@@ -301,14 +307,12 @@ private:
     std::unique_ptr<class AutoUpdater> updater_;
 #endif
 
-    // Pending file uploads: file data cached until CHAT_MESSAGE assigns attachment IDs
     struct PendingUpload {
         std::string path;
         std::vector<uint8_t> data;
     };
     std::vector<PendingUpload> pending_uploads_;
 
-    // Pending file downloads: received from QUIC thread, processed on main thread
     struct CompletedDownload {
         uint64_t attachment_id;
         std::vector<uint8_t> data;
@@ -325,7 +329,7 @@ private:
     void on_user_role_changed(const uint8_t* data, size_t len);
     void on_screen_share_started(const uint8_t* data, size_t len);
     void on_screen_share_stopped(const uint8_t* data, size_t len);
-    void on_screen_share_denied(const uint8_t* data, size_t len);
+    void on_screen_share_denied();
     void on_admin_result(const uint8_t* data, size_t len);
     void on_server_error(const uint8_t* data, size_t len);
     void on_chat_channel_list(const uint8_t* data, size_t len);
@@ -342,10 +346,6 @@ private:
     IdleSleepInhibitor sleep_inhibitor_;
     void apply_sleep_inhibit(bool wanted);
 
-    // ── Server-list query polling (connectionless, game-browser style) ──
-    // A background thread queries each saved server's UDP port while the lobby
-    // is visible; results are applied to server_model_ on the main thread in
-    // tick() (mirrors the disconnect_pending_ cross-thread pattern).
     struct QueryTarget { int id; std::string host; uint16_t port; };
     struct QueryResult { bool online = false; uint16_t cur = 0; uint16_t max = 0; bool locked = false; std::string name; };
 
@@ -365,4 +365,4 @@ private:
     void apply_query_results();
 };
 
-} // namespace parties::client
+}

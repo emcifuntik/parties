@@ -1,5 +1,8 @@
 #pragma once
 
+#include <client/rml_shutdown.h>
+#include <parties/permissions.h>
+
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -10,9 +13,6 @@ typedef struct HWND__* HWND;
 
 namespace parties::client {
 
-// Owns transient frameless HWND surfaces backed by independent RmlUi contexts.
-// Only one context window is active at a time, matching native context-menu
-// semantics while allowing rich controls such as sliders and switches.
 class ContextWindowManager {
 public:
     struct Action {
@@ -27,7 +27,7 @@ public:
         int user_id = 0;
         std::string name;
         std::string channel_name;
-        int role = 3;
+        Role role = Role::User;
         bool can_manage_roles = false;
         bool can_kick = false;
         float volume = 1.0f;
@@ -40,7 +40,7 @@ public:
         std::function<void(float)> set_volume;
         std::function<void(float)> set_music_volume;
         std::function<void(bool, float)> set_compression;
-        std::function<void(int)> set_role;
+        std::function<void(Role)> set_role;
         std::function<void()> kick;
     };
 
@@ -60,15 +60,12 @@ public:
     ContextWindowManager& operator=(const ContextWindowManager&) = delete;
 
     bool init(HWND owner, std::recursive_mutex* ui_mutex);
-    // Remove the popup context while RmlUi is still alive, retaining the
-    // renderer until the application's global Rml::Shutdown has completed.
-    void prepare_shutdown();
-    void shutdown();
+    void release_documents();
+    void destroy_window(const RmlShutdownProof&);
 
     void show_user(const UserRequest& request, UserCallbacks callbacks);
     void show_actions(const ActionRequest& request, std::function<void(int)> on_action);
 
-    // Called by App's render thread after the main window frame is presented.
     void render();
     void close();
     bool is_open() const;
@@ -78,4 +75,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-} // namespace parties::client
+}

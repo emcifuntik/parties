@@ -2,6 +2,8 @@
 
 #import <AppKit/AppKit.h>
 
+#include <parties/permissions.h>
+
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -25,12 +27,10 @@ struct MacOSUserMenuCallbacks {
     std::function<void(float)> set_volume;
     std::function<void(float)> set_music_volume;
     std::function<void(bool, float)> set_compression;
-    std::function<void(int)> set_role;
+    std::function<void(parties::Role)> set_role;
     std::function<void()> kick;
 };
 
-// Presents native macOS context UI anchored to the last secondary click.
-// Simple actions use NSMenu, while the rich per-user controls use NSPopover.
 class MacOSContextMenuController {
 public:
     explicit MacOSContextMenuController(NSView* anchor_view);
@@ -52,4 +52,4 @@ private:
     std::shared_ptr<State> state_;
 };
 
-} // namespace parties::client
+}

@@ -1,15 +1,14 @@
-// Dynamic loader for NVIDIA Video Codec SDK DLLs.
-// Loads nvcuda.dll, nvEncodeAPI64.dll, nvcuvid.dll at runtime.
 #pragma once
 
-#include "cuda_drvapi.h"  // CUDA type shim (defines __cuda_cuda_h__)
-#include "cuviddec.h"     // Official NVIDIA NVDEC types
-#include "nvcuvid.h"      // Official NVIDIA CUVID parser types
-#include "nvEncodeAPI.h"  // Official NVIDIA NVENC types
+#include "cuda_drvapi.h"
+#include "cuviddec.h"
+#include "nvcuvid.h"
+#include "nvEncodeAPI.h"
+
+#include <optional>
 
 namespace parties::encdec::nvidia {
 
-// CUDA driver API function pointers (loaded from nvcuda.dll)
 struct CudaApi {
     CUresult (CUDAAPI *cuInit)(unsigned int flags);
     CUresult (CUDAAPI *cuDeviceGet)(CUdevice*, int);
@@ -55,17 +54,17 @@ struct CudaApi {
     CUresult (CUDAAPI *cuGetErrorString)(CUresult, const char**);
 };
 
-// CUVID (NVDEC) function pointers (loaded from nvcuvid.dll)
-struct CuvidApi {
-    CUresult (CUDAAPI *cuvidGetDecoderCaps)(CUVIDDECODECAPS*);
-    CUresult (CUDAAPI *cuvidCreateDecoder)(CUvideodecoder*, CUVIDDECODECREATEINFO*);
-    CUresult (CUDAAPI *cuvidDestroyDecoder)(CUvideodecoder);
-    // Optional SDK 13.1 entry points. A current client must continue to run
-    // against older NVIDIA drivers and transparently use the legacy path.
+struct CuvidOpaqueOutputApi {
     CUresult (CUDAAPI *cuvidRegisterDecodeSurfaces)(
         CUvideodecoder, CUVIDREGISTERDECODESURFACESINFO*);
     CUresult (CUDAAPI *cuvidDecodePictureAsync)(
         CUvideodecoder, CUVIDPICPARAMS*, CUstream);
+};
+
+struct CuvidApi {
+    CUresult (CUDAAPI *cuvidGetDecoderCaps)(CUVIDDECODECAPS*);
+    CUresult (CUDAAPI *cuvidCreateDecoder)(CUvideodecoder*, CUVIDDECODECREATEINFO*);
+    CUresult (CUDAAPI *cuvidDestroyDecoder)(CUvideodecoder);
     CUresult (CUDAAPI *cuvidDecodePicture)(CUvideodecoder, CUVIDPICPARAMS*);
     CUresult (CUDAAPI *cuvidMapVideoFrame64)(CUvideodecoder, int,
         unsigned long long*, unsigned int*, CUVIDPROCPARAMS*);
@@ -73,13 +72,12 @@ struct CuvidApi {
     CUresult (CUDAAPI *cuvidCreateVideoParser)(CUvideoparser*, CUVIDPARSERPARAMS*);
     CUresult (CUDAAPI *cuvidDestroyVideoParser)(CUvideoparser);
     CUresult (CUDAAPI *cuvidParseVideoData)(CUvideoparser, CUVIDSOURCEDATAPACKET*);
+    std::optional<CuvidOpaqueOutputApi> opaque_output;
 };
 
-// Check if NVENC is available (nvEncodeAPI64.dll loads and entry point works)
 bool load_nvenc(NV_ENCODE_API_FUNCTION_LIST& funcs);
 
-// Check if CUDA + CUVID (NVDEC) are available
 bool load_cuda(CudaApi& api);
 bool load_cuvid(CuvidApi& api);
 
-} // namespace parties::encdec::nvidia
+}

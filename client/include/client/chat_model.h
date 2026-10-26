@@ -20,8 +20,8 @@ struct TextSegment {
 struct ChatAttachment {
     int64_t id = 0;
     Rml::String file_name;
-    Rml::String size_str;       // formatted "2.4 MB"
-    Rml::String file_ext;       // "PDF", "PNG" etc. for type badge
+    Rml::String size_str;
+    Rml::String file_ext;
     bool uploaded = false;
 };
 
@@ -29,14 +29,14 @@ struct ChatMessage {
     int64_t id = 0;
     int sender_id = 0;
     Rml::String sender_name;
-    Rml::String initials;       // "SK" from "Sara King"
-    bool is_own = false;        // true if sent by current user
-    Rml::String text;           // raw text
-    bool has_url = false;       // true if text contains a URL (for clickable rendering)
-    Rml::Vector<TextSegment> segments;  // text split into plain text + URL segments
-    Rml::String timestamp_str;  // "10:32 AM"
-    Rml::String date_label;     // "Today", "Yesterday", "Mar 17" — set on first msg of each day
-    uint64_t raw_timestamp = 0; // unix timestamp for date grouping (not bound to RmlUi)
+    Rml::String initials;
+    bool is_own = false;
+    Rml::String text;
+    bool has_url = false;
+    Rml::Vector<TextSegment> segments;
+    Rml::String timestamp_str;
+    Rml::String date_label;
+    uint64_t raw_timestamp = 0;
     bool pinned = false;
     int color_index = 0;
     Rml::Vector<ChatAttachment> attachments;
@@ -49,14 +49,13 @@ struct TextChannel {
 };
 
 struct PendingFile {
-    Rml::String name;       // display name
-    Rml::String size_str;   // formatted size
-    Rml::String path;       // local file path (for reading data on send)
+    Rml::String name;
+    Rml::String size_str;
+    Rml::String path;
 };
 
 class ChatModel : public rml::Model {
 public:
-    // --- Bound state (Property<T> auto-dirties; arrays via silent()/notify()) ---
     rml::Prop<Rml::Vector<TextChannel>> text_channels;
     rml::Prop<int>         active_channel{0};
     rml::Prop<Rml::String> active_channel_name;
@@ -65,27 +64,21 @@ public:
     rml::Prop<bool>        loading_history{false};
     rml::Prop<bool>        has_more_history{false};
 
-    // Compose
     rml::Prop<Rml::String> compose_text;
 
-    // Search
     rml::Prop<bool>        show_search{false};
     rml::Prop<Rml::String> search_query;
     rml::Prop<Rml::Vector<ChatMessage>> search_results;
 
-    // Pinned
     rml::Prop<bool>        show_pinned{false};
     rml::Prop<Rml::Vector<ChatMessage>> pinned_messages;
 
-    // Pending file attachments
     rml::Prop<Rml::Vector<PendingFile>> pending_files;
 
-    // Create text channel
     rml::Prop<bool>        can_manage_channels{false};
     rml::Prop<bool>        show_create_text_channel{false};
     rml::Prop<Rml::String> new_text_channel_name;
 
-    // --- Callbacks ---
     std::function<void()>        on_send_message;
     std::function<void(int)>     on_select_channel;
     std::function<void()>        on_load_more_history;
@@ -106,4 +99,4 @@ protected:
     void build(rml::Builder& b) override;
 };
 
-} // namespace parties::client
+}

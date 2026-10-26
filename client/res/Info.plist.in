@@ -36,9 +36,6 @@
     <string>https://github.com/emcifuntik/parties/releases/latest/download/appcast.xml</string>
     <key>SUPublicEDKey</key>
     <string>XMYpl1LClni1E3t256j+TsHWq/5aquhdnRr+PIU2l6E=</string>
-    <!-- Enable automatic update checks without the first-run consent prompt,
-         and check hourly (in addition to the explicit check-on-launch and the
-         "Check for Updates…" menu item). -->
     <key>SUEnableAutomaticChecks</key>
     <true/>
     <key>SUScheduledCheckInterval</key>

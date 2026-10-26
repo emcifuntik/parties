@@ -93,7 +93,7 @@ D3D12_RESOURCE_BARRIER transition_resource(ID3D12Resource* resource,
 	barrier.Transition.StateAfter = after;
 	return barrier;
 }
-} // namespace
+}
 
 struct PartiesRenderInterface_DX12::GeometryProxy {
 	Rml::CompiledGeometryHandle upstream = 0;
@@ -132,22 +132,13 @@ PartiesRenderInterface_DX12::~PartiesRenderInterface_DX12() {
 
 PartiesRenderInterface_DX12::operator bool() const { return static_cast<bool>(upstream_); }
 
-void PartiesRenderInterface_DX12::SetViewport(int width, int height, bool force) {
+void PartiesRenderInterface_DX12::SetViewport(int width, int height) {
 	if (width <= 0 || height <= 0) return;
-	// Restoring an unchanged window does not require a synthetic one-pixel
-	// ResizeBuffers cycle. DWM surface refresh is handled by the window layer;
-	// resizing twice here can exhaust or invalidate transient driver resources.
-	(void)force;
 	const bool resize_pending = viewport_width_ != width || viewport_height_ != height ||
 		!upstream_.IsViewportValid();
 	if (upstream_.SetViewport(width, height)) {
-		// A real resize flushes the GPU before replacing the swapchain buffers.
-		// ResizeBuffers also resets the frame index, so repeated resizing can
-		// otherwise keep retired video descriptors in a bucket that EndFrame
-		// never revisits. Every bucket is safe to release after that flush.
 		if (resize_pending) {
-			for (uint32_t frame = 0; frame < retired_textures_.size(); ++frame)
-				CollectRetiredTextures(frame);
+			CollectAllRetiredTextures();
 		}
 		viewport_width_ = width;
 		viewport_height_ = height;
@@ -155,18 +146,24 @@ void PartiesRenderInterface_DX12::SetViewport(int width, int height, bool force)
 }
 
 void PartiesRenderInterface_DX12::BeginFrame() {
-	frame_active_ = false;
-	if (!upstream_.IsViewportValid()) return;
-	frame_active_ = upstream_.BeginFrame();
+	active_frame_.reset();
+	if (!upstream_.IsViewportValid() || !upstream_.BeginFrame()) return;
+	active_frame_ = Dx12FrameSlot::after_fence_wait(upstream_.Get_CurrentFrameIndex());
 }
 
 void PartiesRenderInterface_DX12::Clear() { upstream_.Clear(); }
 
 void PartiesRenderInterface_DX12::EndFrame() {
-	if (!frame_active_) return;
-	frame_active_ = false;
+	if (!active_frame_) return;
+	active_frame_.reset();
 	upstream_.EndFrame();
 	CollectRetiredTextures(upstream_.Get_CurrentFrameIndex());
+}
+
+void PartiesRenderInterface_DX12::ReleaseRetiredResourcesBetweenFrames() {
+	if (!upstream_ || active_frame_) return;
+	upstream_.WaitIdle();
+	CollectAllRetiredTextures();
 }
 
 void PartiesRenderInterface_DX12::CaptureNextFrame(std::string output_path) {
@@ -329,6 +326,11 @@ void PartiesRenderInterface_DX12::CollectRetiredTextures(uint32_t completed_fram
 	retired.clear();
 }
 
+void PartiesRenderInterface_DX12::CollectAllRetiredTextures() {
+	for (uint32_t frame = 0; frame < retired_textures_.size(); ++frame)
+		CollectRetiredTextures(frame);
+}
+
 void PartiesRenderInterface_DX12::ReplaceTexture(TextureProxy& proxy,
 	Rml::Span<const Rml::byte> data, Rml::Vector2i dimensions) {
 	Rml::TextureHandle replacement = upstream_.GenerateTextureCommitted(data, dimensions);
@@ -400,18 +402,17 @@ inline void yuv_to_rgba(uint8_t* destination, int y, int u, int v) {
 	destination[2] = clamp_channel((298 * c + 516 * d + 128) >> 8);
 	destination[3] = 255;
 }
-} // namespace
+}
 
 void PartiesRenderInterface_DX12::ConvertI420ToRgba(std::vector<Rml::byte>& rgba,
-	const uint8_t* y_data, uint32_t y_stride, const uint8_t* u_data, const uint8_t* v_data,
-	uint32_t uv_stride, uint32_t width, uint32_t height) {
-	rgba.resize(static_cast<size_t>(width) * height * 4);
-	for (uint32_t row = 0; row < height; ++row) {
-		for (uint32_t column = 0; column < width; ++column) {
-			yuv_to_rgba(rgba.data() + (static_cast<size_t>(row) * width + column) * 4,
-				y_data[static_cast<size_t>(row) * y_stride + column],
-				u_data[static_cast<size_t>(row / 2) * uv_stride + column / 2],
-				v_data[static_cast<size_t>(row / 2) * uv_stride + column / 2]);
+	const I420Planes& planes) {
+	rgba.resize(static_cast<size_t>(planes.width) * planes.height * 4);
+	for (uint32_t row = 0; row < planes.height; ++row) {
+		for (uint32_t column = 0; column < planes.width; ++column) {
+			const size_t chroma = static_cast<size_t>(row / 2) * planes.uv_stride + column / 2;
+			yuv_to_rgba(rgba.data() + (static_cast<size_t>(row) * planes.width + column) * 4,
+				planes.y[static_cast<size_t>(row) * planes.y_stride + column],
+				planes.u[chroma], planes.v[chroma]);
 		}
 	}
 }
@@ -429,18 +430,17 @@ void PartiesRenderInterface_DX12::ConvertNV12ToRgba(std::vector<Rml::byte>& rgba
 	}
 }
 
-uintptr_t PartiesRenderInterface_DX12::GenerateYUVTexture(const uint8_t* y_data, uint32_t y_stride,
-	const uint8_t* u_data, const uint8_t* v_data, uint32_t uv_stride, uint32_t width, uint32_t height) {
-	if (video_converter_ && frame_active_) {
-		auto video = video_converter_.Create(Dx12VideoConverter::Layout::I420, width, height);
-		if (video && video_converter_.UpdateI420(*video, upstream_.Get_CommandList(),
-			upstream_.Get_CurrentFrameIndex(), y_data, y_stride, u_data, v_data, uv_stride)) {
+uintptr_t PartiesRenderInterface_DX12::GenerateI420Texture(const I420Planes& planes) {
+	if (video_converter_ && active_frame_) {
+		auto video = video_converter_.Create(Dx12VideoConverter::Layout::I420, planes.width, planes.height);
+		if (video && video_converter_.UpdateI420(*video, upstream_.Get_CommandList(), *active_frame_,
+			planes.y, planes.y_stride, planes.u, planes.v, planes.uv_stride)) {
 			auto upstream_handle = upstream_.RegisterExternalTexture(
 				video->output.Get(), DXGI_FORMAT_R8G8B8A8_UNORM);
 			auto wrapped = WrapTexture(upstream_handle);
 			if (wrapped) {
 				auto* proxy = Texture(wrapped);
-				proxy->dimensions = {static_cast<int>(width), static_cast<int>(height)};
+				proxy->dimensions = {static_cast<int>(planes.width), static_cast<int>(planes.height)};
 				proxy->native_owner = video;
 				proxy->native_resource = video->output.Get();
 				proxy->native_rgba = true;
@@ -450,35 +450,33 @@ uintptr_t PartiesRenderInterface_DX12::GenerateYUVTexture(const uint8_t* y_data,
 		}
 	}
 	std::vector<Rml::byte> rgba;
-	ConvertI420ToRgba(rgba, y_data, y_stride, u_data, v_data, uv_stride, width, height);
-	return GenerateDynamicTexture(rgba, {static_cast<int>(width), static_cast<int>(height)});
+	ConvertI420ToRgba(rgba, planes);
+	return GenerateDynamicTexture(rgba, {static_cast<int>(planes.width), static_cast<int>(planes.height)});
 }
 
-void PartiesRenderInterface_DX12::UpdateYUVTexture(uintptr_t handle, const uint8_t* y_data,
-	uint32_t y_stride, const uint8_t* u_data, const uint8_t* v_data, uint32_t uv_stride,
-	uint32_t width, uint32_t height) {
+void PartiesRenderInterface_DX12::UpdateI420Texture(uintptr_t handle, const I420Planes& planes) {
 	auto* proxy = Texture(handle);
-	if (proxy && proxy->converted_video && frame_active_ &&
+	if (proxy && proxy->converted_video && active_frame_ &&
 		proxy->converted_video->layout == Dx12VideoConverter::Layout::I420) {
-		video_converter_.UpdateI420(*proxy->converted_video, upstream_.Get_CommandList(),
-			upstream_.Get_CurrentFrameIndex(), y_data, y_stride, u_data, v_data, uv_stride);
+		video_converter_.UpdateI420(*proxy->converted_video, upstream_.Get_CommandList(), *active_frame_,
+			planes.y, planes.y_stride, planes.u, planes.v, planes.uv_stride);
 		return;
 	}
 	std::vector<Rml::byte> rgba;
-	ConvertI420ToRgba(rgba, y_data, y_stride, u_data, v_data, uv_stride, width, height);
-	UpdateTextureData(handle, rgba, {static_cast<int>(width), static_cast<int>(height)});
+	ConvertI420ToRgba(rgba, planes);
+	UpdateTextureData(handle, rgba, {static_cast<int>(planes.width), static_cast<int>(planes.height)});
 }
 
-void PartiesRenderInterface_DX12::ReleaseYUVTexture(uintptr_t handle) { ReleaseTexture(handle); }
-void PartiesRenderInterface_DX12::RenderYUVGeometry(Rml::CompiledGeometryHandle geometry,
+void PartiesRenderInterface_DX12::ReleaseI420Texture(uintptr_t handle) { ReleaseTexture(handle); }
+void PartiesRenderInterface_DX12::RenderI420Geometry(Rml::CompiledGeometryHandle geometry,
 	Rml::Vector2f translation, uintptr_t handle) { RenderGeometry(geometry, translation, handle); }
 
 uintptr_t PartiesRenderInterface_DX12::GenerateNV12Texture(const uint8_t* y_data, uint32_t y_stride,
 	const uint8_t* uv_data, uint32_t uv_stride, uint32_t width, uint32_t height) {
-	if (video_converter_ && frame_active_) {
+	if (video_converter_ && active_frame_) {
 		auto video = video_converter_.Create(Dx12VideoConverter::Layout::DirectNV12, width, height);
 		if (video && video_converter_.UpdateNV12(*video, upstream_.Get_CommandList(),
-			upstream_.Get_CurrentFrameIndex(), y_data, y_stride, uv_data, uv_stride)) {
+			*active_frame_, y_data, y_stride, uv_data, uv_stride)) {
 			auto upstream_handle = upstream_.RegisterExternalNV12Texture(video->Luma(), video->Chroma());
 			auto wrapped = WrapTexture(upstream_handle);
 			if (wrapped) {
@@ -499,10 +497,10 @@ uintptr_t PartiesRenderInterface_DX12::GenerateNV12Texture(const uint8_t* y_data
 void PartiesRenderInterface_DX12::UpdateNV12Texture(uintptr_t handle, const uint8_t* y_data,
 	uint32_t y_stride, const uint8_t* uv_data, uint32_t uv_stride, uint32_t width, uint32_t height) {
 	auto* proxy = Texture(handle);
-	if (proxy && proxy->converted_video && frame_active_ &&
+	if (proxy && proxy->converted_video && active_frame_ &&
 		proxy->converted_video->layout == Dx12VideoConverter::Layout::DirectNV12) {
 		video_converter_.UpdateNV12(*proxy->converted_video, upstream_.Get_CommandList(),
-			upstream_.Get_CurrentFrameIndex(), y_data, y_stride, uv_data, uv_stride);
+			*active_frame_, y_data, y_stride, uv_data, uv_stride);
 		return;
 	}
 	std::vector<Rml::byte> rgba;
@@ -514,60 +512,47 @@ void PartiesRenderInterface_DX12::ReleaseNV12Texture(uintptr_t handle) { Release
 void PartiesRenderInterface_DX12::RenderNV12Geometry(Rml::CompiledGeometryHandle geometry,
 	Rml::Vector2f translation, uintptr_t handle) { RenderGeometry(geometry, translation, handle); }
 
-uintptr_t PartiesRenderInterface_DX12::GenerateNativeNV12Texture(
-	void* d3d12_resource, void* d3d12_chroma_resource,
-	std::shared_ptr<void> owner,
-	void* ready_fence, uint64_t ready_value, uint32_t resource_state, bool rgba,
-	uint32_t width, uint32_t height) {
-	if (!d3d12_resource || !owner) return 0;
-	auto* resource = static_cast<ID3D12Resource*>(d3d12_resource);
-	auto* chroma_resource = static_cast<ID3D12Resource*>(d3d12_chroma_resource);
-	auto upstream_handle = rgba
+Rml::TextureHandle PartiesRenderInterface_DX12::RegisterNativeVideoTexture(const NativeVideoFrame& frame) {
+	auto* resource = static_cast<ID3D12Resource*>(frame.resource);
+	return frame.rgba
 		? upstream_.RegisterExternalTexture(resource, DXGI_FORMAT_R8G8B8A8_UNORM)
-		: upstream_.RegisterExternalNV12Texture(resource, chroma_resource);
+		: upstream_.RegisterExternalNV12Texture(resource, static_cast<ID3D12Resource*>(frame.chroma_resource));
+}
+
+void PartiesRenderInterface_DX12::AdoptNativeVideoFrame(TextureProxy& proxy, const NativeVideoFrame& frame) {
+	proxy.dimensions = {static_cast<int>(frame.visible_width), static_cast<int>(frame.visible_height)};
+	proxy.native_owner = frame.owner;
+	proxy.native_resource = frame.resource;
+	proxy.native_chroma_resource = frame.chroma_resource;
+	proxy.ready_fence = frame.ready_fence;
+	proxy.ready_value = frame.ready_fence_value;
+	proxy.native_state = static_cast<D3D12_RESOURCE_STATES>(frame.resource_state);
+	proxy.native_rgba = frame.rgba;
+	proxy.ready_wait_enqueued = false;
+}
+
+uintptr_t PartiesRenderInterface_DX12::GenerateNativeVideoTexture(const NativeVideoFrame& frame) {
+	if (!frame.resource || !frame.owner) return 0;
+	auto upstream_handle = RegisterNativeVideoTexture(frame);
 	if (!upstream_handle) return 0;
 	auto wrapped = WrapTexture(upstream_handle);
-	auto* proxy = Texture(wrapped);
-	proxy->dimensions = {static_cast<int>(width), static_cast<int>(height)};
-	proxy->native_owner = std::move(owner);
-	proxy->native_resource = d3d12_resource;
-	proxy->native_chroma_resource = d3d12_chroma_resource;
-	proxy->ready_fence = ready_fence;
-	proxy->ready_value = ready_value;
-	proxy->native_state = static_cast<D3D12_RESOURCE_STATES>(resource_state);
-	proxy->native_rgba = rgba;
+	AdoptNativeVideoFrame(*Texture(wrapped), frame);
 	return wrapped;
 }
 
-bool PartiesRenderInterface_DX12::UpdateNativeNV12Texture(
-	uintptr_t handle, void* d3d12_resource, void* d3d12_chroma_resource,
-	std::shared_ptr<void> owner,
-	void* ready_fence, uint64_t ready_value, uint32_t resource_state, bool rgba,
-	uint32_t width, uint32_t height) {
+bool PartiesRenderInterface_DX12::UpdateNativeVideoTexture(uintptr_t handle, const NativeVideoFrame& frame) {
 	auto* proxy = Texture(handle);
-	if (!proxy || !d3d12_resource || !owner) return false;
-	if (proxy->native_resource != d3d12_resource ||
-		proxy->native_chroma_resource != d3d12_chroma_resource ||
-		proxy->native_rgba != rgba) {
-		auto* resource = static_cast<ID3D12Resource*>(d3d12_resource);
-		auto* chroma_resource = static_cast<ID3D12Resource*>(d3d12_chroma_resource);
-		auto replacement = rgba
-			? upstream_.RegisterExternalTexture(resource, DXGI_FORMAT_R8G8B8A8_UNORM)
-			: upstream_.RegisterExternalNV12Texture(resource, chroma_resource);
+	if (!proxy || !frame.resource || !frame.owner) return false;
+	if (proxy->native_resource != frame.resource ||
+		proxy->native_chroma_resource != frame.chroma_resource ||
+		proxy->native_rgba != frame.rgba) {
+		auto replacement = RegisterNativeVideoTexture(frame);
 		if (!replacement) return false;
 		RetireTexture(proxy->upstream, std::move(proxy->native_owner), proxy->last_use_frame);
 		proxy->upstream = replacement;
 		proxy->last_use_frame = uint32_t(-1);
 	}
-	proxy->dimensions = {static_cast<int>(width), static_cast<int>(height)};
-	proxy->native_owner = std::move(owner);
-	proxy->native_resource = d3d12_resource;
-	proxy->native_chroma_resource = d3d12_chroma_resource;
-	proxy->ready_fence = ready_fence;
-	proxy->ready_value = ready_value;
-	proxy->native_state = static_cast<D3D12_RESOURCE_STATES>(resource_state);
-	proxy->native_rgba = rgba;
-	proxy->ready_wait_enqueued = false;
+	AdoptNativeVideoFrame(*proxy, frame);
 	return true;
 }
 

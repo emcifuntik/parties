@@ -16,11 +16,11 @@ public:
     ~OpenH264Encoder() override;
 
     bool init(ID3D11Device* device, uint32_t width, uint32_t height,
-              uint32_t fps, uint32_t bitrate);
+              uint32_t fps, uint32_t average_bps);
 
     bool encode(ID3D11Texture2D* bgra_texture, int64_t timestamp_100ns) override;
     void force_keyframe() override;
-    void set_bitrate(uint32_t bitrate) override;
+    void set_average_bitrate_bps(uint32_t average_bps) override;
     EncoderInfo info() const override;
 
 private:
@@ -38,4 +38,4 @@ private:
     bool force_keyframe_ = false;
 };
 
-} // namespace parties::encdec::openh264
+}

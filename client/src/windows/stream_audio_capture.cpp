@@ -29,7 +29,6 @@ using Microsoft::WRL::FtmBase;
 
 namespace parties::client {
 
-// COM completion handler for ActivateAudioInterfaceAsync
 class ActivationHandler
     : public RuntimeClass<RuntimeClassFlags<ClassicCom>, IActivateAudioInterfaceCompletionHandler, FtmBase> {
 public:
@@ -89,14 +88,14 @@ StreamAudioCapture::~StreamAudioCapture() {
     shutdown();
 }
 
-bool StreamAudioCapture::init(uint32_t target_pid, OutputMode mode) {
+bool StreamAudioCapture::init(StreamAudioSource source, OutputMode mode) {
 	ZoneScopedN("StreamAudioCapture::init");
     // Ensure COM is initialized on the calling thread (needed for IMMDeviceEnumerator)
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 
     output_mode_ = mode;
     if (output_mode_ == OutputMode::EncodedStereo) {
-        if (!encoder_.init_encoder(kSampleRate, kChannels, 64000)) {
+        if (!encoder_.init_encoder(kSampleRate, kChannels, 64000, std::nullopt)) {
             LOG_ERROR("Failed to init Opus encoder");
             return false;
         }
@@ -107,12 +106,11 @@ bool StreamAudioCapture::init(uint32_t target_pid, OutputMode mode) {
     mono_buf_.resize(kFrameSize, 0.0f);
     capture_pos_ = 0;
 
-    // Build activation params for process loopback
     AUDIOCLIENT_ACTIVATION_PARAMS ac_params = {};
     ac_params.ActivationType = AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK;
 
-    if (target_pid != 0) {
-        ac_params.ProcessLoopbackParams.TargetProcessId = target_pid;
+    if (const auto* tree = std::get_if<CaptureProcessTree>(&source)) {
+        ac_params.ProcessLoopbackParams.TargetProcessId = tree->pid;
         ac_params.ProcessLoopbackParams.ProcessLoopbackMode =
             PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE;
     } else {
@@ -170,7 +168,6 @@ bool StreamAudioCapture::init(uint32_t target_pid, OutputMode mode) {
     LOG_INFO("Requested format: {} Hz, {} ch, {} bits (float)",
                 fmt->nSamplesPerSec, fmt->nChannels, fmt->wBitsPerSample);
 
-    // Create event for buffer-ready notification
     state->audio_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (!state->audio_event) {
         LOG_ERROR("CreateEvent failed");
@@ -178,12 +175,12 @@ bool StreamAudioCapture::init(uint32_t target_pid, OutputMode mode) {
         return false;
     }
 
-    // Initialize in shared mode with automatic format conversion
+    constexpr REFERENCE_TIME buffer_duration_20ms = 200000;
     hr = state->audio_client->Initialize(
         AUDCLNT_SHAREMODE_SHARED,
         AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK |
             AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
-        200000,  // 20ms in 100ns units
+        buffer_duration_20ms,
         0,       // periodicity (must be 0 for shared mode)
         state->mix_format,
         nullptr);
@@ -212,8 +209,8 @@ bool StreamAudioCapture::init(uint32_t target_pid, OutputMode mode) {
     wasapi_ = state;
 
     LOG_INFO("Loopback: {} PID {} ({} Hz, {} ch)",
-                target_pid != 0 ? "include" : "exclude-self",
-                target_pid != 0 ? target_pid : static_cast<uint32_t>(GetCurrentProcessId()),
+                std::holds_alternative<CaptureProcessTree>(source) ? "include" : "exclude-self",
+                static_cast<uint32_t>(ac_params.ProcessLoopbackParams.TargetProcessId),
                 state->mix_format->nSamplesPerSec, state->mix_format->nChannels);
     return true;
 }
@@ -254,7 +251,7 @@ void StreamAudioCapture::stop() {
 
 void StreamAudioCapture::capture_thread_func() {
 	TracySetThreadName("StreamAudioCapture");
-    if (!parties::set_current_thread_highest_priority())
+    if (parties::raise_thread_to_highest_normal_priority() == parties::ThreadPriorityChange::Failed)
         LOG_WARN("Failed to set the stream audio capture thread to highest priority");
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 
@@ -282,9 +279,6 @@ void StreamAudioCapture::capture_thread_func() {
 
             bool is_silent = (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0;
             if (flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) {
-                // Never splice the tail of the old WASAPI timeline onto the
-                // beginning of a new one. It creates a malformed 20 ms frame and
-                // is especially audible in the stateful music encoder.
                 capture_pos_ = 0;
             }
 
@@ -303,7 +297,6 @@ void StreamAudioCapture::capture_thread_func() {
                     }
                 }
 
-                // Protect both the direct stereo encoder and the VOICE2 downmix.
                 // std::clamp alone does not sanitize NaN (all comparisons are
                 // false), so finite validation must happen first.
                 left = std::isfinite(left) ? std::clamp(left, -1.0f, 1.0f) : 0.0f;
@@ -317,10 +310,9 @@ void StreamAudioCapture::capture_thread_func() {
                         downmix_application_audio(capture_buf_.data(), mono_buf_.data(), kFrameSize);
                         on_pcm_frame(mono_buf_.data(), kFrameSize);
                     } else if (encoder_initialized_ && on_encoded_frame) {
-                        int encoded = encoder_.encode(capture_buf_.data(), kFrameSize,
-                                                       opus_buf_, audio::MAX_OPUS_PACKET);
-                        if (encoded > 0)
-                            on_encoded_frame(opus_buf_, static_cast<size_t>(encoded));
+                        const auto encoded = encoder_.encode(capture_buf_.data(), kFrameSize, opus_buf_);
+                        if (encoded)
+                            on_encoded_frame(opus_buf_, *encoded);
                     }
                     capture_pos_ = 0;
                 }
@@ -333,4 +325,4 @@ void StreamAudioCapture::capture_thread_func() {
     CoUninitialize();
 }
 
-} // namespace parties::client
+}

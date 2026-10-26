@@ -51,16 +51,17 @@ Rml::String initials_from_name(const std::string& name) {
     return result;
 }
 
-Rml::String role_name(int role) {
+Rml::String role_name(Role role) {
     switch (role) {
-    case 0: return "Owner";
-    case 1: return "Administrator";
-    case 2: return "Moderator";
-    default: return "Member";
+    case Role::Owner:     return "Owner";
+    case Role::Admin:     return "Administrator";
+    case Role::Moderator: return "Moderator";
+    case Role::User:      return "Member";
     }
+    return "Member";
 }
 
-} // namespace
+}
 
 struct ContextWindowManager::Impl {
     struct ActiveWindow {
@@ -99,9 +100,6 @@ struct ContextWindowManager::Impl {
         // not dereference the manager here: shutdown may already be finishing.
         if (OwnerThreadWindowDestroy::handle_message(hwnd, message))
             return 0;
-        // This must be handled before taking ui_mutex. The message is posted by
-        // the render thread specifically so no thread waits for the HWND owner
-        // while holding the RmlUi lock.
         if (OwnerThreadWindowResize::handle_message(hwnd, message, w_param, l_param))
             return 0;
 
@@ -161,7 +159,7 @@ struct ContextWindowManager::Impl {
             if (self->ui_mutex && window->renderer && window->context) {
                 const int width = rect->right - rect->left;
                 const int height = rect->bottom - rect->top;
-                window->renderer->SetViewport(width, height, true);
+                window->renderer->SetViewport(width, height);
                 window->context->SetDimensions({width, height});
                 window->context->SetDensityIndependentPixelRatio(
                     static_cast<float>(HIWORD(w_param)) / 96.0f);
@@ -187,7 +185,7 @@ struct ContextWindowManager::Impl {
         wc.style = CS_HREDRAW | CS_VREDRAW;
         wc.lpfnWndProc = &Impl::wnd_proc;
         wc.hInstance = GetModuleHandleW(nullptr);
-        wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
+        wc.hCursor = LoadCursorW(nullptr, reinterpret_cast<LPCWSTR>(IDC_ARROW));
         wc.lpszClassName = kClassName;
         if (RegisterClassExW(&wc)) return true;
         return GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
@@ -217,9 +215,7 @@ struct ContextWindowManager::Impl {
         active->text_input.reset();
     }
 
-    // Must run only after the application's global Rml::Shutdown. Until then,
-    // RmlUi's RenderManager owns resources referring to this render interface.
-    void destroy_surface_after_rml_shutdown() {
+    void destroy_surface() {
         if (!active) return;
         HWND hwnd = active->hwnd;
         active->model.reset();
@@ -264,10 +260,7 @@ struct ContextWindowManager::Impl {
             return false;
 
         active->last_content_height_px = desired_height;
-        // The render thread owns both the popup renderer and its RmlUi context.
-        // Resize those immediately; the HWND placement itself is applied later
-        // by its owner thread through the posted message above.
-        active->renderer->SetViewport(width, desired_height, true);
+        active->renderer->SetViewport(width, desired_height);
         active->context->SetDimensions({width, desired_height});
         return true;
     }
@@ -302,13 +295,10 @@ struct ContextWindowManager::Impl {
                 return false;
             }
 
-            DWORD corner = 3; // DWMWCP_ROUND
-            DwmSetWindowAttribute(active->hwnd, 33, &corner, sizeof(corner));
-            // DWMWA_BORDER_COLOR: 0xFFFFFFFE is DWMWA_COLOR_NONE. 0xFFFFFFFF
-            // asks DWM for its default native border, which doubled the custom
-            // RmlUI outline around the rounded popup.
-            constexpr COLORREF no_border = 0xFFFFFFFEu;
-            DwmSetWindowAttribute(active->hwnd, 34, &no_border, sizeof(no_border));
+            const DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
+            DwmSetWindowAttribute(active->hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
+            const COLORREF no_border = DWMWA_COLOR_NONE;
+            DwmSetWindowAttribute(active->hwnd, DWMWA_BORDER_COLOR, &no_border, sizeof(no_border));
             apply_rounded_region(active->hwnd, width, height);
 
             active->renderer = make_renderer(active->hwnd);
@@ -326,7 +316,7 @@ struct ContextWindowManager::Impl {
                 SWP_NOACTIVATE | SWP_NOOWNERZORDER);
         }
 
-        active->renderer->SetViewport(width, height, true);
+        active->renderer->SetViewport(width, height);
         active->last_content_height_px = 0;
         active->text_input = std::make_unique<TextInputMethodEditor_Win32>();
         active->context_name = "context-window-" + std::to_string(next_context_id++);
@@ -367,7 +357,9 @@ struct ContextWindowManager::Impl {
 };
 
 ContextWindowManager::ContextWindowManager() : impl_(std::make_unique<Impl>()) {}
-ContextWindowManager::~ContextWindowManager() { shutdown(); }
+ContextWindowManager::~ContextWindowManager() {
+    if (impl_) impl_->destroy_surface();
+}
 
 bool ContextWindowManager::init(HWND owner, std::recursive_mutex* ui_mutex) {
     impl_->owner = owner;
@@ -376,7 +368,7 @@ bool ContextWindowManager::init(HWND owner, std::recursive_mutex* ui_mutex) {
     return impl_->initialised;
 }
 
-void ContextWindowManager::prepare_shutdown() {
+void ContextWindowManager::release_documents() {
     if (!impl_) return;
     if (impl_->ui_mutex) {
         std::lock_guard<std::recursive_mutex> lock(*impl_->ui_mutex);
@@ -389,9 +381,9 @@ void ContextWindowManager::prepare_shutdown() {
     impl_->initialised = false;
 }
 
-void ContextWindowManager::shutdown() {
+void ContextWindowManager::destroy_window(const RmlShutdownProof&) {
     if (!impl_) return;
-    impl_->destroy_surface_after_rml_shutdown();
+    impl_->destroy_surface();
     impl_->initialised = false;
 }
 
@@ -413,9 +405,9 @@ void ContextWindowManager::show_user(const UserRequest& request, UserCallbacks c
 
     auto& actions = model->actions.silent();
     if (request.can_manage_roles) {
-        if (request.role != 1) actions.push_back({"Make administrator", "Full moderation access", 101, false, false});
-        if (request.role != 2) actions.push_back({"Make moderator", "Manage conversations", 102, false, false});
-        if (request.role != 3) actions.push_back({"Make member", "Standard permissions", 103, false, false});
+        if (request.role != Role::Admin) actions.push_back({"Make administrator", "Full moderation access", 101, false, false});
+        if (request.role != Role::Moderator) actions.push_back({"Make moderator", "Manage conversations", 102, false, false});
+        if (request.role != Role::User) actions.push_back({"Make member", "Standard permissions", 103, false, false});
     }
     if (request.can_kick) {
         if (!actions.empty()) actions.push_back({"", "", 0, false, true});
@@ -427,9 +419,9 @@ void ContextWindowManager::show_user(const UserRequest& request, UserCallbacks c
     model->on_music_volume = std::move(callbacks.set_music_volume);
     model->on_compression = std::move(callbacks.set_compression);
     model->on_action = [this, callbacks = std::move(callbacks)](int id) mutable {
-        if (id == 101 && callbacks.set_role) callbacks.set_role(1);
-        else if (id == 102 && callbacks.set_role) callbacks.set_role(2);
-        else if (id == 103 && callbacks.set_role) callbacks.set_role(3);
+        if (id == 101 && callbacks.set_role) callbacks.set_role(Role::Admin);
+        else if (id == 102 && callbacks.set_role) callbacks.set_role(Role::Moderator);
+        else if (id == 103 && callbacks.set_role) callbacks.set_role(Role::User);
         else if (id == 200 && callbacks.kick) callbacks.kick();
         impl_->request_close();
     };
@@ -482,4 +474,4 @@ bool ContextWindowManager::is_open() const {
     return impl_ && impl_->active && impl_->active->open.load(std::memory_order_acquire);
 }
 
-} // namespace parties::client
+}

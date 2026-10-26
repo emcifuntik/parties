@@ -1,5 +1,6 @@
 #include <client/ui_manager.h>
 #include <client/rml_elements.h>
+#include <client/window_action.h>
 #include <parties/profiler.h>
 
 #include "RmlUi_RenderInterface_Extended.h"
@@ -9,7 +10,6 @@
 #ifndef PARTIES_RETAIL
 #include <RmlUi/Debugger.h>
 #endif
-#include <RmlUi/Core/StyleSheetSpecification.h>
 
 #include <parties/log.h>
 
@@ -39,32 +39,25 @@ public:
             LOG_INFO("RmlUi: {}", message);
             break;
         }
-        // Production diagnostics must never open a debugger assertion dialog.
         return true;
     }
 };
 
-} // namespace
-
-// ═══════════════════════════════════════════════════════════════════════
-// UiManager
-// ═══════════════════════════════════════════════════════════════════════
+}
 
 UiManager::UiManager() = default;
-UiManager::~UiManager() { shutdown(); }
+UiManager::~UiManager() { static_cast<void>(shutdown()); }
 
 bool UiManager::init(HWND hwnd) {
 	ZoneScopedN("UiManager::init");
     hwnd_ = hwnd;
 
-    // Create system interface (from vendored Win32 platform)
     system_interface_ = std::make_unique<PartiesSystemInterface_Win32>();
     system_interface_->SetWindow(hwnd);
 
     Rml::SetSystemInterface(system_interface_.get());
     Rml::SetFileInterface(&file_interface_);
 
-    // Create render interface
     Backend::RmlRendererSettings settings{};
     settings.vsync = true;
     settings.msaa_sample_count = 4;
@@ -83,12 +76,8 @@ bool UiManager::init(HWND hwnd) {
         return false;
     }
 
-    // Register custom property for Win32 window hit-testing.
-    // Inherited so child elements of .titlebar get 'caption' automatically.
-    Rml::StyleSheetSpecification::RegisterProperty("window-action", "none", true)
-        .AddParser("keyword", "none, caption, close, minimize, maximize");
+    register_window_action_property();
 
-    // Get window dimensions
     RECT rc;
     GetClientRect(hwnd, &rc);
     int width = rc.right - rc.left;
@@ -96,7 +85,6 @@ bool UiManager::init(HWND hwnd) {
 
     render_interface_->SetViewport(width, height);
 
-    // Create context
     context_ = Rml::CreateContext("main", Rml::Vector2i(width, height));
     if (!context_) {
         LOG_ERROR("Failed to create RmlUi context");
@@ -108,19 +96,16 @@ bool UiManager::init(HWND hwnd) {
     Rml::Debugger::Initialise(context_);
 #endif
 
-    // DPI scaling
     UINT dpi = GetDpiForWindow(hwnd);
     dpi_scale_ = static_cast<float>(dpi) / 96.0f;
     context_->SetDensityIndependentPixelRatio(dpi_scale_);
 
-    // Load fonts (Inter — Regular, Medium, Bold)
     Rml::LoadFontFace("ui/fonts/Inter-Regular.ttf");
     Rml::LoadFontFace("ui/fonts/Inter-Medium.ttf");
     Rml::LoadFontFace("ui/fonts/Inter-Bold.ttf");
     Rml::LoadFontFace("ui/fonts/NotoSans-Regular.ttf", true);
     Rml::LoadFontFace("ui/fonts/NotoSans-Bold.ttf", true);
 
-    // Text input method editor for IME support
     text_input_editor_ = std::make_unique<TextInputMethodEditor_Win32>();
 
     initialised_ = true;
@@ -129,19 +114,20 @@ bool UiManager::init(HWND hwnd) {
     return true;
 }
 
-void UiManager::shutdown() {
-    if (!initialised_) return;
+RmlShutdownProof UiManager::shutdown() {
+    if (!initialised_) return rml_not_running();
 
     text_input_editor_.reset();
     if (context_) {
         Rml::RemoveContext("main");
         context_ = nullptr;
     }
-    Rml::Shutdown();
+    const auto rml_gone = shutdown_rml();
 
     render_interface_.reset();
     system_interface_.reset();
     initialised_ = false;
+    return rml_gone;
 }
 
 Rml::ElementDocument* UiManager::load_document(const std::string& path) {
@@ -187,8 +173,6 @@ bool UiManager::render_begin() {
 
 void UiManager::render_body() {
 	ZoneScopedN("UiManager::render_body");
-    // Do not re-check minimized_ here. A minimize can race with rendering, and
-    // abandoning a frame after BeginFrame leaves the DX12 command list open.
     if (!frame_started_ || !render_interface_) return;
     render_interface_->Clear();
     if (context_) context_->Render();
@@ -196,8 +180,6 @@ void UiManager::render_body() {
 
 void UiManager::render_end() {
 	ZoneScopedN("UiManager::render_end");
-    // Every successfully opened frame must be closed, including a frame during
-    // which the message thread reported that the window was minimized.
     if (!frame_started_ || !render_interface_) return;
     frame_started_ = false;
     render_interface_->EndFrame();
@@ -208,8 +190,6 @@ void UiManager::on_resize(int width, int height) {
     if (width <= 0 || height <= 0) return;
     minimized_.store(false, std::memory_order_release);
     if (render_interface_) {
-        // The renderer validates the complete size-dependent resource set and
-        // skips redundant ResizeBuffers calls when the dimensions are unchanged.
         render_interface_->SetViewport(width, height);
     }
     if (context_)
@@ -243,10 +223,6 @@ void UiManager::bind_event(const std::string& element_id, const std::string& eve
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Window controls
-// ═══════════════════════════════════════════════════════════════════════
-
 void UiManager::minimize_window() {
     if (hwnd_) ShowWindow(hwnd_, SW_MINIMIZE);
 }
@@ -271,7 +247,6 @@ void UiManager::set_fullscreen(bool fs) {
     if (!hwnd_ || fullscreen_ == fs) return;
 
     if (fs) {
-        // Save current window state
         saved_style_ = GetWindowLongW(hwnd_, GWL_STYLE);
         saved_ex_style_ = GetWindowLongW(hwnd_, GWL_EXSTYLE);
         RECT rc;
@@ -281,14 +256,12 @@ void UiManager::set_fullscreen(bool fs) {
         saved_rect_[2] = rc.right;
         saved_rect_[3] = rc.bottom;
 
-        // Remove caption and thick frame for true borderless fullscreen
         SetWindowLongW(hwnd_, GWL_STYLE,
             saved_style_ & ~(WS_CAPTION | WS_THICKFRAME));
         SetWindowLongW(hwnd_, GWL_EXSTYLE,
             saved_ex_style_ & ~(WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE |
                                 WS_EX_CLIENTEDGE | WS_EX_STATICEDGE));
 
-        // Cover the full monitor (including taskbar)
         HMONITOR mon = MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST);
         MONITORINFO mi{};
         mi.cbSize = sizeof(mi);
@@ -299,7 +272,6 @@ void UiManager::set_fullscreen(bool fs) {
             mi.rcMonitor.bottom - mi.rcMonitor.top,
             SWP_NOZORDER | SWP_FRAMECHANGED);
     } else {
-        // Restore saved window state
         SetWindowLongW(hwnd_, GWL_STYLE, saved_style_);
         SetWindowLongW(hwnd_, GWL_EXSTYLE, saved_ex_style_);
         SetWindowPos(hwnd_, nullptr,
@@ -316,4 +288,4 @@ TextInputMethodEditor_Win32& UiManager::text_input_editor() {
     return *text_input_editor_;
 }
 
-} // namespace parties::client
+}

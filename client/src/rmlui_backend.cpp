@@ -7,10 +7,6 @@
 
 namespace parties::client {
 
-// ═══════════════════════════════════════════════════════════════════════
-// Embedded UI resources via C++23 #embed
-// ═══════════════════════════════════════════════════════════════════════
-
 static constexpr unsigned char embed_lobby_rml[] = {
     #embed "../ui/lobby.rml"
 };
@@ -19,6 +15,12 @@ static constexpr unsigned char embed_context_window_rml[] = {
     #embed "../ui/context_window.rml"
 };
 
+static constexpr unsigned char embed_pip_rml[] = {
+    #embed "../ui/pip.rml"
+};
+static constexpr unsigned char embed_pip_rcss[] = {
+    #embed "../ui/pip.rcss"
+};
 static constexpr unsigned char embed_theme_rcss[] = {
     #embed "../ui/theme.rcss"
 };
@@ -97,6 +99,14 @@ static constexpr unsigned char embed_icon_share[] = {
 
 static constexpr unsigned char embed_icon_sharing[] = {
     #embed "../ui/icon-sharing.svg"
+};
+
+static constexpr unsigned char embed_icon_pip[] = {
+    #embed "../ui/icon-pip.svg"
+};
+
+static constexpr unsigned char embed_icon_pip_exit[] = {
+    #embed "../ui/icon-pip-exit.svg"
 };
 
 static constexpr unsigned char embed_icon_leave[] = {
@@ -230,11 +240,13 @@ struct OpenFile {
     std::ifstream* fp = nullptr;
 };
 
-} // anonymous namespace
+}
 
 EmbeddedFileInterface::EmbeddedFileInterface() {
     entries_["ui/lobby.rml"] = { embed_lobby_rml, sizeof(embed_lobby_rml) };
     entries_["ui/context_window.rml"] = { embed_context_window_rml, sizeof(embed_context_window_rml) };
+    entries_["ui/pip.rml"] = { embed_pip_rml, sizeof(embed_pip_rml) };
+    entries_["ui/pip.rcss"] = { embed_pip_rcss, sizeof(embed_pip_rcss) };
     entries_["ui/theme.rcss"] = { embed_theme_rcss, sizeof(embed_theme_rcss) };
     entries_["ui/primitives.rcss"] = { embed_primitives_rcss, sizeof(embed_primitives_rcss) };
     entries_["ui/shell.rcss"] = { embed_shell_rcss, sizeof(embed_shell_rcss) };
@@ -255,6 +267,8 @@ EmbeddedFileInterface::EmbeddedFileInterface() {
     entries_["ui/icon-deafen.svg"] = { embed_icon_deafen, sizeof(embed_icon_deafen) };
     entries_["ui/icon-share.svg"] = { embed_icon_share, sizeof(embed_icon_share) };
     entries_["ui/icon-sharing.svg"] = { embed_icon_sharing, sizeof(embed_icon_sharing) };
+    entries_["ui/icon-pip.svg"] = { embed_icon_pip, sizeof(embed_icon_pip) };
+    entries_["ui/icon-pip-exit.svg"] = { embed_icon_pip_exit, sizeof(embed_icon_pip_exit) };
     entries_["ui/icon-leave.svg"] = { embed_icon_leave, sizeof(embed_icon_leave) };
     entries_["ui/icon-settings.svg"] = { embed_icon_settings, sizeof(embed_icon_settings) };
     entries_["ui/icon-volume.svg"] = { embed_icon_volume, sizeof(embed_icon_volume) };
@@ -367,4 +381,4 @@ size_t EmbeddedFileInterface::Tell(Rml::FileHandle file) {
     return f->pos;
 }
 
-} // namespace parties::client
+}

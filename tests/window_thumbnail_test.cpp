@@ -79,7 +79,7 @@ int RunThumbnailWindowChild() {
     return 0;
 }
 
-} // namespace
+}
 
 int main(int argc, char** argv) {
     if (argc == 2 && std::string(argv[1]) == "--thumbnail-child")
@@ -119,9 +119,6 @@ int main(int argc, char** argv) {
     target.type = parties::client::CaptureTarget::Type::Window;
     target.name = "thumbnail test";
     target.handle = window;
-    // Exercise concurrent callers deliberately. Production uses one preview
-    // worker, while ScreenCapture serializes access to the out-of-process WGC
-    // broker as a second line of defence against activation deadlocks.
     std::array<parties::client::CaptureThumbnail, 4> thumbnails;
     std::array<std::jthread, 4> capture_workers;
     for (size_t worker = 0; worker < capture_workers.size(); ++worker) {

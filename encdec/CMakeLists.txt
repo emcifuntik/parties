@@ -58,6 +58,8 @@ if(WIN32)
 endif()
 
 target_link_libraries(parties_encdec
+    PUBLIC
+        parties_video_policy
     PRIVATE
         parties_common
         dav1d::dav1d

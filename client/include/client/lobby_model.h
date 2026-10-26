@@ -1,8 +1,11 @@
 #pragma once
 
+#include <parties/permissions.h>
 #include <parties/types.h>
 #include <client/document_router.h>
+#include <client/hotkey_binding.h>
 #include <client/rml_binding.h>
+#include <client/share_settings.h>
 
 #include <RmlUi/Core/Types.h>
 
@@ -17,13 +20,13 @@ namespace rml = parties::rml;
 struct ChannelUser {
     Rml::String name;
     int id = 0;
-    int role = 0;
+    Role role = Role::Owner;
     bool muted = false;
     bool deafened = false;
     bool speaking = false;
     bool music_playing = false;
     bool streaming = false;
-    int color_index = 0;  // 0-11, generated from name hash for avatar color
+    int color_index = 0;
 };
 
 struct ChannelInfo {
@@ -41,21 +44,17 @@ struct AudioDevice {
 
 struct ShareTarget {
     Rml::String name;
-    int index = 0;       // index into App's capture_targets_ vector
+    int index = 0;
     bool is_monitor = false;
-    // Stable DOM id for direct delivery into this target's preview surface.
     Rml::String element_id;
 };
 
 struct ActiveSharer {
     int id = 0;
     Rml::String name;
-    bool watching = false;   // true if this viewer is currently watching this sharer
+    bool watching = false;
 };
 
-// One screen share currently shown in the viewer grid. element_id is the stable
-// RmlUi id of its <video_frame> cell ("screen-share-<id>") so the platform layer
-// can route decoded frames to the right surface.
 struct WatchedStream {
     int id = 0;
     Rml::String name;
@@ -64,22 +63,29 @@ struct WatchedStream {
 
 class LobbyModel : public rml::Model {
 public:
-    // Return to the joined channel's viewer, or show the room when joining another.
     void show_voice_channel(int channel_id);
 
-    // Stream notifications and watch actions are scoped to the joined channel.
     bool add_channel_sharer(int user_id);
     void remove_channel_sharer(int user_id);
     void clear_channel_sharers();
 
-    // --- Bound state (Property<T> auto-dirties; arrays via silent()/notify()) ---
+    struct HotkeyProps {
+        rml::Prop<bool>&        assigned;
+        rml::Prop<Rml::String>& name;
+        rml::Prop<bool>&        capturing;
+    };
+    HotkeyProps hotkey_props(HotkeyAction action);
+
+    ShareEncoding share_encoding() const;
+    void apply_share_encoding(const ShareEncoding& encoding);
+
     rml::Prop<bool>        is_connected{false};
     rml::Prop<int>         ping_ms{0};
     rml::Prop<Rml::String> server_name;
     rml::Prop<Rml::String> server_initials;
     rml::Prop<int>         server_color_index{0};
     rml::Prop<Rml::String> username;
-    rml::Prop<int>         my_color_index{0};   // user's avatar color (0-11), from fingerprint hash
+    rml::Prop<int>         my_color_index{0};
     rml::Prop<Rml::String> error_text;
 
     rml::Prop<Rml::Vector<ChannelInfo>> channels;
@@ -90,7 +96,6 @@ public:
     rml::Prop<bool>        is_deafened{false};
     DocumentRouter         router;
 
-    // Audio settings
     rml::Prop<Rml::Vector<AudioDevice>> capture_devices;
     rml::Prop<Rml::Vector<AudioDevice>> playback_devices;
     rml::Prop<int>         selected_capture{0};
@@ -103,58 +108,43 @@ public:
     rml::Prop<float>       vad_threshold{0.10f};
     rml::Prop<float>       voice_level{0.0f};
 
-    // Master output volume for the two received audio streams (0.0 - 2.0).
-    // voice_volume = primary mic-voice mix; secondary_volume = aux stream
-    // (karaoke / join sounds / plugin audio).
     rml::Prop<float>       voice_volume{1.0f};
     rml::Prop<float>       secondary_volume{1.0f};
-    // Gain applied to locally captured application audio before it is encoded
-    // and sent as the secondary VOICE2 stream.
     rml::Prop<float>       music_send_volume{1.0f};
 
-    // Notification sounds
-    rml::Prop<float>       notification_volume{1.0f};   // 0.0 - 2.0
+    rml::Prop<float>       notification_volume{1.0f};
 
-    // Push-to-talk
     rml::Prop<bool>        ptt_enabled{false};
-    rml::Prop<int>         ptt_key{0};      // Win32 virtual key code (0 = not set)
-    int ptt_key2 = 0;               // optional second regular key held in combo (0 = none) [unbound]
-    int ptt_mods = 0;               // modifier bitmask: 1=Ctrl 2=Shift 4=Alt [unbound]
-    rml::Prop<Rml::String> ptt_key_name;    // display name for UI
-    rml::Prop<bool>        ptt_binding{false};  // true when waiting for key press
-    rml::Prop<float>       ptt_delay{0.0f}; // release delay in ms (0-1000, step 50)
+    rml::Prop<bool>        ptt_key_assigned{false};
+    rml::Prop<Rml::String> ptt_key_name;
+    rml::Prop<bool>        ptt_binding{false};
+    rml::Prop<float>       ptt_delay{0.0f};
     rml::Prop<Rml::String> ptt_delay_text{"0 ms"};
 
-    // Global hotkeys
-    rml::Prop<int>         mute_key{0};     // Toggle mute hotkey (0 = not set)
-    int mute_key2 = 0;              // [unbound]
-    int mute_mods = 0;              // [unbound]
+    rml::Prop<bool>        mute_key_assigned{false};
     rml::Prop<Rml::String> mute_key_name;
     rml::Prop<bool>        mute_binding{false};
-    rml::Prop<int>         deafen_key{0};   // Toggle deafen hotkey (0 = not set)
-    int deafen_key2 = 0;            // [unbound]
-    int deafen_mods = 0;            // [unbound]
+    rml::Prop<bool>        deafen_key_assigned{false};
     rml::Prop<Rml::String> deafen_key_name;
     rml::Prop<bool>        deafen_binding{false};
 
-    // Mobile navigation (iOS: sidebar vs content panel)
     rml::Prop<bool>        mobile_show_content{false};
 
-    // Screen sharing
     rml::Prop<bool>        is_sharing{false};
     rml::Prop<bool>        is_audio_sharing{false};
     rml::Prop<Rml::String> audio_share_target_name;
-    rml::Prop<bool>        someone_sharing{false};      // convenience: !sharers.empty()
-    rml::Prop<Rml::Vector<ActiveSharer>> sharers;       // all active sharers in channel
-    rml::Prop<Rml::Vector<WatchedStream>> watched;      // sharers shown in the viewer grid
-    rml::Prop<int>         watching_count{0};           // size of watched (grid visible when > 0)
-    rml::Prop<int>         viewing_sharer_id{0};        // primary/last watched sharer (0 = none)
-    rml::Prop<float>       stream_volume{1.0f};         // stream audio volume (0.0 - 2.0)
-    rml::Prop<bool>        stream_fullscreen{false};    // double-click toggles fullscreen stream view
-    rml::Prop<int>         stream_fps{0};               // current stream FPS (encode or decode)
+    rml::Prop<bool>        someone_sharing{false};
+    rml::Prop<Rml::Vector<ActiveSharer>> sharers;
+    rml::Prop<Rml::Vector<WatchedStream>> watched;
+    rml::Prop<int>         watching_count{0};
+    rml::Prop<int>         viewing_sharer_id{0};
+    rml::Prop<float>       stream_volume{1.0f};
+    rml::Prop<bool>        stream_fullscreen{false};
+    rml::Prop<int>         stream_fps{0};
+    rml::Prop<int>         pip_stream_id{0};
+    rml::Prop<bool>        pip_supported{false};
 
-    // Share picker
-    rml::Prop<bool>        use_native_picker{false};  // true on macOS (native picker, no target list)
+    rml::Prop<bool>        use_native_picker{false};
     // Keep monitor and application targets in separate collections. RmlUi's
     // data-if hides non-matching data-for rows but keeps their elements in the
     // DOM, so filtering one combined collection in markup creates duplicate
@@ -162,60 +152,51 @@ public:
     rml::Prop<Rml::Vector<ShareTarget>> share_monitor_targets;
     rml::Prop<Rml::Vector<ShareTarget>> share_application_targets;
     rml::Prop<int>         selected_share_target{-1};
-    rml::Prop<int>         share_picker_mode{0}; // 0 = screen/video, 1 = application audio only
-    rml::Prop<float>       share_bitrate{2.0f};    // Average Mbps (0.5 - 20.0), VBR peak is 2x
-    rml::Prop<int>         share_fps{2};           // 0=15, 1=30, 2=60, 3=120
-    rml::Prop<int>         share_codec{0};         // 0=AV1, 1=H.265, 2=H.264
-    rml::Prop<int>         share_scale{0};         // 0=Source, 1=x0.75, 2=x0.5, 3=x0.25
-    rml::Prop<int>         share_preset{-1};        // -1=Custom, 0=Data saver, 1=Balanced, 2=Best quality
+    rml::Prop<SharePickerMode> share_picker_mode{SharePickerMode::Screen};
+    rml::Prop<float>       share_bitrate{2.0f};
+    rml::Prop<ShareFrameRate> share_fps{ShareEncoding{}.frame_rate};
+    rml::Prop<ShareCodec>  share_codec{ShareEncoding{}.codec};
+    rml::Prop<ShareScale>  share_scale{ShareEncoding{}.scale};
 
-    // Auto-update
     rml::Prop<bool>        update_available{false};
     rml::Prop<bool>        update_downloading{false};
     rml::Prop<bool>        update_ready{false};
     rml::Prop<Rml::String> update_version;
 
-    // Admin / permissions
-    rml::Prop<int>         my_role{3};                  // current user's role (0=Owner..3=User)
-    rml::Prop<bool>        can_manage_channels{false};  // derived from role
-    rml::Prop<bool>        can_kick{false};             // derived from role
-    rml::Prop<bool>        can_manage_roles{false};     // derived from role
+    rml::Prop<Role>        my_role{Role::User};
+    rml::Prop<bool>        can_manage_channels{false};
+    rml::Prop<bool>        can_kick{false};
+    rml::Prop<bool>        can_manage_roles{false};
 
-    // User context menu (RmlUi-based, non-blocking)
     rml::Prop<bool>        show_user_menu{false};
     rml::Prop<int>         menu_user_id{0};
     rml::Prop<Rml::String> menu_user_name;
-    rml::Prop<int>         menu_user_role{0};
-    rml::Prop<float>       menu_user_volume{1.0f};         // 0.0 - 2.0
-    rml::Prop<float>       menu_user_music_volume{1.0f};   // received VOICE2 volume, 0.0 - 2.0
-    rml::Prop<bool>        menu_user_compress{false};      // per-user voice compression enabled
-    rml::Prop<float>       menu_user_compress_target{0.8f}; // compression target (0.0 - 1.0)
-    rml::Prop<bool>        menu_can_roles{false};          // can we change this user's role?
-    rml::Prop<bool>        menu_can_kick{false};           // can we kick this user?
+    rml::Prop<Role>        menu_user_role{Role::Owner};
+    rml::Prop<float>       menu_user_volume{1.0f};
+    rml::Prop<float>       menu_user_music_volume{1.0f};
+    rml::Prop<bool>        menu_user_compress{false};
+    rml::Prop<float>       menu_user_compress_target{0.8f};
+    rml::Prop<bool>        menu_can_roles{false};
+    rml::Prop<bool>        menu_can_kick{false};
 
-    // Create channel form
     rml::Prop<bool>        show_create_channel{false};
     rml::Prop<Rml::String> new_channel_name;
 
-    // Rename channel form
     rml::Prop<bool>        show_rename_channel{false};
     rml::Prop<int>         rename_channel_id{0};
-    rml::Prop<Rml::String> rename_channel_name;      // current name (display only)
-    rml::Prop<Rml::String> new_rename_channel_name;  // input field
+    rml::Prop<Rml::String> rename_channel_name;
+    rml::Prop<Rml::String> new_rename_channel_name;
 
-    // Admin feedback
     rml::Prop<Rml::String> admin_message;
 
-    // Identity backup/import/export
     rml::Prop<bool>        show_seed_phrase{false};
     rml::Prop<Rml::String> identity_seed_phrase;
     rml::Prop<bool>        show_import_identity{false};
     rml::Prop<Rml::String> import_phrase;
     rml::Prop<Rml::String> import_error;
     rml::Prop<bool>        show_private_key{false};
-    rml::Prop<Rml::String> identity_private_key;  // hex-encoded 32-byte Ed25519 seed
+    rml::Prop<Rml::String> identity_private_key;
 
-    // --- Callbacks (set by App before init) ---
     std::function<void()>      on_disconnect_server;
     std::function<void(int)>   on_join_channel;
     std::function<void()>      on_leave_channel;
@@ -243,19 +224,18 @@ public:
     std::function<void()>      on_toggle_audio_share;
     std::function<void(int)>   on_select_share_target;
     std::function<void()>      on_cancel_share;
-    std::function<void()>      on_start_native_share;  // macOS: trigger native picker
+    std::function<void()>      on_start_native_share;
     std::function<void(float)> on_share_bitrate_changed;
-    std::function<void(int)>   on_watch_sharer;     // sharer card / chip: add (or single-select) watch
+    std::function<void(int)>   on_watch_sharer;
     std::function<void(int)>   on_select_sharer;
-    std::function<void(int)>   on_toggle_watch;     // chip toggle: add/remove this sharer from the grid
-    std::function<void()>      on_stop_watching;    // close all watched streams
+    std::function<void(int)>   on_toggle_watch;
+    std::function<void()>      on_stop_watching;
     std::function<void(float)> on_stream_volume_changed;
-    std::function<void()>      on_stream_tap_fullscreen;  // iOS: single tap toggles fullscreen
+    std::function<void()>      on_stream_tap_fullscreen;
+    std::function<void(int)>   on_toggle_stream_pip;
 
-    // Auto-update
     std::function<void()>      on_apply_update;
 
-    // Identity
     std::function<void()>      on_show_seed_phrase;
     std::function<void()>      on_copy_seed_phrase;
     std::function<void()>      on_show_private_key;
@@ -264,23 +244,21 @@ public:
     std::function<void()>      on_do_import;
     std::function<void()>      on_cancel_import;
 
-    // Admin
     std::function<void()>      on_create_channel;
     std::function<void(int)>   on_delete_channel;
     std::function<void()>      on_rename_channel;
-    std::function<void(int, std::string, int)> on_show_user_menu;    // (user_id, name, role)
-    std::function<void(int, std::string)>      on_show_channel_menu; // (channel_id, name)
+    std::function<void(int, std::string, Role)> on_show_user_menu;
+    std::function<void(int, std::string)>      on_show_channel_menu;
 
-    // User context menu actions
-    std::function<void(int, int)>    on_set_user_role;       // (user_id, new_role)
-    std::function<void(int)>         on_kick_user;           // (user_id)
-    std::function<void(int, float)>  on_user_volume_changed; // (user_id, volume)
-    std::function<void(int, float)>  on_user_music_volume_changed; // (user_id, VOICE2 volume)
-    std::function<void(int, bool, float)> on_user_compress_changed; // (user_id, enabled, target)
+    std::function<void(int, Role)>   on_set_user_role;
+    std::function<void(int)>         on_kick_user;
+    std::function<void(int, float)>  on_user_volume_changed;
+    std::function<void(int, float)>  on_user_music_volume_changed;
+    std::function<void(int, bool, float)> on_user_compress_changed;
 
 protected:
     const char* model_name() const override { return "lobby"; }
     void build(rml::Builder& b) override;
 };
 
-} // namespace parties::client
+}

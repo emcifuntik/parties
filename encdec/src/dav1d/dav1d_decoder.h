@@ -23,4 +23,4 @@ private:
     VideoCodecId codec_ = VideoCodecId::AV1;
 };
 
-} // namespace parties::encdec::dav1d
+}

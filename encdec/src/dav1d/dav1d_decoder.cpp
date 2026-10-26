@@ -17,16 +17,12 @@ Dav1dDecoder::~Dav1dDecoder() {
     }
 }
 
-bool Dav1dDecoder::init(VideoCodecId codec, uint32_t /*width*/, uint32_t /*height*/) {
+bool Dav1dDecoder::init(VideoCodecId codec, uint32_t, uint32_t) {
     if (codec != VideoCodecId::AV1)
         return false;
 
     codec_ = codec;
 
-    // Use about half of the machine's hardware threads for the decoder, bounded
-    // to [4, 16]. hardware_concurrency() may report 0; treat that as 4.
-    // max_frame_delay = 1 keeps the decoder from buffering frames for
-    // throughput: every submitted frame is output as soon as it is decoded.
     const unsigned hw_threads = std::thread::hardware_concurrency();
     const int n_threads = hw_threads == 0
         ? 4
@@ -99,4 +95,4 @@ DecoderInfo Dav1dDecoder::info() const {
     return {Backend::Software, codec_};
 }
 
-} // namespace parties::encdec::dav1d
+}

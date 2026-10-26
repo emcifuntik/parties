@@ -124,8 +124,6 @@ bool Settings::create_schema() {
     return true;
 }
 
-// --- Identity ---
-
 bool Settings::has_identity() {
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "SELECT COUNT(*) FROM identity";
@@ -198,8 +196,6 @@ std::string Settings::get_fingerprint() {
     return parties::public_key_fingerprint(id->public_key);
 }
 
-// --- TOFU ---
-
 Settings::TofuResult Settings::check_fingerprint(const std::string& host, int port,
                                                    const std::string& fingerprint) {
     sqlite3_stmt* stmt = nullptr;
@@ -239,8 +235,6 @@ bool Settings::trust_fingerprint(const std::string& host, int port,
     sqlite3_finalize(stmt);
     return ok;
 }
-
-// --- Saved servers ---
 
 bool Settings::save_server(const std::string& name, const std::string& host, int port,
                            const std::string& fingerprint, const std::string& last_username,
@@ -319,8 +313,6 @@ bool Settings::delete_server(int id) {
     return ok;
 }
 
-// --- Resumption tickets ---
-
 bool Settings::save_resumption_ticket(const std::string& host, int port,
                                        const uint8_t* data, size_t len) {
     sqlite3_stmt* stmt = nullptr;
@@ -378,8 +370,6 @@ bool Settings::delete_resumption_ticket(const std::string& host, int port) {
     return ok;
 }
 
-// --- Preferences ---
-
 bool Settings::set_pref(const std::string& key, const std::string& value) {
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "INSERT OR REPLACE INTO preferences (key, value) VALUES (?, ?)";
@@ -414,4 +404,4 @@ std::optional<std::string> Settings::get_pref(const std::string& key) {
     return val;
 }
 
-} // namespace parties::client
+}

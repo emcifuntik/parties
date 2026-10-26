@@ -1,9 +1,11 @@
 #pragma once
 
 #include <server/session.h>
+#include <server/video_ingress_queue.h>
 #include <parties/thread_queue.h>
 #include <parties/protocol.h>
 #include <parties/quic_common.h>
+#include <parties/net_common.h>
 
 #include <string>
 #include <cstdint>
@@ -11,28 +13,24 @@
 #include <vector>
 #include <mutex>
 #include <atomic>
-#include <functional>
 #include <unordered_map>
 
 namespace parties::server {
 
-// A control message received from a client (same as TlsServer's IncomingMessage)
 struct IncomingMessage {
     uint32_t                      session_id;
     protocol::ControlMessageType  type;
     std::vector<uint8_t>          payload;
 };
 
-// A data packet received from a client (same as EnetServer's DataPacket)
 struct DataPacket {
     uint32_t    session_id;
-    uint8_t     packet_type;   // VOICE_PACKET_TYPE etc.
-    uint8_t     channel_id;    // Unused in QUIC (kept for compatibility)
-    bool        reliable;      // Datagrams = unreliable, streams = reliable
+    uint8_t     packet_type;
+    uint8_t     channel_id;
+    bool        reliable;
     std::vector<uint8_t> data;
 };
 
-// File transfer events (pushed from QUIC thread, polled by server main loop)
 struct FileUploadEvent {
     uint32_t session_id;
     uint64_t attachment_id;
@@ -42,16 +40,61 @@ struct FileUploadEvent {
 struct FileDownloadRequest {
     uint32_t session_id;
     uint64_t attachment_id;
-    HQUIC stream;  // Send file data back on this stream
+    HQUIC stream;
 };
 
-// A session that dropped. Captured (under sessions_mutex_) on the MsQuic worker
-// thread at SHUTDOWN_COMPLETE and drained on the server main loop, so all
-// Session-field reads/writes for disconnect handling stay on one thread.
 struct SessionDisconnect {
-    uint32_t  session_id;
-    UserId    user_id;
-    ChannelId channel_id;   // 0 if the session wasn't in a channel
+    std::shared_ptr<Session> session;
+};
+
+class SessionRegistry {
+public:
+    uint32_t allocate_id() {
+        std::lock_guard lock(m_);
+        return next_id_++;
+    }
+
+    void insert(std::shared_ptr<Session> session) {
+        std::lock_guard lock(m_);
+        const uint32_t id = session->id;
+        sessions_[id] = std::move(session);
+    }
+
+    std::shared_ptr<Session> find(uint32_t id) const {
+        std::lock_guard lock(m_);
+        auto it = sessions_.find(id);
+        return it == sessions_.end() ? nullptr : it->second;
+    }
+
+    std::vector<std::shared_ptr<Session>> snapshot() const {
+        std::lock_guard lock(m_);
+        std::vector<std::shared_ptr<Session>> result;
+        result.reserve(sessions_.size());
+        for (const auto& [id, session] : sessions_) result.push_back(session);
+        return result;
+    }
+
+    std::shared_ptr<Session> remove(uint32_t id) {
+        std::lock_guard lock(m_);
+        auto it = sessions_.find(id);
+        if (it == sessions_.end()) return nullptr;
+        auto session = std::move(it->second);
+        sessions_.erase(it);
+        return session;
+    }
+
+    uint16_t count_authenticated() const {
+        std::lock_guard lock(m_);
+        uint16_t count = 0;
+        for (const auto& [id, session] : sessions_)
+            if (session->phase.authenticated()) ++count;
+        return count;
+    }
+
+private:
+    mutable std::mutex m_;
+    std::unordered_map<uint32_t, std::shared_ptr<Session>> sessions_;
+    uint32_t next_id_ = 1;
 };
 
 class QuicServer {
@@ -59,124 +102,51 @@ public:
     QuicServer();
     ~QuicServer();
 
-    // Start the QUIC listener
     bool start(const std::string& listen_ip, uint16_t port, size_t max_clients,
                const std::string& cert_file, const std::string& key_file);
 
-    // Stop the server
     void stop();
 
-    // ── Control plane (replaces TlsServer) ──
-
-    // Queue of control messages received from clients
     ThreadQueue<IncomingMessage>& incoming() { return control_incoming_; }
 
-    // Send a control message to a specific session
     bool send_to(uint32_t session_id, protocol::ControlMessageType type,
                  const uint8_t* payload, size_t payload_len);
 
-    // Broadcast to all authenticated sessions
-    void broadcast(protocol::ControlMessageType type,
-                   const uint8_t* payload, size_t payload_len);
-
-    // Disconnect a session
     void disconnect(uint32_t session_id);
 
-    // Get a session (may return nullptr)
     std::shared_ptr<Session> get_session(uint32_t session_id);
 
-    // Get all sessions (snapshot)
     std::vector<std::shared_ptr<Session>> get_sessions();
 
 
-    // Set the info reported to connectionless server queries (game-server-browser
-    // style, served by the MsQuic unconnected-query patch). Call before start();
-    // the values are read from the MsQuic listener thread.
     void set_server_info(std::string name, uint16_t max_users, bool password_locked);
 
-    // Queue of dropped sessions (drained on the server main loop). Replaces the
-    // old on_disconnect callback, which ran Session mutation on the worker
-    // thread and raced the main loop.
     ThreadQueue<SessionDisconnect>& disconnects() { return disconnects_; }
 
-    // Callback for video frames — called directly from QUIC receive thread
-    // to bypass the polling loop and avoid 1ms+ latency.
-    // Parameters: session_id, packet_type, data (after type byte), length.
-    // Fires for whole frames from BOTH inputs: the legacy video stream 1
-    // (packet_type = first byte after the length prefix) and per-frame
-    // unidirectional streams (packet_type = VIDEO_FRAME_PACKET_TYPE, data =
-    // [14-byte header][encoded]). Either way `data` starts with the header.
-    std::function<void(uint32_t session_id, uint8_t packet_type,
-                       const uint8_t* data, size_t len)> on_video_frame;
+    VideoIngressQueue& video_ingress() { return video_ingress_; }
 
-    // ── Data plane (replaces EnetServer) ──
-
-    // Queue of received data packets (voice, video)
     ThreadQueue<DataPacket>& data_incoming() { return data_incoming_; }
 
-    // Send a datagram to a specific peer (voice). `priority` sets
-    // QUIC_SEND_FLAG_DGRAM_PRIORITY (voice ahead of everything else queued).
     bool send_datagram(uint32_t session_id, const uint8_t* data, size_t len,
-                       bool priority = false);
+                       DatagramPriority priority = DatagramPriority::Normal);
 
-    // Send a datagram to all peers in a list (SFU voice fan-out)
     void send_to_many(const std::vector<uint32_t>& session_ids,
-                      const uint8_t* data, size_t len, bool priority = false);
+                      const uint8_t* data, size_t len,
+                      DatagramPriority priority = DatagramPriority::Normal);
 
-    // Send a length-prefixed packet on the session's legacy video stream 1
-    // (used for PLI toward sharers and for video toward pre-1.2 viewers).
-    // Video bytes are added to Session::video_outstanding_bytes and subtracted
-    // on SEND_COMPLETE.
-    bool send_video_to(uint32_t session_id, const uint8_t* data, size_t len);
-
-    // Forward one whole video frame to a viewer on the path its protocol
-    // version supports. `frame` = [sender_id u32][VideoFrameHeader 14][encoded]
-    // (NO leading type byte); the same buffer may be shared by every viewer of
-    // that frame (no copy per viewer).
-    //   >= 1.2 : a fresh unidirectional per-frame stream carrying
-    //            [STREAM_TYPE_VIDEO_FRAME][frame] + FIN.
-    //   <  1.2 : [u32 len][VIDEO_FRAME_PACKET_TYPE][frame] on quic_video_stream.
-    // Adds frame->size() plus the prefix bytes to video_outstanding_bytes on
-    // success and subtracts them in SEND_COMPLETE. Returns false if nothing was
-    // queued (dead session, MsQuic StreamOpen/StreamSend failure, or a frame
-    // that would exceed the legacy parser cap) — the caller treats that as a
-    // drop. If the viewer's unidirectional stream credit (PeerUnidiStreamCount)
-    // is exhausted the stream is still accepted: MsQuic parks it until the
-    // viewer closes an older frame stream, its bytes stay charged to
-    // video_outstanding_bytes, and the backlog gate bounds the wait. Holds only
-    // session->quic_mutex, never sessions_mutex_.
     bool send_video_frame_to(const std::shared_ptr<Session>& session,
                              std::shared_ptr<const std::vector<uint8_t>> frame);
-
-    // Send on a reliable stream to a specific peer (video)
-    bool send_stream(uint32_t session_id, const uint8_t* data, size_t len);
-
-    // Send to many — for video, uses datagrams (same as voice for now)
-    void send_to_many_on_channel(const std::vector<uint32_t>& session_ids,
-                                 uint8_t channel, const uint8_t* data, size_t len,
-                                 uint32_t flags);
-
-    // Compatibility — same as send_datagram
-    bool send_to_on_channel(uint32_t session_id, uint8_t channel,
-                            const uint8_t* data, size_t len, uint32_t flags);
-
-    // ── File transfer ──
 
     ThreadQueue<FileUploadEvent>& file_uploads() { return file_uploads_; }
     ThreadQueue<FileDownloadRequest>& file_downloads() { return file_downloads_; }
 
-    // Send raw data on a file stream and close it with FIN
     bool send_file_on_stream(HQUIC stream, const uint8_t* data, size_t len);
 
-    // Cumulative count of failed reliable (control + video stream) sends. The
-    // main loop logs this periodically so silent backpressure/teardown drops
-    // are observable.
     uint64_t reliable_send_failures() const {
         return reliable_send_failures_.load(std::memory_order_relaxed);
     }
 
 private:
-    // MsQuic callback functions (static, forward to member via context)
     static QUIC_STATUS QUIC_API listener_callback(HQUIC listener, void* context,
                                                    QUIC_LISTENER_EVENT* event);
     static QUIC_STATUS QUIC_API connection_callback(HQUIC connection, void* context,
@@ -184,23 +154,11 @@ private:
     static QUIC_STATUS QUIC_API stream_callback(HQUIC stream, void* context,
                                                  QUIC_STREAM_EVENT* event);
 
+    struct SendCtx;
     struct FileStreamContext;
     static QUIC_STATUS QUIC_API file_stream_callback(HQUIC stream, void* context,
                                                       QUIC_STREAM_EVENT* event);
 
-    // Per-frame video streams.
-    //   Inbound (client -> server, PEER_STREAM_STARTED with the UNIDIRECTIONAL
-    //   flag): VideoInStreamContext accumulates RECEIVE buffers until FIN,
-    //   validates the STREAM_TYPE_VIDEO_FRAME byte, VIDEO_FRAME_MAX_PAYLOAD_BYTES
-    //   and the per-session ingress cap (Session::video_in_buffered_bytes),
-    //   then invokes on_video_frame once with the whole frame; oversize or
-    //   malformed streams are aborted and the accumulator freed.
-    //   Outbound (server -> viewer): VideoOutStreamContext owns the shared
-    //   frame buffer, the two QUIC_BUFFERs (type byte + frame) and a
-    //   shared_ptr<Session>; SEND_COMPLETE subtracts from
-    //   video_outstanding_bytes, SHUTDOWN_COMPLETE closes the stream and frees
-    //   the context. The sender starts and sends in one StreamSend
-    //   (QUIC_SEND_FLAG_START|FIN) and never touches the context afterwards.
     struct VideoInStreamContext;
     struct VideoOutStreamContext;
     static QUIC_STATUS QUIC_API video_in_stream_callback(HQUIC stream, void* context,
@@ -208,7 +166,6 @@ private:
     static QUIC_STATUS QUIC_API video_out_stream_callback(HQUIC stream, void* context,
                                                            QUIC_STREAM_EVENT* event);
 
-    // Internal event handlers
     QUIC_STATUS on_new_connection(HQUIC listener, QUIC_LISTENER_EVENT* event);
     QUIC_STATUS on_connection_event(HQUIC connection, uint32_t session_id,
                                     QUIC_CONNECTION_EVENT* event);
@@ -218,15 +175,13 @@ private:
     QUIC_STATUS on_file_stream_event(HQUIC stream, FileStreamContext* ctx,
                                       QUIC_STREAM_EVENT* event);
 
-    // Send length-prefixed control message on a session's control stream
-    bool send_control_on_stream(HQUIC stream, protocol::ControlMessageType type,
-                                const uint8_t* payload, size_t payload_len);
+    bool send_control(Session& session, protocol::ControlMessageType type,
+                      const uint8_t* payload, size_t payload_len);
 
-    // Process received stream data (accumulate and parse length-prefixed messages)
     void process_stream_data(uint32_t session_id, const uint8_t* data, size_t len);
 
-    // Process received video stream data (length-prefixed video packets)
-    void process_video_stream_data(uint32_t session_id, const uint8_t* data, size_t len);
+    void process_video_stream_data(const std::shared_ptr<Session>& session,
+                                   const uint8_t* data, size_t len);
 
     const QUIC_API_TABLE* api_ = nullptr;
     HQUIC registration_ = nullptr;
@@ -234,18 +189,14 @@ private:
     HQUIC listener_ = nullptr;
     std::atomic<bool> running_{false};
 
-    std::mutex sessions_mutex_;
-    std::unordered_map<uint32_t, std::shared_ptr<Session>> sessions_;
-    uint32_t next_session_id_ = 1;
+    SessionRegistry registry_;
 
     std::atomic<uint64_t> reliable_send_failures_{0};
 
-    // Connectionless server-query info (set before start(), read on MsQuic thread)
     std::string query_server_name_;
     uint16_t    query_max_users_ = 0;
     bool        query_password_locked_ = false;
 
-    // Per-session stream receive buffers
     std::mutex buffers_mutex_;
     std::unordered_map<uint32_t, std::vector<uint8_t>> recv_buffers_;
     std::unordered_map<uint32_t, std::vector<uint8_t>> video_recv_buffers_;
@@ -255,6 +206,7 @@ private:
     ThreadQueue<FileUploadEvent> file_uploads_;
     ThreadQueue<FileDownloadRequest> file_downloads_;
     ThreadQueue<SessionDisconnect> disconnects_;
+    VideoIngressQueue video_ingress_;
 };
 
-} // namespace parties::server
+}

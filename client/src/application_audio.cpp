@@ -21,4 +21,4 @@ void downmix_application_audio(const float* stereo, float* mono, int frame_count
     }
 }
 
-} // namespace parties::client
+}

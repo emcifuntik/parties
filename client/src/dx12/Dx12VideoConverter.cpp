@@ -88,7 +88,7 @@ ComPtr<ID3D12Resource> create_texture(ID3D12Device* device, uint32_t width,
 		return {};
 	return result;
 }
-} // namespace
+}
 
 Dx12VideoConverter::Texture::~Texture() {
 	auto unmap = [](auto& planes) {
@@ -168,7 +168,7 @@ std::shared_ptr<Dx12VideoConverter::Texture> Dx12VideoConverter::Create(
 	texture->width = width;
 	texture->height = height;
 	if ((layout != Layout::DirectNV12 && !CreateOutput(*texture)) ||
-		(layout != Layout::NativeNV12 && !CreateCpuPlanes(*texture)) ||
+		!CreateCpuPlanes(*texture) ||
 		(layout != Layout::DirectNV12 && !CreateDescriptors(*texture)))
 		return {};
 	return texture;
@@ -235,16 +235,10 @@ bool Dx12VideoConverter::CreateDescriptors(Texture& texture) {
 		return false;
 
 	for (uint32_t frame = 0; frame < frame_count; ++frame) {
-		if (texture.layout != Layout::NativeNV12) {
-			CreatePlaneSrv(texture, frame, 0, texture.y.Get(), DXGI_FORMAT_R8_UNORM, 0);
-			CreatePlaneSrv(texture, frame, 1, texture.uv.Get(),
-				texture.layout == Layout::I420 ? DXGI_FORMAT_R8_UNORM : DXGI_FORMAT_R8G8_UNORM, 0);
-			CreatePlaneSrv(texture, frame, 2, texture.v.Get(), DXGI_FORMAT_R8_UNORM, 0);
-		} else {
-			CreatePlaneSrv(texture, frame, 0, nullptr, DXGI_FORMAT_R8_UNORM, 0);
-			CreatePlaneSrv(texture, frame, 1, nullptr, DXGI_FORMAT_R8G8_UNORM, 1);
-			CreatePlaneSrv(texture, frame, 2, nullptr, DXGI_FORMAT_R8_UNORM, 0);
-		}
+		CreatePlaneSrv(texture, frame, 0, texture.y.Get(), DXGI_FORMAT_R8_UNORM, 0);
+		CreatePlaneSrv(texture, frame, 1, texture.uv.Get(),
+			texture.layout == Layout::I420 ? DXGI_FORMAT_R8_UNORM : DXGI_FORMAT_R8G8_UNORM, 0);
+		CreatePlaneSrv(texture, frame, 2, texture.v.Get(), DXGI_FORMAT_R8_UNORM, 0);
 
 		D3D12_UNORDERED_ACCESS_VIEW_DESC uav{};
 		uav.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -304,9 +298,10 @@ void Dx12VideoConverter::CopyPlane(ID3D12GraphicsCommandList* commands,
 }
 
 bool Dx12VideoConverter::UpdateI420(Texture& texture,
-	ID3D12GraphicsCommandList* commands, uint32_t frame_index,
+	ID3D12GraphicsCommandList* commands, Dx12FrameSlot frame,
 	const uint8_t* y, uint32_t y_stride, const uint8_t* u, const uint8_t* v,
 	uint32_t uv_stride) {
+	const uint32_t frame_index = frame.index();
 	if (!commands || texture.layout != Layout::I420 || frame_index >= frame_count)
 		return false;
 	const uint32_t chroma_width = (texture.width + 1) / 2;
@@ -325,8 +320,9 @@ bool Dx12VideoConverter::UpdateI420(Texture& texture,
 }
 
 bool Dx12VideoConverter::UpdateNV12(Texture& texture,
-	ID3D12GraphicsCommandList* commands, uint32_t frame_index,
+	ID3D12GraphicsCommandList* commands, Dx12FrameSlot frame,
 	const uint8_t* y, uint32_t y_stride, const uint8_t* uv, uint32_t uv_stride) {
+	const uint32_t frame_index = frame.index();
 	if (!commands || (texture.layout != Layout::NV12 && texture.layout != Layout::DirectNV12) ||
 		frame_index >= frame_count)
 		return false;
@@ -340,38 +336,6 @@ bool Dx12VideoConverter::UpdateNV12(Texture& texture,
 		chroma_width, chroma_height);
 	if (texture.layout == Layout::NV12)
 		Dispatch(texture, commands, frame_index);
-	return true;
-}
-
-bool Dx12VideoConverter::UpdateNativeNV12(Texture& texture, ID3D12CommandQueue* queue,
-	ID3D12GraphicsCommandList* commands, uint32_t frame_index,
-	ID3D12Resource* source, std::shared_ptr<void> owner,
-	ID3D12Fence* ready_fence, uint64_t ready_value,
-	D3D12_RESOURCE_STATES source_state) {
-	if (!queue || !commands || !source || !owner ||
-		texture.layout != Layout::NativeNV12 || frame_index >= frame_count ||
-		source->GetDesc().Format != DXGI_FORMAT_NV12)
-		return false;
-	if (ready_fence && ready_value && FAILED(queue->Wait(ready_fence, ready_value)))
-		return false;
-
-	// This descriptor group belongs to the back buffer which BeginFrame has
-	// already waited for, so replacing it cannot race an older command list.
-	CreatePlaneSrv(texture, frame_index, 0, source, DXGI_FORMAT_R8_UNORM, 0);
-	CreatePlaneSrv(texture, frame_index, 1, source, DXGI_FORMAT_R8G8_UNORM, 1);
-	texture.native_owners[frame_index] = std::move(owner);
-
-	if (source_state != D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE) {
-		auto barrier = transition(source, source_state,
-			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-		commands->ResourceBarrier(1, &barrier);
-	}
-	Dispatch(texture, commands, frame_index);
-	if (source_state != D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE) {
-		auto barrier = transition(source, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-			source_state);
-		commands->ResourceBarrier(1, &barrier);
-	}
 	return true;
 }
 

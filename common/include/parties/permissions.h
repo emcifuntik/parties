@@ -1,5 +1,7 @@
 #pragma once
 
+#include <parties/enum_names.h>
+
 #include <cstdint>
 #include <optional>
 
@@ -11,6 +13,14 @@ enum class Role : uint8_t {
     Moderator = 2,
     User      = 3,
 };
+
+template <>
+inline constexpr auto enum_names_v<Role> = EnumNames<Role, 4>{{{
+    {Role::Owner, "owner"},
+    {Role::Admin, "admin"},
+    {Role::Moderator, "moderator"},
+    {Role::User, "user"},
+}}};
 
 enum class Permission : uint32_t {
     None              = 0,
@@ -41,4 +51,4 @@ bool has_permission(Role role, Permission perm,
                     const std::optional<uint32_t>& channel_override = std::nullopt);
 bool can_moderate(Role actor, Role target);
 
-} // namespace parties
+}

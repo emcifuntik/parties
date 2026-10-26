@@ -24,7 +24,6 @@ private:
 
     void* codec_obj_ = nullptr;
 
-    // Output YUV420P buffers (allocated after header decode reveals dimensions)
     std::vector<uint8_t> y_buf_;
     std::vector<uint8_t> u_buf_;
     std::vector<uint8_t> v_buf_;
@@ -32,4 +31,4 @@ private:
     uint32_t buf_height_ = 0;
 };
 
-} // namespace parties::encdec::libhevc
+}

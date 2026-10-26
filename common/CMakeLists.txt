@@ -3,6 +3,8 @@ find_package(OpenSSL REQUIRED)
 find_package(msquic CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 
+add_subdirectory(video_policy)
+
 add_library(parties_common STATIC
     src/serialization.cpp
     src/server_query.cpp
@@ -13,8 +15,7 @@ add_library(parties_common STATIC
     src/log.cpp
     src/crash_reporter.cpp
     src/thread_scheduling.cpp
-    src/video_send_controller.cpp
-    src/video_frame_reorder.cpp
+    src/process_services.cpp
 )
 set_target_properties(parties_common PROPERTIES XCODE_ATTRIBUTE_SKIP_INSTALL "YES")
 
@@ -30,8 +31,6 @@ if(ENABLE_TRACY)
     find_package(Tracy CONFIG REQUIRED)
 endif()
 
-# Sentry (optional — enabled when ENABLE_SENTRY is ON)
-# iOS uses sentry-cocoa (xcframework linked in client/CMakeLists.txt), not sentry-native.
 if(ENABLE_SENTRY AND NOT APPLE)
     find_package(sentry CONFIG REQUIRED)
     set(_SENTRY_LIB sentry::sentry)
@@ -41,6 +40,7 @@ endif()
 
 target_link_libraries(parties_common
     PUBLIC
+        parties_video_policy
         Opus::opus
         OpenSSL::Crypto
         msquic::msquic
@@ -52,8 +52,6 @@ target_link_libraries(parties_common
 target_compile_definitions(parties_common PUBLIC
     SPDLOG_USE_STD_FORMAT
     $<$<BOOL:${BUILD_IN_RETAIL}>:PARTIES_RETAIL=1>
-    # Keep debug statements available in production binaries, but disabled at
-    # runtime by default. Support can opt in with PARTIES_LOG_LEVEL=debug.
     SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_DEBUG
 )
 

@@ -1,19 +1,5 @@
 #pragma once
 
-// ─────────────────────────────────────────────────────────────────────────────
-// parties::rml element helpers — companion to rml_binding.h for the *custom
-// element* binding surface (distinct from data-model bindings).
-//
-//   * ElementRegistry — registers custom RmlUi elements via RmlUi's own
-//     ElementInstancerGeneric<T> (new T(tag) / delete), replacing the
-//     hand-written pass-through ElementInstancer classes, and owns the
-//     instancer lifetimes in one place.
-//
-//   * OwnedListener — a self-deleting Rml::EventListener. RmlUi never deletes
-//     listeners attached via Element::AddEventListener, so this frees itself on
-//     OnDetach, fixing the manual-wiring leak.
-// ─────────────────────────────────────────────────────────────────────────────
-
 #include <RmlUi/Core/Element.h>
 #include <RmlUi/Core/ElementInstancer.h>
 #include <RmlUi/Core/Event.h>
@@ -32,8 +18,6 @@ namespace parties::rml {
 // instancers), e.g. as a member of the application object.
 class ElementRegistry {
 public:
-    // Register element type ElementT under the given RML tag. ElementT must have
-    // a constructor taking (const Rml::String& tag).
     template <typename ElementT>
     void add(const Rml::String& tag) {
         auto instancer = std::make_unique<Rml::ElementInstancerGeneric<ElementT>>();
@@ -54,10 +38,10 @@ public:
     void ProcessEvent(Rml::Event& event) override {
         if (callback_) callback_(event);
     }
-    void OnDetach(Rml::Element* /*element*/) override { delete this; }
+    void OnDetach(Rml::Element*) override { delete this; }
 
 private:
     std::function<void(Rml::Event&)> callback_;
 };
 
-} // namespace parties::rml
+}

@@ -58,10 +58,8 @@ class Decoder {
 public:
     virtual ~Decoder() = default;
 
-    // Feed encoded data. Fires on_decoded when a frame is ready.
     virtual bool decode(const uint8_t* data, size_t len, int64_t timestamp) = 0;
 
-    // Flush any buffered frames
     virtual void flush() = 0;
 
     // True if the GPU context was invalidated (device reset, game launch, TDR).
@@ -73,14 +71,11 @@ public:
     // render thread making progress while the caller joins the worker.
     virtual void set_stop_token(std::stop_token) {}
 
-    // Metadata about the active decoder
     virtual DecoderInfo info() const = 0;
 
-    // Callback with decoded frame
     std::function<void(const DecodedFrame& frame)> on_decoded;
 
-    // Convenience
     VideoCodecId codec() const { return info().codec; }
 };
 
-} // namespace parties::encdec
+}

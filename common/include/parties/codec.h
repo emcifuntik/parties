@@ -1,50 +1,47 @@
 #pragma once
 
+#include <parties/audio_common.h>
+
+#include <cstddef>
 #include <cstdint>
+#include <optional>
+#include <span>
 
 struct OpusEncoder;
 struct OpusDecoder;
 
 namespace parties {
 
-// Encoder tuning profile. Voice = mic speech (OPUS_APPLICATION_VOIP, speech
-// signal). Music = the secondary/auxiliary stream (karaoke backing track,
-// sound effects): OPUS_APPLICATION_AUDIO + music signal so transients and
-// full-band content aren't smeared the way the speech-optimized path would.
 enum class OpusMode { Voice, Music };
+
+struct OpusFec {
+    int expected_loss_pct;
+};
+
+inline constexpr OpusFec kVoiceFec{audio::OPUS_EXPECTED_LOSS_PCT};
 
 class OpusCodec {
 public:
     OpusCodec();
     ~OpusCodec();
+    OpusCodec(const OpusCodec&) = delete;
+    OpusCodec& operator=(const OpusCodec&) = delete;
 
-    // inband_fec: enable Opus in-band FEC (LBRR) and tell the encoder the
-    // expected packet-loss percentage so it sizes redundancy accordingly. Use
-    // for real-time voice over a lossy/unreliable transport.
-    // mode: Voice (default) or Music (auxiliary stream); see OpusMode.
-    bool init_encoder(int sample_rate, int channels, int bitrate,
-                      bool inband_fec = false, int expected_loss_pct = 0,
-                      OpusMode mode = OpusMode::Voice);
+    bool init_encoder(int sample_rate, int channels, int bitrate_bps,
+                      std::optional<OpusFec> fec, OpusMode mode = OpusMode::Voice);
     bool init_decoder(int sample_rate, int channels);
 
-    // Encode PCM -> Opus. Returns bytes written, or negative on error.
-    int encode(const float* pcm_in, int frame_size,
-               uint8_t* opus_out, int max_opus_bytes);
+    [[nodiscard]] std::optional<size_t> encode(const float* pcm, int frame_size, std::span<uint8_t> out);
 
-    // Decode Opus -> PCM. Returns samples decoded.
-    //  - Normal: opus_in = the packet for this frame, decode_fec = 0.
-    //  - PLC (packet missing, no successor): opus_in = nullptr, decode_fec = 0.
-    //  - FEC recovery: opus_in = the NEXT packet (frame N+1), decode_fec = 1 → the
-    //    decoder reconstructs the lost frame N from that packet's embedded FEC.
-    //    max_frame_size must equal the lost frame's sample count.
-    int decode(const uint8_t* opus_in, int opus_len,
-               float* pcm_out, int max_frame_size, int decode_fec = 0);
-
-    void set_bitrate(int bps);
+    [[nodiscard]] std::optional<int> decode(std::span<const uint8_t> packet, float* pcm, int max_frame_size);
+    [[nodiscard]] std::optional<int> conceal_lost_frame(float* pcm, int frame_size);
+    // Opus needs the successor itself decoded normally afterwards to keep its state continuous.
+    [[nodiscard]] std::optional<int> recover_from_successor_fec(std::span<const uint8_t> successor,
+                                                                float* pcm, int frame_size);
 
 private:
     OpusEncoder* encoder_ = nullptr;
     OpusDecoder* decoder_ = nullptr;
 };
 
-} // namespace parties
+}
