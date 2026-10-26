@@ -2,6 +2,7 @@
 
 #include <client/app.h>
 #include <client/app_core.h>
+#include <client/hotkey_combo.h>
 #include <d3dcompiler.h>
 #include <client/screen_capture.h>
 #include <client/video_encoder.h>
@@ -666,18 +667,21 @@ void App::poll_hotkeys() {
         }
     }
 
-    // Returns true when the full hotkey combo (key + optional key2 + mods) is held
-    auto combo_held = [](int key, int key2, int mods) -> bool {
-        if (!(GetAsyncKeyState(key) & 0x8000)) return false;
-        if (key2 != 0 && !(GetAsyncKeyState(key2) & 0x8000)) return false;
-        return current_mods() == mods;
+    auto key_down = [](int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; };
+    // Exact combo (key + optional key2 + exactly these modifiers): the toggles.
+    auto combo_held = [&](int key, int key2, int mods) -> bool {
+        return toggle_combo_down(key_down(key), key2 == 0 || key_down(key2), current_mods(), mods);
     };
 
     // PTT polling — only controls audio mute, does not touch model_.is_muted
-    // PTT is blocked when manually muted or deafened
+    // PTT is blocked when manually muted or deafened. Modifiers pressed while
+    // talking (a game's sprint/crouch/walk) must not cut it: hold_combo_active.
     if (core_.model_.ptt_enabled && core_.model_.ptt_key != 0 && core_.current_channel_ != 0) {
         bool blocked = core_.model_.is_muted || core_.model_.is_deafened;
-        bool held = combo_held(core_.model_.ptt_key, core_.model_.ptt_key2, core_.model_.ptt_mods);
+        const int key2 = core_.model_.ptt_key2;
+        bool held = hold_combo_active(ptt_held_, key_down(core_.model_.ptt_key),
+                                      key2 == 0 || key_down(key2), current_mods(),
+                                      core_.model_.ptt_mods);
         auto now = std::chrono::steady_clock::now();
         if (held && !blocked) {
             ptt_held_ = true;

@@ -156,6 +156,9 @@ target_include_directories(parties_video_frame_reorder_test PRIVATE ../common/in
 add_executable(parties_video_backlog_test video_backlog_test.cpp)
 target_include_directories(parties_video_backlog_test PRIVATE ../common/include)
 
+add_executable(parties_hotkey_combo_test hotkey_combo_test.cpp)
+target_include_directories(parties_hotkey_combo_test PRIVATE ../client/include)
+
 add_executable(parties_datagram_backlog_test datagram_backlog_test.cpp)
 target_include_directories(parties_datagram_backlog_test PRIVATE ../common/include)
 
@@ -263,6 +266,7 @@ add_test(NAME parties_video_rate_control COMMAND parties_video_rate_control_test
 add_test(NAME parties_video_send_controller COMMAND parties_video_send_controller_test)
 add_test(NAME parties_video_frame_reorder COMMAND parties_video_frame_reorder_test)
 add_test(NAME parties_video_backlog COMMAND parties_video_backlog_test)
+add_test(NAME parties_hotkey_combo COMMAND parties_hotkey_combo_test)
 add_test(NAME parties_datagram_backlog COMMAND parties_datagram_backlog_test)
 # Server + two headless clients over real MsQuic on a loopback port.
 add_test(NAME parties_integration COMMAND parties_integration_test)
