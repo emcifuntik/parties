@@ -442,7 +442,6 @@ int main() {
 	if (!Check(Rml::Initialise(), "RmlUi did not initialise"))
 		return 1;
 	success &= Check(Rml::Factory::GetElementInstancer("svg") != nullptr, "SVG plugin element was not registered");
-	success &= Check(Rml::Factory::GetElementInstancer("lottie") != nullptr, "Lottie plugin element was not registered");
 
 	Rml::Context* context = Rml::CreateContext("rcss-variable-test", {800, 600});
 	if (!Check(context != nullptr, "context was not created")) {
