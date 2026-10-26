@@ -32,6 +32,30 @@ if(WIN32)
     target_link_libraries(parties_integration_test PRIVATE ncrypt.lib crypt32.lib)
 endif()
 
+# ── Voice under a congested last mile (server + MsQuic + UDP relay) ──────────
+add_executable(parties_voice_congestion_test
+    voice_congestion_test.cpp
+    ../server/src/server.cpp
+    ../server/src/quic_server.cpp
+    ../server/src/database.cpp
+    ../server/src/config.cpp
+    ../client/src/net_client_msquic.cpp
+)
+target_include_directories(parties_voice_congestion_test
+    PRIVATE
+        ../server/include
+        ../client/include
+)
+target_link_libraries(parties_voice_congestion_test
+    PRIVATE
+        parties_common
+        unofficial::sqlite3::sqlite3
+        toml11::toml11
+)
+if(WIN32)
+    target_link_libraries(parties_voice_congestion_test PRIVATE ncrypt.lib crypt32.lib)
+endif()
+
 # ── Voice packet-loss resilience (offline, deterministic) ─────────────────────
 find_package(Opus CONFIG REQUIRED)
 
@@ -141,6 +165,12 @@ target_include_directories(parties_video_frame_reorder_test PRIVATE ../common/in
 
 add_executable(parties_video_backlog_test video_backlog_test.cpp)
 target_include_directories(parties_video_backlog_test PRIVATE ../common/include)
+
+add_executable(parties_hotkey_combo_test hotkey_combo_test.cpp)
+target_include_directories(parties_hotkey_combo_test PRIVATE ../client/include)
+
+add_executable(parties_datagram_backlog_test datagram_backlog_test.cpp)
+target_include_directories(parties_datagram_backlog_test PRIVATE ../common/include)
 
 add_executable(parties_application_audio_test
     application_audio_test.cpp
@@ -260,8 +290,11 @@ add_test(NAME parties_video_rate_control COMMAND parties_video_rate_control_test
 add_test(NAME parties_video_send_controller COMMAND parties_video_send_controller_test)
 add_test(NAME parties_video_frame_reorder COMMAND parties_video_frame_reorder_test)
 add_test(NAME parties_video_backlog COMMAND parties_video_backlog_test)
+add_test(NAME parties_hotkey_combo COMMAND parties_hotkey_combo_test)
+add_test(NAME parties_datagram_backlog COMMAND parties_datagram_backlog_test)
 # Server + two headless clients over real MsQuic on a loopback port.
 add_test(NAME parties_integration COMMAND parties_integration_test)
+add_test(NAME parties_voice_congestion COMMAND parties_voice_congestion_test)
 set_tests_properties(parties_integration PROPERTIES TIMEOUT 120)
 add_test(NAME parties_application_audio_downmix COMMAND parties_application_audio_test)
 if(BUILD_CLIENT)

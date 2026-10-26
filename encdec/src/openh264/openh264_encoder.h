@@ -2,6 +2,8 @@
 
 #include <encdec/encoder.h>
 
+#include <atomic>
+
 #include <d3d11.h>
 #include <wrl/client.h>
 
@@ -35,7 +37,9 @@ private:
     uint32_t width_ = 0;
     uint32_t height_ = 0;
     uint32_t fps_ = 30;
-    bool force_keyframe_ = false;
+    // Set by force_keyframe() from any thread (PLI handlers), consumed by the
+    // thread that submits frames.
+    std::atomic<bool> force_keyframe_{false};
 };
 
 } // namespace parties::encdec::openh264

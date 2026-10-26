@@ -162,11 +162,18 @@ video_frame {
 }
 
 .stream-cell-label {
-    display: block;
+    display: flex;
     flex: none;
+    align-items: center;
+    gap: 6dp;
     padding: 4dp 2dp;
     color: #9AA3B2;
-    font-size: 12dp;
+}
+
+.stream-cell-label-icon {
+    display: block;
+    flex-shrink: 0;
+    image-color: #5EEAD4;
 }
 
 /* Fullscreen stream */
@@ -225,6 +232,17 @@ video_frame {
 .sharer-tab.active {
     background-color: #6EECD4;
     color: #0B0D14;
+}
+
+.sharer-tab-icon {
+    display: block;
+    flex-shrink: 0;
+    margin-right: 6dp;
+    image-color: #A0A8C0;
+}
+
+.sharer-tab.active .sharer-tab-icon {
+    image-color: #5EEAD4;
 }
 
 .sharer-close {

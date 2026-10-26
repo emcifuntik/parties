@@ -432,8 +432,8 @@
 
     /* The current iOS bridge receives streams but intentionally does not
        expose capture or application-audio sending. Never present dead actions. */
-    #room-share-button, #room-audio-share-button,
-    .dock-share, .dock-audio-share { display: none; }
+    #room-share-button, #room-audio-share-button, #room-camera-button,
+    .dock-share, .dock-audio-share, .dock-camera { display: none; }
     .stream-mobile-back {
         display: flex;
         min-width: 54dp;

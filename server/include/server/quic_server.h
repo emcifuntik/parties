@@ -101,12 +101,13 @@ public:
 
     // Callback for video frames — called directly from QUIC receive thread
     // to bypass the polling loop and avoid 1ms+ latency.
-    // Parameters: session_id, packet_type, data (after type byte), length.
+    // Parameters: session_id, packet_type, source, data (after the prefix), length.
     // Fires for whole frames from BOTH inputs: the legacy video stream 1
-    // (packet_type = first byte after the length prefix) and per-frame
-    // unidirectional streams (packet_type = VIDEO_FRAME_PACKET_TYPE, data =
-    // [14-byte header][encoded]). Either way `data` starts with the header.
-    std::function<void(uint32_t session_id, uint8_t packet_type,
+    // (packet_type = first byte after the length prefix, source = Screen) and
+    // per-frame unidirectional streams (packet_type = VIDEO_FRAME_PACKET_TYPE,
+    // source from the stream prefix, data = [14-byte header][encoded]). For a
+    // video frame `data` starts with the header.
+    std::function<void(uint32_t session_id, uint8_t packet_type, protocol::VideoSource source,
                        const uint8_t* data, size_t len)> on_video_frame;
 
     // ── Data plane (replaces EnetServer) ──
@@ -114,10 +115,13 @@ public:
     // Queue of received data packets (voice, video)
     ThreadQueue<DataPacket>& data_incoming() { return data_incoming_; }
 
-    // Send a datagram to a specific peer (voice). `priority` sets
+    // Send a datagram to a specific peer. `priority` sets
     // QUIC_SEND_FLAG_DGRAM_PRIORITY (voice ahead of everything else queued).
+    // `media` (voice, screen-share audio) is dropped — returns false — while
+    // the peer's datagram queue is stale (Session::dgram_backlog); control
+    // datagrams (PLI) pass `media = false` and are always queued.
     bool send_datagram(uint32_t session_id, const uint8_t* data, size_t len,
-                       bool priority = false);
+                       bool priority = false, bool media = true);
 
     // Send a datagram to all peers in a list (SFU voice fan-out)
     void send_to_many(const std::vector<uint32_t>& session_ids,
@@ -175,6 +179,13 @@ public:
         return reliable_send_failures_.load(std::memory_order_relaxed);
     }
 
+    // Cumulative count of media datagrams dropped because the receiving
+    // peer's datagram queue was stale (see send_datagram). Logged periodically
+    // by the main loop next to reliable_send_failures().
+    uint64_t media_datagram_drops() const {
+        return media_datagram_drops_.load(std::memory_order_relaxed);
+    }
+
 private:
     // MsQuic callback functions (static, forward to member via context)
     static QUIC_STATUS QUIC_API listener_callback(HQUIC listener, void* context,
@@ -191,7 +202,9 @@ private:
     // Per-frame video streams.
     //   Inbound (client -> server, PEER_STREAM_STARTED with the UNIDIRECTIONAL
     //   flag): VideoInStreamContext accumulates RECEIVE buffers until FIN,
-    //   validates the STREAM_TYPE_VIDEO_FRAME byte, VIDEO_FRAME_MAX_PAYLOAD_BYTES
+    //   validates the prefix ([STREAM_TYPE_VIDEO_FRAME] = screen, or
+    //   [STREAM_TYPE_VIDEO_SOURCE_FRAME][source] for a source the session
+    //   currently publishes), VIDEO_FRAME_MAX_PAYLOAD_BYTES
     //   and the per-session ingress cap (Session::video_in_buffered_bytes),
     //   then invokes on_video_frame once with the whole frame; oversize or
     //   malformed streams are aborted and the accumulator freed.
@@ -239,6 +252,7 @@ private:
     uint32_t next_session_id_ = 1;
 
     std::atomic<uint64_t> reliable_send_failures_{0};
+    std::atomic<uint64_t> media_datagram_drops_{0};
 
     // Connectionless server-query info (set before start(), read on MsQuic thread)
     std::string query_server_name_;

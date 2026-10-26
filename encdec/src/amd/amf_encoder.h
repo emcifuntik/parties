@@ -2,6 +2,8 @@
 
 #include <encdec/encoder.h>
 
+#include <atomic>
+
 #include <AMF/core/Factory.h>
 #include <AMF/core/Context.h>
 #include <AMF/components/Component.h>
@@ -53,7 +55,9 @@ private:
     uint32_t height_ = 0;
     uint32_t fps_ = 30;
     bool initialized_ = false;
-    bool force_keyframe_ = false;
+    // Set by force_keyframe() from any thread (PLI handlers), consumed by the
+    // thread that submits frames.
+    std::atomic<bool> force_keyframe_{false};
 };
 
 } // namespace parties::encdec::amd

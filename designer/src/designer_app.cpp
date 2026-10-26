@@ -11,6 +11,7 @@
 #include <client/server_list_model.h>
 #include <client/video_element.h>
 #include <client/rml_binding.h>
+#include <parties/protocol.h>
 
 #include <RmlUi/Core/Core.h>
 #include <RmlUi/Core/ComputedValues.h>
@@ -242,6 +243,11 @@ struct DesignerApp::PartiesFixture {
 		return user;
 	}
 
+	static int CameraStream(int user_id) {
+		return static_cast<int>(parties::protocol::video_stream_id(
+			static_cast<uint32_t>(user_id), parties::protocol::VideoSource::Camera));
+	}
+
 	static parties::client::ChatMessage Message(int64_t id, int sender_id,
 		const char* sender, const char* initials, const char* text, const char* time,
 		int color, bool own = false) {
@@ -436,7 +442,7 @@ struct DesignerApp::PartiesFixture {
 		lobby.router.reset();
 		const bool settings_scenario = scenario == "settings" || scenario == "settings-select-open" ||
 			scenario == "settings-screen-share" || scenario == "settings-hotkeys" ||
-			scenario == "settings-account";
+			scenario == "settings-account" || scenario == "settings-camera";
 		if (settings_scenario)
 			lobby.router.go(parties::client::DocumentRoute::Settings);
 		else if (scenario == "chat" || scenario == "chat-segment-churn")
@@ -445,6 +451,8 @@ struct DesignerApp::PartiesFixture {
 			lobby.router.select_settings(parties::client::SettingsSection::ScreenShare);
 		else if (scenario == "settings-hotkeys")
 			lobby.router.select_settings(parties::client::SettingsSection::Hotkeys);
+		else if (scenario == "settings-camera")
+			lobby.router.select_settings(parties::client::SettingsSection::Camera);
 		else if (scenario == "settings-account") {
 			lobby.router.select_settings(parties::client::SettingsSection::AccountKeys);
 			lobby.show_private_key = true;
@@ -463,8 +471,8 @@ struct DesignerApp::PartiesFixture {
 		if (scenario == "room") {
 			lobby.someone_sharing = true;
 			lobby.sharers = Rml::Vector<parties::client::ActiveSharer>{
-				{3, "ivan", false}};
-			lobby.on_watch_sharer = [this](int user_id) {
+				{3, 3, "ivan", false}};
+			lobby.on_watch_user = [this](int user_id) {
 				++room_watch_request_count;
 				room_watched_user_id = user_id;
 			};
@@ -525,11 +533,49 @@ struct DesignerApp::PartiesFixture {
 			lobby.viewing_sharer_id = 2;
 			lobby.stream_fps = scenario == "stream-fps-overflow" ? 1001 : 60;
 			lobby.sharers = Rml::Vector<parties::client::ActiveSharer>{
-				{2, "IceTroll", true}, {3, "ivan", true}, {4, "Sara", false}};
+				{2, 2, "IceTroll", true}, {3, 3, "ivan", true}, {4, 4, "Sara", false}};
 			lobby.watched = Rml::Vector<parties::client::WatchedStream>{
-				{2, "IceTroll · Counter-Strike 2", "screen-share-2"}};
+				{2, 2, "IceTroll · Counter-Strike 2", "screen-share-2"}};
 			if (!single_stream)
-				lobby.watched.silent().push_back({3, "ivan · Zen Browser", "screen-share-3"});
+				lobby.watched.silent().push_back({3, 3, "ivan · Zen Browser", "screen-share-3"});
+		}
+
+		if (scenario == "room-camera" || scenario == "streams-camera" || scenario == "settings-camera") {
+			// We (tuxick) publish our camera, Sara has hers on, ivan shares a screen.
+			lobby.camera_available = true;
+			lobby.camera_supported = true;
+			lobby.is_camera_on = true;
+			lobby.camera_devices = Rml::Vector<parties::client::AudioDevice>{
+				{"Logitech BRIO", 0}, {"ezcap Live Gamer Ultra", 1}};
+			lobby.selected_camera = 1;
+			lobby.camera_quality = 1;
+			if (scenario == "settings-camera")
+				lobby.camera_error = "could not open the camera: access denied (check the Windows camera privacy settings)";
+			auto& users = lobby.channels.silent()[0].users;
+			users[0].camera_on = true;
+			users[3].camera_on = true;
+			lobby.channels.notify();
+			const bool streams = scenario == "streams-camera";
+			lobby.someone_sharing = true;
+			lobby.sharers = Rml::Vector<parties::client::ActiveSharer>{
+				{3, 3, "ivan", streams, false},
+				{CameraStream(1), 1, "tuxick", streams, true},
+				{CameraStream(4), 4, "Sara", false, true}};
+			if (scenario == "room-camera") {
+				lobby.on_watch_user = [this](int user_id) {
+					++room_watch_request_count;
+					room_watched_user_id = user_id;
+				};
+			}
+			if (streams) {
+				lobby.router.go(parties::client::DocumentRoute::Streams);
+				lobby.watching_count = 2;
+				lobby.viewing_sharer_id = 3;
+				lobby.stream_fps = 30;
+				lobby.watched = Rml::Vector<parties::client::WatchedStream>{
+					{3, 3, "ivan · Zen Browser", "screen-share-3"},
+					{CameraStream(1), 1, "tuxick", "screen-share-" + Rml::ToString(CameraStream(1)), true, true}};
+			}
 		}
 	}
 
@@ -543,7 +589,8 @@ struct DesignerApp::PartiesFixture {
 			scenario != "stream-single" && scenario != "streams" &&
 			scenario != "stream-fps-overflow" &&
 			scenario != "member" && scenario != "share" && scenario != "audio-share" &&
-			scenario != "context-user" && scenario != "context-channel")
+			scenario != "context-user" && scenario != "context-channel" &&
+			scenario != "room-camera" && scenario != "streams-camera" && scenario != "settings-camera")
 			return false;
 		Populate(scenario);
 		if (scenario == "context-user" || scenario == "context-channel")
@@ -662,6 +709,24 @@ struct DesignerApp::PartiesFixture {
 				}
 			}
 		}
+		if (scenario == "room-camera") {
+			// The camera-only member (Sara) opens on click like a screen share.
+			document->GetContext()->Update();
+			Rml::ElementList cards;
+			document->GetElementsByClassName(cards, "voice-stage-card");
+			for (Rml::Element* card : cards) {
+				if (card->IsVisible(true) && card->IsClassSet("camera-on") && !card->IsClassSet("streaming") &&
+					card->GetInnerRML().find("Sara") != Rml::String::npos)
+					card->DispatchEvent("click", Rml::Dictionary{});
+			}
+		}
+		if (scenario == "streams-camera") {
+			const Rml::String own_camera = "screen-share-" + Rml::ToString(CameraStream(1));
+			for (const Rml::String& id : {Rml::String("screen-share-3"), own_camera}) {
+				if (auto* video = rmlui_dynamic_cast<parties::client::VideoElement*>(document->GetElementById(id)))
+					video->UpdateFrame(MockStreamFrame(id == own_camera ? 0 : 1), 960, 540);
+			}
+		}
 		if (scenario == "share" || scenario == "audio-share") {
 			Rml::ElementList videos;
 			document->GetElementsByTagName(videos, "video_frame");
@@ -705,7 +770,7 @@ struct DesignerApp::PartiesFixture {
 			scenario == "chat-segment-churn" ||
 			scenario == "member" || scenario == "share" || scenario == "audio-share" ||
 			scenario == "stream-single" || scenario == "streams" ||
-			scenario == "stream-fps-overflow";
+			scenario == "stream-fps-overflow" || scenario == "room-camera" || scenario == "streams-camera";
 		Rml::Element* channel_sidebar = document->GetElementById("channel-sidebar");
 		Rml::ElementList legacy_party_rails;
 		document->GetElementsByClassName(legacy_party_rails, "stream-rail");
@@ -799,6 +864,53 @@ struct DesignerApp::PartiesFixture {
 				return false;
 		}
 
+		auto count_visible = [document](const char* class_name) {
+			Rml::ElementList elements;
+			document->GetElementsByClassName(elements, class_name);
+			return static_cast<size_t>(std::count_if(elements.begin(), elements.end(),
+				[](Rml::Element* element) { return element->IsVisible(true); }));
+		};
+		if (scenario == "room-camera") {
+			const bool mobile = document->IsClassSet("platform-ios");
+			Rml::Element* button = document->GetElementById("room-camera-button");
+			const size_t badges = count_visible("voice-stage-camera");
+			const size_t list_icons = count_visible("icon-camera");
+			const bool valid = button && button->IsVisible(true) && button->IsClassSet("active") &&
+				badges == (mobile ? 0u : 2u) && list_icons == 2 &&
+				room_watch_request_count == (mobile ? 0 : 1) && room_watched_user_id == (mobile ? 0 : 4);
+			if (!valid)
+				std::fprintf(stderr,
+					"[Designer] Camera room validation failed: button=%d active=%d badges=%zu list-icons=%zu watch-count=%d watched=%d\n",
+					button && button->IsVisible(true) ? 1 : 0, button && button->IsClassSet("active") ? 1 : 0,
+					badges, list_icons, room_watch_request_count, room_watched_user_id);
+			return valid;
+		}
+		if (scenario == "streams-camera") {
+			auto* own = document->GetElementById("screen-share-" + Rml::ToString(CameraStream(1)));
+			auto* screen = document->GetElementById("screen-share-3");
+			Rml::ElementList docks;
+			document->GetElementsByClassName(docks, "stream-call-dock");
+			Rml::Element* dock = docks.empty() ? nullptr : docks.front();
+			Rml::ElementList dock_cameras;
+			document->GetElementsByClassName(dock_cameras, "dock-camera");
+			Rml::Element* dock_camera = dock_cameras.empty() ? nullptr : dock_cameras.front();
+			const bool desktop = document->IsClassSet("platform-desktop");
+			const float dock_width = dock ? dock->GetBox().GetSize(Rml::BoxArea::Border).x : 0.0f;
+			const size_t chip_icons = count_visible("sharer-tab-icon");
+			const size_t label_icons = count_visible("stream-cell-label-icon");
+			const bool valid = own && screen && own->IsClassSet("mirror") && !screen->IsClassSet("mirror") &&
+				dock && dock->IsClassSet("with-camera") && dock_camera && dock_camera->IsVisible(true) &&
+				dock_camera->IsClassSet("active") && (!desktop || std::fabs(dock_width - 298.0f) < 1.0f) &&
+				chip_icons == 2 && label_icons == 1;
+			if (!valid)
+				std::fprintf(stderr,
+					"[Designer] Camera stream validation failed: own=%d mirror=%d screen-mirror=%d dock=%d camera-button=%d width=%.1f chip-icons=%zu label-icons=%zu\n",
+					own ? 1 : 0, own && own->IsClassSet("mirror") ? 1 : 0,
+					screen && screen->IsClassSet("mirror") ? 1 : 0, dock && dock->IsClassSet("with-camera") ? 1 : 0,
+					dock_camera && dock_camera->IsVisible(true) ? 1 : 0, dock_width, chip_icons, label_icons);
+			return valid;
+		}
+
 		if (scenario == "room") {
 			Rml::Element* audio_share = document->GetElementById("room-audio-share-button");
 			Rml::ElementList cards;
@@ -874,7 +986,7 @@ struct DesignerApp::PartiesFixture {
 
 		if (scenario == "settings" || scenario == "settings-select-open" ||
 			scenario == "settings-screen-share" || scenario == "settings-hotkeys" ||
-			scenario == "settings-account" ||
+			scenario == "settings-account" || scenario == "settings-camera" ||
 			scenario == "chat" || scenario == "chat-segment-churn") {
 			Rml::Element* settings_route = document->GetElementById("route-settings");
 			Rml::Element* chat_route = document->GetElementById("route-chat");
@@ -896,7 +1008,10 @@ struct DesignerApp::PartiesFixture {
 				const float expected_nav_width = viewport_width <= 1100 ? 250.0f : 286.0f;
 				const float nav_width = settings_nav
 					? settings_nav->GetBox().GetSize(Rml::BoxArea::Border).x : 0.0f;
-				valid = settings_nav && visible_nav_items == 4 &&
+				// The Camera page exists only where the platform can capture one.
+				const bool camera_page = lobby.camera_available.get();
+				valid = settings_nav && visible_nav_items == (camera_page ? 5u : 4u) &&
+					(!camera_page || document->GetElementById("settings-nav-camera")) &&
 					document->GetElementById("settings-nav-audio") &&
 					document->GetElementById("settings-nav-screen-share") &&
 					document->GetElementById("settings-nav-hotkeys") &&
@@ -1101,6 +1216,23 @@ struct DesignerApp::PartiesFixture {
 						description->GetComputedValues().font_weight() == Rml::Style::FontWeight::Normal;
 				if (!valid)
 					std::fprintf(stderr, "[Designer] Hotkeys typography validation failed\n");
+			}
+			if (valid && scenario == "settings-camera") {
+				Rml::Element* page = document->GetElementById("settings-camera-page");
+				auto* select = rmlui_dynamic_cast<Rml::ElementFormControlSelect*>(
+					document->GetElementById("settings-camera-select"));
+				Rml::ElementList segments;
+				if (page) page->GetElementsByClassName(segments, "share-codec-btn");
+				const size_t active_segments = static_cast<size_t>(std::count_if(segments.begin(), segments.end(),
+					[](Rml::Element* segment) { return segment->IsClassSet("active"); }));
+				Rml::Element* error = document->GetElementById("settings-camera-error");
+				valid = page && page->IsVisible(true) && select && select->GetNumOptions() >= 2 &&
+					select->GetSelection() == 1 && segments.size() == 3 && active_segments == 1 &&
+					segments[1]->IsClassSet("active") && error && error->IsVisible(true);
+				if (!valid)
+					std::fprintf(stderr, "[Designer] Camera settings validation failed: page=%d options=%d selection=%d segments=%zu active=%zu\n",
+						page && page->IsVisible(true) ? 1 : 0, select ? select->GetNumOptions() : -1,
+						select ? select->GetSelection() : -1, segments.size(), active_segments);
 			}
 			if (valid && scenario == "settings-account") {
 				Rml::Element* page = document->GetElementById("settings-account-page");

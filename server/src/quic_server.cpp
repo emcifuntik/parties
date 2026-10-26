@@ -12,12 +12,16 @@
 #include <cstring>
 
 namespace parties::server {
+static int64_t steady_now_us() {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 // GetParam blocks when called off the connection's worker. Sample only from
 // that connection's stream callbacks, where MsQuic executes it inline, and
 // never while holding quic_mutex (the worker itself needs that mutex).
 static void sample_min_rtt(const QUIC_API_TABLE* api, Session& session, HQUIC stream) {
-    const auto now = std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
+    const auto now = steady_now_us();
     if (now - session.rtt_sample_last_us < 1'000'000) return;
     session.rtt_sample_last_us = now;
     QUIC_STATISTICS_V2 stats{};
@@ -64,6 +68,18 @@ struct SendCtx {
     uint8_t     kind = KIND_CONTROL;
 };
 
+// One DatagramSend toward a peer. Owns the bytes for MsQuic's asynchronous
+// send lifetime (freed on the final DATAGRAM_SEND_STATE_CHANGED) and keeps the
+// session alive so the completion can settle Session::dgram_backlog without a
+// map lookup, even after the session was erased.
+struct DatagramCtx {
+    QUIC_BUFFER              buf{};
+    std::vector<uint8_t>     bytes;
+    std::shared_ptr<Session> session;
+    int64_t                  queued_us  = 0;
+    bool                     left_queue = false;   // SENT or CANCELED already accounted
+};
+
 // Completes the video accounting of a SendCtx exactly once.
 static void send_ctx_uncharge(SendCtx* ctx) {
     if (ctx->kind == SendCtx::KIND_VIDEO && ctx->session && ctx->len) {
@@ -96,6 +112,7 @@ struct LogThrottle {
 
 static LogThrottle video_reject_log_throttle;    // refused per-frame streams
 static LogThrottle video_ingress_log_throttle;   // malformed / oversize / over-cap streams
+static LogThrottle datagram_backlog_log_throttle; // media dropped toward a stale datagram queue
 
 // Peer-opened unidirectional stream refused at PEER_STREAM_STARTED (session
 // unknown, unauthenticated or not an active sharer): aborted on arrival. This
@@ -122,9 +139,13 @@ struct QuicServer::VideoInStreamContext {
     QuicServer* server = nullptr;
     uint32_t    session_id = 0;
     std::shared_ptr<Session> session;   // ingress accounting (video_in_buffered_bytes)
-    std::vector<uint8_t> buf;           // [STREAM_TYPE_VIDEO_FRAME][header][encoded] accumulated until FIN
+    std::vector<uint8_t> buf;           // [prefix][header][encoded] accumulated until FIN
     int64_t     charged = 0;            // bytes of this stream counted in session->video_in_buffered_bytes
     bool        dead = false;           // malformed/oversize/over cap: aborted, ignore further data
+    // Parsed from the first bytes: [0x12] = screen, [0x13][source] = any
+    // source (1.4+). 0 until enough bytes have arrived.
+    size_t      prefix_len = 0;
+    protocol::VideoSource source = protocol::VideoSource::Screen;
 
     // Returns this stream's bytes to the session's ingress budget exactly once.
     void uncharge() {
@@ -401,28 +422,48 @@ std::vector<std::shared_ptr<Session>> QuicServer::get_sessions() {
 // ── Data plane ──
 
 bool QuicServer::send_datagram(uint32_t session_id, const uint8_t* data, size_t len,
-                               bool priority) {
+                               bool priority, bool media) {
 	ZoneScopedN("QuicServer::send_datagram");
     std::shared_ptr<Session> session = get_session(session_id);
     if (!session) return false;
 
-    std::lock_guard<std::mutex> qlock(session->quic_mutex);
-    if (!session->alive || !session->quic_connection)
+    // Late media is as useless as lost media: while this peer's datagram queue
+    // is not draining, drop it here instead of stacking it ahead of the peer's
+    // control stream (MsQuic writes queued datagrams before any stream data).
+    const int64_t now = steady_now_us();
+    auto& backlog = session->dgram_backlog;
+    if (media && !backlog.admit(now)) {
+        media_datagram_drops_.fetch_add(1, std::memory_order_relaxed);
+        uint32_t suppressed = 0;
+        if (datagram_backlog_log_throttle.allow(suppressed)) {
+            LOG_WARN("Session {}: datagram queue toward the peer is stale ({} queued, oldest ~{} ms) - dropping media; {} more drop(s) since the last line",
+                     session_id, backlog.queued(), backlog.head_wait_us(now) / 1000, suppressed);
+        }
         return false;
+    }
 
-    // Both the data buffer AND the QUIC_BUFFER descriptor must be heap-allocated
-    // because DatagramSend is async — MsQuic stores only the pointer.
-    auto* buf_data = new uint8_t[len];
-    std::memcpy(buf_data, data, len);
+    // MsQuic keeps only the QUIC_BUFFER pointer until the final send state.
+    auto* ctx = new DatagramCtx;
+    ctx->bytes.assign(data, data + len);
+    ctx->buf       = QUIC_BUFFER{ static_cast<uint32_t>(len), ctx->bytes.data() };
+    ctx->session   = session;
+    ctx->queued_us = now;
 
-    auto* quic_buf = new QUIC_BUFFER{ static_cast<uint32_t>(len), buf_data };
+    std::lock_guard<std::mutex> qlock(session->quic_mutex);
+    if (!session->alive || !session->quic_connection) {
+        delete ctx;
+        return false;
+    }
+
+    // Accounted before the call: the worker may report SENT before it returns.
+    backlog.on_queued(now);
     QUIC_STATUS status = api_->DatagramSend(session->quic_connection,
-        quic_buf, 1, priority ? QUIC_SEND_FLAG_DGRAM_PRIORITY : QUIC_SEND_FLAG_NONE,
-        quic_buf);
+        &ctx->buf, 1, priority ? QUIC_SEND_FLAG_DGRAM_PRIORITY : QUIC_SEND_FLAG_NONE,
+        ctx);
 
     if (QUIC_FAILED(status)) {
-        delete[] buf_data;
-        delete quic_buf;
+        backlog.on_send_failed();
+        delete ctx;
         return false;
     }
     return true;
@@ -732,7 +773,7 @@ QUIC_STATUS QuicServer::on_connection_event(HQUIC connection, uint32_t session_i
                 if (it != sessions_.end()) session = it->second;
             }
             const bool allowed = session &&
-                                 session->video_ingress_allowed.load(std::memory_order_acquire) &&
+                                 session->any_video_ingress_allowed() &&
                                  session->authenticated;
             if (!allowed) {
                 uint32_t suppressed = 0;
@@ -804,16 +845,28 @@ QUIC_STATUS QuicServer::on_connection_event(HQUIC connection, uint32_t session_i
         break;
 
     case QUIC_CONNECTION_EVENT_DATAGRAM_SEND_STATE_CHANGED: {
-        // Free the QUIC_BUFFER + its data when send completes
-        if (QUIC_DATAGRAM_SEND_STATE_IS_FINAL(event->DATAGRAM_SEND_STATE_CHANGED.State)) {
-            auto* quic_buf = static_cast<QUIC_BUFFER*>(event->DATAGRAM_SEND_STATE_CHANGED.ClientContext);
-            if (quic_buf) {
-                delete[] quic_buf->Buffer;
-                delete quic_buf;
-            }
+        auto* ctx = static_cast<DatagramCtx*>(event->DATAGRAM_SEND_STATE_CHANGED.ClientContext);
+        if (!ctx) break;
+        const QUIC_DATAGRAM_SEND_STATE state = event->DATAGRAM_SEND_STATE_CHANGED.State;
+        const bool final_state = QUIC_DATAGRAM_SEND_STATE_IS_FINAL(state);
+        // SENT = written into a packet (later states only track its fate on
+        // the wire); a final state without SENT = canceled in the queue.
+        if (!ctx->left_queue && (state == QUIC_DATAGRAM_SEND_SENT || final_state)) {
+            ctx->left_queue = true;
+            const int64_t now = steady_now_us();
+            ctx->session->dgram_backlog.on_dequeued(
+                now, state == QUIC_DATAGRAM_SEND_SENT ? now - ctx->queued_us : -1);
         }
+        if (final_state) delete ctx;
         break;
     }
+
+    case QUIC_CONNECTION_EVENT_PEER_ADDRESS_CHANGED:
+        // NAT rebinding or client migration. Until MsQuic validates the new
+        // path it sends no datagrams at all and limits everything else to 3x
+        // what it received, so voice toward this peer stalls meanwhile.
+        LOG_INFO("Session {} peer address changed; path validation pending", session_id);
+        break;
 
     case QUIC_CONNECTION_EVENT_RESUMED:
         LOG_INFO("Session {} resumed (0-RTT)", session_id);
@@ -1053,7 +1106,8 @@ void QuicServer::process_video_stream_data(uint32_t session_id,
     // Forward outside the lock
     for (auto& f : frames) {
         if (on_video_frame) {
-            on_video_frame(session_id, f.packet_type, f.data.data(), f.data.size());
+            on_video_frame(session_id, f.packet_type, protocol::VideoSource::Screen,
+                           f.data.data(), f.data.size());
         } else {
             DataPacket pkt;
             pkt.session_id = session_id;
@@ -1162,8 +1216,29 @@ bool QuicServer::send_file_on_stream(HQUIC stream, const uint8_t* data, size_t l
 
 // ── Per-frame video streams ──
 
+// Frame prefix of an inbound per-frame stream: [STREAM_TYPE_VIDEO_FRAME] for a
+// screen share, [STREAM_TYPE_VIDEO_SOURCE_FRAME][source] for any source
+// (1.4+). Returns the prefix length, 0 while more bytes are needed, or -1 for
+// a stream that is not a video frame of a source this session may publish.
+static int parse_video_ingress_prefix(const std::vector<uint8_t>& buf, const Session& session,
+                                      protocol::VideoSource& source) {
+    if (buf.empty()) return 0;
+    if (buf[0] == protocol::STREAM_TYPE_VIDEO_FRAME) {
+        source = protocol::VideoSource::Screen;
+    } else if (buf[0] == protocol::STREAM_TYPE_VIDEO_SOURCE_FRAME) {
+        if (buf.size() < 2) return 0;
+        if (!protocol::video_source_valid(buf[1])) return -1;
+        source = static_cast<protocol::VideoSource>(buf[1]);
+    } else {
+        return -1;
+    }
+    if (!session.video_ingress_allowed(source)) return -1;
+    return buf[0] == protocol::STREAM_TYPE_VIDEO_FRAME ? 1 : 2;
+}
+
 // Inbound: sharer -> server. One whole frame per stream:
-// [STREAM_TYPE_VIDEO_FRAME][VideoFrameHeader 14][encoded] + FIN.
+// [prefix][VideoFrameHeader 14][encoded] + FIN (prefix: see
+// parse_video_ingress_prefix).
 QUIC_STATUS QUIC_API QuicServer::video_in_stream_callback(
     HQUIC stream, void* context, QUIC_STREAM_EVENT* event) {
     auto* ctx = static_cast<VideoInStreamContext*>(context);
@@ -1200,28 +1275,42 @@ QUIC_STATUS QUIC_API QuicServer::video_in_stream_callback(
             ctx->buf.insert(ctx->buf.end(), b.Buffer, b.Buffer + b.Length);
         }
 
-        // Validate as early as the first byte: anything that is not a video
-        // frame, or that grows past the largest payload a sharer may send, is
-        // aborted and its accumulator (and budget share) released.
-        if ((!ctx->buf.empty() && ctx->buf[0] != protocol::STREAM_TYPE_VIDEO_FRAME) ||
-            ctx->buf.size() > 1 + VIDEO_FRAME_MAX_PAYLOAD_BYTES) {
+        // Validate as early as the prefix: anything that is not a video frame
+        // of a source this session currently publishes, or that grows past the
+        // largest payload a sharer may send, is aborted and its accumulator
+        // (and budget share) released.
+        if (ctx->prefix_len == 0) {
+            const int prefix = parse_video_ingress_prefix(ctx->buf, *ctx->session, ctx->source);
+            if (prefix > 0) ctx->prefix_len = static_cast<size_t>(prefix);
+            if (prefix < 0) {
+                uint32_t suppressed = 0;
+                if (video_ingress_log_throttle.allow(suppressed)) {
+                    LOG_WARN("Session {}: refused per-frame video stream (type {:#x}, source {}) - aborting; {} more since the last line",
+                             ctx->session_id, (unsigned)ctx->buf[0],
+                             ctx->buf.size() > 1 ? (int)ctx->buf[1] : -1, suppressed);
+                }
+                ctx->abort(stream);
+                break;
+            }
+        }
+        if (ctx->buf.size() > (ctx->prefix_len ? ctx->prefix_len : 2) + VIDEO_FRAME_MAX_PAYLOAD_BYTES) {
             uint32_t suppressed = 0;
             if (video_ingress_log_throttle.allow(suppressed)) {
-                LOG_WARN("Session {}: invalid per-frame video stream (first byte {:#x}, {} bytes) - aborting; {} more since the last line",
-                         ctx->session_id, ctx->buf.empty() ? 0u : (unsigned)ctx->buf[0], ctx->buf.size(), suppressed);
+                LOG_WARN("Session {}: oversize per-frame video stream ({} bytes) - aborting; {} more since the last line",
+                         ctx->session_id, ctx->buf.size(), suppressed);
             }
             ctx->abort(stream);
             break;
         }
 
         if (event->RECEIVE.Flags & QUIC_RECEIVE_FLAG_FIN) {
-            if (ctx->buf.size() >= 1 + VIDEO_FRAME_HEADER_SIZE) {
-                const uint8_t* frame = ctx->buf.data() + 1;
-                const size_t   flen  = ctx->buf.size() - 1;
+            if (ctx->prefix_len && ctx->buf.size() >= ctx->prefix_len + VIDEO_FRAME_HEADER_SIZE) {
+                const uint8_t* frame = ctx->buf.data() + ctx->prefix_len;
+                const size_t   flen  = ctx->buf.size() - ctx->prefix_len;
                 if (self->on_video_frame) {
                     self->on_video_frame(ctx->session_id, protocol::VIDEO_FRAME_PACKET_TYPE,
-                                         frame, flen);
-                } else {
+                                         ctx->source, frame, flen);
+                } else if (ctx->source == protocol::VideoSource::Screen) {
                     DataPacket pkt;
                     pkt.session_id = ctx->session_id;
                     pkt.packet_type = protocol::VIDEO_FRAME_PACKET_TYPE;

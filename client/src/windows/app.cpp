@@ -2,6 +2,7 @@
 
 #include <client/app.h>
 #include <client/app_core.h>
+#include <client/hotkey_combo.h>
 #include <d3dcompiler.h>
 #include <client/screen_capture.h>
 #include <client/video_encoder.h>
@@ -34,6 +35,7 @@
 #include <cstring>
 #include <ctime>
 #include <string>
+#include <utility>
 
 namespace parties::client {
 
@@ -362,6 +364,22 @@ bool App::init(HWND hwnd) {
         }
     };
 
+    bridge.start_camera   = [this]() { return start_camera_capture(); };
+    bridge.stop_camera    = [this]() { stop_camera_capture(); };
+    bridge.restart_camera = [this]() { restart_camera_capture(); };
+    // MsQuic worker thread (AppCore applies the cooldown). The encoder belongs
+    // to the camera worker, which forces the keyframe on its next frame.
+    bridge.request_camera_keyframe = [this]() {
+        camera_keyframe_requested_.store(true, std::memory_order_relaxed);
+    };
+    bridge.list_cameras = [this]() {
+        camera_devices_ = CameraCapture::enumerate();
+        std::vector<std::string> names;
+        names.reserve(camera_devices_.size());
+        for (const auto& device : camera_devices_) names.push_back(device.name);
+        return names;
+    };
+
     // Main thread (AppCore::tick PLI retry). Same lock order as
     // enqueue_decode_work: streams_mutex_ then the stream's queue_mutex.
     // Deliberately false in two cases even though the gate may be waiting:
@@ -586,6 +604,18 @@ void App::shutdown() {
     if (encoder_) { encoder_->shutdown(); encoder_.reset(); }
     if (capture_) ScreenCapture::shutdown_async(std::move(capture_));
     capture_targets_.clear();
+    // The camera feeds its own preview's decode queue: stop it first, and let
+    // the camera thread finish every pending open and close (Media Foundation
+    // opens do return; a cancelled open is skipped).
+    stop_camera_capture();
+    if (camera_thread_.joinable()) {
+        {
+            std::lock_guard<std::mutex> lock(camera_tasks_mutex_);
+            camera_thread_exit_ = true;
+        }
+        camera_tasks_cv_.notify_one();
+        camera_thread_.join();
+    }
     stop_all_video_streams();
     core_.shutdown();
     ui_.shutdown();
@@ -661,18 +691,21 @@ void App::poll_hotkeys() {
         }
     }
 
-    // Returns true when the full hotkey combo (key + optional key2 + mods) is held
-    auto combo_held = [](int key, int key2, int mods) -> bool {
-        if (!(GetAsyncKeyState(key) & 0x8000)) return false;
-        if (key2 != 0 && !(GetAsyncKeyState(key2) & 0x8000)) return false;
-        return current_mods() == mods;
+    auto key_down = [](int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; };
+    // Exact combo (key + optional key2 + exactly these modifiers): the toggles.
+    auto combo_held = [&](int key, int key2, int mods) -> bool {
+        return toggle_combo_down(key_down(key), key2 == 0 || key_down(key2), current_mods(), mods);
     };
 
     // PTT polling — only controls audio mute, does not touch model_.is_muted
-    // PTT is blocked when manually muted or deafened
+    // PTT is blocked when manually muted or deafened. Modifiers pressed while
+    // talking (a game's sprint/crouch/walk) must not cut it: hold_combo_active.
     if (core_.model_.ptt_enabled && core_.model_.ptt_key != 0 && core_.current_channel_ != 0) {
         bool blocked = core_.model_.is_muted || core_.model_.is_deafened;
-        bool held = combo_held(core_.model_.ptt_key, core_.model_.ptt_key2, core_.model_.ptt_mods);
+        const int key2 = core_.model_.ptt_key2;
+        bool held = hold_combo_active(ptt_held_, key_down(core_.model_.ptt_key),
+                                      key2 == 0 || key_down(key2), current_mods(),
+                                      core_.model_.ptt_mods);
         auto now = std::chrono::steady_clock::now();
         if (held && !blocked) {
             ptt_held_ = true;
@@ -974,6 +1007,7 @@ void App::tick_message_thread() {
     std::lock_guard<std::recursive_mutex> lock(ui_mutex_);
 
     poll_screen_share_start();
+    poll_camera();
     // WGC can miss/delay Closed, particularly after asynchronous startup.
     // Native source liveness also catches application exit without a new frame.
     if (sharing_screen_ && capture_ && capture_->target_lost()) {
@@ -1610,6 +1644,266 @@ void App::stop_screen_share() {
         core_.net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_STOP, nullptr, 0);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Webcam: Media Foundation capture -> its own encoder -> the Camera source
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// AppCore owns the protocol side (SCREEN_SHARE_START/STOP with the Camera
+// source, the camera send controller, the self-preview watch); this side owns
+// the device and the encoder. Threads: the bridge calls and poll_camera run on
+// the message thread; opens and closes run on camera_thread_; frames are
+// encoded on the capture's worker thread (an asynchronous MFT encoder hands
+// its output back on its own thread).
+
+void App::CameraSession::fail(const std::string& reason) {
+    std::lock_guard<std::mutex> lock(error_mutex);
+    if (failed.load(std::memory_order_relaxed)) return;   // the first failure wins
+    error = reason;
+    failed.store(true, std::memory_order_release);
+}
+
+std::string App::CameraSession::failure() {
+    std::lock_guard<std::mutex> lock(error_mutex);
+    return error;
+}
+
+App::CameraSession::~CameraSession() { close(); }
+
+// Camera thread (or the last owner). Idempotent.
+void App::CameraSession::close() {
+    capture.stop();   // joins the capture worker: nothing touches the encoder past here
+    if (encoder) { encoder->shutdown(); encoder.reset(); }
+    device_ref.Reset();
+}
+
+void App::post_camera_task(std::function<void()> task) {
+    {
+        std::lock_guard<std::mutex> lock(camera_tasks_mutex_);
+        camera_tasks_.push_back(std::move(task));
+    }
+    camera_tasks_cv_.notify_one();
+    if (!camera_thread_.joinable())
+        camera_thread_ = std::thread([this] { camera_thread_loop(); });
+}
+
+// Runs opens and closes in the order they were posted, so a device that is
+// being closed is released before the next open. Exits once asked to and the
+// queue is drained.
+void App::camera_thread_loop() {
+    TracySetThreadName("Camera");
+    const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    for (;;) {
+        std::function<void()> task;
+        {
+            std::unique_lock<std::mutex> lock(camera_tasks_mutex_);
+            camera_tasks_cv_.wait(lock, [this] { return camera_thread_exit_ || !camera_tasks_.empty(); });
+            if (camera_tasks_.empty()) break;
+            task = std::move(camera_tasks_.front());
+            camera_tasks_.pop_front();
+        }
+        task();
+    }
+    if (SUCCEEDED(com)) CoUninitialize();
+}
+
+// bridge.start_camera. Opens the device selected in the model on the camera
+// thread; poll_camera reports the outcome to AppCore.
+bool App::start_camera_capture() {
+    ZoneScopedN("App::start_camera_capture");
+    if (camera_ || camera_opening_) return false;   // AppCore stops the camera before starting it again
+    const int index = core_.selected_camera_index();
+    if (index < 0 || index >= static_cast<int>(camera_devices_.size())) {
+        LOG_WARN("Camera: device {} is not among the {} known devices", index, camera_devices_.size());
+        return false;
+    }
+    const AppCore::CameraPreset preset = AppCore::camera_preset(core_.model_.camera_quality.get());
+
+    auto session = std::make_shared<CameraSession>();
+    session->device = camera_devices_[index];
+    session->config.max_width  = preset.width;
+    session->config.max_height = preset.height;
+    session->config.fps        = preset.fps;
+    session->codec = core_.model_.share_codec == 2 ? VideoCodecId::H264
+                   : core_.model_.share_codec == 1 ? VideoCodecId::H265
+                                                    : VideoCodecId::AV1;
+    camera_keyframe_requested_.store(false, std::memory_order_relaxed);
+    camera_opening_ = session;
+    post_camera_task([this, session] {
+        if (!session->cancelled.load(std::memory_order_acquire)) {
+            // The session outlives its capture worker (close() joins it), so
+            // the callbacks may hold it by reference.
+            CameraSession* s = session.get();
+            s->open_ok = s->capture.start(
+                s->device, s->config,
+                [this, s](ID3D11Texture2D* bgra, uint32_t w, uint32_t h, int64_t ts) {
+                    on_camera_frame(*s, bgra, w, h, ts);
+                },
+                [s](const std::string& reason) { s->fail(reason); });
+        }
+        session->opened.store(true, std::memory_order_release);
+    });
+    return true;
+}
+
+// bridge.stop_camera. Idempotent and never blocks: the live capture and one
+// that is still opening are closed on the camera thread.
+void App::stop_camera_capture() {
+    ZoneScopedN("App::stop_camera_capture");
+    if (camera_opening_) {
+        camera_opening_->cancelled.store(true, std::memory_order_release);
+        post_camera_task([session = std::move(camera_opening_)] { session->close(); });
+        camera_opening_.reset();
+    }
+    if (camera_) {
+        camera_->live.store(false, std::memory_order_release);
+        post_camera_task([session = std::move(camera_)] { session->close(); });
+        camera_.reset();
+    }
+    camera_keyframe_requested_.store(false, std::memory_order_relaxed);
+}
+
+// bridge.restart_camera: reopen the live capture with the current device and
+// quality. The stream stays announced; poll_camera does not announce it again.
+void App::restart_camera_capture() {
+    // A reopen still in flight is superseded by the newer choice; a first open
+    // keeps its settings (AppCore defers the restart until it is up).
+    const bool reopening = camera_opening_ && camera_opening_->restart;
+    if (!camera_ && !reopening) return;
+    stop_camera_capture();
+    if (!start_camera_capture()) {
+        core_.camera_failed("could not reopen the camera");
+        return;
+    }
+    camera_opening_->restart = true;
+}
+
+// Message thread: publish an open once the device delivers a picture, and
+// report a failure of the opening or the live camera.
+void App::poll_camera() {
+    // A device that opens but delivers nothing (another application holds it,
+    // privacy settings, a dead driver) fails here instead of being announced.
+    constexpr auto first_frame_timeout = std::chrono::seconds(5);
+
+    if (camera_opening_ && camera_opening_->opened.load(std::memory_order_acquire)) {
+        CameraSession& s = *camera_opening_;
+        const auto now = std::chrono::steady_clock::now();
+        if (s.opened_seen == std::chrono::steady_clock::time_point{}) s.opened_seen = now;
+        std::string failure;
+        if (!s.open_ok)
+            failure = "could not open '" + s.device.name + "'";
+        else if (s.failed.load(std::memory_order_acquire))
+            failure = s.failure();
+        else if (!s.first_frame.load(std::memory_order_acquire) && now - s.opened_seen > first_frame_timeout)
+            failure = "'" + s.device.name + "' delivers no picture";
+
+        if (!failure.empty()) {
+            post_camera_task([session = std::move(camera_opening_)] { session->close(); });
+            camera_opening_.reset();
+            core_.camera_failed(failure);
+        } else if (s.first_frame.load(std::memory_order_acquire)) {
+            auto session = std::move(camera_opening_);
+            camera_opening_.reset();
+            // The preset's rate, or the device's when it is slower.
+            const uint32_t device_fps = session->capture.fps();
+            session->fps = (std::max)(1u, device_fps ? (std::min)(device_fps, session->config.fps)
+                                                     : session->config.fps);
+            camera_ = session;
+            // SCREEN_SHARE_START goes out first: the encoder's
+            // SCREEN_SHARE_UPDATE must follow it on the control stream. It may
+            // also stop the camera right away (left the channel meanwhile). A
+            // reopened camera continues its announced stream.
+            if (!session->restart) core_.camera_started();
+            if (camera_ == session) session->live.store(true, std::memory_order_release);
+        }
+    }
+
+    if (camera_ && camera_->failed.load(std::memory_order_acquire))
+        core_.camera_failed(camera_->failure());   // stops it through bridge.stop_camera
+}
+
+// Capture worker thread (CameraCapture::FrameFn).
+void App::on_camera_frame(CameraSession& s, ID3D11Texture2D* bgra,
+                          uint32_t width, uint32_t height, int64_t timestamp_100ns) {
+    ZoneScopedN("App::on_camera_frame");
+    if (!s.first_frame.load(std::memory_order_relaxed))
+        s.first_frame.store(true, std::memory_order_release);
+    if (!s.live.load(std::memory_order_acquire) || s.encoder_failed) return;
+
+    // Frame-rate limiter on the capture clock: some devices only offer 60 fps
+    // modes, and the encoder is set up for s.fps. A quarter interval of
+    // tolerance keeps a jittery 30 fps camera at 30; a timestamp far behind
+    // the phase (clock restart) or past it (stall) re-anchors it.
+    const int64_t interval = 10'000'000LL / s.fps;
+    if (s.next_frame_ts - timestamp_100ns > 4 * interval)
+        s.next_frame_ts = timestamp_100ns;
+    if (timestamp_100ns < s.next_frame_ts - interval / 4) return;
+    s.next_frame_ts += interval;
+    if (s.next_frame_ts < timestamp_100ns - interval)
+        s.next_frame_ts = timestamp_100ns + interval;
+
+    // Congestion admission before any GPU work, as for the screen share.
+    if (!core_.video_admit_frame(protocol::VideoSource::Camera)) return;
+
+    if (!s.encoder || s.encoder->width() != width || s.encoder->height() != height) {
+        if (s.encoder) { s.encoder->shutdown(); s.encoder.reset(); }
+        if (!s.device_ref) bgra->GetDevice(&s.device_ref);
+        // The controller's rate survives an encoder re-create (format change).
+        const uint32_t bitrate_bps = std::clamp(core_.camera_sender_.bitrate_bps(),
+                                                VIDEO_MIN_BITRATE, VIDEO_MAX_BITRATE);
+        auto encoder = std::make_unique<VideoEncoder>();
+        if (!encoder->init(s.device_ref.Get(), width, height, 0, 0, s.fps, bitrate_bps, s.codec)) {
+            s.encoder_failed = true;
+            s.fail("no video encoder accepts " + std::to_string(width) + "x" + std::to_string(height));
+            return;
+        }
+        const uint16_t w = static_cast<uint16_t>(encoder->width());
+        const uint16_t h = static_cast<uint16_t>(encoder->height());
+        const VideoCodecId codec = encoder->codec();
+        encoder->on_encoded = [this, &s, w, h, codec](const uint8_t* data, size_t len, bool keyframe) {
+            on_camera_encoded(s, data, len, keyframe, w, h, codec);
+        };
+        LOG_INFO("Camera encoder: {} codec {} at {}x{} @ {} fps, {} kbps", encoder->backend_name(),
+                 static_cast<int>(codec), w, h, s.fps, bitrate_bps / 1000);
+        s.encoder = std::move(encoder);
+        core_.send_video_stream_update(protocol::VideoSource::Camera, codec, w, h);
+    }
+
+    // Encoder reconfiguration happens only on this thread: the controller's
+    // adapted rate, and keyframes for a send failure or a viewer's PLI.
+    if (auto b = core_.take_video_bitrate_update(protocol::VideoSource::Camera)) {
+        const uint32_t bitrate_bps = std::clamp(*b, VIDEO_MIN_BITRATE, VIDEO_MAX_BITRATE);
+        LOG_INFO("Camera encoder bitrate -> {} kbps", bitrate_bps / 1000);
+        s.encoder->set_bitrate(bitrate_bps);
+    }
+    const bool viewer_asked = camera_keyframe_requested_.exchange(false, std::memory_order_relaxed);
+    if (core_.take_video_keyframe_request(protocol::VideoSource::Camera) || viewer_asked)
+        s.encoder->force_keyframe();
+
+    if (s.encoder->encode_frame(bgra, timestamp_100ns)) {
+        s.encode_failures = 0;
+    } else if (++s.encode_failures == 30) {
+        s.encoder_failed = true;
+        s.fail("the camera encoder keeps failing");
+    }
+}
+
+// The encoder's output: on the capture worker inside encode_frame, or on an
+// asynchronous MFT's own thread. Touches only atomics and locked state.
+void App::on_camera_encoded(CameraSession& s, const uint8_t* data, size_t len, bool keyframe,
+                            uint16_t width, uint16_t height, VideoCodecId codec) {
+    if (!s.live.load(std::memory_order_acquire)) return;
+    const auto r = core_.send_video_frame(protocol::VideoSource::Camera, data, len, keyframe,
+                                          width, height, codec);
+    // Our own camera tile decodes this output locally; the server never echoes
+    // a publisher's stream back to it.
+    const UserId own = protocol::video_stream_id(core_.user_id_, protocol::VideoSource::Camera);
+    if (core_.is_watching(own)) {
+        std::vector<uint8_t> copy(data, data + len);
+        enqueue_decode_work(own, std::move(copy), static_cast<int64_t>(r.frame_seq),
+                            codec, width, height, keyframe);
+    }
+}
+
 void App::on_video_frame_received(uint32_t sender_id, const uint8_t* data, size_t len) {
     ZoneScopedN("App::on_video_frame_received");
     // data = [fn(4)][ts(4)][flags(1)][w(2)][h(2)][codec(1)][encoded(N)]
@@ -1814,7 +2108,8 @@ void App::start_video_stream(UserId sharer_id) {
     s->element_id = "screen-share-" + std::to_string(sharer_id);
     // Main thread, while authenticated: user_id_ is stable for the stream's
     // whole life, so decide once here instead of reading it off-thread later.
-    s->self_preview = (sharer_id == core_.user_id_);
+    // Any of our own streams (screen or camera) is a local self-preview.
+    s->self_preview = (protocol::video_stream_owner(sharer_id) == core_.user_id_);
     s->running.store(true, std::memory_order_relaxed);
     VideoStream* ptr = s.get();
     s->thread = std::thread([this, ptr] { decode_loop(ptr); });

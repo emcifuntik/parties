@@ -14,6 +14,7 @@ namespace parties::client {
 // 1. RGBA: frames uploaded or shared as a single RGBA texture.
 // 2. NV12: luma/chroma planes sampled directly by the final DX12 draw.
 // I420 retains the existing compute conversion compatibility path.
+// The "mirror" class flips the picture horizontally (a camera's self-view).
 class VideoElement : public Rml::Element {
 public:
     explicit VideoElement(const Rml::String& tag);
@@ -129,6 +130,7 @@ private:
     float texture_u1_ = 1.0f;
     float texture_v1_ = 1.0f;
     bool geometry_uv_dirty_ = false;
+    bool geometry_mirrored_ = false;   // the geometry was built for the "mirror" class
 };
 
 } // namespace parties::client

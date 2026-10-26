@@ -26,6 +26,7 @@ enum class SettingsSection {
     ScreenShare,
     Hotkeys,
     AccountKeys,
+    Camera,
 };
 
 class DocumentRouter {

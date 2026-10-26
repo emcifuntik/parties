@@ -9,6 +9,7 @@
 // all callbacks run on the MsQuic worker thread. See handles_mutex below.
 
 #include <client/net_client.h>
+#include <parties/datagram_backlog.h>
 #include <parties/quic_common.h>
 #include <parties/profiler.h>
 #include <parties/protocol.h>
@@ -33,10 +34,11 @@ namespace parties::client {
 // ── Send / stream contexts ────────────────────────────────────────────────────
 //
 // Video send accounting rule (mirrored in AppCore::send_video_frame):
-//   NetClient reports on_video_bytes_completed(len) from SEND_COMPLETE with the
-//   EXACT byte count that was handed to StreamSend — stream 1:
-//   4 + header_len + payload_len; per-frame stream: 1 + header_len +
-//   payload_len — whether or not MsQuic canceled the send. AppCore adds the
+//   NetClient reports on_video_bytes_completed(source, len) from SEND_COMPLETE
+//   with the EXACT byte count that was handed to StreamSend — stream 1 (always
+//   the screen): 4 + header_len + payload_len; per-frame stream:
+//   frame_stream_prefix_bytes(source) + header_len + payload_len — whether or
+//   not MsQuic canceled the send. AppCore adds the
 //   same count to its VideoSendController BEFORE the send call (a canceled
 //   SEND_COMPLETE can run on the worker before the call returns) and takes it
 //   back when the call returns false. Nothing is ever reported for a send call
@@ -77,6 +79,22 @@ static void free_send_ctx(SendCtx* ctx)
     delete ctx;
 }
 
+static int64_t steady_now_us()
+{
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// One DatagramSend. Owns the bytes for MsQuic's asynchronous send lifetime
+// (freed on the final DATAGRAM_SEND_STATE_CHANGED) and remembers when it was
+// queued, so the backlog gate learns how long it waited before being written.
+struct DatagramCtx {
+    QUIC_BUFFER          buf{};
+    std::vector<uint8_t> bytes;
+    int64_t              queued_us  = 0;
+    bool                 left_queue = false;   // SENT or CANCELED already accounted
+};
+
 // One per-frame unidirectional video stream (sharer -> server). Owns the
 // [STREAM_TYPE_VIDEO_FRAME][header][payload] buffer. The payload is released
 // as soon as SEND_COMPLETE says MsQuic is done with it; the context itself
@@ -98,6 +116,7 @@ struct VideoOutCtx {
     QUIC_BUFFER           buf{};
     uint8_t*              data   = nullptr;
     uint32_t              len    = 0;   // exact byte count handed to StreamSend
+    protocol::VideoSource source = protocol::VideoSource::Screen;
 };
 
 static QUIC_STATUS QUIC_API s_video_out_stream_cb(HQUIC stream, void* ctx,
@@ -109,7 +128,7 @@ static QUIC_STATUS QUIC_API s_video_out_stream_cb(HQUIC stream, void* ctx,
         // Reported whether or not the send was canceled: the caller added
         // exactly `len` when StreamSend succeeded and must get it back.
         if (c->parent->on_video_bytes_completed)
-            c->parent->on_video_bytes_completed(c->len);
+            c->parent->on_video_bytes_completed(c->source, c->len);
         delete[] c->data;
         c->data = nullptr;
         break;
@@ -318,6 +337,13 @@ struct NetClient::Impl {
     std::mutex           video_buffer_mutex;
     std::vector<uint8_t> video_recv_buffer;
 
+    // Datagrams queued inside MsQuic (see parties/datagram_backlog.h). Every
+    // datagram is accounted; send_data refuses media while the queue is stale
+    // so a collapsed path cannot pile up voice and starve the control stream.
+    // About 0.6 s of voice + VOICE2 + screen-share audio; 200 ms of waiting.
+    DatagramSendBacklog dgram_backlog{
+        DatagramBacklogLimits{ .max_queued = 32, .max_delay_us = 200'000 } };
+
     std::string server_fingerprint;
 
     explicit Impl(NetClient& p) : parent(p) {}
@@ -341,6 +367,17 @@ struct NetClient::Impl {
         // stream pointers but not registration/configuration/connection. Close
         // them before opening new ones so a reconnect can't leak the old set.
         cleanup_handles();
+
+        // Nothing of the old connection may leak into the new one (its
+        // callbacks are all done once cleanup_handles returned). A connection
+        // that drops mid-transfer leaves part of a control message in the
+        // reassembly buffer; the new stream's bytes would be framed behind it
+        // and the misread length would swallow the AUTH_RESPONSE and
+        // desynchronize every message after it. disconnect() clears these too,
+        // but an unexpected drop never goes through it.
+        { std::lock_guard lock(buffer_mutex);       recv_buffer.clear(); }
+        { std::lock_guard lock(video_buffer_mutex); video_recv_buffer.clear(); }
+        dgram_backlog.reset();
 
         bool ok;
         {
@@ -502,13 +539,23 @@ struct NetClient::Impl {
         std::shared_lock<std::shared_mutex> hlock(handles_mutex);
         if (!connected || !connection) return false;
 
-        auto* buf = new uint8_t[len];
-        std::memcpy(buf, data, len);
-        auto* qb = new QUIC_BUFFER{ static_cast<uint32_t>(len), buf };
+        // Real-time media only: late is as bad as lost, so drop it here rather
+        // than queue it behind a path that is not draining.
+        const int64_t now = steady_now_us();
+        if (!dgram_backlog.admit(now)) return false;
+
+        auto* ctx = new DatagramCtx;
+        ctx->bytes.assign(data, data + len);
+        ctx->buf       = QUIC_BUFFER{ static_cast<uint32_t>(len), ctx->bytes.data() };
+        ctx->queued_us = now;
         const QUIC_SEND_FLAGS flags = priority ? QUIC_SEND_FLAG_DGRAM_PRIORITY
                                                : QUIC_SEND_FLAG_NONE;
-        if (QUIC_FAILED(api->DatagramSend(connection, qb, 1, flags, qb))) {
-            delete[] buf; delete qb; return false;
+        // Accounted before the call: the worker may report SENT before it returns.
+        dgram_backlog.on_queued(now);
+        if (QUIC_FAILED(api->DatagramSend(connection, &ctx->buf, 1, flags, ctx))) {
+            dgram_backlog.on_send_failed();
+            delete ctx;
+            return false;
         }
         return true;
     }
@@ -558,12 +605,13 @@ struct NetClient::Impl {
     }
 
     // Per-frame unidirectional video stream (servers >= 1.2):
-    // [STREAM_TYPE_VIDEO_FRAME][header][payload], one StreamSend with
-    // QUIC_SEND_FLAG_START | QUIC_SEND_FLAG_FIN (ownership rules: see
-    // VideoOutCtx). Accounting: on success the caller adds exactly
-    // 1 + header_len + payload_len; SEND_COMPLETE reports the same count back,
-    // canceled or not. On any failure nothing was queued and nothing is
-    // reported.
+    // [STREAM_TYPE_VIDEO_FRAME][header][payload] for the screen share, or
+    // [STREAM_TYPE_VIDEO_SOURCE_FRAME][source][header][payload] (1.4+), one
+    // StreamSend with QUIC_SEND_FLAG_START | QUIC_SEND_FLAG_FIN (ownership
+    // rules: see VideoOutCtx). Accounting: on success the caller adds exactly
+    // NetClient::frame_stream_prefix_bytes(source) + header_len + payload_len;
+    // SEND_COMPLETE reports the same count back for the same source, canceled
+    // or not. On any failure nothing was queued and nothing is reported.
     //
     // Stream credit: the server allows 128 concurrent per-frame streams. When
     // all of them are still open the start does NOT fail (no FAIL_BLOCKED):
@@ -571,26 +619,35 @@ struct NetClient::Impl {
     // stay charged in the caller's controller, and the sharer's admission gate
     // bounds how much can pile up behind the wait.
     bool send_video_frame_stream(const uint8_t* header, size_t header_len,
-                                 const uint8_t* payload, size_t payload_len)
+                                 const uint8_t* payload, size_t payload_len,
+                                 protocol::VideoSource source)
     {
         ZoneScopedN("NetClient::send_video_frame_stream");
         std::shared_lock<std::shared_mutex> hlock(handles_mutex);
         if (!connected || !connection) return false;
+        if (!protocol::video_source_valid(static_cast<uint8_t>(source))) return false;
 
         // The server aborts anything larger (it prepends [type][sender_id]
         // when re-originating the frame, hence the payload cap rather than the
         // parser cap); do not even queue it.
         if (header_len + payload_len > VIDEO_FRAME_MAX_PAYLOAD_BYTES) return false;
-        const size_t total = 1 + header_len + payload_len;
+        const size_t prefix = NetClient::frame_stream_prefix_bytes(source);
+        const size_t total  = prefix + header_len + payload_len;
 
         auto* ctx = new VideoOutCtx;
         ctx->parent = &parent;
         ctx->api    = api;
         ctx->data   = new uint8_t[total];
         ctx->len    = static_cast<uint32_t>(total);
-        ctx->data[0] = protocol::STREAM_TYPE_VIDEO_FRAME;
-        if (header_len)  std::memcpy(ctx->data + 1, header, header_len);
-        if (payload_len) std::memcpy(ctx->data + 1 + header_len, payload, payload_len);
+        ctx->source = source;
+        if (source == protocol::VideoSource::Screen) {
+            ctx->data[0] = protocol::STREAM_TYPE_VIDEO_FRAME;
+        } else {
+            ctx->data[0] = protocol::STREAM_TYPE_VIDEO_SOURCE_FRAME;
+            ctx->data[1] = static_cast<uint8_t>(source);
+        }
+        if (header_len)  std::memcpy(ctx->data + prefix, header, header_len);
+        if (payload_len) std::memcpy(ctx->data + prefix + header_len, payload, payload_len);
         ctx->buf = QUIC_BUFFER{ ctx->len, ctx->data };
 
         HQUIC stream = nullptr;
@@ -701,10 +758,19 @@ struct NetClient::Impl {
         }
 
         case QUIC_CONNECTION_EVENT_DATAGRAM_SEND_STATE_CHANGED: {
-            if (QUIC_DATAGRAM_SEND_STATE_IS_FINAL(ev->DATAGRAM_SEND_STATE_CHANGED.State)) {
-                auto* qb = static_cast<QUIC_BUFFER*>(ev->DATAGRAM_SEND_STATE_CHANGED.ClientContext);
-                if (qb) { delete[] qb->Buffer; delete qb; }
+            auto* ctx = static_cast<DatagramCtx*>(ev->DATAGRAM_SEND_STATE_CHANGED.ClientContext);
+            if (!ctx) break;
+            const QUIC_DATAGRAM_SEND_STATE state = ev->DATAGRAM_SEND_STATE_CHANGED.State;
+            const bool final_state = QUIC_DATAGRAM_SEND_STATE_IS_FINAL(state);
+            // SENT = written into a packet (later states only track its fate
+            // on the wire); a final state without SENT = canceled in the queue.
+            if (!ctx->left_queue && (state == QUIC_DATAGRAM_SEND_SENT || final_state)) {
+                ctx->left_queue = true;
+                const int64_t now = steady_now_us();
+                dgram_backlog.on_dequeued(
+                    now, state == QUIC_DATAGRAM_SEND_SENT ? now - ctx->queued_us : -1);
             }
+            if (final_state) delete ctx;
             break;
         }
 
@@ -799,7 +865,7 @@ struct NetClient::Impl {
                 // Video bytes on stream 1 are reported (canceled or not) with
                 // the exact count handed to StreamSend; control/PLI are not.
                 if (ctx->kind == SendKind::VideoStream1 && parent.on_video_bytes_completed)
-                    parent.on_video_bytes_completed(ctx->len);
+                    parent.on_video_bytes_completed(protocol::VideoSource::Screen, ctx->len);
                 free_send_ctx(ctx);
             }
             break;
@@ -944,14 +1010,25 @@ bool NetClient::send_video_parts(const uint8_t* header, size_t header_len,
 }
 
 bool NetClient::send_video_frame_stream(const uint8_t* header, size_t header_len,
-                                        const uint8_t* payload, size_t payload_len)
+                                        const uint8_t* payload, size_t payload_len,
+                                        protocol::VideoSource source)
 {
-    return impl_->send_video_frame_stream(header, header_len, payload, payload_len);
+    return impl_->send_video_frame_stream(header, header_len, payload, payload_len, source);
 }
 
 NetClient::ConnectionStats NetClient::connection_stats() const
 {
     return impl_->connection_stats();
+}
+
+NetClient::DatagramBacklogStats NetClient::datagram_backlog() const
+{
+    DatagramBacklogStats out;
+    const auto& b    = impl_->dgram_backlog;
+    out.queued       = b.queued();
+    out.head_wait_us = b.head_wait_us(steady_now_us());
+    out.dropped      = b.dropped();
+    return out;
 }
 
 // MsQuic opens both streams automatically on QUIC_CONNECTION_EVENT_CONNECTED.

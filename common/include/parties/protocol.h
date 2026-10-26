@@ -16,7 +16,14 @@ constexpr uint8_t  PROTOCOL_VERSION_MAJOR = 1;
 // 1.2: +per-frame unidirectional video streams (STREAM_TYPE_VIDEO_FRAME),
 //      SCREEN_SHARE_VIEWER, trailing protocol version in AUTH_RESPONSE,
 //      trailing replay flag in SCREEN_SHARE_STARTED. All additive.
-constexpr uint8_t  PROTOCOL_VERSION_MINOR = 2;
+// 1.3: +trailing voice state [muted][deafened] in CHANNEL_JOIN and
+//      USER_JOINED_CHANNEL. Additive.
+// 1.4: +camera streams: a user publishes one video stream per VideoSource,
+//      identified on the wire by a stream id (see video_stream_id). Trailing
+//      [source] in SCREEN_SHARE_START/UPDATE/STOP, per-frame ingress type
+//      STREAM_TYPE_VIDEO_SOURCE_FRAME, trailing [stream_id] on server -> sharer
+//      PLIs. Screen shares keep stream id == user id. Additive.
+constexpr uint8_t  PROTOCOL_VERSION_MINOR = 4;
 constexpr uint16_t PROTOCOL_VERSION =
     (static_cast<uint16_t>(PROTOCOL_VERSION_MAJOR) << 8) | PROTOCOL_VERSION_MINOR;
 
@@ -31,6 +38,60 @@ constexpr uint16_t PROTOCOL_VERSION_ASSUMED_LEGACY = (1u << 8) | 1u;
 constexpr uint16_t PROTOCOL_VERSION_FRAME_STREAMS  = (1u << 8) | 2u;
 constexpr bool protocol_supports_frame_streams(uint16_t version) {
     return protocol_major(version) == 1 && version >= PROTOCOL_VERSION_FRAME_STREAMS;
+}
+
+// Version from which the voice state rides on CHANNEL_JOIN (client -> server)
+// and USER_JOINED_CHANNEL (server -> client). A client talking to an older
+// server follows the join with a VOICE_STATE_UPDATE; the server additionally
+// sends older clients a USER_VOICE_STATE for a joiner that is muted/deafened.
+constexpr uint16_t PROTOCOL_VERSION_JOIN_VOICE_STATE = (1u << 8) | 3u;
+constexpr bool protocol_supports_join_voice_state(uint16_t version) {
+    return protocol_major(version) == 1 && version >= PROTOCOL_VERSION_JOIN_VOICE_STATE;
+}
+
+// ── Video sources and stream ids (1.4+) ─────────────────────────────────────
+// A user publishes at most one video stream per source. Everything that names
+// a stream on the wire (SCREEN_SHARE_STARTED/STOPPED/VIEW, the sender field of
+// forwarded frames, PLI targets) carries a 32-bit stream id that packs the
+// owner and the source: user_id | (source << 30). A screen share therefore
+// keeps stream id == user id, exactly what pre-1.4 peers have always seen;
+// camera streams are only ever announced to 1.4+ peers.
+enum class VideoSource : uint8_t {
+    Screen = 0,
+    Camera = 1,
+};
+constexpr uint8_t  VIDEO_SOURCE_COUNT        = 2;
+constexpr uint32_t VIDEO_STREAM_SOURCE_SHIFT = 30;
+constexpr uint32_t VIDEO_STREAM_USER_MASK    = (1u << VIDEO_STREAM_SOURCE_SHIFT) - 1;
+
+constexpr bool video_source_valid(uint8_t source) { return source < VIDEO_SOURCE_COUNT; }
+constexpr uint32_t video_stream_id(uint32_t user_id, VideoSource source) {
+    return (user_id & VIDEO_STREAM_USER_MASK) |
+           (static_cast<uint32_t>(source) << VIDEO_STREAM_SOURCE_SHIFT);
+}
+constexpr uint32_t video_stream_owner(uint32_t stream_id) {
+    return stream_id & VIDEO_STREAM_USER_MASK;
+}
+constexpr VideoSource video_stream_source(uint32_t stream_id) {
+    return static_cast<VideoSource>(stream_id >> VIDEO_STREAM_SOURCE_SHIFT);
+}
+// False for ids no source maps to (source bits beyond VIDEO_SOURCE_COUNT).
+constexpr bool video_stream_valid(uint32_t stream_id) {
+    return video_stream_owner(stream_id) != 0 &&
+           (stream_id >> VIDEO_STREAM_SOURCE_SHIFT) < VIDEO_SOURCE_COUNT;
+}
+
+static_assert(video_stream_id(42, VideoSource::Screen) == 42,
+              "a screen share's stream id must stay its owner's user id");
+static_assert(video_stream_owner(video_stream_id(42, VideoSource::Camera)) == 42 &&
+              video_stream_source(video_stream_id(42, VideoSource::Camera)) == VideoSource::Camera,
+              "stream ids must round-trip owner and source");
+
+// Version a peer must report before camera streams are announced to it (as a
+// viewer) or accepted from it (as a publisher).
+constexpr uint16_t PROTOCOL_VERSION_CAMERA = (1u << 8) | 4u;
+constexpr bool protocol_supports_camera(uint16_t version) {
+    return protocol_major(version) == 1 && version >= PROTOCOL_VERSION_CAMERA;
 }
 
 // SERVER_ERROR payload: [code(u16)][message(string)]. The code lets the client
@@ -146,6 +207,12 @@ constexpr uint8_t STREAM_TYPE_FILE_DOWNLOAD = 0x11;
 // (see parties/video_common.h, VideoFrameHeader). Frames larger than
 // VIDEO_FRAME_MAX_BYTES are rejected and the stream aborted.
 constexpr uint8_t STREAM_TYPE_VIDEO_FRAME   = 0x12;
+// Per-frame stream from a publisher, any VideoSource (1.4+; used for every
+// source except the screen, which keeps 0x12 for pre-1.4 servers):
+//   sharer -> server : [0x13][source(1)][frame header(14)][encoded]   (one StreamSend + FIN)
+// The server forwards it to viewers as a 0x12 stream whose sender field is the
+// stream id, so receivers need no second format.
+constexpr uint8_t STREAM_TYPE_VIDEO_SOURCE_FRAME = 0x13;
 
 // Video control subtypes (VIDEO_CONTROL_TYPE datagrams / stream-1 packets)
 constexpr uint8_t VIDEO_CTL_PLI         = 0x01;
@@ -159,5 +226,17 @@ constexpr uint8_t VIDEO_CTL_SHARE_STOP  = 0x03;   // reserved, unused
 //   AUTH_RESPONSE: [user_id(4)][session_token(32)][role(1)][server_name(string)][protocol_version(2)]
 //   The trailing u16 tells the client which protocol the server speaks; absent
 //   means PROTOCOL_VERSION_ASSUMED_LEGACY.
+//   CHANNEL_JOIN (1.3+): [channel_id(4)][muted(1)][deafened(1)]
+//   The joiner's current voice state, applied atomically with the join so the
+//   channel never sees a muted user as live. Absent = keep the session's state.
+//   USER_JOINED_CHANNEL (1.3+): [user_id(4)][name(string)][channel_id(4)][role(1)][muted(1)][deafened(1)]
+//   Absent = not muted, not deafened.
+//   SCREEN_SHARE_START / SCREEN_SHARE_UPDATE (1.4+): [codec(1)][width(2)][height(2)][source(1)]
+//   SCREEN_SHARE_STOP (1.4+): [source(1)]
+//   The VideoSource the message is about; absent = VideoSource::Screen.
+//   SCREEN_SHARE_STARTED / STOPPED / VIEW: the sharer/target field is a stream
+//   id (1.4+; identical to the user id for screen shares).
+//   PLI toward a sharer (1.4+): [VIDEO_CONTROL_TYPE][VIDEO_CTL_PLI][requester(4)][stream_id(4)]
+//   The stream that needs a keyframe; absent = the sharer's screen share.
 
 } // namespace parties::protocol

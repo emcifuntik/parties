@@ -1,6 +1,6 @@
 # Parties Networking Protocol
 
-> Version 1.2 -- September 2026
+> Version 1.4 -- October 2026
 
 The wire version is a `u16` (major in the high byte, minor in the low byte) sent in
 AUTH_IDENTITY and, since 1.2, echoed back in AUTH_RESPONSE. The server rejects only
@@ -11,6 +11,8 @@ on a **major** mismatch; every minor bump is additive.
 | 1.0 | March 2026 | Baseline: single QUIC connection, control stream 0, reliable video stream 1, voice datagrams |
 | 1.1 | June 2026 | Secondary voice stream VOICE2 (`0x05`), same wire shape as voice |
 | 1.2 | September 2026 | Per-frame unidirectional video streams (`0x12`), SCREEN_SHARE_VIEWER (0x010D), trailing `protocol_version` in AUTH_RESPONSE, trailing `replay` flag in SCREEN_SHARE_STARTED, QUIC pacing enabled |
+| 1.3 | October 2026 | Trailing voice state `[muted][deafened]` in CHANNEL_JOIN and USER_JOINED_CHANNEL; the server never forwards the voice of a session it lists as muted or deafened; media datagrams are dropped at the source while a peer's datagram queue is stale (behavioural, no wire change) |
+| 1.4 | October 2026 | Cameras: one video stream per user and source, addressed by a stream id (`user_id \| source << 30`, a screen share's id is still the user id); trailing `source` byte in SCREEN_SHARE_START, SCREEN_SHARE_UPDATE and SCREEN_SHARE_STOP; per-frame ingress type `0x13` for non-screen sources; trailing `stream_id` in server -> sharer PLIs; cameras are announced only to 1.4+ peers (see [Video sources and stream ids](#video-sources-and-stream-ids-14)) |
 
 ## 1. Overview
 
@@ -171,6 +173,15 @@ it). Readers must ignore any unknown trailing bytes.
 | Field | Type | Size | Description |
 |-------|------|------|-------------|
 | channel_id | u32 | 4 | Channel to join |
+| muted | u8 | 1 (optional, 1.3+) | 1 = joiner's mic is muted |
+| deafened | u8 | 1 (optional, 1.3+) | 1 = joiner is deafened |
+
+The voice state is applied atomically with the join, before the channel's user
+list and USER_JOINED_CHANNEL are built, so a user who muted before an
+auto-reconnect is never listed (or forwarded) as live. When absent the session
+keeps the state it last reported. Mute/deafen are client-side user choices that
+survive reconnects; a 1.3 client talking to an older server, which ignores the
+trailing bytes, follows a non-default join with VOICE_STATE_UPDATE.
 
 #### CHANNEL_LEAVE (0x0003) -- C->S
 
@@ -208,6 +219,12 @@ No payload.
 | user_id | u32 | User who joined |
 | username | string | Their display name |
 | channel_id | u32 | Channel they joined |
+| role | u8 (optional) | Role (0-3); absent = 3 |
+| muted | u8 (optional, 1.3+) | 1 = self-muted; absent = 0 |
+| deafened | u8 (optional, 1.3+) | 1 = self-deafened; absent = 0 |
+
+Clients older than 1.3 ignore the voice state; the server sends them a
+USER_VOICE_STATE for the joiner right after when it is not the default.
 
 #### USER_LEFT_CHANNEL (0x0105) -- S->C
 
@@ -244,10 +261,33 @@ No payload. Server echoes back immediately.
 | codec | u8 | 1 | Video codec ID |
 | width | u16 | 2 | Capture width in pixels |
 | height | u16 | 2 | Capture height in pixels |
+| source | u8 | 1 (optional, 1.4+) | `0` = screen, `1` = camera; absent = screen |
+
+Starts the stream `video_stream_id(sender, source)`. A user may run one stream
+per source at the same time (a screen share and a camera). The server silently
+refuses a non-screen source from a session that reported a version below 1.4.
+Clients send zeros for codec and size when the encoder does not exist yet and
+follow up with SCREEN_SHARE_UPDATE.
+
+#### SCREEN_SHARE_UPDATE (0x000A) -- C->S
+
+| Field | Type | Size | Description |
+|-------|------|------|-------------|
+| codec | u8 | 1 | Video codec ID the encoder settled on |
+| width | u16 | 2 | Encoded width |
+| height | u16 | 2 | Encoded height |
+| source | u8 | 1 (optional, 1.4+) | Which of the sender's streams; absent = screen |
+
+Refreshes the metadata the server replays to late joiners. Ignored for a stream
+the sender is not publishing.
 
 #### SCREEN_SHARE_STOP (0x0008) -- C->S
 
-No payload.
+| Field | Type | Size | Description |
+|-------|------|------|-------------|
+| source | u8 | 1 (optional, 1.4+) | Which stream to stop; absent (no payload) = screen |
+
+Stopping one source leaves the sender's other stream running.
 
 #### SCREEN_SHARE_VIEW (0x0009) -- C->S
 
@@ -256,7 +296,7 @@ so a session holds a *set* of subscriptions. Two wire forms:
 
 | Field | Type | Size | Description |
 |-------|------|------|-------------|
-| target_user_id | u32 | 4 | Sharer id |
+| target | u32 | 4 | Stream id (a screen share's is its sharer's user id) |
 | action | u8 | 1 (optional) | `1` = subscribe, `0` = unsubscribe |
 
 - **Legacy (4 bytes, no `action`):** single-select — replaces the whole set with
@@ -264,20 +304,23 @@ so a session holds a *set* of subscriptions. Two wire forms:
 - **Additive (5 bytes):** `action=1` adds `target`, `action=0` removes it
   (`target 0, action 0` = clear all). Used by the multi-stream grid (desktop).
 
-Subscribing to a sharer triggers an auto-PLI to that sharer (keyframe for the new
-viewer) and, when the sharer speaks 1.2+, a SCREEN_SHARE_VIEWER notification to
-the sharer (`watching = 1` on subscribe, `0` on unsubscribe). Subscriptions are
-cleared on channel leave, disconnect, and when the sharer stops.
+Subscribing to a stream triggers an auto-PLI to its sharer (keyframe for the new
+viewer) and, for a screen share whose sharer speaks 1.2+, a SCREEN_SHARE_VIEWER
+notification to the sharer (`watching = 1` on subscribe, `0` on unsubscribe).
+Subscriptions are cleared on channel leave, disconnect, and when the stream stops.
 
 #### SCREEN_SHARE_STARTED (0x010A) -- S->C
 
 | Field | Type | Size | Description |
 |-------|------|------|-------------|
-| sharer_user_id | u32 | 4 | Who started sharing |
+| stream_id | u32 | 4 | The stream that started (a screen share's is its sharer's user id) |
 | codec | u8 | 1 | Video codec ID |
 | width | u16 | 2 | Capture width |
 | height | u16 | 2 | Capture height |
 | replay | u8 | 1 (optional, 1.2+) | `1` = late-join replay of an already active share, `0`/absent = live start |
+
+A camera stream is announced (live and on replay) only to sessions that reported
+1.4+.
 
 Broadcast to all users in the channel when a share starts (`replay = 0`), and sent
 to a joining user once per active sharer (`replay = 1`). The trailing byte lets
@@ -291,8 +334,8 @@ someone else; older servers omit it and clients treat absence as `0`.
 | viewer_id | u32 | 4 | The viewer that changed its subscription |
 | watching | u8 | 1 | `1` = subscribed to your stream, `0` = unsubscribed |
 
-Sent **only to the sharer** whose stream is affected, and only when that sharer
-reported protocol 1.2+. Never sent for the sharer's own self-preview subscription
+Sent **only to the sharer** whose stream is affected, only for screen shares,
+and only when that sharer reported protocol 1.2+. Never sent for the sharer's own self-preview subscription
 (`viewer_id == sharer_id`). Fired on SCREEN_SHARE_VIEW and on the implicit
 unsubscribes (channel leave, disconnect). The client uses it for a "viewer
 joined" sound and for a viewer count on the sharer's side.
@@ -301,7 +344,12 @@ joined" sound and for a viewer count on the sharer's side.
 
 | Field | Type | Size | Description |
 |-------|------|------|-------------|
-| sharer_user_id | u32 | 4 | Who stopped sharing |
+| stream_id | u32 | 4 | The stream that stopped |
+
+Sent to everyone the stream was announced to (a camera's stop only to 1.4+
+sessions). The server also stops a user's streams itself on channel leave,
+channel switch, channel deletion and disconnect; a client that sees its own
+stream stopped without having asked must stop capturing.
 
 #### SCREEN_SHARE_DENIED (0x010C) -- S->C
 
@@ -376,7 +424,24 @@ Voice audio is sent as QUIC datagrams (unreliable, unordered) for minimal latenc
 +------+-----------+----------------------------+
 ```
 
-The server **never decodes** voice data. It prepends the sender's user ID and forwards to all authenticated users in the same channel who are not deafened.
+The server **never decodes** voice data. It prepends the sender's user ID and forwards to all authenticated users in the same channel who are not deafened. Voice (`0x01`) from a session the server lists as muted or deafened is dropped (1.3+): every client shows the server's view of that state, so a user shown as muted is never audible, whatever their client sends.
+
+### Datagram send queue (both ends)
+
+MsQuic keeps every queued datagram until it can be written (no expiry, no length
+limit) and writes queued datagrams ahead of all stream data. When a path's
+congestion window collapses below the offered voice rate, unbounded queuing makes
+voice arrive later and later while the control stream (voice-state updates,
+keepalive pongs) starves behind it; ACKs keep the connection alive, so nothing
+recovers on its own. Both ends therefore account for every datagram they queue
+(`DatagramSend` to the `SENT`/`CANCELED` indication) and drop new **media**
+datagrams (voice, VOICE2, screen-share audio) at the source while the queue holds
+too many of them or its oldest has waited about 200 ms (`parties/datagram_backlog.h`:
+client 32 per connection, server 64 per peer), and for another 100 ms once such a
+drop episode has drained the queue, so the stream data that waited behind the
+datagrams gets the path before media competes for it again. Receivers see ordinary
+packet loss (FEC/PLC). Server -> sharer PLI datagrams are control and are never
+dropped.
 
 ### Secondary voice stream (VOICE2, `0x05`)
 
@@ -452,7 +517,20 @@ byte is the stream type `0x12` (`STREAM_TYPE_VIDEO_FRAME`).
 +------+---------------------+------------+
 ```
 
-**Server -> viewer** (one stream per frame *per viewer*, `sender_id` inserted after the type byte):
+**Publisher -> server, any other source (1.4+):** the source byte follows the
+type byte. The screen keeps `0x12` so a 1.4 client can still share its screen
+with an older server.
+
+```
++------+--------+---------------------+------------+
+| 0x13 | source | frame header (14 B) |  encoded   |
+| 1 B  |  1 B   |                     |  variable  |
++------+--------+---------------------+------------+
+```
+
+**Server -> viewer** (one stream per frame *per viewer*, `sender_id` inserted
+after the type byte; since 1.4 it is the stream id, which for a screen share is
+the sharer's user id):
 
 ```
 +------+-----------+---------------------+------------+
@@ -462,7 +540,8 @@ byte is the stream type `0x12` (`STREAM_TYPE_VIDEO_FRAME`).
 ```
 
 A receiver aborts and discards any unidirectional stream whose first byte is not
-`0x12` or whose total length exceeds `VIDEO_FRAME_MAX_BYTES`. Because per-frame
+`0x12` (the server also takes `0x13` from publishers) or whose total length
+exceeds `VIDEO_FRAME_MAX_BYTES`. Because per-frame
 streams complete independently, both the server and viewer run a small reorder buffer keyed by
 `frame_seq` (holds newer complete frames for up to 150 ms / 8 frames while an
 older one is missing and delivers keyframes immediately) before the frames reach
@@ -484,7 +563,9 @@ re-originates whole frames on either path.
 authenticated sessions that are currently registered as sharers
 (`SCREEN_SHARE_START` accepted and not yet stopped, left, or disconnected;
 `Session::video_ingress_allowed`); a unidirectional stream from any other session
-is aborted as soon as it is started. At most 16 MB may be buffered across one
+is aborted as soon as it is started, and a frame for a source the session is not
+publishing (an unknown source byte, or a camera frame after its stop) is aborted
+once its prefix arrives. At most 16 MB may be buffered across one
 session's unfinished per-frame streams (`Session::VIDEO_INGRESS_MAX_BUFFERED_BYTES`);
 a stream that would exceed that is aborted. The largest `[header][encoded]` a
 sharer may send is `VIDEO_FRAME_MAX_PAYLOAD_BYTES` (`VIDEO_FRAME_MAX_BYTES` - 5,
@@ -576,10 +657,13 @@ Video control packets share the `0x03` type byte. The two hops of a PLI use
 different transports:
 
 - **Viewer -> server**: on **stream 1**, length-prefixed like a frame
-  (`[u32 len][0x03][0x01][target_user_id]`), so the request itself is never lost.
+  (`[u32 len][0x03][0x01][target]`, `target` = stream id), so the request itself
+  is never lost.
 - **Server -> sharer**: forwarded viewer PLIs, the subscribe auto-PLI and the
   backlog-recovery PLI are all sent as a **priority QUIC datagram**
-  (`DGRAM_PRIORITY`) with the same 6-byte body, so a keyframe request is never
+  (`DGRAM_PRIORITY`) with the body `[0x03][0x01][requester_user_id][stream_id]`
+  (the trailing stream id since 1.4 tells the sharer which encoder; older
+  sharers read the first 6 bytes), so a keyframe request is never
   queued behind video. Delivery is best effort: a lost PLI is covered by the
   viewer's 500 ms PLI retry while a keyframe is pending and by the sharer's 5 s
   maximum keyframe interval.
@@ -595,7 +679,7 @@ Both forms are accepted on receive. The body is:
 
 | Subtype | ID | Payload | Description |
 |---------|----|---------|-------------|
-| PLI | 0x01 | target_user_id (u32) | Request keyframe from sharer |
+| PLI | 0x01 | viewer -> server: target stream id (u32); server -> sharer: requester user id (u32) + stream id (u32, 1.4+) | Request keyframe from sharer |
 | SHARE_START | 0x02 | -- | (reserved, unused) |
 | SHARE_STOP | 0x03 | -- | (reserved, unused) |
 | NACK | 0x04 | -- | (reserved for a possible datagram video path; not implemented, do not reuse) |
@@ -643,6 +727,50 @@ sequenceDiagram
     Server->>Sharer: SCREEN_SHARE_VIEWER [viewer_id, watching=0]
     Sharer->>Server: SCREEN_SHARE_STOP
     Server->>Viewer: SCREEN_SHARE_STOPPED [sharer_id]
+```
+
+### Video sources and stream ids (1.4+)
+
+A user publishes at most one video stream per `VideoSource` (`0` = screen,
+`1` = camera). Every message that names a stream carries its **stream id**:
+
+```
+stream_id = user_id | (source << 30)        user_id < 2^30
+```
+
+A screen share's stream id equals the user id, which is exactly what pre-1.4
+peers have always seen, so they keep working unchanged: they are never told
+about cameras (no SCREEN_SHARE_STARTED or STOPPED for one), a camera start from
+them is refused, and they never receive camera frames because they cannot
+subscribe to an id they never learned.
+
+A camera is a stream like a screen share, opened on demand: it costs no
+bandwidth until a viewer subscribes. It carries no stream audio (the speaker's
+voice already reaches the room), raises no SCREEN_SHARE_VIEWER notifications
+and plays no "stream started" sound. The desktop client lists it as a second
+entry next to the participant's screen share, shows a camera badge on the
+participant's card, opens both on a card click, and mirrors the publisher's own
+camera tile, which is decoded locally from the encoder output (the server never
+echoes a publisher's stream back to it).
+
+```mermaid
+sequenceDiagram
+    participant Pub as Publisher (1.4)
+    participant Server as Server
+    participant V14 as Viewer (1.4)
+    participant V13 as Peer (pre-1.4)
+
+    Pub->>Server: SCREEN_SHARE_START [codec, w, h, source=1]
+    Server->>Pub: SCREEN_SHARE_STARTED [cam_id, codec, w, h, 0]
+    Server->>V14: SCREEN_SHARE_STARTED [cam_id, codec, w, h, 0]
+    Note over V13: never told about the camera
+    V14->>Server: SCREEN_SHARE_VIEW [cam_id, action=1]
+    Server->>Pub: PLI (priority datagram) [0x03, 0x01, viewer_id, cam_id]
+    Pub->>Server: [0x13][source=1][hdr][encoded] per frame
+    Server->>V14: [0x12][cam_id][hdr][encoded] per frame
+    Pub->>Server: SCREEN_SHARE_STOP [source=1]
+    Server->>Pub: SCREEN_SHARE_STOPPED [cam_id]
+    Server->>V14: SCREEN_SHARE_STOPPED [cam_id]
 ```
 
 Key properties:
@@ -777,6 +905,7 @@ sequenceDiagram
 | Max sharer frame payload (`VIDEO_FRAME_MAX_PAYLOAD_BYTES`) | 4 MB - 5 B (`[header][encoded]`, leaves room for the forwarding prefix) | `video_common.h` |
 | Per-session per-frame ingress buffer (`VIDEO_INGRESS_MAX_BUFFERED_BYTES`) | 16 MB across unfinished per-frame streams | `session.h` |
 | Per-viewer backlog threshold clamp | 64 KB .. 2 MB | `video_backlog.h` |
+| Media datagram send queue (1.3+) | 32 queued per client connection, 64 per server peer; ~200 ms max wait; 100 ms holdoff after a drop episode | `datagram_backlog.h` |
 
 ### Types
 
@@ -794,6 +923,7 @@ sequenceDiagram
 | Voice | `0x01` | Datagram |
 | Video frame (legacy, pre-1.2 peers) | `0x02` | Stream 1 |
 | Video frame (per-frame stream, 1.2+) | `0x12` stream type | One unidirectional stream per frame |
+| Video frame of a non-screen source (1.4+, publisher -> server only) | `0x13` stream type + source byte | One unidirectional stream per frame |
 | Video control (PLI) | `0x03` | Client -> server: stream 1; server -> sharer: priority datagram; both forms accepted on receive |
 | Stream (screen-share) audio | `0x04` | Datagram |
 | Secondary voice (VOICE2) | `0x05` | Datagram |
@@ -802,7 +932,8 @@ sequenceDiagram
 
 The server operates as a **Selective Forwarding Unit** (SFU):
 
-- Voice packets (`0x01`) and secondary voice (`0x05`) are forwarded to all authenticated users in the same channel (excluding sender and deafened users)
+- Voice packets (`0x01`) and secondary voice (`0x05`) are forwarded to all authenticated users in the same channel (excluding sender and deafened users); `0x01` from a sender listed as muted or deafened is not forwarded at all
+- Media datagrams toward a peer whose datagram send queue is stale (too many queued, or the oldest waited ~200 ms) are dropped for that peer only (see "Datagram send queue")
 - Video frames are forwarded to every viewer subscribed to that sharer (a viewer may subscribe to multiple sharers at once), on the path that viewer supports (per-frame stream for 1.2+, stream 1 otherwise)
 - Video forwarding is gated per viewer: when the bytes outstanding toward a viewer exceed `clamp(viewer_rate x (MinRtt + 250 ms) + keyframe_headroom, 64 KB, 2 MB)` (`viewer_rate` = sum of the rates of every sharer that viewer watches, `MinRtt` sampled about once per second) the frame is dropped for that viewer as a whole (never partially), the viewer is held until the next keyframe, and the server asks the sharer for one (coalesced to one request per sharer per 200 ms). Other viewers of the same sharer are unaffected
 - Per-frame ingress is guarded: streams are accepted only from sessions registered as sharers, at most 16 MB may be buffered per session across unfinished per-frame streams, and a sharer's `[header][encoded]` may not exceed `VIDEO_FRAME_MAX_PAYLOAD_BYTES`
