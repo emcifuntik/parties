@@ -271,10 +271,8 @@ bool NvencEncoder::do_encode(NV_ENC_REGISTERED_PTR resource, int64_t timestamp_1
     pic.bufferFmt = map.mappedBufferFmt;
     pic.inputTimeStamp = static_cast<uint64_t>(timestamp_100ns);
 
-    if (force_keyframe_) {
+    if (force_keyframe_.exchange(false))
         pic.encodePicFlags = NV_ENC_PIC_FLAG_FORCEIDR | NV_ENC_PIC_FLAG_OUTPUT_SPSPPS;
-        force_keyframe_ = false;
-    }
 
     {
         ZoneScopedN("nvenc::encode");

@@ -580,6 +580,11 @@ gradient_circle.user-dot {
     opacity: 1;
 }
 
+.channel-user-item.camera-on .icon-camera {
+    display: block;
+    opacity: 1;
+}
+
 .role-badge {
     display: block;
     color: #6EECD4;
@@ -787,4 +792,6 @@ body {
 .voice-btn.active { background-color: #3A1D24; }
 .voice-btn.audio-share-button.active { background-color: #17312D; }
 .voice-btn.audio-share-button.active svg { image-color: var(--color-accent); }
+.voice-btn.camera-button.active { background-color: #17312D; }
+.voice-btn.camera-button.active svg { image-color: var(--color-accent); }
 .main-content { background-color: #0A0C11; }

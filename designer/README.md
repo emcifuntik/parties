@@ -85,9 +85,9 @@ It exits non-zero when the document fails to load, RmlUI reports an error, the
 fixture is unknown, or the GPU readback cannot be written.
 
 Available Parties fixtures are `onboarding`, `recovery`, `launcher`,
-`party-modal`, `room`, `stream-single`, `stream-fps-overflow`, `streams`, `member`,
-`settings`, `settings-select-open`, `settings-screen-share`, `settings-hotkeys`, `settings-account`,
-`share`, `audio-share`, and `chat`. They use the real `LobbyModel`, `ServerListModel`, and `ChatModel`,
+`party-modal`, `room`, `room-camera`, `stream-single`, `stream-fps-overflow`, `streams`,
+`streams-camera`, `member`, `settings`, `settings-select-open`, `settings-screen-share`,
+`settings-hotkeys`, `settings-account`, `settings-camera`, `share`, `audio-share`, and `chat`. They use the real `LobbyModel`, `ServerListModel`, and `ChatModel`,
 including structured arrays and the production custom elements. Stream
 fixtures feed deterministic frames through `VideoElement`; the `share` fixture
 uses the same path for target thumbnails so the picker cards are covered by

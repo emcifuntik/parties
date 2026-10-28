@@ -52,10 +52,22 @@ public:
     bool send_message(protocol::ControlMessageType type,
                       const uint8_t* payload, size_t payload_len);
 
-    // Send a voice/control packet as an unreliable datagram. `priority` puts it
-    // ahead of other queued datagrams (QUIC_SEND_FLAG_DGRAM_PRIORITY) — use it
-    // for voice so video never delays it.
+    // Send real-time media (voice, VOICE2, screen-share audio) as an unreliable
+    // datagram. `priority` puts it ahead of other queued datagrams
+    // (QUIC_SEND_FLAG_DGRAM_PRIORITY) — use it for voice. Returns false and
+    // sends nothing while the transport's datagram queue is stale (the path is
+    // not draining it): late media is dropped at the source instead of piling
+    // up ahead of the control stream. See parties/datagram_backlog.h.
     bool send_data(const uint8_t* data, size_t len, bool priority = false);
+
+    // Datagrams queued inside the transport. `dropped` counts send_data calls
+    // refused because the queue was stale; it is cumulative across reconnects.
+    struct DatagramBacklogStats {
+        int32_t  queued       = 0;
+        int64_t  head_wait_us = 0;   // estimated wait of the oldest queued datagram
+        uint64_t dropped      = 0;
+    };
+    DatagramBacklogStats datagram_backlog() const;
 
     // Send a whole packet on the legacy reliable video stream (stream 1). Used
     // for PLI (reliable, ordered) and for video toward pre-1.2 servers.
@@ -69,13 +81,20 @@ public:
                           const uint8_t* payload, size_t payload_len);
 
     // Per-frame video stream (servers >= 1.2). Opens one UNIDIRECTIONAL QUIC
-    // stream, sends [STREAM_TYPE_VIDEO_FRAME][header][payload] with FIN in one
-    // StreamSend and closes it on SHUTDOWN_COMPLETE. Returns false (and queues
-    // nothing) if the stream could not be opened/started/sent — the caller
-    // treats that as a lost frame. Completed bytes are reported through
-    // on_video_bytes_completed exactly like stream-1 video.
+    // stream, sends the frame with FIN in one StreamSend and closes it on
+    // SHUTDOWN_COMPLETE. The screen share is framed
+    // [STREAM_TYPE_VIDEO_FRAME][header][payload]; any other source
+    // (servers >= 1.4) [STREAM_TYPE_VIDEO_SOURCE_FRAME][source][header][payload].
+    // Returns false (and queues nothing) if the stream could not be
+    // opened/started/sent — the caller treats that as a lost frame. Completed
+    // bytes are reported through on_video_bytes_completed exactly like stream-1
+    // video: frame_stream_prefix_bytes(source) + header_len + payload_len.
     bool send_video_frame_stream(const uint8_t* header, size_t header_len,
-                                 const uint8_t* payload, size_t payload_len);
+                                 const uint8_t* payload, size_t payload_len,
+                                 protocol::VideoSource source = protocol::VideoSource::Screen);
+    static constexpr size_t frame_stream_prefix_bytes(protocol::VideoSource source) {
+        return source == protocol::VideoSource::Screen ? 1 : 2;
+    }
 
     // Snapshot of QUIC_PARAM_CONN_STATISTICS_V2 for congestion control.
     // valid == false when not connected.
@@ -110,9 +129,9 @@ public:
     std::function<void(const uint8_t* ticket, size_t len)> on_resumption_ticket;
 
     // Video send accounting: bytes of video (stream 1 or per-frame streams)
-    // that MsQuic has finished with (acknowledged). Paired with the byte counts
-    // the caller added after each successful send call.
-    std::function<void(size_t bytes)>                       on_video_bytes_completed;
+    // that MsQuic has finished with (acknowledged), per source. Paired with
+    // the byte counts the caller added after each successful send call.
+    std::function<void(protocol::VideoSource source, size_t bytes)> on_video_bytes_completed;
 
     // A complete frame arrived on a server-opened per-frame stream.
     // `frame` = [14-byte VideoFrameHeader][encoded] — the same layout that

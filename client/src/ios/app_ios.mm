@@ -249,8 +249,8 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
         lobby.watching_count = scenario == "streams" ? 2 : 1;
         lobby.viewing_sharer_id = 2;
         lobby.stream_fps = 60;
-        lobby.sharers = Rml::Vector<ActiveSharer>{{2, "IceTroll", true}, {3, "ivan", true}};
-        lobby.watched = Rml::Vector<WatchedStream>{{2, "IceTroll · Counter-Strike 2", "screen-share-2"}};
+        lobby.sharers = Rml::Vector<ActiveSharer>{{2, 2, "IceTroll", true}, {3, 3, "ivan", true}};
+        lobby.watched = Rml::Vector<WatchedStream>{{2, 2, "IceTroll · Counter-Strike 2", "screen-share-2"}};
         if (scenario == "streams")
             lobby.watched.silent().push_back({3, "ivan · Zen Browser", "screen-share-3"});
     }
@@ -297,7 +297,7 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     }
     if (scenario == "room") {
         lobby.someone_sharing = true;
-        lobby.sharers = Rml::Vector<ActiveSharer>{{3, "ivan", false}};
+        lobby.sharers = Rml::Vector<ActiveSharer>{{3, 3, "ivan", false}};
     }
     if (scenario == "settings-account") {
         lobby.show_private_key = true;

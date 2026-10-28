@@ -137,6 +137,10 @@ static constexpr unsigned char embed_icon_camera[] = {
     #embed "../ui/icon-camera.svg"
 };
 
+static constexpr unsigned char embed_icon_video[] = {
+    #embed "../ui/icon-video.svg"
+};
+
 static constexpr unsigned char embed_icon_keyboard[] = {
     #embed "../ui/icon-keyboard.svg"
 };
@@ -279,6 +283,7 @@ EmbeddedFileInterface::EmbeddedFileInterface() {
     entries_["ui/icon-music.svg"] = { embed_icon_music, sizeof(embed_icon_music) };
     entries_["ui/icon-stream-off.svg"] = { embed_icon_stream_off, sizeof(embed_icon_stream_off) };
     entries_["ui/icon-camera.svg"] = { embed_icon_camera, sizeof(embed_icon_camera) };
+    entries_["ui/icon-video.svg"] = { embed_icon_video, sizeof(embed_icon_video) };
     entries_["ui/icon-keyboard.svg"] = { embed_icon_keyboard, sizeof(embed_icon_keyboard) };
     entries_["ui/icon-appearance.svg"] = { embed_icon_appearance, sizeof(embed_icon_appearance) };
     entries_["ui/icon-key.svg"] = { embed_icon_key, sizeof(embed_icon_key) };

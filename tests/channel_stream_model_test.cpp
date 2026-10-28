@@ -1,4 +1,5 @@
 #include <client/lobby_model.h>
+#include <parties/protocol.h>
 #include <RmlUi/Core.h>
 
 #include <cstdio>
@@ -53,7 +54,7 @@ bool check_voice_navigation(Rml::Context* context, parties::client::LobbyModel& 
         for (int i = 0; i < count; ++i) {
             auto& sharer = model.sharers.silent()[i];
             sharer.watching = true;
-            model.watched.silent().push_back({sharer.id, sharer.name, "stream"});
+            model.watched.silent().push_back({sharer.id, sharer.user_id, sharer.name, "stream"});
         }
         model.sharers.notify();
         model.watched.notify();
@@ -75,13 +76,13 @@ bool check_voice_navigation(Rml::Context* context, parties::client::LobbyModel& 
             "return from chat lost sharers or streaming badges");
 
         int watched_id = 0;
-        model.on_watch_sharer = [&](int id) { watched_id = id; };
+        model.on_watch_user = [&](int id) { watched_id = id; };
         model.on_toggle_watch = [&](int id) { watched_id = id; };
         auto* watch = document->GetElementById(count == 0 ? "watch" : "sharer-33");
         passed &= check(watch && watch->IsVisible(true), "stream entry is not visible after returning from chat");
         if (watch) watch->DispatchEvent("click", {});
         passed &= check(watched_id == (count == 0 ? 22 : 33), "watch action was lost after returning from chat");
-        model.on_watch_sharer = {};
+        model.on_watch_user = {};
         model.on_toggle_watch = {};
     }
 
@@ -142,7 +143,7 @@ int main() {
         // A stale sidebar badge must not make another channel's stream clickable.
         model.channels.silent()[0].users[0].streaming = true;
         int watched_id = 0;
-        model.on_watch_sharer = [&](int id) { watched_id = id; };
+        model.on_watch_user = [&](int id) { watched_id = id; };
         auto* document = context->LoadDocumentFromMemory(R"RML(
 <rml><body data-model="lobby">
 <button id="foreign" data-event-click="watch_user_stream(11)">Foreign stream</button>
@@ -158,6 +159,47 @@ int main() {
         document->Close();
 
         passed &= check_voice_navigation(context, model);
+
+        // A camera is a second stream of the same member: its own sharer entry
+        // (the stream id carries the source), the camera badge next to the
+        // streaming one, and stopping one leaves the other alone.
+        const int bob_camera = static_cast<int>(
+            parties::protocol::video_stream_id(22, parties::protocol::VideoSource::Camera));
+        passed &= check(model.add_channel_sharer(bob_camera) && model.sharers.get().size() == 2,
+            "camera stream was rejected");
+        bool camera_entry = false;
+        for (const auto& sharer : model.sharers.get())
+            camera_entry |= sharer.id == bob_camera && sharer.user_id == 22 && sharer.camera && sharer.name == "Bob";
+        passed &= check(camera_entry, "camera sharer entry is wrong");
+        passed &= check(model.channels.get()[1].users[0].camera_on && model.channels.get()[1].users[0].streaming,
+            "camera badge missing next to the screen share");
+        model.remove_channel_sharer(bob_camera);
+        passed &= check(!model.channels.get()[1].users[0].camera_on && model.channels.get()[1].users[0].streaming &&
+            model.sharers.get().size() == 1, "stopping the camera touched the screen share");
+        passed &= check(!model.add_channel_sharer(static_cast<int>(
+            parties::protocol::video_stream_id(11, parties::protocol::VideoSource::Camera))),
+            "foreign-channel camera was accepted");
+        passed &= check(!model.add_channel_sharer(static_cast<int>(22u | (3u << 30))), "unknown video source was accepted");
+
+        // A member with only the camera on is still clickable.
+        model.remove_channel_sharer(22);
+        passed &= check(model.add_channel_sharer(bob_camera) && !model.channels.get()[1].users[0].streaming,
+            "camera-only member looks like a screen share");
+        watched_id = 0;
+        model.on_watch_user = [&](int id) { watched_id = id; };
+        auto* camera_document = context->LoadDocumentFromMemory(R"RML(
+<rml><body data-model="lobby">
+<button id="camera-card" data-event-click="watch_user_stream(22)">Camera</button>
+</body></rml>)RML");
+        if (!camera_document) return 5;
+        camera_document->Show();
+        context->Update();
+        camera_document->GetElementById("camera-card")->DispatchEvent("click", {});
+        passed &= check(watched_id == 22, "camera-only card did not open the camera");
+        camera_document->Close();
+        model.on_watch_user = {};
+        model.remove_channel_sharer(bob_camera);
+        passed &= check(model.add_channel_sharer(22), "screen share replay after the camera failed");
 
         model.remove_channel_sharer(22);
         passed &= check(model.sharers.get().empty() && !model.someone_sharing.get() &&

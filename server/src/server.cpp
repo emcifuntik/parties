@@ -77,9 +77,10 @@ bool Server::start(const Config& cfg) {
     // Queue completed frames with a per-session byte cap. The server loop
     // restores encode order before applying gates and forwarding to viewers.
     quic_.on_video_frame = [this](uint32_t session_id, uint8_t packet_type,
+                                  protocol::VideoSource source,
                                   const uint8_t* data, size_t len) {
         if (packet_type == protocol::VIDEO_FRAME_PACKET_TYPE) {
-            enqueue_video_frame(session_id, data, len);
+            enqueue_video_frame(session_id, source, data, len);
         } else {
             // Non-video packets (control, stream audio) still go through the queue
             DataPacket pkt;
@@ -109,6 +110,7 @@ bool Server::start(const Config& cfg) {
 void Server::run() {
     auto last_retention_check = std::chrono::steady_clock::now();
     uint64_t last_send_failures_ = 0;
+    uint64_t last_media_drops = 0;
 
     while (running_) {
         ZoneScopedN("Server::run");
@@ -129,6 +131,13 @@ void Server::run() {
                 LOG_WARN("{} reliable send(s) failed in the last interval (total {})",
                          fails - last_send_failures_, fails);
                 last_send_failures_ = fails;
+            }
+            // ...and media dropped toward peers whose datagram queue stalled.
+            uint64_t media_drops = quic_.media_datagram_drops();
+            if (media_drops > last_media_drops) {
+                LOG_WARN("{} media datagram(s) dropped toward stalled peers in the last interval (total {})",
+                         media_drops - last_media_drops, media_drops);
+                last_media_drops = media_drops;
             }
 
             if (config_.chat.message_retention_days > 0) {
@@ -179,6 +188,14 @@ void Server::process_data_packets() {
             if (!session || !session->authenticated || session->channel_id == 0)
                 continue;
 
+            // Every client shows the server's view of the sender's voice state,
+            // so never forward the mic of a session listed as muted or
+            // deafened (deafen implies mute), whatever its client keeps
+            // sending. VOICE2 is not the mic and is not gated by mute.
+            if (pkt.packet_type == protocol::VOICE_PACKET_TYPE &&
+                (session->muted || session->deafened))
+                continue;
+
             // Forward: [<voice type>][sender_user_id(u32)][seq(2)][opus_data].
             // The SFU treats the primary (VOICE) and secondary (VOICE2) streams
             // identically — it never decodes; it echoes the same type byte so the
@@ -207,7 +224,8 @@ void Server::process_data_packets() {
                 quic_.send_to_many(targets, fwd.data(), fwd.size(), true);
         }
         else if (pkt.packet_type == protocol::VIDEO_FRAME_PACKET_TYPE) {
-            enqueue_video_frame(pkt.session_id, pkt.data.data(), pkt.data.size());
+            enqueue_video_frame(pkt.session_id, protocol::VideoSource::Screen,
+                                pkt.data.data(), pkt.data.size());
         }
         else if (pkt.packet_type == protocol::STREAM_AUDIO_PACKET_TYPE) {
             forward_stream_audio(pkt);
@@ -617,6 +635,12 @@ void Server::handle_message(const IncomingMessage& msg) {
         BinaryReader reader(msg.payload.data(), msg.payload.size());
         ChannelId channel_id = reader.read_u32();
         if (reader.error()) break;
+        // 1.3+: the joiner's voice state rides on the join, so the channel
+        // never sees a muted user as live (absent from older clients: keep
+        // what the session last reported).
+        const bool has_voice_state = reader.remaining() >= 2;
+        const bool join_muted      = has_voice_state && reader.read_u8() != 0;
+        const bool join_deafened   = has_voice_state && reader.read_u8() != 0;
 
         // Verify channel exists
         auto channel = db_.get_channel(channel_id);
@@ -651,7 +675,7 @@ void Server::handle_message(const IncomingMessage& msg) {
         // Leave current channel if in one
         ChannelId old_channel = session->channel_id;
         if (old_channel != 0 && old_channel != channel_id) {
-            stop_screen_share(old_channel, session->user_id);
+            stop_all_video_streams(old_channel, session->user_id);
             clear_viewer_subscriptions(session, true);
             session->channel_id = 0;
             BinaryWriter leave_writer;
@@ -665,8 +689,13 @@ void Server::handle_message(const IncomingMessage& msg) {
             }
         }
 
+        if (has_voice_state) {
+            session->muted    = join_muted;
+            session->deafened = join_deafened;
+        }
         session->channel_id = channel_id;
-        LOG_INFO("User '{}' joined channel '{}' ({})", session->username, channel->name, channel_id);
+        LOG_INFO("User '{}' joined channel '{}' ({}){}{}", session->username, channel->name, channel_id,
+                 session->muted ? " muted" : "", session->deafened ? " deafened" : "");
 
         // Send user list for the channel
         {
@@ -693,45 +722,52 @@ void Server::handle_message(const IncomingMessage& msg) {
                          list_writer.data().data(), list_writer.data().size());
         }
 
-        // Notify new joiner about all active screen sharers in this channel.
-        // The trailing replay flag (1) tells 1.2+ clients not to play the
-        // "stream started" sound for shares that were already running.
+        // Notify the new joiner about every stream already running in this
+        // channel. The trailing replay flag (1) tells 1.2+ clients not to play
+        // the "stream started" sound for streams that were already running.
         {
-            std::vector<UserId> sharers;
+            std::vector<uint32_t> streams;
             {
                 std::lock_guard<std::mutex> lock(sharers_mutex_);
-                auto ss_it = channel_screen_sharers_.find(channel_id);
-                if (ss_it != channel_screen_sharers_.end())
-                    sharers.assign(ss_it->second.begin(), ss_it->second.end());
+                auto ss_it = channel_video_streams_.find(channel_id);
+                if (ss_it != channel_video_streams_.end())
+                    streams.assign(ss_it->second.begin(), ss_it->second.end());
             }
-            for (UserId sharer_id : sharers) {
-                auto s = session_for_user(sharer_id);
-                if (!s || !s->authenticated) continue;
-                BinaryWriter ss_writer;
-                ss_writer.write_u32(s->user_id);
-                ss_writer.write_u8(s->share_codec);
-                ss_writer.write_u16(s->share_width);
-                ss_writer.write_u16(s->share_height);
-                ss_writer.write_u8(1);   // replay
-                quic_.send_to(msg.session_id,
-                             protocol::ControlMessageType::SCREEN_SHARE_STARTED,
-                             ss_writer.data().data(), ss_writer.data().size());
+            for (uint32_t stream_id : streams) {
+                auto publisher = session_for_user(protocol::video_stream_owner(stream_id));
+                if (!publisher || !publisher->authenticated) continue;
+                announce_video_stream(*session, stream_id, *publisher, /*replay=*/true);
             }
         }
 
-        // Notify others in the channel
+        // Notify others in the channel. The trailing voice state (1.3+) lets a
+        // client show the joiner's icons immediately; older clients ignore it
+        // and are sent a USER_VOICE_STATE instead when it matters.
         {
             BinaryWriter join_writer;
             join_writer.write_u32(session->user_id);
             join_writer.write_string(session->username);
             join_writer.write_u32(channel_id);
             join_writer.write_u8(static_cast<uint8_t>(session->role));
+            join_writer.write_u8(session->muted ? 1 : 0);
+            join_writer.write_u8(session->deafened ? 1 : 0);
+
+            BinaryWriter state_writer;
+            state_writer.write_u32(session->user_id);
+            state_writer.write_u8(session->muted ? 1 : 0);
+            state_writer.write_u8(session->deafened ? 1 : 0);
+            const bool default_state = !session->muted && !session->deafened;
 
             auto all = quic_.get_sessions();
             for (auto& s : all) {
                 if (s->id != msg.session_id && s->authenticated) {
                     quic_.send_to(s->id, protocol::ControlMessageType::USER_JOINED_CHANNEL,
                                    join_writer.data().data(), join_writer.data().size());
+                    if (!default_state &&
+                        !protocol::protocol_supports_join_voice_state(s->protocol_version)) {
+                        quic_.send_to(s->id, protocol::ControlMessageType::USER_VOICE_STATE,
+                                       state_writer.data().data(), state_writer.data().size());
+                    }
                 }
             }
         }
@@ -771,7 +807,7 @@ void Server::handle_message(const IncomingMessage& msg) {
         if (!session->authenticated || session->channel_id == 0) break;
 
         ChannelId old_channel = session->channel_id;
-        stop_screen_share(old_channel, session->user_id);
+        stop_all_video_streams(old_channel, session->user_id);
         clear_viewer_subscriptions(session, true);
         session->channel_id = 0;
 
@@ -839,15 +875,15 @@ void Server::handle_message(const IncomingMessage& msg) {
         ChannelId channel_id = reader.read_u32();
         if (reader.error()) break;
 
-        // Kick everyone from the channel first. Tear down screen-share state
-        // before the channel ids are zeroed: stop_screen_share needs the
-        // channel to find the sharer and to notify the remaining members, and
-        // a sharer that keeps video_ingress_allowed after leaving would still
+        // Kick everyone from the channel first. Tear down video state before
+        // the channel ids are zeroed: stop_all_video_streams needs the channel
+        // to find the streams and to notify the remaining members, and a
+        // publisher that keeps its ingress allowed after leaving would still
         // have its per-frame streams buffered on the server.
         auto all = quic_.get_sessions();
         for (auto& s : all) {
             if (s->authenticated && s->channel_id == channel_id) {
-                stop_screen_share(channel_id, s->user_id);
+                stop_all_video_streams(channel_id, s->user_id);
                 clear_viewer_subscriptions(s, false);
             }
         }
@@ -1027,7 +1063,8 @@ void Server::handle_message(const IncomingMessage& msg) {
         break;
     }
 
-    // ── Screen share start ───────────────────────────────────────────────
+    // ── Video stream start (screen share or camera) ─────────────────────
+    // [codec(1)][width(2)][height(2)][source(1), 1.4+; absent = screen]
     case protocol::ControlMessageType::SCREEN_SHARE_START: {
         if (!session->authenticated || session->channel_id == 0) break;
 
@@ -1035,79 +1072,88 @@ void Server::handle_message(const IncomingMessage& msg) {
         uint8_t codec_id = reader.read_u8();
         uint16_t width = reader.read_u16();
         uint16_t height = reader.read_u16();
-        if (reader.error()) break;
+        const uint8_t source_raw = reader.has_remaining(1) ? reader.read_u8() : 0;
+        if (reader.error() || !protocol::video_source_valid(source_raw)) break;
+        const auto source = static_cast<protocol::VideoSource>(source_raw);
+        // A camera is a 1.4 feature: an older client cannot have sent one,
+        // and its viewers' streams would never be told apart from it.
+        if (source != protocol::VideoSource::Screen && !session->supports_camera()) break;
 
-        ChannelId ch = session->channel_id;
+        const ChannelId ch = session->channel_id;
+        const uint32_t stream_id = protocol::video_stream_id(session->user_id, source);
 
-        // Allow multiple sharers per channel
+        // Allow multiple streams per channel (and per user: one per source)
         {
             std::lock_guard<std::mutex> lock(sharers_mutex_);
-            channel_screen_sharers_[ch].insert(session->user_id);
+            channel_video_streams_[ch].insert(stream_id);
         }
-        session->share_codec = codec_id;
-        session->share_width = width;
-        session->share_height = height;
-        // From now on this session's per-frame video streams are accepted
+        auto& state = session->video_source(source);
+        state.codec  = codec_id;
+        state.width  = width;
+        state.height = height;
+        // From now on this source's per-frame video streams are accepted
         // (release pairs with the acquire in QuicServer's PEER_STREAM_STARTED).
-        session->video_ingress_allowed.store(true, std::memory_order_release);
+        state.ingress_allowed.store(true, std::memory_order_release);
 
-        // Notify all in channel (including sender for confirmation). Trailing
-        // replay = 0: a live start (clients play the "stream started" sound).
-        BinaryWriter writer;
-        writer.write_u32(session->user_id);
-        writer.write_u8(codec_id);
-        writer.write_u16(width);
-        writer.write_u16(height);
-        writer.write_u8(0);   // replay
-
-        auto all = quic_.get_sessions();
-        for (auto& s : all) {
-            if (s->authenticated && s->channel_id == ch) {
-                quic_.send_to(s->id, protocol::ControlMessageType::SCREEN_SHARE_STARTED,
-                               writer.data().data(), writer.data().size());
-            }
+        // Notify all in channel (including the publisher, for confirmation).
+        // replay = 0: a live start.
+        for (auto& s : quic_.get_sessions()) {
+            if (s->authenticated && s->channel_id == ch)
+                announce_video_stream(*s, stream_id, *session, /*replay=*/false);
         }
 
-        LOG_INFO("User '{}' started screen sharing in channel {} ({}x{})", session->username, ch, width, height);
+        LOG_INFO("User '{}' started {} in channel {} ({}x{})", session->username,
+                 source == protocol::VideoSource::Camera ? "a camera" : "screen sharing",
+                 ch, width, height);
         break;
     }
 
-    // ── Screen share update (encoder initialized with real codec/dims) ──
+    // ── Video stream update (encoder initialized with real codec/dims) ──
     case protocol::ControlMessageType::SCREEN_SHARE_UPDATE: {
         if (!session->authenticated || session->channel_id == 0) break;
-
-        // Only accept from active sharers
-        {
-            std::lock_guard<std::mutex> lock(sharers_mutex_);
-            auto it = channel_screen_sharers_.find(session->channel_id);
-            if (it == channel_screen_sharers_.end() ||
-                it->second.count(session->user_id) == 0)
-                break;
-        }
 
         BinaryReader reader(msg.payload.data(), msg.payload.size());
         uint8_t codec_id = reader.read_u8();
         uint16_t width = reader.read_u16();
         uint16_t height = reader.read_u16();
-        if (reader.error()) break;
+        const uint8_t source_raw = reader.has_remaining(1) ? reader.read_u8() : 0;
+        if (reader.error() || !protocol::video_source_valid(source_raw)) break;
+        const auto source = static_cast<protocol::VideoSource>(source_raw);
+        const uint32_t stream_id = protocol::video_stream_id(session->user_id, source);
 
-        session->share_codec = codec_id;
-        session->share_width = width;
-        session->share_height = height;
+        // Only accept for streams this session is publishing
+        {
+            std::lock_guard<std::mutex> lock(sharers_mutex_);
+            auto it = channel_video_streams_.find(session->channel_id);
+            if (it == channel_video_streams_.end() || it->second.count(stream_id) == 0)
+                break;
+        }
 
-        LOG_INFO("User '{}' encoder ready: codec={} {}x{}", session->username, codec_id, width, height);
+        auto& state = session->video_source(source);
+        state.codec  = codec_id;
+        state.width  = width;
+        state.height = height;
+
+        LOG_INFO("User '{}' {} encoder ready: codec={} {}x{}", session->username,
+                 source == protocol::VideoSource::Camera ? "camera" : "screen share",
+                 codec_id, width, height);
         break;
     }
 
-    // ── Screen share stop ────────────────────────────────────────────────
+    // ── Video stream stop ───────────────────────────────────────────────
+    // [source(1), 1.4+; absent = screen]
     case protocol::ControlMessageType::SCREEN_SHARE_STOP: {
         if (!session->authenticated || session->channel_id == 0) break;
-        stop_screen_share(session->channel_id, session->user_id);
+        const uint8_t source_raw = msg.payload.empty() ? 0 : msg.payload[0];
+        if (!protocol::video_source_valid(source_raw)) break;
+        stop_video_stream(session->channel_id, session->user_id,
+                          static_cast<protocol::VideoSource>(source_raw));
         break;
     }
 
-    // ── Screen share view (subscribe/unsubscribe) ────────────────────────
-    // Wire formats (a viewer may watch several sharers at once):
+    // ── Video stream view (subscribe/unsubscribe) ────────────────────────
+    // The target is a stream id (a screen share's is its user id). Wire
+    // formats (a viewer may watch several streams at once):
     //   [target(4)]            legacy single-select: replace the whole set with
     //                          {target} (target 0 = clear all).
     //   [target(4)][action(1)] additive: action 1 = add target, 0 = remove
@@ -1139,17 +1185,17 @@ void Server::handle_message(const IncomingMessage& msg) {
         }
         if (target_id == 0) break;
 
-        // Verify target is actually sharing in this channel
+        // Verify the target stream is actually running in this channel
         bool is_sharer = false;
         {
             std::lock_guard<std::mutex> lock(sharers_mutex_);
-            auto it = channel_screen_sharers_.find(session->channel_id);
-            is_sharer = (it != channel_screen_sharers_.end() &&
+            auto it = channel_video_streams_.find(session->channel_id);
+            is_sharer = (it != channel_video_streams_.end() &&
                          it->second.count(target_id));
         }
         if (!is_sharer) break;
 
-        std::vector<UserId> dropped;   // sharers replaced by a legacy single-select
+        std::vector<uint32_t> dropped;   // streams replaced by a legacy single-select
         bool newly_subscribed = false;
         {
             std::lock_guard<std::mutex> lock(subscriptions_mutex_);
@@ -1175,7 +1221,7 @@ void Server::handle_message(const IncomingMessage& msg) {
                 session->video_gates[target_id].awaiting_keyframe = true;
             }
         }
-        for (UserId old : dropped)
+        for (uint32_t old : dropped)
             notify_viewer_change(old, session->user_id, false);
 
         if (newly_subscribed) {
@@ -1603,15 +1649,31 @@ void Server::process_disconnect(uint32_t session_id, UserId user_id, ChannelId c
         session = it->second;
         authed_sessions_.erase(it);
         // The user index no longer points at this session, so the
-        // stop_screen_share below cannot clear this for us.
-        session->video_ingress_allowed.store(false, std::memory_order_release);
+        // stop_all_video_streams below cannot clear these for us.
+        for (auto& source : session->video_sources)
+            source.ingress_allowed.store(false, std::memory_order_release);
     }
 
     if (channel_id == 0)
         return;
 
-    // Clean up screen share if this user was sharing.
-    stop_screen_share(channel_id, user_id);
+    // A dropped session can be reported after the same identity already
+    // reconnected and rejoined this channel (its SHUTDOWN_COMPLETE raced the
+    // duplicate-login kick). The user is still there through the newer
+    // session: everything below is keyed by user_id and would evict them.
+    if (auto current = session_for_user(user_id);
+        current && current->id != session_id && current->channel_id == channel_id) {
+        LOG_INFO("Session {} of user {} dropped after a newer session rejoined channel {}; keeping the user",
+                 session_id, user_id, channel_id);
+        // Silently: a "stopped watching" for this user id would contradict
+        // whatever the newer session is watching.
+        if (session)
+            clear_viewer_subscriptions(session, false);
+        return;
+    }
+
+    // End every stream this user was publishing.
+    stop_all_video_streams(channel_id, user_id);
 
     // Drop what this viewer was watching; tell those sharers (best effort —
     // the sharer may itself be gone).
@@ -1631,19 +1693,22 @@ void Server::process_disconnect(uint32_t session_id, UserId user_id, ChannelId c
     }
 }
 
-void Server::enqueue_video_frame(uint32_t session_id, const uint8_t* data, size_t len) {
+void Server::enqueue_video_frame(uint32_t session_id, protocol::VideoSource source,
+                                 const uint8_t* data, size_t len) {
     if (len < VIDEO_FRAME_HEADER_SIZE || len > VIDEO_FRAME_MAX_PAYLOAD_BYTES) return;
+    if (!protocol::video_source_valid(static_cast<uint8_t>(source))) return;
     auto session = quic_.get_session(session_id);
     if (!session) return;
-    const auto generation = session->video_generation.load(std::memory_order_acquire);
-    if (!session->video_ingress_allowed.load(std::memory_order_acquire)) return;
+    auto& state = session->video_source(source);
+    const auto generation = state.generation.load(std::memory_order_acquire);
+    if (!state.ingress_allowed.load(std::memory_order_acquire)) return;
     const auto bytes = static_cast<int64_t>(len);
     const auto pending = session->video_pending_bytes.fetch_add(bytes, std::memory_order_relaxed) + bytes;
     if (pending > Session::VIDEO_INGRESS_MAX_BUFFERED_BYTES) {
         session->video_pending_bytes.fetch_sub(bytes, std::memory_order_relaxed);
         return;
     }
-    video_incoming_.push({session, generation, std::vector<uint8_t>(data, data + len)});
+    video_incoming_.push({session, source, generation, std::vector<uint8_t>(data, data + len)});
 }
 
 void Server::process_video_frames() {
@@ -1652,50 +1717,60 @@ void Server::process_video_frames() {
         const auto& session = frame.session;
         session->video_pending_bytes.fetch_sub(static_cast<int64_t>(frame.data.size()),
                                                std::memory_order_relaxed);
-        if (!session->alive || !session->video_ingress_allowed.load(std::memory_order_acquire) ||
-            frame.generation != session->video_generation.load(std::memory_order_acquire)) continue;
+        auto& state = session->video_source(frame.source);
+        if (!session->alive || !state.ingress_allowed.load(std::memory_order_acquire) ||
+            frame.generation != state.generation.load(std::memory_order_acquire)) continue;
         VideoFrameHeader hdr;
         if (!VideoFrameHeader::parse(frame.data.data(), frame.data.size(), hdr)) continue;
-        auto& ingress = video_ingress_[session->id];
+        const uint32_t stream_id = protocol::video_stream_id(session->user_id, frame.source);
+        auto& ingress = video_ingress_[stream_id];
         ingress.session = session;
+        ingress.source  = frame.source;
         ingress.reorder.on_frame(hdr, std::move(frame.data), now_us(),
-            [this, id = session->id](const VideoFrameHeader&, std::vector<uint8_t>&& data) {
-                forward_video_frame(id, data.data(), data.size());
+            [this, id = session->id, source = frame.source](const VideoFrameHeader&,
+                                                            std::vector<uint8_t>&& data) {
+                forward_video_frame(id, source, data.data(), data.size());
             },
-            [this, user = session->user_id](uint32_t) { request_keyframe_from_sharer(user, 0); });
+            [this, stream_id](uint32_t) { request_keyframe_from_sharer(stream_id, 0); });
     }
     const int64_t now = now_us();
     for (auto it = video_ingress_.begin(); it != video_ingress_.end();) {
         const auto& session = it->second.session;
-        if (!session->alive || !session->video_ingress_allowed.load(std::memory_order_acquire)) {
+        const auto  source  = it->second.source;
+        const uint32_t stream_id = it->first;
+        if (!session->alive || !session->video_ingress_allowed(source)) {
             it = video_ingress_.erase(it);
             continue;
         }
         it->second.reorder.poll(now,
-            [this, id = session->id](const VideoFrameHeader&, std::vector<uint8_t>&& data) {
-                forward_video_frame(id, data.data(), data.size());
+            [this, id = session->id, source](const VideoFrameHeader&, std::vector<uint8_t>&& data) {
+                forward_video_frame(id, source, data.data(), data.size());
             },
-            [this, user = session->user_id](uint32_t) { request_keyframe_from_sharer(user, 0); });
+            [this, stream_id](uint32_t) { request_keyframe_from_sharer(stream_id, 0); });
         // Recovery no longer forwards undecodable deltas. Keep retrying even
-        // when the sharer is idle or the requested keyframe is itself lost.
+        // when the publisher is idle or the requested keyframe is itself lost.
         if (it->second.reorder.needs_keyframe())
-            request_keyframe_from_sharer(session->user_id, 0);
+            request_keyframe_from_sharer(stream_id, 0);
         ++it;
     }
 }
 
-void Server::forward_video_frame(uint32_t session_id, const uint8_t* data, size_t len) {
+void Server::forward_video_frame(uint32_t session_id, protocol::VideoSource source,
+                                 const uint8_t* data, size_t len) {
 	ZoneScopedN("Server::forward_video_frame");
     auto session = quic_.get_session(session_id);
     if (!session || !session->authenticated || session->channel_id == 0)
         return;
+    // `sharer` names the stream from here on: everything downstream (viewer
+    // subscriptions, gates, rate estimates, the forwarded sender field) is
+    // keyed by stream id.
+    const uint32_t sharer = protocol::video_stream_id(session->user_id, source);
 
-    // Verify this user is an active screen sharer in the channel
+    // Verify this stream is running in the channel
     {
         std::lock_guard<std::mutex> lock(sharers_mutex_);
-        auto it = channel_screen_sharers_.find(session->channel_id);
-        if (it == channel_screen_sharers_.end() ||
-            it->second.count(session->user_id) == 0)
+        auto it = channel_video_streams_.find(session->channel_id);
+        if (it == channel_video_streams_.end() || it->second.count(sharer) == 0)
             return;
     }
 
@@ -1705,18 +1780,17 @@ void Server::forward_video_frame(uint32_t session_id, const uint8_t* data, size_
         return;
     }
     const bool      keyframe = hdr.keyframe();
-    const UserId    sharer   = session->user_id;
     const ChannelId channel  = session->channel_id;
     const int64_t   now      = now_us();
 
-    // Per-viewer backlog budget inputs. A viewer of several sharers has ONE
+    // Per-viewer backlog budget inputs. A viewer of several streams has ONE
     // outstanding-bytes counter, so its threshold is the SUM of the rates of
-    // every sharer it watches x (its MinRtt + 250 ms) plus headroom for the
-    // largest keyframe this sharer produced recently (one admitted keyframe
+    // every stream it watches x (its MinRtt + 250 ms) plus headroom for the
+    // largest keyframe this stream produced recently (one admitted keyframe
     // must not by itself trip the gate for the deltas behind it). Until a
     // full window has been observed, assume this frame size at 30 fps for
-    // this sharer and 0 for sharers without an estimate yet.
-    std::unordered_map<UserId, double> sharer_rates;
+    // this stream and 0 for streams without an estimate yet.
+    std::unordered_map<uint32_t, double> sharer_rates;
     int64_t keyframe_headroom = 0;
     double  sharer_rate = 0.0;
     {
@@ -1814,14 +1888,14 @@ void Server::forward_video_frame(uint32_t session_id, const uint8_t* data, size_
 }
 
 int64_t Server::viewer_backlog_threshold(const Session& viewer,
-                                         const std::unordered_map<UserId, double>& sharer_rates,
+                                         const std::unordered_map<uint32_t, double>& stream_rates,
                                          int64_t keyframe_headroom) const {
-    // Every sharer this viewer watches feeds the same outstanding-bytes
-    // counter (a sharer without an estimate contributes 0).
+    // Every stream this viewer watches feeds the same outstanding-bytes
+    // counter (a stream without an estimate contributes 0).
     double viewer_rate = 0.0;
-    for (UserId sharer : viewer.subscribed_sharers) {
-        auto it = sharer_rates.find(sharer);
-        if (it != sharer_rates.end()) viewer_rate += it->second;
+    for (uint32_t stream : viewer.subscribed_sharers) {
+        auto it = stream_rates.find(stream);
+        if (it != stream_rates.end()) viewer_rate += it->second;
     }
     return video_backlog_threshold_bytes(viewer_rate,
                                          viewer.min_rtt_us.load(std::memory_order_relaxed),
@@ -1860,8 +1934,8 @@ void Server::handle_video_control(const DataPacket& pkt) {
         // sharer table is keyed by channel, so this also proves same-channel).
         {
             std::lock_guard<std::mutex> lock(sharers_mutex_);
-            auto it = channel_screen_sharers_.find(session->channel_id);
-            if (it == channel_screen_sharers_.end() ||
+            auto it = channel_video_streams_.find(session->channel_id);
+            if (it == channel_video_streams_.end() ||
                 it->second.count(target_id) == 0)
                 return;
         }
@@ -1870,9 +1944,9 @@ void Server::handle_video_control(const DataPacket& pkt) {
         // already waiting for a keyframe) gets nothing from a new keyframe
         // right now — it would be dropped too. forward_video_frame asks for
         // one as soon as the viewer is back under budget. The threshold is
-        // computed exactly as forward_video_frame does it: every sharer's
+        // computed exactly as forward_video_frame does it: every stream's
         // rate (no estimate yet = 0) and the target's keyframe headroom.
-        std::unordered_map<UserId, double> sharer_rates;
+        std::unordered_map<uint32_t, double> sharer_rates;
         int64_t keyframe_headroom = 0;
         {
             std::lock_guard<std::mutex> lock(video_state_mutex_);
@@ -1898,29 +1972,38 @@ void Server::handle_video_control(const DataPacket& pkt) {
     }
 }
 
-void Server::request_keyframe_from_sharer(UserId sharer_user_id, UserId requester) {
+void Server::request_keyframe_from_sharer(uint32_t stream_id, UserId requester) {
 	ZoneScopedN("Server::request_keyframe_from_sharer");
-    // Coalesce: one PLI per sharer per 200 ms, whoever asks.
+    if (!protocol::video_stream_valid(stream_id)) return;
+    // Coalesce: one PLI per stream per 200 ms, whoever asks.
     {
         std::lock_guard<std::mutex> lock(video_state_mutex_);
-        if (!sharer_video_state_[sharer_user_id].pli.allow(now_us()))
+        if (!sharer_video_state_[stream_id].pli.allow(now_us()))
             return;
     }
 
-    auto sharer = session_for_user(sharer_user_id);
+    auto sharer = session_for_user(protocol::video_stream_owner(stream_id));
     if (!sharer || !sharer->authenticated) return;
 
-    // [VIDEO_CONTROL_TYPE][VIDEO_CTL_PLI][requester u32] as a priority datagram
-    // so it isn't queued behind video.
-    uint8_t pli[6];
+    // [VIDEO_CONTROL_TYPE][VIDEO_CTL_PLI][requester u32][stream_id u32] as a
+    // priority datagram so it isn't queued behind video. Control, not media:
+    // never dropped by the sharer's datagram backlog gate. The trailing stream
+    // id (1.4+) names the encoder that must emit the keyframe; pre-1.4
+    // publishers only ever have a screen share and ignore it.
+    uint8_t pli[10];
     pli[0] = protocol::VIDEO_CONTROL_TYPE;
     pli[1] = protocol::VIDEO_CTL_PLI;
     uint32_t requester_id = requester;
     std::memcpy(pli + 2, &requester_id, 4);
-    quic_.send_datagram(sharer->id, pli, sizeof(pli), true);
+    std::memcpy(pli + 6, &stream_id, 4);
+    quic_.send_datagram(sharer->id, pli, sizeof(pli), /*priority=*/true, /*media=*/false);
 }
 
-void Server::notify_viewer_change(UserId sharer_user_id, UserId viewer_user_id, bool watching) {
+void Server::notify_viewer_change(uint32_t stream_id, UserId viewer_user_id, bool watching) {
+    // Only screen shares announce their audience; nobody is told who is
+    // looking at their camera.
+    if (protocol::video_stream_source(stream_id) != protocol::VideoSource::Screen) return;
+    const UserId sharer_user_id = protocol::video_stream_owner(stream_id);
     if (sharer_user_id == viewer_user_id) return;   // self-preview subscription
 
     auto sharer = session_for_user(sharer_user_id);
@@ -1966,11 +2049,12 @@ void Server::forward_stream_audio(const DataPacket& pkt) {
     if (!session || !session->authenticated || session->channel_id == 0)
         return;
 
-    // Verify this user is an active screen sharer
+    // Verify this user is an active screen sharer (stream audio belongs to the
+    // screen share, whose stream id is the user id; cameras carry no audio)
     {
         std::lock_guard<std::mutex> lock(sharers_mutex_);
-        auto it = channel_screen_sharers_.find(session->channel_id);
-        if (it == channel_screen_sharers_.end() ||
+        auto it = channel_video_streams_.find(session->channel_id);
+        if (it == channel_video_streams_.end() ||
             it->second.count(session->user_id) == 0)
             return;
     }
@@ -2003,55 +2087,82 @@ void Server::forward_stream_audio(const DataPacket& pkt) {
         quic_.send_datagram(sid, fwd.data(), fwd.size());
 }
 
-void Server::stop_screen_share(ChannelId channel_id, UserId user_id) {
-    for (auto it = video_ingress_.begin(); it != video_ingress_.end();) {
-        if (it->second.session->user_id == user_id) it = video_ingress_.erase(it);
-        else ++it;
-    }
+void Server::stop_video_stream(ChannelId channel_id, UserId user_id, protocol::VideoSource source) {
+    const uint32_t stream_id = protocol::video_stream_id(user_id, source);
+    video_ingress_.erase(stream_id);
     {
         std::lock_guard<std::mutex> lock(sharers_mutex_);
-        auto it = channel_screen_sharers_.find(channel_id);
-        if (it == channel_screen_sharers_.end()) return;
-        if (it->second.erase(user_id) == 0) return; // wasn't sharing
+        auto it = channel_video_streams_.find(channel_id);
+        if (it == channel_video_streams_.end()) return;
+        if (it->second.erase(stream_id) == 0) return; // wasn't publishing this source
         if (it->second.empty())
-            channel_screen_sharers_.erase(it);
+            channel_video_streams_.erase(it);
     }
 
-    // No longer a sharer: new per-frame video streams from this session are
-    // refused at PEER_STREAM_STARTED. (On the disconnect path the user index
-    // no longer resolves — process_disconnect clears the flag itself there.)
+    // No longer published: new per-frame video streams for this source are
+    // refused. (On the disconnect path the user index no longer resolves —
+    // process_disconnect clears the flags itself there.)
     if (auto sharer = session_for_user(user_id)) {
-        sharer->video_ingress_allowed.store(false, std::memory_order_release);
-        sharer->video_generation.fetch_add(1, std::memory_order_release);
+        auto& state = sharer->video_source(source);
+        state.ingress_allowed.store(false, std::memory_order_release);
+        state.generation.fetch_add(1, std::memory_order_release);
     }
 
-    // Clear subscriptions (and backlog gates) pointing to this sharer
+    // Clear subscriptions (and backlog gates) pointing to this stream
     auto all = quic_.get_sessions();
     {
         std::lock_guard<std::mutex> lock(subscriptions_mutex_);
         for (auto& s : all) {
-            s->subscribed_sharers.erase(user_id);
-            s->video_gates.erase(user_id);
+            s->subscribed_sharers.erase(stream_id);
+            s->video_gates.erase(stream_id);
         }
     }
-    // Forwarding state (rate estimate, PLI coalescer) restarts on the next share
+    // Forwarding state (rate estimate, PLI coalescer) restarts on the next start
     {
         std::lock_guard<std::mutex> lock(video_state_mutex_);
-        sharer_video_state_.erase(user_id);
+        sharer_video_state_.erase(stream_id);
     }
 
-    // Notify all in channel
+    // Notify the channel: everyone the stream was announced to (a camera is
+    // never announced to pre-1.4 clients).
     BinaryWriter writer;
-    writer.write_u32(user_id);
+    writer.write_u32(stream_id);
 
     for (auto& s : all) {
-        if (s->authenticated && s->channel_id == channel_id) {
-            quic_.send_to(s->id, protocol::ControlMessageType::SCREEN_SHARE_STOPPED,
-                           writer.data().data(), writer.data().size());
-        }
+        if (!s->authenticated || s->channel_id != channel_id) continue;
+        if (source != protocol::VideoSource::Screen && !s->supports_camera()) continue;
+        quic_.send_to(s->id, protocol::ControlMessageType::SCREEN_SHARE_STOPPED,
+                      writer.data().data(), writer.data().size());
     }
 
-    LOG_INFO("User {} stopped screen sharing in channel {}", user_id, channel_id);
+    LOG_INFO("User {} stopped {} in channel {}", user_id,
+             source == protocol::VideoSource::Camera ? "their camera" : "screen sharing",
+             channel_id);
+}
+
+void Server::stop_all_video_streams(ChannelId channel_id, UserId user_id) {
+    for (uint8_t source = 0; source < protocol::VIDEO_SOURCE_COUNT; ++source)
+        stop_video_stream(channel_id, user_id, static_cast<protocol::VideoSource>(source));
+}
+
+void Server::announce_video_stream(const Session& to, uint32_t stream_id,
+                                   const Session& publisher, bool replay) {
+    const auto source = protocol::video_stream_source(stream_id);
+    // Pre-1.4 clients only know screen shares: a camera stream id would look
+    // like a screen share of a user that does not exist.
+    if (source != protocol::VideoSource::Screen && !to.supports_camera()) return;
+    const auto& state = publisher.video_source(source);
+
+    // [stream_id(4)][codec(1)][width(2)][height(2)][replay(1)]: replay = 1 for
+    // the late-join replay of a stream that was already running.
+    BinaryWriter writer;
+    writer.write_u32(stream_id);
+    writer.write_u8(state.codec);
+    writer.write_u16(state.width);
+    writer.write_u16(state.height);
+    writer.write_u8(replay ? 1 : 0);
+    quic_.send_to(to.id, protocol::ControlMessageType::SCREEN_SHARE_STARTED,
+                  writer.data().data(), writer.data().size());
 }
 
 } // namespace parties::server

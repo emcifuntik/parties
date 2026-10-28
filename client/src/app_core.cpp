@@ -140,7 +140,7 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
             if (len < 19) return;
             uint32_t sender_id;
             std::memcpy(&sender_id, data + 1, 4);
-            if (sender_id == user_id_) return;
+            if (protocol::video_stream_owner(sender_id) == user_id_) return;
             if (on_video_frame_received)
                 on_video_frame_received(sender_id, data + 5, len - 5);
         } else if (type == protocol::STREAM_AUDIO_PACKET_TYPE) {
@@ -152,34 +152,33 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
             // When watching several shares in the grid the server forwards audio
             // for all of them, but StreamAudioPlayer is a single decoder/jitter
             // queue — feeding it two senders would corrupt decoding. So we play
-            // only the focused (primary) stream's audio. Per-sharer screen-share
+            // only the focused screen share's audio. Per-sharer screen-share
             // audio mixing would need a StreamAudioPlayer-per-sharer (TODO).
-            if (sender_id == viewing_sharer_)
+            if (sender_id == audio_sharer_.load(std::memory_order_relaxed))
                 stream_audio_player_.push_packet(data + 5, len - 5);
         } else if (type == protocol::VIDEO_CONTROL_TYPE) {
-            // A viewer (via the server) asks for a keyframe. Viewers retry PLIs
-            // every VIDEO_PLI_RETRY_MS and the server coalesces per sharer, so
-            // gate the forced keyframe to one per VIDEO_KEYFRAME_REQUEST_COOLDOWN_MS.
-            if (len >= 2 && data[1] == protocol::VIDEO_CTL_PLI && bridge_.request_keyframe) {
-                bool allowed = false;
-                {
-                    std::lock_guard<std::mutex> lock(pli_mutex_);
-                    const auto now = std::chrono::steady_clock::now();
-                    if (now - keyframe_request_last_ >=
-                        std::chrono::milliseconds(VIDEO_KEYFRAME_REQUEST_COOLDOWN_MS)) {
-                        keyframe_request_last_ = now;
-                        allowed = true;
-                    }
+            // A viewer (via the server) asks for a keyframe:
+            // [type][PLI][requester(4)][stream_id(4), 1.4+]. The stream id
+            // names our encoder; without it the request is for the screen.
+            if (len >= 2 && data[1] == protocol::VIDEO_CTL_PLI) {
+                auto source = protocol::VideoSource::Screen;
+                if (len >= 10) {
+                    uint32_t stream_id = 0;
+                    std::memcpy(&stream_id, data + 6, 4);
+                    if (protocol::video_stream_valid(stream_id))
+                        source = protocol::video_stream_source(stream_id);
                 }
-                if (allowed) bridge_.request_keyframe();
+                on_keyframe_request(source);
             }
         }
     };
 
-    // Screen-share send accounting (MsQuic worker thread, lock-free): the
-    // transport reports the exact byte count of every finished video send;
+    // Video send accounting (MsQuic worker thread, lock-free): the transport
+    // reports the exact byte count of every finished video send per source;
     // send_video_frame added the same count when the send call succeeded.
-    net_.on_video_bytes_completed = [this](size_t bytes) { video_sender_.on_completed(bytes); };
+    net_.on_video_bytes_completed = [this](protocol::VideoSource source, size_t bytes) {
+        video_sender_for(source).on_completed(bytes);
+    };
 
     // Per-frame video streams from a 1.2+ server (MsQuic worker thread).
     net_.on_video_stream_frame = [this](uint32_t sender_id, std::vector<uint8_t>&& frame) {
@@ -258,8 +257,14 @@ void AppCore::shutdown()
 
 void AppCore::tick()
 {
-    if (disconnect_pending_.exchange(false, std::memory_order_acquire))
+    if (disconnect_pending_.exchange(false, std::memory_order_acquire)) {
+        // Everything the dropped connection delivered was queued before its
+        // SHUTDOWN_COMPLETE. Apply it in order while the session still exists
+        // (e.g. a SERVER_ERROR "replaced" must mark the drop intentional before
+        // the cleanup decides to reconnect) — never against the cleaned state.
+        process_server_messages();
         on_disconnect_cleanup();
+    }
 
     // Persist a resumption ticket received on the QUIC worker thread.
     {
@@ -355,15 +360,38 @@ void AppCore::tick()
         }
     }
 
-    // Send keepalive ping every 2 seconds while connected
+    // Keepalive ping every 2 seconds while connected. One ping is outstanding
+    // at a time so each PONG is timed against the PING it answers; while it is
+    // overdue the shown ping grows with it, so a stalled control stream shows
+    // up instead of freezing at the last good value.
     if (authenticated_) {
         auto now = std::chrono::steady_clock::now();
-        auto since_last = std::chrono::duration_cast<std::chrono::milliseconds>(now - ping_last_send_).count();
-        if (since_last >= 2000) {
-            ping_sent_at_ = now;
-            ping_pending_ = true;
-            ping_last_send_ = now;
-            net_.send_message(protocol::ControlMessageType::KEEPALIVE_PING, nullptr, 0);
+        if (ping_pending_) {
+            const int waiting = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - ping_sent_at_).count());
+            if (waiting >= model_.ping_ms + 500) model_.ping_ms = waiting;
+        } else {
+            auto since_last = std::chrono::duration_cast<std::chrono::milliseconds>(now - ping_last_send_).count();
+            if (since_last >= 2000) {
+                ping_sent_at_ = now;
+                ping_pending_ = true;
+                ping_last_send_ = now;
+                net_.send_message(protocol::ControlMessageType::KEEPALIVE_PING, nullptr, 0);
+            }
+        }
+
+        // Media the transport refused because the path stopped draining its
+        // datagram queue (NetClient::send_data). Summarized here, never from
+        // the audio thread that hit the drop.
+        if (now - datagram_drop_log_last_ >= std::chrono::seconds(1)) {
+            datagram_drop_log_last_ = now;
+            const auto backlog = net_.datagram_backlog();
+            if (backlog.dropped > datagram_drops_logged_) {
+                LOG_WARN("Datagram send queue stalled: dropped {} media datagram(s) since the last check ({} queued, oldest ~{} ms)",
+                         backlog.dropped - datagram_drops_logged_, backlog.queued,
+                         backlog.head_wait_us / 1000);
+                datagram_drops_logged_ = backlog.dropped;
+            }
         }
     }
 
@@ -499,6 +527,10 @@ void AppCore::load_saved_prefs()
 
     v = pref("video.share_scale");
     if (!v.empty()) model_.share_scale = std::atoi(v.c_str());
+
+    v = pref("video.camera_quality");
+    if (!v.empty()) model_.camera_quality = std::clamp(std::atoi(v.c_str()), 0, 2);
+    refresh_camera_devices();   // also restores the saved camera by name
 
     // Restore saved device by name
     v = pref("audio.capture_device");
@@ -845,6 +877,9 @@ void AppCore::on_disconnect_cleanup()
     const bool was_authenticated = authenticated_;
     const ChannelId prev_channel = current_channel_;
 
+    // First, while the connection state the camera pipeline reads is intact.
+    stop_camera(/*tell_server=*/false);
+
     authenticated_ = false;
     current_channel_ = 0;
     server_password_.clear();
@@ -861,12 +896,16 @@ void AppCore::on_disconnect_cleanup()
     tofu_pending_ = false;
     server_protocol_version_ = protocol::PROTOCOL_VERSION_ASSUMED_LEGACY;
 
-    // Screen-share state: sender controller (the transport reported or
+    // Video state: both senders' controllers (the transport reported or
     // canceled every outstanding send by now, so the byte count is zeroed as
     // well — reset() alone keeps it), receive reorder buffers and the PLI /
-    // keyframe-request cooldowns.
+    // keyframe-request cooldowns. The camera was stopped above.
+    camera_stops_in_flight_ = 0;
+    camera_frame_number_ = 0;
     video_sender_.reset();
     video_sender_.clear_outstanding();
+    camera_sender_.reset();
+    camera_sender_.clear_outstanding();
     {
         std::lock_guard<std::mutex> lock(reorder_mutex_);
         reorder_buffers_.clear();
@@ -875,6 +914,7 @@ void AppCore::on_disconnect_cleanup()
         std::lock_guard<std::mutex> lock(pli_mutex_);
         pli_last_sent_.clear();
         keyframe_request_last_ = {};
+        camera_keyframe_request_last_ = {};
     }
 
     audio_.stop();
@@ -890,8 +930,11 @@ void AppCore::on_disconnect_cleanup()
     model_.current_channel = 0;
     model_.current_channel_name = "";
     model_.channels.silent().clear();
-    model_.is_muted = false;
-    model_.is_deafened = false;
+    // Mute/deafen are the user's choice, not connection state: they survive a
+    // drop exactly like the audio engine's own flags (which follow them), and
+    // the next CHANNEL_JOIN reports them. Resetting only the model used to
+    // show "unmuted" over a still-muted engine — and silently unmuting a user
+    // because the network blipped would be worse.
     if (model_.is_sharing && bridge_.stop_screen_share)
         bridge_.stop_screen_share();
     if (model_.is_audio_sharing && bridge_.stop_audio_share)
@@ -899,6 +942,7 @@ void AppCore::on_disconnect_cleanup()
     model_.is_sharing = false;
     model_.is_audio_sharing = false;
     model_.audio_share_target_name = "";
+    sync_camera_supported();   // the next server may speak an older protocol
     model_.router.reset();
     model_.show_create_channel = false;
     model_.my_role = 3;
@@ -1056,11 +1100,17 @@ void AppCore::join_channel(ChannelId id)
     pending_channel_id_ = id;
     BinaryWriter w;
     w.write_u32(id);
+    // 1.3+: report the voice state with the join itself, so the channel never
+    // lists this user as live while the mic is muted (or the reverse) — e.g.
+    // when auto-reconnect rejoins a user who had muted before the drop. Older
+    // servers ignore the trailing bytes (see on_channel_user_list).
+    w.write_u8(model_.is_muted ? 1 : 0);
+    w.write_u8(model_.is_deafened ? 1 : 0);
     net_.send_message(protocol::ControlMessageType::CHANNEL_JOIN,
                       w.data().data(), w.data().size());
 }
 
-void AppCore::leave_channel()
+void AppCore::leave_channel(bool tell_server)
 {
     if (!authenticated_ || current_channel_ == 0) return;
 
@@ -1070,6 +1120,7 @@ void AppCore::leave_channel()
         bridge_.stop_screen_share();
     if (model_.is_audio_sharing && bridge_.stop_audio_share)
         bridge_.stop_audio_share();
+    stop_camera(tell_server);
 
     if (viewing_sharer_ != 0)
         stop_watching();
@@ -1078,7 +1129,8 @@ void AppCore::leave_channel()
     model_.is_audio_sharing = false;
     model_.audio_share_target_name = "";
 
-    net_.send_message(protocol::ControlMessageType::CHANNEL_LEAVE, nullptr, 0);
+    if (tell_server)
+        net_.send_message(protocol::ControlMessageType::CHANNEL_LEAVE, nullptr, 0);
 
     auto& channels = model_.channels.silent();
     for (auto& ch : channels) {
@@ -1137,6 +1189,7 @@ void AppCore::watch_sharer(UserId id)
         watched_.insert(id);
     }
     viewing_sharer_ = id;
+    audio_sharer_ = protocol::video_stream_source(id) == protocol::VideoSource::Screen ? id : 0;
     awaiting_keyframe_ = true;
     if (bridge_.start_video_stream) bridge_.start_video_stream(id);
 
@@ -1176,8 +1229,33 @@ void AppCore::add_watch(UserId id)
     if (bridge_.start_video_stream) bridge_.start_video_stream(id);
     send_pli(id);
     viewing_sharer_ = id;   // most-recently-added is the "primary" (fullscreen focus)
+    // The most recently opened screen share also takes the stream audio.
+    if (protocol::video_stream_source(id) == protocol::VideoSource::Screen)
+        audio_sharer_ = id;
     model_.viewing_sharer_id = static_cast<int>(id);
     rebuild_watched_model();
+}
+
+void AppCore::watch_user(UserId user_id)
+{
+    const UserId screen = protocol::video_stream_id(user_id, protocol::VideoSource::Screen);
+    const UserId camera = protocol::video_stream_id(user_id, protocol::VideoSource::Camera);
+    bool has_screen = false, has_camera = false;
+    for (const auto& sharer : model_.sharers.get()) {
+        has_screen |= sharer.id == static_cast<int>(screen);
+        has_camera |= sharer.id == static_cast<int>(camera);
+    }
+    if (!multi_stream()) {
+        // One decoder: the screen share is what a participant card is about.
+        // Through the model callback: single-decoder platforms (macOS/iOS)
+        // override it to set up their decoder.
+        if ((has_screen || has_camera) && model_.on_watch_sharer)
+            model_.on_watch_sharer(static_cast<int>(has_screen ? screen : camera));
+        return;
+    }
+    // Camera first so the screen ends up the primary stream (focus + audio).
+    if (has_camera) add_watch(camera);
+    if (has_screen) add_watch(screen);
 }
 
 void AppCore::remove_watch(UserId id)
@@ -1207,7 +1285,26 @@ void AppCore::remove_watch(UserId id)
         viewing_sharer_ = primary;
         model_.viewing_sharer_id = static_cast<int>(primary);
     }
+    if (audio_sharer_.load(std::memory_order_relaxed) == id)
+        refocus_stream_audio();
     rebuild_watched_model();
+}
+
+// Main thread. The stream audio leaves with its screen share: move it to any
+// other watched screen share, else silence it.
+void AppCore::refocus_stream_audio()
+{
+    UserId next = 0;
+    {
+        std::lock_guard<std::mutex> lock(watched_mutex_);
+        for (UserId watched : watched_) {
+            if (protocol::video_stream_source(watched) == protocol::VideoSource::Screen) {
+                next = watched;
+                break;
+            }
+        }
+    }
+    audio_sharer_ = next;
 }
 
 void AppCore::toggle_watch(UserId id)
@@ -1224,6 +1321,7 @@ void AppCore::set_single_watched(UserId id)
         if (id != 0) watched_.insert(id);
     }
     viewing_sharer_ = id;
+    audio_sharer_ = protocol::video_stream_source(id) == protocol::VideoSource::Screen ? id : 0;
     model_.viewing_sharer_id = static_cast<int>(id);
     if (id == 0) model_.stream_fullscreen = false;
     rebuild_watched_model();
@@ -1304,6 +1402,7 @@ void AppCore::stop_watching()
     net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_VIEW,
                       reinterpret_cast<const uint8_t*>(&zero), 4);
     viewing_sharer_ = 0;
+    audio_sharer_ = 0;
     awaiting_keyframe_ = false;
     model_.viewing_sharer_id = 0;
     // Leaving the stream view must also drop fullscreen, or the window stays
@@ -1333,8 +1432,12 @@ void AppCore::rebuild_watched_model()
         if (watching) {
             WatchedStream ws;
             ws.id = s.id;
+            ws.user_id = s.user_id;
             ws.name = s.name;
             ws.element_id = Rml::String("screen-share-" + std::to_string(s.id));
+            ws.camera = s.camera;
+            // Our own camera reads like a mirror; everyone else sees it as is.
+            ws.mirror = s.camera && static_cast<UserId>(s.user_id) == user_id_;
             wv.push_back(ws);
         }
     }
@@ -1358,7 +1461,9 @@ void AppCore::rebuild_watched_model()
 // accounting (see NetClient::send_video).
 void AppCore::send_pli(UserId target)
 {
-    if (target == 0 || target == user_id_) return;
+    // Never toward our own streams: the local encoders keyframe on their own
+    // interval and other viewers' PLIs already force them.
+    if (target == 0 || protocol::video_stream_owner(target) == user_id_) return;
     {
         std::lock_guard<std::mutex> lock(pli_mutex_);
         const auto now = std::chrono::steady_clock::now();
@@ -1418,6 +1523,7 @@ void AppCore::clear_all_sharers()
     }
 
     viewing_sharer_ = 0;
+    audio_sharer_ = 0;
     awaiting_keyframe_ = false;
     pip_.reconcile({});   // channel left / disconnected: nothing is watched
     active_sharers_.clear();
@@ -1432,23 +1538,32 @@ void AppCore::clear_all_sharers()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Screen-share sender (encode / capture / main threads)
+// Video senders (encode / capture / main threads)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Share start (main thread): the frame counter restarts and the controller is
+// Stream start (main thread): the frame counter restarts and the controller is
 // seeded with the user's target. This is the only place besides
-// on_disconnect_cleanup that resets video_frame_number_ — a mid-share reset
+// on_disconnect_cleanup that resets a frame counter — a mid-stream reset
 // would look like a backward jump to every viewer's reorder buffer.
 void AppCore::reset_video_sender(uint32_t target_bitrate_bps)
 {
-    video_frame_number_.store(0, std::memory_order_relaxed);
+    reset_video_sender(protocol::VideoSource::Screen, target_bitrate_bps);
+}
+
+void AppCore::reset_video_sender(protocol::VideoSource source, uint32_t target_bitrate_bps)
+{
+    const bool camera = source == protocol::VideoSource::Camera;
+    (camera ? camera_frame_number_ : video_frame_number_).store(0, std::memory_order_relaxed);
     VideoSendControllerConfig cfg;
     cfg.target_bitrate_bps = std::clamp(target_bitrate_bps, VIDEO_MIN_BITRATE, VIDEO_MAX_BITRATE);
+    // A webcam stays watchable far below the screen-share floor (no text to
+    // read), so congestion may push it lower before frames are dropped.
+    if (camera) cfg.min_bitrate_bps = 250'000;
     // The adaptation floor can never sit above the user's ceiling.
     cfg.min_bitrate_bps = (std::min)(cfg.min_bitrate_bps, cfg.target_bitrate_bps);
-    video_sender_.reset(cfg);
-    LOG_INFO("Video sender reset: target {} kbps, {} transport",
-             cfg.target_bitrate_bps / 1000,
+    video_sender_for(source).reset(cfg);
+    LOG_INFO("{} sender reset: target {} kbps, {} transport",
+             camera ? "Camera" : "Video", cfg.target_bitrate_bps / 1000,
              protocol::protocol_supports_frame_streams(server_protocol_version_)
                  ? "per-frame streams" : "legacy stream 1");
 }
@@ -1461,33 +1576,59 @@ void AppCore::set_video_target_bitrate(uint32_t target_bitrate_bps)
         std::clamp(target_bitrate_bps, VIDEO_MIN_BITRATE, VIDEO_MAX_BITRATE));
 }
 
-// Capture thread (WGC free-threaded callback): atomics only.
+// Capture thread (WGC free-threaded callback, camera reader): atomics only.
 bool AppCore::video_admit_frame()
 {
-    return video_sender_.admit_frame(steady_now_us());
+    return video_admit_frame(protocol::VideoSource::Screen);
+}
+
+bool AppCore::video_admit_frame(protocol::VideoSource source)
+{
+    return video_sender_for(source).admit_frame(steady_now_us());
 }
 
 std::optional<uint32_t> AppCore::take_video_bitrate_update()
 {
-    return video_sender_.take_bitrate_update();
+    return take_video_bitrate_update(protocol::VideoSource::Screen);
+}
+
+std::optional<uint32_t> AppCore::take_video_bitrate_update(protocol::VideoSource source)
+{
+    return video_sender_for(source).take_bitrate_update();
 }
 
 bool AppCore::take_video_keyframe_request()
 {
-    return video_sender_.take_keyframe_request();
+    return take_video_keyframe_request(protocol::VideoSource::Screen);
+}
+
+bool AppCore::take_video_keyframe_request(protocol::VideoSource source)
+{
+    return video_sender_for(source).take_keyframe_request();
 }
 
 // Encode thread. Accounting rule (mirrored in net_client_msquic.cpp): after a
 // send call returns true we add the exact byte count the transport hands to
-// StreamSend — per-frame stream: 1 + header + payload; stream 1:
-// 4 + [type + header] + payload — and the transport reports the same count
-// back through on_video_bytes_completed. A failed call queued nothing, so it
-// is a send failure (frame lost, keyframe requested) and nothing is added.
+// StreamSend — per-frame stream: prefix + header + payload (prefix 1 for the
+// screen, 2 for other sources); stream 1: 4 + [type + header] + payload — and
+// the transport reports the same count back through on_video_bytes_completed
+// for the same source. A failed call queued nothing, so it is a send failure
+// (frame lost, keyframe requested) and nothing is added.
 AppCore::VideoSendResult AppCore::send_video_frame(const uint8_t* encoded, size_t len, bool keyframe,
                                                    uint16_t width, uint16_t height, VideoCodecId codec)
 {
+    return send_video_frame(protocol::VideoSource::Screen, encoded, len, keyframe, width, height, codec);
+}
+
+AppCore::VideoSendResult AppCore::send_video_frame(protocol::VideoSource source,
+                                                   const uint8_t* encoded, size_t len, bool keyframe,
+                                                   uint16_t width, uint16_t height, VideoCodecId codec)
+{
+    const bool camera = source == protocol::VideoSource::Camera;
+    VideoSendController& sender = video_sender_for(source);
     VideoSendResult result;
-    result.frame_seq = video_frame_number_.fetch_add(1, std::memory_order_relaxed);
+    result.frame_seq = (camera ? camera_frame_number_ : video_frame_number_)
+                           .fetch_add(1, std::memory_order_relaxed);
     if (!authenticated_ || !net_.is_connected()) return result;
 
     VideoFrameHeader hdr;
@@ -1508,46 +1649,232 @@ AppCore::VideoSendResult AppCore::send_video_frame(const uint8_t* encoded, size_
     if (protocol::protocol_supports_frame_streams(server_protocol_version_)) {
         uint8_t h[VIDEO_FRAME_HEADER_SIZE];
         hdr.write(h);
-        accounted = 1 + sizeof(h) + len;
-        video_sender_.on_enqueued(accounted);
-        result.sent = net_.send_video_frame_stream(h, sizeof(h), encoded, len);
-    } else {
+        accounted = NetClient::frame_stream_prefix_bytes(source) + sizeof(h) + len;
+        sender.on_enqueued(accounted);
+        result.sent = net_.send_video_frame_stream(h, sizeof(h), encoded, len, source);
+    } else if (!camera) {
         uint8_t pkt[1 + VIDEO_FRAME_HEADER_SIZE];
         pkt[0] = protocol::VIDEO_FRAME_PACKET_TYPE;
         hdr.write(pkt + 1);
         accounted = 4 + sizeof(pkt) + len;
-        video_sender_.on_enqueued(accounted);
+        sender.on_enqueued(accounted);
         result.sent = net_.send_video_parts(pkt, sizeof(pkt), encoded, len);
+    } else {
+        return result;   // no camera without per-frame streams (camera_supported gates this)
     }
 
     if (!result.sent) {
         // Nothing was queued and no SEND_COMPLETE will ever report it: take the
         // charge back, then record the failure (window flag + keyframe request).
-        video_sender_.on_completed(accounted);
-        video_sender_.on_send_failed(accounted);
+        sender.on_completed(accounted);
+        sender.on_send_failed(accounted);
     }
 
     if (keyframe)
-        LOG_DEBUG("Video keyframe {} ({} bytes, {}x{}) {}", result.frame_seq, len, width, height,
-                  result.sent ? "queued" : "send failed");
+        LOG_DEBUG("{} keyframe {} ({} bytes, {}x{}) {}", camera ? "Camera" : "Video",
+                  result.frame_seq, len, width, height, result.sent ? "queued" : "send failed");
     else if (!result.sent)
-        LOG_DEBUG("Video frame {} ({} bytes) send failed", result.frame_seq, len);
+        LOG_DEBUG("{} frame {} ({} bytes) send failed", camera ? "Camera" : "Video",
+                  result.frame_seq, len);
     return result;
+}
+
+void AppCore::send_video_stream_update(protocol::VideoSource source, VideoCodecId codec,
+                                       uint16_t width, uint16_t height)
+{
+    BinaryWriter w;
+    w.write_u8(static_cast<uint8_t>(codec));
+    w.write_u16(width);
+    w.write_u16(height);
+    w.write_u8(static_cast<uint8_t>(source));
+    net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_UPDATE, w.data().data(), w.data().size());
 }
 
 // tick(): QUIC connection statistics -> AIMD loss/RTT input. Only while
 // something is (or was just) being sent — the GetParam round-trips to the
-// MsQuic worker, so it is not worth doing when idle.
+// MsQuic worker, so it is not worth doing when idle. Both senders share the
+// connection, so they see the same loss and RTT.
 void AppCore::feed_video_sender_stats()
 {
     if (!authenticated_) return;
-    if (!model_.is_sharing.get() && video_sender_.outstanding_bytes() <= 0) return;
+    const bool screen = model_.is_sharing.get() || video_sender_.outstanding_bytes() > 0;
+    const bool camera = model_.is_camera_on.get() || camera_sender_.outstanding_bytes() > 0;
+    if (!screen && !camera) return;
     const NetClient::ConnectionStats st = net_.connection_stats();
     if (!st.valid) return;
-    video_sender_.on_connection_stats(steady_now_us(), st.min_rtt_us ? st.min_rtt_us : st.rtt_us,
-                                      st.suspected_lost_packets,
-                                      st.spurious_lost_packets,
-                                      st.sent_packets);
+    const int64_t  now = steady_now_us();
+    const uint32_t rtt = st.min_rtt_us ? st.min_rtt_us : st.rtt_us;
+    if (screen)
+        video_sender_.on_connection_stats(now, rtt, st.suspected_lost_packets,
+                                          st.spurious_lost_packets, st.sent_packets);
+    if (camera)
+        camera_sender_.on_connection_stats(now, rtt, st.suspected_lost_packets,
+                                           st.spurious_lost_packets, st.sent_packets);
+}
+
+// MsQuic worker thread: a viewer (via the server) asks one of our encoders for
+// a keyframe. Viewers retry PLIs every VIDEO_PLI_RETRY_MS and the server
+// coalesces per stream, so gate the forced keyframe to one per
+// VIDEO_KEYFRAME_REQUEST_COOLDOWN_MS and source.
+void AppCore::on_keyframe_request(protocol::VideoSource source)
+{
+    const bool camera = source == protocol::VideoSource::Camera;
+    const auto& request = camera ? bridge_.request_camera_keyframe : bridge_.request_keyframe;
+    if (!request) return;
+    {
+        std::lock_guard<std::mutex> lock(pli_mutex_);
+        auto& last = camera ? camera_keyframe_request_last_ : keyframe_request_last_;
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last < std::chrono::milliseconds(VIDEO_KEYFRAME_REQUEST_COOLDOWN_MS))
+            return;
+        last = now;
+    }
+    request();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Camera (main thread)
+// ─────────────────────────────────────────────────────────────────────────────
+
+AppCore::CameraPreset AppCore::camera_preset(int quality)
+{
+    switch (std::clamp(quality, 0, 2)) {
+    case 0:  return {  854,  480, 30,   700'000 };
+    case 2:  return { 1920, 1080, 30, 3'000'000 };
+    default: return { 1280,  720, 30, 1'500'000 };
+    }
+}
+
+bool AppCore::camera_supported() const
+{
+    return static_cast<bool>(bridge_.start_camera) && authenticated_ &&
+           protocol::protocol_supports_camera(server_protocol_version_);
+}
+
+void AppCore::sync_camera_supported()
+{
+    model_.camera_supported = camera_supported();
+}
+
+void AppCore::refresh_camera_devices()
+{
+    if (!bridge_.list_cameras) return;
+    const auto names = bridge_.list_cameras();
+    auto& devices = model_.camera_devices.silent();
+    // Keep the selection on the same physical device when the list changes.
+    std::string selected;
+    if (const auto saved = settings_.get_pref("video.camera_device"))
+        selected = *saved;
+    devices.clear();
+    int index = 0;
+    for (size_t i = 0; i < names.size(); ++i) {
+        devices.push_back({Rml::String(names[i]), static_cast<int>(i)});
+        if (names[i] == selected) index = static_cast<int>(i);
+    }
+    model_.camera_devices.notify();
+    model_.selected_camera = names.empty() ? 0 : index;
+}
+
+void AppCore::start_camera()
+{
+    if (model_.is_camera_on.get() || camera_starting_) return;
+    if (!camera_supported() || current_channel_ == 0) return;
+    if (model_.camera_devices.get().empty()) refresh_camera_devices();
+    if (model_.camera_devices.get().empty()) {
+        LOG_WARN("Camera: no capture device found");
+        return;
+    }
+
+    const CameraPreset preset = camera_preset(model_.camera_quality.get());
+    reset_video_sender(protocol::VideoSource::Camera, preset.bitrate_bps);
+    camera_starting_ = true;
+    model_.is_camera_on = true;   // the button reflects the request immediately
+    LOG_INFO("Camera: starting device {} at up to {}x{}", model_.selected_camera.get(),
+             preset.width, preset.height);
+    if (!bridge_.start_camera())
+        camera_failed("could not start the capture");
+}
+
+void AppCore::camera_started()
+{
+    if (!camera_starting_) return;   // stopped (or failed) while it was opening
+    camera_starting_ = false;
+    if (!authenticated_ || current_channel_ == 0) {
+        stop_camera();
+        return;
+    }
+    // [codec][width][height][source]: the real codec and size follow in a
+    // SCREEN_SHARE_UPDATE once the encoder exists (send_video_stream_update).
+    BinaryWriter w;
+    w.write_u8(0);
+    w.write_u16(0);
+    w.write_u16(0);
+    w.write_u8(static_cast<uint8_t>(protocol::VideoSource::Camera));
+    net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_START, w.data().data(), w.data().size());
+    // Show our own camera as soon as the server confirms the stream.
+    camera_preview_pending_ = true;
+    model_.camera_error = "";
+    if (std::exchange(camera_restart_pending_, false))
+        restart_camera();
+}
+
+void AppCore::camera_failed(const std::string& reason)
+{
+    LOG_WARN("Camera: {}", reason);
+    const bool announced = model_.is_camera_on.get() && !camera_starting_;
+    camera_starting_ = false;
+    camera_preview_pending_ = false;
+    camera_restart_pending_ = false;
+    model_.camera_error = Rml::String(reason);
+    model_.is_camera_on = false;
+    if (bridge_.stop_camera) bridge_.stop_camera();
+    const UserId own = protocol::video_stream_id(user_id_, protocol::VideoSource::Camera);
+    if (is_watching(own)) remove_watch(own);
+    if (announced && authenticated_ && current_channel_ != 0) {
+        const uint8_t source = static_cast<uint8_t>(protocol::VideoSource::Camera);
+        if (net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_STOP, &source, 1))
+            ++camera_stops_in_flight_;
+    }
+}
+
+// Main thread: the device or quality changed while the camera is on. The
+// capture reopens underneath the announced stream, so viewers keep their tile
+// and get a keyframe (plus a SCREEN_SHARE_UPDATE when the size changes); the
+// frame counter carries on. A camera still opening keeps its old settings.
+void AppCore::restart_camera()
+{
+    if (!model_.is_camera_on.get() || !bridge_.restart_camera) return;
+    // Still opening with the old settings: reopen as soon as it is up.
+    if (camera_starting_) {
+        camera_restart_pending_ = true;
+        return;
+    }
+    const CameraPreset preset = camera_preset(model_.camera_quality.get());
+    camera_sender_.set_target_bitrate(std::clamp(preset.bitrate_bps, VIDEO_MIN_BITRATE, VIDEO_MAX_BITRATE));
+    LOG_INFO("Camera: reopening device {} at up to {}x{}", model_.selected_camera.get(),
+             preset.width, preset.height);
+    bridge_.restart_camera();
+}
+
+void AppCore::stop_camera(bool tell_server)
+{
+    const bool running = model_.is_camera_on.get() || camera_starting_;
+    const bool announced = model_.is_camera_on.get() && !camera_starting_;
+    camera_starting_ = false;
+    camera_preview_pending_ = false;
+    camera_restart_pending_ = false;
+    if (!running) return;
+    model_.is_camera_on = false;
+    if (bridge_.stop_camera) bridge_.stop_camera();
+
+    const UserId own = protocol::video_stream_id(user_id_, protocol::VideoSource::Camera);
+    if (is_watching(own)) remove_watch(own);
+    if (tell_server && announced && authenticated_ && current_channel_ != 0) {
+        const uint8_t source = static_cast<uint8_t>(protocol::VideoSource::Camera);
+        if (net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_STOP, &source, 1))
+            ++camera_stops_in_flight_;
+    }
+    LOG_INFO("Camera: stopped");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1563,7 +1890,7 @@ void AppCore::feed_video_sender_stats()
 // MsQuic worker thread.
 void AppCore::route_video_stream_frame(uint32_t sender_id, std::vector<uint8_t>&& frame)
 {
-    if (sender_id == user_id_ || !is_watching(sender_id)) return;
+    if (protocol::video_stream_owner(sender_id) == user_id_ || !is_watching(sender_id)) return;
     VideoFrameHeader hdr;
     if (!VideoFrameHeader::parse(frame.data(), frame.size(), hdr)) return;
 
@@ -1582,7 +1909,7 @@ void AppCore::route_video_stream_frame(uint32_t sender_id, std::vector<uint8_t>&
 // MsQuic worker thread.
 void AppCore::route_video_stream_aborted(uint32_t sender_id, uint32_t frame_seq, bool have_seq)
 {
-    if (sender_id == user_id_ || !is_watching(sender_id)) return;
+    if (protocol::video_stream_owner(sender_id) == user_id_ || !is_watching(sender_id)) return;
     if (!have_seq) {
         // Nothing arrived, not even the header: we cannot tell which frame is
         // gone, so just ask for a fresh reference.
@@ -1740,6 +2067,7 @@ void AppCore::on_auth_response(const uint8_t* data, size_t len)
     refresh_server_list();
 
     if (bridge_.on_authenticated) bridge_.on_authenticated();
+    sync_camera_supported();   // needs authenticated_ and the server's version
 
     model_.server_name          = Rml::String(server_name);
     // Compute server initials and color
@@ -1887,6 +2215,7 @@ void AppCore::on_channel_user_list(const uint8_t* data, size_t len)
                 bridge_.stop_screen_share();
             if (model_.is_audio_sharing && bridge_.stop_audio_share)
                 bridge_.stop_audio_share();
+            stop_camera();   // the server ended it with the old channel
             model_.is_sharing = false;
             model_.is_audio_sharing = false;
             model_.audio_share_target_name = "";
@@ -1913,12 +2242,24 @@ void AppCore::on_channel_user_list(const uint8_t* data, size_t len)
         for (auto& ch : channels) {
             if (ch.id == static_cast<int>(channel_id)) {
                 model_.current_channel_name = ch.name;
-                for (auto& u : ch.users)
-                    if (static_cast<uint32_t>(u.id) != user_id_)
+                for (auto& u : ch.users) {
+                    if (static_cast<uint32_t>(u.id) != user_id_) {
                         apply_user_audio_prefs(static_cast<UserId>(u.id));
+                    } else {
+                        // Our entry shows what we actually do, not what an
+                        // older server assumed.
+                        u.muted    = model_.is_muted;
+                        u.deafened = model_.is_deafened;
+                    }
+                }
                 break;
             }
         }
+        // A pre-1.3 server ignored the state carried by CHANNEL_JOIN and lists
+        // us unmuted; correct it before anyone hears us as live.
+        if (!protocol::protocol_supports_join_voice_state(server_protocol_version_) &&
+            (model_.is_muted || model_.is_deafened))
+            send_voice_state();
         audio_.start();
         if (bridge_.play_sound)
             bridge_.play_sound(SoundPlayer::Effect::JoinChannel);
@@ -1933,6 +2274,10 @@ void AppCore::on_user_joined(const uint8_t* data, size_t len)
     std::string uname   = reader.read_string();
     uint32_t channel_id = reader.read_u32();
     uint8_t urole       = reader.has_remaining(1) ? reader.read_u8() : 3;
+    // 1.3+: the joiner's voice state. Absent from older servers; a muted
+    // joiner then shows up through the USER_VOICE_STATE that follows.
+    const bool umuted   = reader.has_remaining(1) && reader.read_u8() != 0;
+    const bool udeaf    = reader.has_remaining(1) && reader.read_u8() != 0;
     if (reader.error()) return;
 
     auto& channels = model_.channels.silent();
@@ -1945,9 +2290,11 @@ void AppCore::on_user_joined(const uint8_t* data, size_t len)
                 ul.end());
 
             ChannelUser u;
-            u.id   = static_cast<int>(uid);
-            u.name = Rml::String(uname);
-            u.role = urole;
+            u.id       = static_cast<int>(uid);
+            u.name     = Rml::String(uname);
+            u.role     = urole;
+            u.muted    = umuted;
+            u.deafened = udeaf;
             { uint32_t h = 0; for (char c : uname) h = h * 31 + static_cast<uint8_t>(c); u.color_index = static_cast<int>(h % 12); }
             ch.users.push_back(u);
             ch.user_count = static_cast<int>(ch.users.size());
@@ -1969,10 +2316,22 @@ void AppCore::on_user_left(const uint8_t* data, size_t len)
     uint32_t channel_id = reader.read_u32();
     if (reader.error()) return;
 
+    // The server took us out of the channel (it was deleted) and has already
+    // ended our streams: leave locally, without a CHANNEL_LEAVE or STOP.
+    if (uid == user_id_ && channel_id == current_channel_ && current_channel_ != 0) {
+        leave_channel(/*tell_server=*/false);
+        return;
+    }
+
     if (channel_id == current_channel_) {
-        model_.remove_channel_sharer(static_cast<int>(uid));
-        if (is_watching(uid)) remove_watch(uid);
-        else rebuild_watched_model();
+        // The server stops a departing member's streams first; drop both of
+        // them anyway in case that notification was missed.
+        for (const auto source : {protocol::VideoSource::Screen, protocol::VideoSource::Camera}) {
+            const UserId stream = protocol::video_stream_id(uid, source);
+            model_.remove_channel_sharer(static_cast<int>(stream));
+            if (is_watching(stream)) remove_watch(stream);
+        }
+        rebuild_watched_model();
     }
 
     mixer_.remove_user(uid);
@@ -2052,8 +2411,23 @@ void AppCore::on_screen_share_started(const uint8_t* data, size_t len)
 
     // Ignore delayed/irrelevant notifications from a channel we have left.
     if (!model_.add_channel_sharer(static_cast<int>(sharer_id))) return;
-    if (sharer_id != user_id_ && replay == 0 && bridge_.play_sound)
+    const bool own    = protocol::video_stream_owner(sharer_id) == user_id_;
+    const bool camera = protocol::video_stream_source(sharer_id) == protocol::VideoSource::Camera;
+    // Only a new screen share is worth a sound; cameras come and go quietly.
+    if (!own && !camera && replay == 0 && bridge_.play_sound)
         bridge_.play_sound(SoundPlayer::Effect::StreamStarted);
+    // The server confirmed our camera: show it to us (decoded from our own
+    // encoder output, so it is exactly what the room sees). While one of our
+    // STOPs is unanswered this is the echo of an earlier start that was
+    // already stopped again: keep waiting for the current one.
+    if (own && camera && camera_preview_pending_ && camera_stops_in_flight_ == 0) {
+        camera_preview_pending_ = false;
+        add_watch(sharer_id);
+        // The local preview never sends PLIs: ask our encoder directly so the
+        // tile does not wait for the periodic keyframe.
+        if (bridge_.request_camera_keyframe) bridge_.request_camera_keyframe();
+        return;   // add_watch rebuilt the model
+    }
     rebuild_watched_model();
 }
 
@@ -2071,6 +2445,20 @@ void AppCore::on_screen_share_stopped(const uint8_t* data, size_t len)
         remove_watch(static_cast<UserId>(sharer_id));
     else
         rebuild_watched_model();
+
+    // Our own camera: either the echo of a stop we sent, or the server ended
+    // it on its own (channel switched or deleted) — then stop capturing too,
+    // or the button would claim we are still live.
+    if (sharer_id == protocol::video_stream_id(user_id_, protocol::VideoSource::Camera)) {
+        if (camera_stops_in_flight_ > 0) {
+            --camera_stops_in_flight_;
+        } else if (model_.is_camera_on.get() && !camera_starting_) {
+            camera_preview_pending_ = false;
+            model_.is_camera_on = false;
+            if (bridge_.stop_camera) bridge_.stop_camera();
+            LOG_INFO("Camera: ended by the server");
+        }
+    }
 }
 
 void AppCore::on_screen_share_denied(const uint8_t* /*data*/, size_t /*len*/)
@@ -2381,8 +2769,27 @@ void AppCore::setup_model_callbacks()
     };
 
     model_.on_watch_sharer  = [this](int id) { add_watch(static_cast<UserId>(id)); };
+    model_.on_watch_user    = [this](int id) { watch_user(static_cast<UserId>(id)); };
     model_.on_toggle_watch  = [this](int id) { toggle_watch(static_cast<UserId>(id)); };
     model_.on_select_sharer = [this](int id) { watch_sharer(static_cast<UserId>(id)); };
+
+    model_.on_toggle_camera = [this]() {
+        if (model_.is_camera_on.get()) stop_camera();
+        else                           start_camera();
+    };
+    model_.camera_available = static_cast<bool>(bridge_.start_camera);
+    model_.on_camera_settings_opened = [this]() { refresh_camera_devices(); };
+    // A different device or quality applies right away when the camera is on.
+    model_.on_select_camera = [this](int index) {
+        const auto& devices = model_.camera_devices.get();
+        if (index >= 0 && index < static_cast<int>(devices.size()))
+            settings_.set_pref("video.camera_device", std::string(devices[index].name));
+        restart_camera();
+    };
+    model_.on_select_camera_quality = [this](int quality) {
+        settings_.set_pref("video.camera_quality", std::to_string(quality));
+        restart_camera();
+    };
     model_.on_stop_watching = [this]()       { stop_watching(); };
 
     model_.on_toggle_stream_pip  = [this](int id) { toggle_pip(static_cast<UserId>(id)); };

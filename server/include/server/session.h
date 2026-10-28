@@ -2,6 +2,7 @@
 
 #include <parties/types.h>
 #include <parties/protocol.h>
+#include <parties/datagram_backlog.h>
 #include <parties/video_backlog.h>
 
 #include <string>
@@ -48,22 +49,55 @@ struct Session {
     // (StreamSend adds, SEND_COMPLETE subtracts). Signed: completion and
     // enqueue can be observed out of order across threads.
     std::atomic<int64_t> video_outstanding_bytes{0};
-    // Per-sharer forwarding gate (awaiting-keyframe after a drop). Guarded by
-    // Server::subscriptions_mutex_ like subscribed_sharers.
-    std::unordered_map<UserId, ViewerVideoGate> video_gates;
+    // Per-stream forwarding gate (awaiting-keyframe after a drop), keyed by
+    // stream id. Guarded by Server::subscriptions_mutex_ like subscribed_sharers.
+    std::unordered_map<uint32_t, ViewerVideoGate> video_gates;
     // MinRtt sampled in the connection's QUIC callbacks about once per second.
     // The server loop reads this cache without blocking the QUIC worker.
     std::atomic<uint32_t> min_rtt_us{VIDEO_BACKLOG_DEFAULT_RTT_US};
     int64_t rtt_sample_last_us = 0;  // connection's MsQuic worker only
 
-    // ── Video ingress (as a sharer) ──
-    // True only while the main loop has this session registered as an active
-    // screen sharer (SCREEN_SHARE_START accepted .. stop/leave/disconnect).
-    // Per-frame unidirectional streams from a session without it are aborted
-    // at PEER_STREAM_STARTED, so unauthenticated or idle peers cannot buffer
-    // video on the server.
-    std::atomic<bool> video_ingress_allowed{false};
-    std::atomic<uint64_t> video_generation{0};  // invalidates queued frames on share stop
+    // ── Datagrams toward this peer (voice fan-out, screen-share audio, PLI) ──
+    // Queued inside MsQuic; media is dropped at the source while the queue is
+    // stale so a peer whose path collapsed does not accumulate seconds of
+    // voice ahead of its control stream (see parties/datagram_backlog.h).
+    // Every speaker in the channel feeds this one queue, hence the larger cap.
+    DatagramSendBacklog dgram_backlog{
+        DatagramBacklogLimits{ .max_queued = 64, .max_delay_us = 200'000 } };
+
+    // ── Video ingress (as a publisher), one slot per protocol::VideoSource ──
+    struct VideoSourceState {
+        // True only while the main loop has this source registered as an
+        // active stream (SCREEN_SHARE_START accepted .. stop/leave/disconnect).
+        // Per-frame streams for a source without it are aborted, and a session
+        // with no source allowed has its unidirectional streams refused at
+        // PEER_STREAM_STARTED, so idle peers cannot buffer video on the server.
+        std::atomic<bool>     ingress_allowed{false};
+        std::atomic<uint64_t> generation{0};   // invalidates queued frames on stop
+        // Stream metadata for late-join notifications. Main loop only.
+        uint8_t  codec  = 0;
+        uint16_t width  = 0;
+        uint16_t height = 0;
+    };
+    VideoSourceState video_sources[protocol::VIDEO_SOURCE_COUNT];
+    VideoSourceState& video_source(protocol::VideoSource source) {
+        return video_sources[static_cast<size_t>(source)];
+    }
+    const VideoSourceState& video_source(protocol::VideoSource source) const {
+        return video_sources[static_cast<size_t>(source)];
+    }
+    bool video_ingress_allowed(protocol::VideoSource source) const {
+        return video_sources[static_cast<size_t>(source)].ingress_allowed.load(
+            std::memory_order_acquire);
+    }
+    bool any_video_ingress_allowed() const {
+        for (const auto& s : video_sources)
+            if (s.ingress_allowed.load(std::memory_order_acquire)) return true;
+        return false;
+    }
+    bool supports_camera() const {
+        return protocol::protocol_supports_camera(protocol_version);
+    }
     // Bytes currently buffered across this session's unfinished per-frame
     // ingress streams. Capped at VIDEO_INGRESS_MAX_BUFFERED_BYTES; a stream
     // that would exceed it is aborted.
@@ -78,15 +112,11 @@ struct Session {
     bool             muted = false;
     bool             deafened = false;
 
-    // Screen share metadata (set when sharing, used for late-join notifications)
-    uint8_t          share_codec = 0;
-    uint16_t         share_width = 0;
-    uint16_t         share_height = 0;
-
-    // Subscribe state: the set of sharers whose video streams this viewer is
-    // watching (empty = none). A viewer can watch several screen shares at once
-    // (the client tiles them in a grid). Mutated only on the server main loop.
-    std::unordered_set<UserId> subscribed_sharers;
+    // Subscribe state: the stream ids (protocol::video_stream_id) this viewer
+    // is watching (empty = none). A viewer can watch several streams at once —
+    // screen shares and cameras — tiled in a grid. Mutated only on the server
+    // main loop.
+    std::unordered_set<uint32_t> subscribed_sharers;
 
     // Connection state
     std::atomic<bool> alive{true};

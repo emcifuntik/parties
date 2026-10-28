@@ -169,6 +169,7 @@
                 <div data-for="user : ch.users" class="channel-user-item ui-body"
                      data-class-speaking="user.speaking"
                      data-class-streaming="user.streaming"
+                     data-class-camera-on="user.camera_on"
                      data-class-music-playing="user.music_playing"
                      data-class-muted="user.muted"
                      data-class-deafened="user.deafened"
@@ -179,6 +180,7 @@
                     <span class="channel-username ui-body">{{ user.name }}</span>
                     <svg class="user-state-icon icon-music" src="icon-music.svg" width="14" height="14" title="Playing music" />
                     <svg class="user-state-icon icon-streaming" src="icon-sharing.svg" width="12" height="12" />
+                    <svg class="user-state-icon icon-camera" src="icon-video.svg" width="12" height="12" title="Camera on" />
                     <svg class="user-state-icon icon-muted" src="icon-mute.svg" width="12" height="12" />
                     <svg class="user-state-icon icon-deafened" src="icon-deafen.svg" width="12" height="12" />
                     <span class="role-badge ui-micro ui-weight-bold" data-if="user.role == 0">OWNER</span>
@@ -241,6 +243,11 @@
                         <svg class="voice-icon" src="icon-share.svg" width="18" height="18" data-if="is_sharing == false" />
                         <svg class="voice-icon" src="icon-sharing.svg" width="18" height="18" data-if="is_sharing" />
                     </div>
+                    <div id="room-camera-button" class="voice-btn camera-button ui-icon-button" data-if="camera_supported"
+                         data-class-active="is_camera_on"
+                         data-event-click="toggle_camera" title="Turn your camera on or off">
+                        <svg class="voice-icon" src="icon-video.svg" width="18" height="18" />
+                    </div>
                     <div id="room-audio-share-button" class="voice-btn audio-share-button ui-icon-button"
                          data-class-active="is_audio_sharing"
                          data-event-click="toggle_audio_share" title="Share application audio">
@@ -285,6 +292,11 @@
                     <span class="settings-nav-icon"><svg src="icon-share.svg" width="15" height="15" /></span>
                     <span>Screen Share</span>
                 </div>
+                <div class="settings-nav-item" id="settings-nav-camera" data-if="camera_available"
+                     data-class-active="settings_section == 4" data-event-click="navigate_settings(4)">
+                    <span class="settings-nav-icon"><svg src="icon-video.svg" width="15" height="15" /></span>
+                    <span>Camera</span>
+                </div>
                 <div class="settings-nav-group">App</div>
                 <div class="settings-nav-item" id="settings-nav-hotkeys" data-class-active="settings_section == 2"
                      data-event-click="navigate_settings(2)">
@@ -304,6 +316,7 @@
                     <div data-if="settings_section == 1"><span class="settings-page-title ui-heading-page">Screen Share</span></div>
                     <div data-if="settings_section == 2"><span class="settings-page-title ui-heading-page">Hotkeys</span></div>
                     <div data-if="settings_section == 3"><span class="settings-page-title ui-heading-page">Account &amp; Keys</span></div>
+                    <div data-if="settings_section == 4"><span class="settings-page-title ui-heading-page">Camera</span></div>
                     <div class="settings-close ui-icon-button" data-event-click="route_back" title="Close settings">
                         <svg src="icon-close.svg" width="17" height="17" />
                     </div>
@@ -455,6 +468,30 @@
                     </div>
                 </div>
 
+                <div class="settings-scroll" id="settings-camera-page" data-if="settings_section == 4">
+                    <div class="settings-page-intro ui-body" id="settings-camera-intro">Your camera is sent to the room only while it is on. Others open it from your card.</div>
+                    <div class="settings-config-card settings-camera-config">
+                        <div class="share-setting-group">
+                            <div class="settings-field-label ui-label">Device</div>
+                            <div class="settings-device-select-wrap">
+                                <svg src="icon-video.svg" width="16" height="16" />
+                                <select class="settings-device-select" id="settings-camera-select" data-value="selected_camera"
+                                        data-event-change="camera_selection_changed">
+                                    <option data-for="dev : camera_devices" data-attr-value="dev.index">{{ dev.name }}</option>
+                                </select>
+                            </div>
+                            <div class="settings-camera-hint ui-caption" data-if="camera_devices.size == 0">No camera found. Connect one, then reopen this page.</div>
+                            <div class="settings-camera-hint settings-camera-error ui-caption" id="settings-camera-error" data-if="camera_error != ''">The camera did not start: {{ camera_error }}</div>
+                        </div>
+                        <div class="share-setting-group"><div class="settings-field-label ui-label">Quality</div><div class="share-codec-buttons ui-segment-group">
+                            <div class="share-codec-btn ui-segment ui-control" data-class-active="camera_quality == 0" data-event-click="select_camera_quality(0)"><span class="ui-control">480p</span></div>
+                            <div class="share-codec-btn ui-segment ui-control" data-class-active="camera_quality == 1" data-event-click="select_camera_quality(1)"><span class="ui-control">720p</span></div>
+                            <div class="share-codec-btn ui-segment ui-control" data-class-active="camera_quality == 2" data-event-click="select_camera_quality(2)"><span class="ui-control">1080p</span></div>
+                        </div></div>
+                        <div class="settings-camera-hint ui-caption">Changes apply right away, even while your camera is on. The video codec follows the Screen Share setting.</div>
+                    </div>
+                </div>
+
                 <div class="settings-scroll" id="settings-hotkeys-page" data-if="settings_section == 2">
                     <div class="settings-page-intro" id="settings-hotkeys-intro">Global shortcuts continue to work while Parties is in the background.</div>
                     <div class="settings-ios-unavailable">
@@ -585,6 +622,7 @@
                         <div data-for="user : ch.users" class="voice-stage-card"
                              data-class-speaking="user.speaking"
                              data-class-streaming="user.streaming"
+                             data-class-camera-on="user.camera_on"
                              data-class-music-playing="user.music_playing"
                              data-class-muted="user.muted"
                             data-event-click="watch_user_stream(user.id)"
@@ -592,6 +630,10 @@
                             <div class="voice-stage-music ui-caption" data-if="user.music_playing">
                                 <svg src="icon-music.svg" width="14" height="14" />
                                 <span>Playing music</span>
+                            </div>
+                            <div class="voice-stage-camera ui-caption" data-if="user.camera_on">
+                                <svg src="icon-video.svg" width="14" height="14" />
+                                <span>Camera</span>
                             </div>
                             <div class="voice-stage-avatar-wrap">
                                 <gradient_circle class="voice-stage-avatar" data-attr-seed="user.name" />
@@ -625,6 +667,7 @@
                             <div class="sharer-tab ui-control"
                                  data-class-active="sharer.watching"
                                  data-event-click="toggle_watch(sharer.id)">
+                                <svg class="sharer-tab-icon" src="icon-video.svg" width="14" height="14" data-if="sharer.camera" />
                                 <span class="ui-control">{{ sharer.name }}</span>
                             </div>
                         </div>
@@ -655,6 +698,7 @@
                                      data-if="w.id != pip_stream_id"
                                      data-attr-id="w.element_id"
                                      data-attr-streamid="w.id"
+                                     data-class-mirror="w.mirror"
                                      data-event-dblclick="toggle_stream_fullscreen"
                                      data-event-click="stream_tap_fullscreen" />
                         <div class="stream-cell-pip-placeholder" data-if="w.id == pip_stream_id">
@@ -670,10 +714,13 @@
                                 <svg src="icon-pip.svg" width="18" height="18" data-if="w.id != pip_stream_id" />
                                 <svg src="icon-pip-exit.svg" width="18" height="18" data-if="w.id == pip_stream_id" />
                             </div>
+                        <div class="stream-cell-label ui-body">
+                            <svg class="stream-cell-label-icon" src="icon-video.svg" width="13" height="13" data-if="w.camera" />
+                            <span>{{ w.name }}</span>
                         </div>
                     </div>
                 </div>
-                <div class="stream-call-dock">
+                <div class="stream-call-dock" data-class-with-camera="camera_supported">
                     <div class="dock-controls">
                         <div class="dock-button ui-icon-button" data-class-danger="is_muted" data-event-click="toggle_mute" title="Toggle microphone">
                             <svg src="icon-unmute.svg" width="18" height="18" data-if="is_muted == false" />
@@ -689,6 +736,9 @@
                         </div>
                         <div class="dock-button dock-audio-share ui-icon-button" data-class-active="is_audio_sharing" data-event-click="toggle_audio_share" title="Share application audio">
                             <svg src="icon-music.svg" width="18" height="18" />
+                        </div>
+                        <div class="dock-button dock-camera ui-icon-button" data-if="camera_supported" data-class-active="is_camera_on" data-event-click="toggle_camera" title="Turn your camera on or off">
+                            <svg src="icon-video.svg" width="18" height="18" />
                         </div>
                         <div class="dock-button dock-end-streams ui-icon-button" data-event-click="stop_watching" title="Leave all video streams">
                             <svg src="icon-stream-off.svg" width="18" height="18" />

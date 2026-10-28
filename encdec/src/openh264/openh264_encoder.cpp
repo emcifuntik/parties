@@ -103,10 +103,8 @@ bool OpenH264Encoder::encode(ID3D11Texture2D* bgra_texture, int64_t timestamp_10
     if (!encoder_) return false;
 
     // Force keyframe if requested
-    if (force_keyframe_) {
-        force_keyframe_ = false;
+    if (force_keyframe_.exchange(false))
         encoder_->ForceIntraFrame(true);
-    }
 
     // GPU → CPU readback
     context_->CopyResource(staging_.Get(), bgra_texture);

@@ -22,7 +22,8 @@ struct ChannelUser {
     bool deafened = false;
     bool speaking = false;
     bool music_playing = false;
-    bool streaming = false;
+    bool streaming = false;   // sharing their screen
+    bool camera_on = false;   // publishing their camera
     int color_index = 0;  // 0-11, generated from name hash for avatar color
 };
 
@@ -47,19 +48,27 @@ struct ShareTarget {
     Rml::String element_id;
 };
 
+// One published video stream in the joined channel: a screen share or a
+// camera. `id` is the stream id (protocol::video_stream_id; a screen share's
+// equals its owner's user id), `user_id` the owner.
 struct ActiveSharer {
     int id = 0;
+    int user_id = 0;
     Rml::String name;
-    bool watching = false;   // true if this viewer is currently watching this sharer
+    bool watching = false;   // true if this viewer is currently watching this stream
+    bool camera = false;     // camera rather than screen share
 };
 
-// One screen share currently shown in the viewer grid. element_id is the stable
+// One stream currently shown in the viewer grid. element_id is the stable
 // RmlUi id of its <video_frame> cell ("screen-share-<id>") so the platform layer
 // can route decoded frames to the right surface.
 struct WatchedStream {
     int id = 0;
+    int user_id = 0;
     Rml::String name;
     Rml::String element_id;
+    bool camera = false;
+    bool mirror = false;     // our own camera: shown as a mirror image
 };
 
 class LobbyModel : public rml::Model {
@@ -68,8 +77,9 @@ public:
     void show_voice_channel(int channel_id);
 
     // Stream notifications and watch actions are scoped to the joined channel.
-    bool add_channel_sharer(int user_id);
-    void remove_channel_sharer(int user_id);
+    // The argument is a stream id (screen share or camera).
+    bool add_channel_sharer(int stream_id);
+    void remove_channel_sharer(int stream_id);
     void clear_channel_sharers();
 
     // --- Bound state (Property<T> auto-dirties; arrays via silent()/notify()) ---
@@ -173,6 +183,15 @@ public:
     rml::Prop<int>         share_scale{0};         // 0=Source, 1=x0.75, 2=x0.5, 3=x0.25
     rml::Prop<int>         share_preset{-1};        // -1=Custom, 0=Data saver, 1=Balanced, 2=Best quality
 
+    // Camera
+    rml::Prop<bool>        camera_available{false};  // this platform can capture a camera (settings page)
+    rml::Prop<bool>        camera_supported{false};  // this client can publish a camera to this server
+    rml::Prop<bool>        is_camera_on{false};      // publishing (or starting) our camera
+    rml::Prop<Rml::Vector<AudioDevice>> camera_devices;   // {name, index} like the audio devices
+    rml::Prop<int>         selected_camera{0};
+    rml::Prop<int>         camera_quality{1};        // 0=480p, 1=720p, 2=1080p (30 fps)
+    rml::Prop<Rml::String> camera_error;             // why the last start failed ("" = it did not)
+
     // Auto-update
     rml::Prop<bool>        update_available{false};
     rml::Prop<bool>        update_downloading{false};
@@ -250,7 +269,12 @@ public:
     std::function<void()>      on_start_native_share;  // macOS: trigger native picker
     std::function<void(float)> on_share_bitrate_changed;
     std::function<void(int)>   on_watch_sharer;     // sharer card / chip: add (or single-select) watch
+    std::function<void(int)>   on_watch_user;       // participant card: open that user's streams
     std::function<void(int)>   on_select_sharer;
+    std::function<void()>      on_toggle_camera;
+    std::function<void()>      on_camera_settings_opened;   // refresh the device list
+    std::function<void(int)>   on_select_camera;
+    std::function<void(int)>   on_select_camera_quality;
     std::function<void(int)>   on_toggle_watch;     // chip toggle: add/remove this sharer from the grid
     std::function<void()>      on_stop_watching;    // close all watched streams
     std::function<void(float)> on_stream_volume_changed;

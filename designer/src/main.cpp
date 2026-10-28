@@ -79,7 +79,7 @@ int main(int argc, char* argv[]) {
 				"Usage: rmlui_designer FILE [options]\n"
 				"  --asset-dir DIR       Add an asset search directory\n"
 				"  --vars FILE           Load scalar preview variables before the document\n"
-				"  --fixture SCENARIO    Real models: launcher, party-modal, onboarding, recovery, room, settings, settings-screen-share, settings-hotkeys, settings-account, chat, chat-segment-churn, stream-single, streams, member, share\n"
+				"  --fixture SCENARIO    Real models: launcher, party-modal, onboarding, recovery, room, settings, settings-screen-share, settings-hotkeys, settings-account, settings-camera, chat, chat-segment-churn, stream-single, streams, streams-camera, room-camera, member, share\n"
 				"  --theme NAME          Activate an RCSS media theme (for example: ios)\n"
 				"  --profile NAME        Device preset (currently: iphone-17-pro)\n"
 				"  --size WIDTHxHEIGHT   Set exact preview client size (default 1440x900)\n"

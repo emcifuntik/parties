@@ -30,12 +30,19 @@ void VideoEncoder::shutdown() {
     if (!initialized_) return;
     encoder_.reset();
     initialized_ = false;
+    output_bound_ = false;
+}
+
+void VideoEncoder::bind_output() {
+    if (output_bound_) return;
+    encoder_->on_encoded = on_encoded;
+    output_bound_ = true;
 }
 
 bool VideoEncoder::encode_frame(ID3D11Texture2D* bgra_texture, int64_t timestamp_100ns) {
 	ZoneScopedN("VideoEncoder::encode_frame");
     if (!initialized_) return false;
-    encoder_->on_encoded = on_encoded;
+    bind_output();
     return encoder_->encode(bgra_texture, timestamp_100ns);
 }
 
@@ -54,7 +61,7 @@ void VideoEncoder::unregister_inputs() {
 
 bool VideoEncoder::encode_registered(int slot, int64_t timestamp_100ns) {
     if (!initialized_ || !encoder_) return false;
-    encoder_->on_encoded = on_encoded;
+    bind_output();
     return encoder_->encode_registered(slot, timestamp_100ns);
 }
 

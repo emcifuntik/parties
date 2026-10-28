@@ -37,6 +37,16 @@
 //       unsubscribes, C stops → everyone gets SCREEN_SHARE_STOPPED [user_c]
 //   16. Client C sends CHANNEL_LEAVE → A receives SCREEN_SHARE_VIEWER
 //       [user_c][0] (implicit unsubscribe on leave)
+//
+// Camera flow (protocol 1.4; A also keeps sharing its screen):
+//   16a. C (1.1) cannot start a camera; A starts one → A and B get
+//        SCREEN_SHARE_STARTED with the camera stream id, C is never told
+//   16b. B subscribes to the camera (no SCREEN_SHARE_VIEWER for cameras; the
+//        auto-PLI names the camera stream), A sends camera frames on 0x13
+//        streams → B receives them from the camera stream id; B's PLI reaches
+//        A as [..][requester][stream id]
+//   16c. A stops only its camera → A and B get SCREEN_SHARE_STOPPED (C not);
+//        A's screen frames still reach B, camera frames no longer do
 //   17. Client A sends SCREEN_SHARE_STOP → A and B receive SCREEN_SHARE_STOPPED
 //
 // Every AUTH_RESPONSE must carry the trailing u16 protocol version, which is the
@@ -232,7 +242,7 @@ int main() {
     TEST_ASSERT(crypto_init(), "crypto_init");
     TEST_ASSERT(net_init(), "net_init");
     TEST_ASSERT(quic_init() != nullptr, "quic_init");
-    LOG("[1/21] Subsystems initialized\n");
+    LOG("[1/24] Subsystems initialized\n");
 
     // ── Create temp directory for test artifacts ──
     auto tmp = fs::temp_directory_path() / "parties_integration_test";
@@ -257,7 +267,7 @@ int main() {
 
     std::thread server_thread([&]() { server.run(); });
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    LOG("[2/21] Server started on port %u\n", TEST_PORT);
+    LOG("[2/24] Server started on port %u\n", TEST_PORT);
 
     NetClient client_a;
     NetClient client_b;
@@ -290,10 +300,10 @@ int main() {
                 "derive keypair C");
 
     // ── Client A: connect + auth identity ──
-    LOG("[3/21] Client A connecting...\n");
+    LOG("[3/24] Client A connecting...\n");
     TEST_ASSERT(client_a.connect("127.0.0.1", TEST_PORT), "client A connect");
     TEST_ASSERT(wait_for_connect(client_a), "client A wait for connect");
-    LOG("[3/21] Client A connected\n");
+    LOG("[3/24] Client A connected\n");
 
     uint32_t user_a_id = 0;
     {
@@ -339,13 +349,13 @@ int main() {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         drain_messages(client_a);
     }
-    LOG("[3/21] Client A authenticated (user_id=%u)\n", user_a_id);
+    LOG("[3/24] Client A authenticated (user_id=%u)\n", user_a_id);
 
     // ── Client B: connect + register + auth ──
-    LOG("[4/21] Client B connecting...\n");
+    LOG("[4/24] Client B connecting...\n");
     TEST_ASSERT(client_b.connect("127.0.0.1", TEST_PORT), "client B connect");
     TEST_ASSERT(wait_for_connect(client_b), "client B wait for connect");
-    LOG("[4/21] Client B connected\n");
+    LOG("[4/24] Client B connected\n");
 
     client_b.on_data_received = [&](const uint8_t* data, size_t len) {
         LOG("[callback] Client B on_data_received: %zu bytes, first=0x%02x\n",
@@ -398,10 +408,10 @@ int main() {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         drain_messages(client_b);
     }
-    LOG("[4/21] Client B authenticated (user_id=%u)\n", user_b_id);
+    LOG("[4/24] Client B authenticated (user_id=%u)\n", user_b_id);
 
     // ── Both join channel 1 ──
-    LOG("[5/21] Joining channel...\n");
+    LOG("[5/24] Joining channel...\n");
     {
         BinaryWriter w;
         w.write_u32(1);
@@ -416,7 +426,7 @@ int main() {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         drain_messages(client_a);
     }
-    LOG("[5/21] Client A joined channel 1\n");
+    LOG("[5/24] Client A joined channel 1\n");
 
     {
         BinaryWriter w;
@@ -432,13 +442,13 @@ int main() {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         drain_messages(client_b);
     }
-    LOG("[6/21] Client B joined channel 1\n");
+    LOG("[6/24] Client B joined channel 1\n");
 
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     drain_messages(client_a);
 
     // ── Client A: encode PCM silence and send as voice ──
-    LOG("[7/21] Sending voice data...\n");
+    LOG("[7/24] Sending voice data...\n");
     std::vector<uint8_t> original_opus;
     {
         OpusCodec codec;
@@ -463,10 +473,10 @@ int main() {
         TEST_ASSERT(client_a.send_data(voice_pkt.data(), voice_pkt.size()),
                     "client A send voice");
     }
-    LOG("[7/21] Client A sent %zu bytes of Opus data\n", original_opus.size());
+    LOG("[7/24] Client A sent %zu bytes of Opus data\n", original_opus.size());
 
     // ── Wait for Client B to receive forwarded voice ──
-    LOG("[8/21] Waiting for Client B to receive voice...\n");
+    LOG("[8/24] Waiting for Client B to receive voice...\n");
     {
         auto deadline = std::chrono::steady_clock::now() +
                         std::chrono::milliseconds(TIMEOUT_MS);
@@ -495,7 +505,7 @@ int main() {
         TEST_ASSERT(std::memcmp(received_voice.data() + 7, original_opus.data(),
                     opus_len) == 0, "opus payload content matches");
 
-        LOG("[8/21] Voice verified: sender=%u, opus=%zu bytes\n", sender_id, opus_len);
+        LOG("[8/24] Voice verified: sender=%u, opus=%zu bytes\n", sender_id, opus_len);
     }
 
     // ── Verify Opus decode ──
@@ -511,14 +521,149 @@ int main() {
         TEST_ASSERT(decoded == audio::OPUS_FRAME_SIZE,
                     "opus decode produces correct frame size");
     }
-    LOG("[9/21] Opus decode OK\n");
+    LOG("[9/24] Opus decode OK\n");
+
+    // ══════════════════════════════════════════════════════════════════════
+    // VOICE STATE TESTS
+    // ══════════════════════════════════════════════════════════════════════
+
+    // Client A sends one voice frame; true when Client B receives it from A
+    // within `wait_ms`.
+    auto a_voice_reaches_b = [&](uint16_t seq, int wait_ms) -> bool {
+        voice_received = false;
+        std::vector<uint8_t> voice_pkt;
+        voice_pkt.push_back(VOICE_PACKET_TYPE);
+        voice_pkt.insert(voice_pkt.end(), reinterpret_cast<uint8_t*>(&seq),
+                         reinterpret_cast<uint8_t*>(&seq) + 2);
+        voice_pkt.insert(voice_pkt.end(), original_opus.begin(), original_opus.end());
+        if (!client_a.send_data(voice_pkt.data(), voice_pkt.size())) return false;
+
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(wait_ms);
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (voice_received) {
+                std::lock_guard<std::mutex> lock(voice_mutex);
+                if (received_voice.size() < 7) return false;
+                uint32_t sender = 0;
+                std::memcpy(&sender, received_voice.data() + 1, 4);
+                return received_voice[0] == VOICE_PACKET_TYPE && sender == user_a_id;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return false;
+    };
+
+    // USER_VOICE_STATE: [user_id(4)][muted(1)][deafened(1)]
+    auto voice_state_is = [](const std::vector<uint8_t>& payload, uint32_t uid,
+                             uint8_t muted, uint8_t deafened) -> bool {
+        BinaryReader r(payload.data(), payload.size());
+        const uint32_t got_uid   = r.read_u32();
+        const uint8_t  got_muted = r.read_u8();
+        const uint8_t  got_deaf  = r.read_u8();
+        return !r.error() && got_uid == uid && got_muted == muted && got_deaf == deafened;
+    };
+
+    // ── The server never forwards the mic of a session it lists as muted ──
+    LOG("[10/24] Muting Client A...\n");
+    {
+        uint8_t state[2] = { 1, 0 };   // muted, not deafened
+        TEST_ASSERT(client_a.send_message(ControlMessageType::VOICE_STATE_UPDATE, state, 2),
+                    "client A send mute");
+        std::vector<uint8_t> payload;
+        TEST_ASSERT(wait_for_message(client_b, ControlMessageType::USER_VOICE_STATE, payload),
+                    "client B told A is muted");
+        TEST_ASSERT(voice_state_is(payload, user_a_id, 1, 0), "USER_VOICE_STATE: A muted");
+        TEST_ASSERT(!a_voice_reaches_b(1, 500),
+                    "server must not forward the voice of a sender it lists as muted");
+
+        state[0] = 0;
+        TEST_ASSERT(client_a.send_message(ControlMessageType::VOICE_STATE_UPDATE, state, 2),
+                    "client A send unmute");
+        TEST_ASSERT(wait_for_message(client_b, ControlMessageType::USER_VOICE_STATE, payload),
+                    "client B told A is unmuted");
+        TEST_ASSERT(voice_state_is(payload, user_a_id, 0, 0), "USER_VOICE_STATE: A unmuted");
+        TEST_ASSERT(a_voice_reaches_b(2, TIMEOUT_MS), "unmuted sender's voice is forwarded again");
+    }
+    LOG("[10/24] Muted voice dropped by the server; unmute restores forwarding\n");
+
+    // ── A rejoin carries the voice state (1.3 trailing fields) ──
+    LOG("[11/24] Client B rejoins muted + deafened...\n");
+    {
+        TEST_ASSERT(client_b.send_message(ControlMessageType::CHANNEL_LEAVE, nullptr, 0),
+                    "client B send leave");
+        std::vector<uint8_t> payload;
+        TEST_ASSERT(wait_for_message(client_a, ControlMessageType::USER_LEFT_CHANNEL, payload),
+                    "client A told B left");
+
+        // CHANNEL_JOIN: [channel_id(4)][muted(1)][deafened(1)]
+        BinaryWriter w;
+        w.write_u32(1);
+        w.write_u8(1);
+        w.write_u8(1);
+        TEST_ASSERT(client_b.send_message(ControlMessageType::CHANNEL_JOIN,
+                    w.data().data(), w.data().size()), "client B send join with voice state");
+
+        // B's own entry already carries the state it joined with.
+        TEST_ASSERT(wait_for_message(client_b, ControlMessageType::CHANNEL_USER_LIST, payload),
+                    "client B channel user list");
+        {
+            BinaryReader r(payload.data(), payload.size());
+            TEST_ASSERT(r.read_u32() == 1, "user list for channel 1");
+            const uint32_t count = r.read_u32();
+            bool found = false;
+            for (uint32_t i = 0; i < count && !r.error(); ++i) {
+                const uint32_t uid = r.read_u32();
+                (void)r.read_string();   // name
+                (void)r.read_u8();       // role
+                const uint8_t muted    = r.read_u8();
+                const uint8_t deafened = r.read_u8();
+                if (uid == user_b_id) {
+                    found = true;
+                    TEST_ASSERT(muted == 1 && deafened == 1, "B listed muted + deafened");
+                }
+            }
+            TEST_ASSERT(!r.error() && found, "B listed in its own channel");
+        }
+
+        // A learns the state with the join itself, not from a later update.
+        TEST_ASSERT(wait_for_message(client_a, ControlMessageType::USER_JOINED_CHANNEL, payload),
+                    "client A told B joined");
+        {
+            // [user_id(4)][name][channel_id(4)][role(1)][muted(1)][deafened(1)]
+            BinaryReader r(payload.data(), payload.size());
+            TEST_ASSERT(r.read_u32() == user_b_id, "joined user is B");
+            (void)r.read_string();
+            TEST_ASSERT(r.read_u32() == 1, "B joined channel 1");
+            (void)r.read_u8();
+            TEST_ASSERT(!r.error() && r.remaining() >= 2,
+                        "USER_JOINED_CHANNEL carries the joiner's voice state");
+            const uint8_t muted    = r.read_u8();
+            const uint8_t deafened = r.read_u8();
+            TEST_ASSERT(muted == 1 && deafened == 1, "B joined muted + deafened");
+        }
+
+        TEST_ASSERT(!a_voice_reaches_b(3, 500),
+                    "server must not forward voice to a listener it lists as deafened");
+
+        uint8_t state[2] = { 0, 0 };
+        TEST_ASSERT(client_b.send_message(ControlMessageType::VOICE_STATE_UPDATE, state, 2),
+                    "client B send undeafen");
+        TEST_ASSERT(wait_for_message(client_a, ControlMessageType::USER_VOICE_STATE, payload),
+                    "client A told B is back");
+        TEST_ASSERT(voice_state_is(payload, user_b_id, 0, 0), "USER_VOICE_STATE: B undeafened");
+        TEST_ASSERT(a_voice_reaches_b(4, TIMEOUT_MS), "voice reaches B again");
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        drain_messages(client_a);
+        drain_messages(client_b);
+    }
+    LOG("[11/24] Join-time voice state reached the channel with the join\n");
 
     // ══════════════════════════════════════════════════════════════════════
     // SCREEN SHARING TESTS
     // ══════════════════════════════════════════════════════════════════════
 
     // ── Client A: start screen share ──
-    LOG("[10/21] Screen share start...\n");
+    LOG("[12/24] Screen share start...\n");
     {
         BinaryWriter w;
         w.write_u8(static_cast<uint8_t>(VideoCodecId::AV1));
@@ -549,10 +694,10 @@ int main() {
         drain_messages(client_a);
         drain_messages(client_b);
     }
-    LOG("[10/21] Screen share started, both clients notified\n");
+    LOG("[12/24] Screen share started, both clients notified\n");
 
     // ── Client B: subscribe to Client A's share; A is told it has a viewer ──
-    LOG("[11/21] Client B subscribing to screen share...\n");
+    LOG("[13/24] Client B subscribing to screen share...\n");
     {
         BinaryWriter w;
         w.write_u32(user_a_id);
@@ -569,12 +714,12 @@ int main() {
         TEST_ASSERT(r.read_u8() == 1, "viewer notification: watching == 1");
         TEST_ASSERT(!r.error(), "viewer notification: well-formed");
     }
-    LOG("[11/21] Client B subscribed, Client A notified\n");
+    LOG("[13/24] Client B subscribed, Client A notified\n");
 
     // ── Client A: send a synthetic frame on the legacy video stream 1 ──
     // Client B speaks protocol 1.2, so the server re-originates it toward B on
     // a per-frame unidirectional stream: on_video_stream_frame(sender, [hdr][payload]).
-    LOG("[12/21] Sending video frame on legacy stream 1...\n");
+    LOG("[14/24] Sending video frame on legacy stream 1...\n");
     std::mutex video_mutex;
     std::vector<uint8_t> received_video;          // [hdr14][payload] as delivered
     uint32_t received_video_sender = 0;
@@ -622,11 +767,11 @@ int main() {
         TEST_ASSERT(client_a.send_video(pkt.data(), pkt.size()),
                     "client A send video frame");
     }
-    LOG("[12/21] Client A sent video frame (%zu bytes)\n",
+    LOG("[14/24] Client A sent video frame (%zu bytes)\n",
         original_video_payload.size());
 
     // ── Client B: receive and verify the frame on a per-frame stream ──
-    LOG("[13/21] Waiting for Client B to receive video frame...\n");
+    LOG("[15/24] Waiting for Client B to receive video frame...\n");
     {
         auto deadline = std::chrono::steady_clock::now() +
                         std::chrono::milliseconds(TIMEOUT_MS);
@@ -644,12 +789,12 @@ int main() {
         TEST_ASSERT(std::memcmp(received_video.data(), original_video_payload.data(),
                     received_video.size()) == 0, "video payload content matches");
 
-        LOG("[13/21] Video frame verified: sender=%u, %zu bytes OK\n",
+        LOG("[15/24] Video frame verified: sender=%u, %zu bytes OK\n",
             received_video_sender, received_video.size());
     }
 
     // ── Client A: five frames on per-frame unidirectional streams ──
-    LOG("[14/21] Sending 5 frames on per-frame streams...\n");
+    LOG("[16/24] Sending 5 frames on per-frame streams...\n");
     std::vector<std::vector<uint8_t>> stream_originals;   // [hdr14][payload] per frame
     {
         for (uint32_t i = 0; i < 5; i++) {
@@ -698,7 +843,7 @@ int main() {
             TEST_ASSERT(stream_frames[i].frame == stream_originals[i],
                         "per-frame stream content matches");
         }
-        LOG("[14/21] All 5 per-frame streams verified (frame_seq 10..14)\n");
+        LOG("[16/24] All 5 per-frame streams verified (frame_seq 10..14)\n");
     }
 
     // ── Viewer notifications: B unsubscribes, then re-subscribes ──
@@ -716,7 +861,7 @@ int main() {
         }
     };
 
-    LOG("[15/21] Viewer notifications (unsubscribe / re-subscribe)...\n");
+    LOG("[17/24] Viewer notifications (unsubscribe / re-subscribe)...\n");
     {
         drain_messages(client_a);
 
@@ -760,15 +905,15 @@ int main() {
             uint32_t requester_id = 0;
             std::memcpy(&requester_id, received_pli.data() + 2, 4);
             TEST_ASSERT(requester_id == user_b_id, "auto-PLI requester_id matches client B");
-            LOG("[15/21] Auto-PLI on subscribe received by client A\n");
+            LOG("[17/24] Auto-PLI on subscribe received by client A\n");
         } else {
-            LOG("[15/21] (auto-PLI datagram not observed; continuing)\n");
+            LOG("[17/24] (auto-PLI datagram not observed; continuing)\n");
         }
     }
-    LOG("[15/21] Viewer notifications verified\n");
+    LOG("[17/24] Viewer notifications verified\n");
 
     // ── PLI test: Client B requests keyframe from Client A ──
-    LOG("[16/21] Testing PLI forwarding...\n");
+    LOG("[18/24] Testing PLI forwarding...\n");
     {
         // Let the server's per-sharer PLI coalescer (200 ms) expire so B's
         // request is forwarded rather than merged into the auto-PLI above.
@@ -804,7 +949,7 @@ int main() {
         std::memcpy(&requester_id, received_pli.data() + 2, 4);
         TEST_ASSERT(requester_id == user_b_id, "PLI requester_id matches client B");
 
-        LOG("[16/21] PLI verified: requester=%u\n", requester_id);
+        LOG("[18/24] PLI verified: requester=%u\n", requester_id);
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -813,7 +958,7 @@ int main() {
     // ══════════════════════════════════════════════════════════════════════
 
     // ── Client C: a protocol 1.1 peer joins while A is already sharing ──
-    LOG("[17/21] Client C (protocol 1.1) connecting...\n");
+    LOG("[19/24] Client C (protocol 1.1) connecting...\n");
     // C must never be handed a per-frame stream: flag it if the server tries.
     std::atomic<bool> c_stream_frame_seen{false};
     client_c.on_video_stream_frame = [&](uint32_t, std::vector<uint8_t>&&) {
@@ -838,7 +983,7 @@ int main() {
 
     TEST_ASSERT(client_c.connect("127.0.0.1", TEST_PORT), "client C connect");
     TEST_ASSERT(wait_for_connect(client_c), "client C wait for connect");
-    LOG("[17/21] Client C connected\n");
+    LOG("[19/24] Client C connected\n");
 
     uint32_t user_c_id = 0;
     {
@@ -884,7 +1029,7 @@ int main() {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         drain_messages(client_c);
     }
-    LOG("[17/21] Client C authenticated as a 1.1 peer (user_id=%u)\n", user_c_id);
+    LOG("[19/24] Client C authenticated as a 1.1 peer (user_id=%u)\n", user_c_id);
 
     // C joins the channel while A's share is active: the late-join replay of
     // SCREEN_SHARE_STARTED must carry replay = 1 (A's live start carried 0).
@@ -916,10 +1061,10 @@ int main() {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         drain_messages(client_c);
     }
-    LOG("[17/21] Client C joined channel 1, late-join replay flag == 1 verified\n");
+    LOG("[19/24] Client C joined channel 1, late-join replay flag == 1 verified\n");
 
     // ── Client C subscribes with the legacy 4-byte form; A is told ──
-    LOG("[18/21] Client C (legacy) subscribing to Client A...\n");
+    LOG("[20/24] Client C (legacy) subscribing to Client A...\n");
     {
         // Legacy single-select: [target(4)], no action byte.
         BinaryWriter w;
@@ -939,7 +1084,7 @@ int main() {
         TEST_ASSERT(r.read_u8() == 1, "viewer notification (C): watching == 1");
         TEST_ASSERT(!r.error(), "viewer notification (C): well-formed");
     }
-    LOG("[18/21] Client C subscribed, Client A notified\n");
+    LOG("[20/24] Client C subscribed, Client A notified\n");
 
     // ── Client A sends one keyframe on a per-frame stream; the server
     //    re-originates it toward C on the legacy stream 1 ──
@@ -990,7 +1135,7 @@ int main() {
         TEST_ASSERT(got.width == 1920 && got.height == 1080, "legacy frame dimensions");
         TEST_ASSERT(std::memcmp(c_received_video.data() + prefix, legacy_frame_payload.data(),
                     legacy_frame_payload.size()) == 0, "legacy frame encoded bytes intact");
-        LOG("[18/21] Legacy re-origination verified: sender=%u, %zu bytes on stream 1\n",
+        LOG("[20/24] Legacy re-origination verified: sender=%u, %zu bytes on stream 1\n",
             sender_id, c_received_video.size());
     }
 
@@ -1061,18 +1206,18 @@ int main() {
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
             TEST_ASSERT(pli_received.load(), "server retries recovery PLI without new frames");
             TEST_ASSERT(send_frame(key, true), "send delayed recovery keyframe");
-            expected.push_back(key);
-            TEST_ASSERT(wait_sequences(expected.size()), "delayed keyframe reaches viewer after gap timeout");
-            TEST_ASSERT(send_frame(key + 1, false), "send successor after recovery");
-            expected.push_back(key + 1);
+            for (uint32_t seq = key; seq <= key + 10; ++seq) expected.push_back(seq);
+            TEST_ASSERT(wait_sequences(expected.size()), "delayed keyframe releases its held successors");
+            TEST_ASSERT(send_frame(key + 11, false), "send successor after recovery");
+            expected.push_back(key + 11);
             TEST_ASSERT(wait_sequences(expected.size()), "playback continues after recovery");
             std::lock_guard<std::mutex> lock(c_video_mutex);
             TEST_ASSERT(c_received_sequences == expected, "recovery preserves usable frame order");
         }
-        LOG("[18/21] Legacy ingress reordering and stale-frame rejection verified\n");
+        LOG("[20/24] Legacy ingress reordering and stale-frame rejection verified\n");
     }
     // ── Client C shares; a pre-1.2 sharer gets no viewer notifications ──
-    LOG("[19/21] Client C starts sharing; B subscribes to C...\n");
+    LOG("[21/24] Client C starts sharing; B subscribes to C...\n");
     {
         // Clear USER_JOINED_CHANNEL (C) and anything else still queued.
         drain_messages(client_a);
@@ -1140,10 +1285,210 @@ int main() {
         }
         TEST_ASSERT(!c_stream_frame_seen.load(), "still no per-frame stream toward client C");
     }
-    LOG("[19/21] Client C shared and stopped; no viewer notifications to a 1.1 sharer\n");
+    LOG("[21/24] Client C shared and stopped; no viewer notifications to a 1.1 sharer\n");
+
+    // ══════════════════════════════════════════════════════════════════════
+    // CAMERA (PROTOCOL 1.4): A SECOND STREAM PER USER, ANNOUNCED TO 1.4 PEERS
+    // ══════════════════════════════════════════════════════════════════════
+
+    LOG("[22/24] Camera next to the screen share...\n");
+    {
+        using Side = std::vector<std::pair<ControlMessageType, std::vector<uint8_t>>>;
+        const uint32_t cam_a = video_stream_id(user_a_id, VideoSource::Camera);
+        TEST_ASSERT(cam_a != user_a_id && video_stream_owner(cam_a) == user_a_id &&
+                    video_stream_source(cam_a) == VideoSource::Camera, "camera stream id encoding");
+        drain_messages(client_a);
+        drain_messages(client_b);
+        drain_messages(client_c);
+
+        auto camera_start = [](uint16_t width, uint16_t height) {
+            BinaryWriter w;
+            w.write_u8(static_cast<uint8_t>(VideoCodecId::H264));
+            w.write_u16(width);
+            w.write_u16(height);
+            w.write_u8(static_cast<uint8_t>(VideoSource::Camera));
+            return w.data();
+        };
+
+        // A 1.1 peer cannot have a camera: its start is refused outright.
+        {
+            const auto start = camera_start(640, 480);
+            TEST_ASSERT(client_c.send_message(ControlMessageType::SCREEN_SHARE_START,
+                        start.data(), start.size()), "client C send camera start");
+            std::vector<uint8_t> unexpected;
+            Side side;
+            TEST_ASSERT(!wait_for_message_collecting(client_b, ControlMessageType::SCREEN_SHARE_STARTED,
+                        unexpected, side, 500), "a 1.1 peer's camera start is refused");
+        }
+
+        // A starts its camera while its screen share keeps running.
+        {
+            const auto start = camera_start(1280, 720);
+            TEST_ASSERT(client_a.send_message(ControlMessageType::SCREEN_SHARE_START,
+                        start.data(), start.size()), "client A send camera start");
+            for (NetClient* c : { &client_a, &client_b }) {
+                std::vector<uint8_t> payload;
+                Side side;
+                TEST_ASSERT(wait_for_message_collecting(*c, ControlMessageType::SCREEN_SHARE_STARTED,
+                            payload, side), "receive camera SCREEN_SHARE_STARTED");
+                BinaryReader r(payload.data(), payload.size());
+                TEST_ASSERT(r.read_u32() == cam_a, "camera started: stream id");
+                TEST_ASSERT(r.read_u8() == static_cast<uint8_t>(VideoCodecId::H264), "camera started: codec");
+                const uint16_t width = r.read_u16();
+                const uint16_t height = r.read_u16();
+                TEST_ASSERT(width == 1280 && height == 720, "camera started: size");
+                TEST_ASSERT(r.read_u8() == 0 && !r.error(), "camera started: live start");
+            }
+            // Never announced to a 1.1 peer: it would take the id for a user.
+            std::vector<uint8_t> unexpected;
+            Side side;
+            TEST_ASSERT(!wait_for_message_collecting(client_c, ControlMessageType::SCREEN_SHARE_STARTED,
+                        unexpected, side, 500), "no camera announcement to a 1.1 peer");
+        }
+
+        // B watches the camera too. Cameras raise no viewer notification; the
+        // server's auto-PLI names the camera stream.
+        {
+            {
+                std::lock_guard<std::mutex> lock(pli_mutex);
+                received_pli.clear();
+                pli_received = false;
+            }
+            BinaryWriter w;
+            w.write_u32(cam_a);
+            w.write_u8(1);
+            TEST_ASSERT(client_b.send_message(ControlMessageType::SCREEN_SHARE_VIEW,
+                        w.data().data(), w.data().size()), "client B subscribe to the camera");
+            std::vector<uint8_t> unexpected;
+            Side side;
+            TEST_ASSERT(!wait_for_message_collecting(client_a, ControlMessageType::SCREEN_SHARE_VIEWER,
+                        unexpected, side, 500), "no viewer notification for a camera");
+            if (pli_received) {
+                std::lock_guard<std::mutex> lock(pli_mutex);
+                uint32_t requester = 0, stream = 0;
+                TEST_ASSERT(received_pli.size() >= 10, "camera auto-PLI carries the stream id");
+                std::memcpy(&requester, received_pli.data() + 2, 4);
+                std::memcpy(&stream, received_pli.data() + 6, 4);
+                TEST_ASSERT(requester == user_b_id && stream == cam_a, "camera auto-PLI fields");
+            } else {
+                LOG("[22/24] (camera auto-PLI datagram not observed; continuing)\n");
+            }
+        }
+
+        // Camera frames: [0x13][source][hdr][encoded] in, [0x12][stream id] out.
+        std::mutex cam_mutex;
+        std::vector<RecvFrame> b_frames;
+        client_b.on_video_stream_frame = [&](uint32_t sender_id, std::vector<uint8_t>&& frame) {
+            std::lock_guard<std::mutex> lock(cam_mutex);
+            b_frames.push_back(RecvFrame{ sender_id, std::move(frame) });
+        };
+        auto make_frame = [](uint32_t seq, bool keyframe, uint16_t width, uint16_t height, uint8_t salt) {
+            VideoFrameHeader hdr;
+            hdr.frame_seq = seq;
+            hdr.timestamp = seq;
+            hdr.flags     = keyframe ? VIDEO_FLAG_KEYFRAME : 0;
+            hdr.width     = width;
+            hdr.height    = height;
+            hdr.codec     = static_cast<uint8_t>(VideoCodecId::H264);
+            std::vector<uint8_t> whole(VIDEO_FRAME_HEADER_SIZE);
+            hdr.write(whole.data());
+            for (size_t k = 0; k < 80; k++)
+                whole.push_back(static_cast<uint8_t>((salt + 3 * k) & 0xFF));
+            return whole;
+        };
+        auto send_frame = [&](const std::vector<uint8_t>& whole, VideoSource source) {
+            return client_a.send_video_frame_stream(whole.data(), VIDEO_FRAME_HEADER_SIZE,
+                whole.data() + VIDEO_FRAME_HEADER_SIZE, whole.size() - VIDEO_FRAME_HEADER_SIZE, source);
+        };
+        auto wait_frames = [&](size_t count, int timeout_ms) {
+            auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+            while (std::chrono::steady_clock::now() < deadline) {
+                {
+                    std::lock_guard<std::mutex> lock(cam_mutex);
+                    if (b_frames.size() >= count) return true;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            return false;
+        };
+        {
+            const auto key = make_frame(1, true, 1280, 720, 0x31);
+            const auto delta = make_frame(2, false, 1280, 720, 0x47);
+            TEST_ASSERT(send_frame(key, VideoSource::Camera), "client A send camera keyframe");
+            TEST_ASSERT(send_frame(delta, VideoSource::Camera), "client A send camera delta");
+            TEST_ASSERT(wait_frames(2, TIMEOUT_MS), "client B received both camera frames");
+            std::lock_guard<std::mutex> lock(cam_mutex);
+            for (const auto& got : b_frames) {
+                TEST_ASSERT(got.sender == cam_a, "camera frames come from the camera stream id");
+                TEST_ASSERT(got.frame == key || got.frame == delta, "camera frame bytes intact");
+            }
+            TEST_ASSERT(b_frames[0].frame != b_frames[1].frame, "both camera frames delivered once");
+        }
+
+        // B asks the camera for a keyframe: A sees which of its streams.
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));   // PLI coalescer window
+            {
+                std::lock_guard<std::mutex> lock(pli_mutex);
+                received_pli.clear();
+                pli_received = false;
+            }
+            std::vector<uint8_t> pli(6);
+            pli[0] = VIDEO_CONTROL_TYPE;
+            pli[1] = VIDEO_CTL_PLI;
+            std::memcpy(pli.data() + 2, &cam_a, 4);
+            TEST_ASSERT(client_b.send_data(pli.data(), pli.size()), "client B send camera PLI");
+            auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(TIMEOUT_MS);
+            while (!pli_received && std::chrono::steady_clock::now() < deadline)
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            TEST_ASSERT(pli_received.load(), "client A received the camera PLI");
+            std::lock_guard<std::mutex> lock(pli_mutex);
+            TEST_ASSERT(received_pli.size() >= 10, "camera PLI carries the stream id");
+            uint32_t requester = 0, stream = 0;
+            std::memcpy(&requester, received_pli.data() + 2, 4);
+            std::memcpy(&stream, received_pli.data() + 6, 4);
+            TEST_ASSERT(requester == user_b_id && stream == cam_a, "camera PLI fields");
+        }
+
+        // A stops only its camera: [source]. The screen share keeps flowing.
+        {
+            const uint8_t camera_source = static_cast<uint8_t>(VideoSource::Camera);
+            TEST_ASSERT(client_a.send_message(ControlMessageType::SCREEN_SHARE_STOP, &camera_source, 1),
+                        "client A send camera stop");
+            for (NetClient* c : { &client_a, &client_b }) {
+                std::vector<uint8_t> payload;
+                Side side;
+                TEST_ASSERT(wait_for_message_collecting(*c, ControlMessageType::SCREEN_SHARE_STOPPED,
+                            payload, side), "receive camera SCREEN_SHARE_STOPPED");
+                BinaryReader r(payload.data(), payload.size());
+                TEST_ASSERT(r.read_u32() == cam_a, "camera stopped: stream id");
+            }
+            std::vector<uint8_t> unexpected;
+            Side side;
+            TEST_ASSERT(!wait_for_message_collecting(client_c, ControlMessageType::SCREEN_SHARE_STOPPED,
+                        unexpected, side, 300), "no camera stop toward a 1.1 peer");
+
+            {
+                std::lock_guard<std::mutex> lock(cam_mutex);
+                b_frames.clear();
+            }
+            // A late camera frame is refused at ingress; the screen still flows.
+            TEST_ASSERT(send_frame(make_frame(3, false, 1280, 720, 0x5C), VideoSource::Camera),
+                        "client A send a camera frame after the stop");
+            const auto screen_key = make_frame(700, true, 1920, 1080, 0x66);
+            TEST_ASSERT(send_frame(screen_key, VideoSource::Screen), "client A send screen keyframe");
+            TEST_ASSERT(wait_frames(1, TIMEOUT_MS), "screen frame after the camera stop");
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            std::lock_guard<std::mutex> lock(cam_mutex);
+            TEST_ASSERT(b_frames.size() == 1 && b_frames[0].sender == user_a_id &&
+                        b_frames[0].frame == screen_key, "only the screen frame reached B");
+        }
+        client_b.on_video_stream_frame = nullptr;
+    }
+    LOG("[22/24] Camera announced, forwarded, keyframed and stopped independently of the screen\n");
 
     // ── Client C leaves the channel: the implicit unsubscribe notifies A ──
-    LOG("[20/21] Client C leaves the channel...\n");
+    LOG("[23/24] Client C leaves the channel...\n");
     {
         TEST_ASSERT(client_c.send_message(ControlMessageType::CHANNEL_LEAVE, nullptr, 0),
                     "client C send channel leave");
@@ -1166,10 +1511,10 @@ int main() {
         TEST_ASSERT(rl.read_u32() == user_c_id, "user left: client C");
         TEST_ASSERT(rl.read_u32() == 1, "user left: channel 1");
     }
-    LOG("[20/21] Implicit unsubscribe on leave verified\n");
+    LOG("[23/24] Implicit unsubscribe on leave verified\n");
 
     // ── Client A: stop screen share (C has left; only A and B are told) ──
-    LOG("[21/21] Screen share stop...\n");
+    LOG("[24/24] Screen share stop...\n");
     {
         TEST_ASSERT(client_a.send_message(ControlMessageType::SCREEN_SHARE_STOP,
                     nullptr, 0), "client A send share stop");
@@ -1185,7 +1530,7 @@ int main() {
         BinaryReader rb(payload_b.data(), payload_b.size());
         TEST_ASSERT(rb.read_u32() == user_a_id, "share stopped user_id (B)");
     }
-    LOG("[21/21] Screen share stopped, both clients notified\n");
+    LOG("[24/24] Screen share stopped, both clients notified\n");
 
     // Detach callbacks that capture locals of this scope before the clients
     // are torn down in cleanup().

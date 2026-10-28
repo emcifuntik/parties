@@ -485,6 +485,12 @@ input.settings-vad-slider sliderbar:active { background-color: #C4B5FD; }
     border-radius: 13dp;
 }
 .settings-config-card .share-setting-group { margin-bottom: 20dp; }
+.settings-camera-hint {
+    display: block;
+    color: #8B93A1;
+}
+.settings-device-select-wrap ~ .settings-camera-hint { margin-top: 8dp; }
+.settings-camera-error { color: #FCA5A5; }
 .settings-config-card .share-codec-buttons { margin-top: 9dp; }
 .settings-config-card .share-codec-btn {
 }

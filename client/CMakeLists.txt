@@ -148,6 +148,9 @@ else()
         # Screen capture — DXGI
         src/windows/screen_capture.cpp
 
+        # Webcam capture — Media Foundation Source Reader
+        src/windows/camera_capture.cpp
+
         # Video — Media Foundation / hardware encoders
         src/windows/video_encoder.cpp
         src/windows/video_decoder.cpp
@@ -338,6 +341,7 @@ else()
     target_link_libraries(parties_client
         PRIVATE
             d3d11 d3d12 dxgi d3dcompiler
+            mfplat mfreadwrite mfuuid mf
             windowsapp
             dwmapi gdi32 shell32
             winhttp wintrust crypt32

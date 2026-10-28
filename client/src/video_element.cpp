@@ -423,28 +423,33 @@ void VideoElement::RebuildGeometry() {
     float ox = (elem_w - rw) * 0.5f;
     float oy = (elem_h - rh) * 0.5f;
 
-    // Build a textured quad (2 triangles)
+    // Build a textured quad (2 triangles). The "mirror" class (a self-view
+    // camera) flips it horizontally by swapping the left and right U.
+    const bool  mirrored = IsClassSet("mirror");
+    const float left_u   = mirrored ? texture_u1_ : texture_u0_;
+    const float right_u  = mirrored ? texture_u0_ : texture_u1_;
     Rml::Vertex vertices[4];
     for (auto& v : vertices)
         v.colour = Rml::ColourbPremultiplied(255, 255, 255, 255);
 
     vertices[0].position = {ox, oy};
-    vertices[0].tex_coord = {texture_u0_, texture_v0_};
+    vertices[0].tex_coord = {left_u, texture_v0_};
 
     vertices[1].position = {ox + rw, oy};
-    vertices[1].tex_coord = {texture_u1_, texture_v0_};
+    vertices[1].tex_coord = {right_u, texture_v0_};
 
     vertices[2].position = {ox + rw, oy + rh};
-    vertices[2].tex_coord = {texture_u1_, texture_v1_};
+    vertices[2].tex_coord = {right_u, texture_v1_};
 
     vertices[3].position = {ox, oy + rh};
-    vertices[3].tex_coord = {texture_u0_, texture_v1_};
+    vertices[3].tex_coord = {left_u, texture_v1_};
 
     int indices[6] = {0, 1, 2, 0, 2, 3};
 
     video_geom_ = ri->CompileGeometry({vertices, 4}, {indices, 6});
     geom_w_ = elem_w;
     geom_h_ = elem_h;
+    geometry_mirrored_ = mirrored;
     geometry_uv_dirty_ = false;
 }
 
@@ -470,7 +475,8 @@ void VideoElement::OnRender() {
 
     // Rebuild geometry if element size changed
     Rml::Vector2f size = GetBox().GetSize(Rml::BoxArea::Content);
-    if (!video_geom_ || size.x != geom_w_ || size.y != geom_h_ || geometry_uv_dirty_)
+    if (!video_geom_ || size.x != geom_w_ || size.y != geom_h_ || geometry_uv_dirty_ ||
+        IsClassSet("mirror") != geometry_mirrored_)
         RebuildGeometry();
     if (!video_geom_) return;
 
