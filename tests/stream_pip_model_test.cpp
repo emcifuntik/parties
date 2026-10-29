@@ -141,7 +141,13 @@ void publish_watched(LobbyModel& model, const std::unordered_set<UserId>& watche
     cells.clear();
     for (const auto& sharer : model.sharers.get()) {
         if (watched.count(static_cast<UserId>(sharer.id)) == 0) continue;
-        cells.push_back({sharer.id, sharer.name, "screen-share-" + std::to_string(sharer.id)});
+        WatchedStream cell;
+        cell.id = sharer.id;
+        cell.user_id = sharer.user_id;
+        cell.name = sharer.name;
+        cell.element_id = "screen-share-" + std::to_string(sharer.id);
+        cell.camera = sharer.camera;
+        cells.push_back(cell);
     }
     model.watched.notify();
     model.watching_count = static_cast<int>(cells.size());
