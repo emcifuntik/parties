@@ -66,7 +66,8 @@
     margin: 0dp 8dp 8dp 8dp;
 }
 .platform-desktop .stream-grid.single .stream-cell,
-.platform-desktop .stream-grid.single .stream-cell-video {
+.platform-desktop .stream-grid.single .stream-cell-video,
+.platform-desktop .stream-grid.single .stream-cell-pip-placeholder {
     border-radius: var(--radius-md);
 }
 .platform-desktop .screen-share-area.fullscreen .stream-grid {

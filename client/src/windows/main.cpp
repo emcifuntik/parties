@@ -67,6 +67,18 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         if (app) app->on_window_visibility_changed(wParam != FALSE);
         break;
 
+    case WM_WINDOWPOSCHANGED: {
+        // WM_SHOWWINDOW is not sent for every show: restoring the window from
+        // the tray with SW_RESTORE skips it, which left rendering suspended.
+        // The show/hide flags here are reported for every visibility change.
+        const auto* position = reinterpret_cast<const WINDOWPOS*>(lParam);
+        if (app && (position->flags & SWP_SHOWWINDOW))
+            app->on_window_visibility_changed(true);
+        else if (app && (position->flags & SWP_HIDEWINDOW))
+            app->on_window_visibility_changed(false);
+        break;   // DefWindowProc still derives WM_SIZE / WM_MOVE from it
+    }
+
     case WM_NCCALCSIZE:
         if (wParam == TRUE) {
             // Collapse non-client area for borderless window.

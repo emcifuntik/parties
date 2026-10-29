@@ -6,6 +6,7 @@
 #import "PartiesAppDelegate.h"
 #import "context_menu_macos.h"
 #import "PartiesStatusItemController.h"
+#import "pip_host_macos.h"
 #import "screen_capture_macos.h"
 #import <encdec/apple/video_encoder_macos.h>
 
@@ -46,6 +47,8 @@
 #include <client/sound_player.h>
 #include <client/rmlui_backend.h>
 #include <client/video_element.h>
+#include <client/video_frame_router.h>
+#include <client/pip_geometry.h>
 #include <client/gradient_circle_element.h>
 #include <client/custom_elements.h>
 #include <client/ui_fixture.h>
@@ -319,6 +322,11 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     std::unique_ptr<VideoDecoderIOS>  _decoder;
     bool                              _streamRevealed;
 
+    // Picture-in-picture panel (state lives in _core.pip_) and the router
+    // that sends each decoded frame to exactly one surface.
+    PartiesPipHost*                   _pipHost;
+    VideoFrameRouter                  _videoRouter;
+
     // FPS counter
     uint32_t _fpsFrameCount;
     std::chrono::steady_clock::time_point _fpsLastUpdate;
@@ -591,6 +599,22 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     // model_.watched, so there is no single element to clear here.
     bridge.clear_video_element = []() {};
 
+    // Picture-in-picture. AppCore owns the state; the panel only presents it.
+    bridge.show_pip = [bself](UserId, const std::string& title) {
+        [bself showPictureInPicture:title];
+    };
+    bridge.hide_pip = [bself](UserId, PipCloseReason) {
+        [bself->_pipHost hide];
+        [bself syncVideoRouter];
+    };
+    bridge.show_main_window = [bself]() {
+        NSWindow* window = bself->_metalView.window;
+        [NSApp unhide:nil];
+        if (window.miniaturized) [window deminiaturize:nil];
+        [window makeKeyAndOrderFront:nil];
+        [NSApp activateIgnoringOtherApps:YES];
+    };
+
     // A call produces no input events, so macOS dims and powers down the display
     // while the user is still talking. An NSProcessInfo activity suppresses the
     // idle-display and idle-system timers for as long as the token is held, and
@@ -752,6 +776,8 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     if (!_coreInitialized)
         return;
     _core.tick();
+    // Apply PiP changes even while no frame arrives (a paused stream).
+    [self syncVideoRouter];
     BOOL visible = _metalView.window.visible && !_metalView.window.miniaturized && !NSApp.hidden;
     if (!visible && !_metalView.paused && _contextMenus)
         _contextMenus->Close();
@@ -900,10 +926,10 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     _core.stream_frame_count_.fetch_add(1, std::memory_order_relaxed);
 
     if (!_doc) return;
-    // The viewer is a grid of per-sharer cells; route to this sharer's cell.
-    // macOS is single-select, so viewing_sharer_ is the one being watched.
-    std::string elem_id = "screen-share-" + std::to_string(_core.viewing_sharer_.load());
-    auto* el = dynamic_cast<VideoElement*>(_doc->GetElementById(elem_id));
+    // macOS is single-select, so viewing_sharer_ is the stream being watched.
+    // The router picks its one surface: the PiP panel or its grid cell.
+    [self syncVideoRouter];
+    auto* el = _videoRouter.target(_core.viewing_sharer_.load(), [self videoSurfaces]);
     if (!el) return;
 
     CVPixelBufferLockBaseAddress(buf, kCVPixelBufferLock_ReadOnly);
@@ -1218,6 +1244,54 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
     _core.set_single_watched(0);
 }
 
+// ── Picture-in-picture (macOS panel) ─────────────────────────────────────────
+
+- (void)showPictureInPicture:(const std::string&)title
+{
+    if (!_pipHost) {
+        PartiesViewController* bself = self;
+        MacPipActions actions;
+        actions.return_to_main = [bself]() { bself->_core.return_from_pip(); };
+        actions.set_volume = [bself](float volume) { bself->_core.set_stream_volume(volume); };
+        actions.close = [bself]() { bself->_core.close_pip(PipCloseReason::UserClosed); };
+        actions.volume = [bself]() { return bself->_core.model_.stream_volume.get(); };
+        actions.load_geometry = [bself]() -> std::optional<PipRect> {
+            const auto saved = bself->_core.settings_.get_pref("window.pip_rect");
+            return saved ? pip_rect_from_string(*saved) : std::nullopt;
+        };
+        actions.save_geometry = [bself](const PipRect& rect) {
+            if (rect.width > 0 && rect.height > 0)
+                bself->_core.settings_.set_pref("window.pip_rect", pip_rect_to_string(rect));
+        };
+        _pipHost = [[PartiesPipHost alloc] initWithDevice:_metalView.device actions:std::move(actions)];
+    }
+    if (![_pipHost showWithTitle:title]) {
+        // Report the failure after AppCore's transition has finished.
+        PartiesViewController* bself = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            bself->_core.close_pip(PipCloseReason::UserClosed);
+        });
+        return;
+    }
+    [self syncVideoRouter];
+}
+
+- (VideoFrameRouter::Surfaces)videoSurfaces
+{
+    VideoFrameRouter::Surfaces surfaces;
+    surfaces.grid = _doc ? _doc->GetElementById("stream-grid") : nullptr;
+    surfaces.pip = _pipHost ? [_pipHost videoSurface] : nullptr;
+    return surfaces;
+}
+
+// Clears the surface a stream leaves when PiP changes. Metal keeps textures
+// referenced by in-flight command buffers alive itself, so the release done
+// by VideoElement::Clear is immediately safe.
+- (void)syncVideoRouter
+{
+    _videoRouter.sync(_core.pip_.stream(), [self videoSurfaces]);
+}
+
 - (void)sendPLI:(UserId)targetId
 {
     // Thin wrapper over the single PLI funnel (per-target cooldown lives there).
@@ -1262,6 +1336,7 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         _debuggerInitialized = false;
     }
 #endif
+    [_pipHost prepareShutdown];
     if (_rmlContext) {
         Rml::RemoveContext(_rmlContext->GetName());
         _rmlContext = nullptr;
@@ -1271,6 +1346,10 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         Rml::Shutdown();
         _rmlInitialized = false;
     }
+    // The PiP renderer may only go after Rml::Shutdown released its manager.
+    [_pipHost shutdown];
+    [_pipHost release];
+    _pipHost = nil;
     if (_backendInitialized) {
         Backend::Shutdown();
         _backendInitialized = false;
@@ -1454,7 +1533,10 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
 
 - (BOOL)applicationShouldHandleReopen:(NSApplication*)sender hasVisibleWindows:(BOOL)hasVisibleWindows
 {
-    if (!hasVisibleWindows && _statusItemController)
+    // A visible picture-in-picture panel counts as a visible window, so judge
+    // the main window itself instead of hasVisibleWindows.
+    const BOOL mainVisible = _window.visible && !_window.miniaturized && !NSApp.hidden;
+    if (!mainVisible && _statusItemController)
         [_statusItemController showWindow:nil];
     return YES;
 }

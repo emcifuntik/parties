@@ -4,6 +4,8 @@ vcpkg_from_github(
     REF 0ae381e00d7426762bb5ed897973366358b16642
     SHA512 e796b00f2212287b7ad5c73a2fffa2112850e78fb0ee9fb690e61b707497156ff61c2297ba337f578fd54ca3c413775c59412b20dd3b8ff4ad53b0fdf8ed8439
     HEAD_REF master
+    PATCHES
+        svg-render-manager-cache.patch
 )
 
 vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS

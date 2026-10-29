@@ -15,6 +15,45 @@ that back buffer's retirement list. `RenderInterface_DX12::EndFrame` waits when
 the swap chain returns to the same buffer; only then does the adapter release
 the descriptor, D3D12 resource, AMF surface, or CUDA ring lease.
 
+## Picture-in-picture surfaces
+
+A watched stream has exactly one video surface at a time: its `<video_frame>`
+cell in `#stream-grid`, or the picture-in-picture (PiP) surface. The shared
+`VideoFrameRouter` (`client/include/client/video_frame_router.h`) decides it
+from `StreamPipController::stream()`; platforms never pick a surface
+themselves, so a decoded frame is never uploaded twice.
+
+When the PiP stream changes (open, switch, close), `VideoFrameRouter::sync`
+clears the surface each stream leaves before the next frame is delivered:
+
+- entering PiP: the stream's grid cell is cleared. `data-if` only hides that
+  `<video_frame>` behind the placeholder, so without the clear it would keep its
+  last textures (and on Windows an AMF/NVDEC lease) while hidden;
+- switching or closing: the PiP surface is cleared, so it never shows the
+  previous stream's last frame and, after a close, holds nothing.
+
+`VideoElement` resolves its render interface from its own context: a PiP
+context registers its renderer with
+`VideoElement::RegisterContextRenderInterface`, other contexts use the global
+one. A cleared element therefore releases through the renderer that created
+its textures, and that renderer's retirement rules apply unchanged.
+
+Each move also sends one PLI through the cooldown funnel, so a static screen
+repaints on its new surface instead of staying empty until it changes.
+
+| Platform | PiP surface | Retirement when a stream leaves a surface |
+|----------|-------------|-------------------------------------------|
+| Windows | `<video_frame id="pip-video">` in the PiP window's own RmlUi context and `PartiesRenderInterface_DX12` (same D3D12 device as the decoders; PiP refuses to open otherwise) | The texture, and any AMF/NVDEC ring lease it holds, goes into that renderer's back-buffer retirement bucket. A bucket is normally collected when the renderer presents into the same buffer again, which a hidden main window or a closed PiP window does not do, and NVDEC waits for its leases before reusing a surface. After a clear the render thread therefore calls `ReleaseRetiredResources()` on that renderer (queue idle wait, then every bucket), outside any recorded frame |
+| macOS | `<video_frame>` in the PiP panel's RmlUi context and its own `RenderInterface_Metal` | CPU NV12 planes are copied into the renderer's Metal textures; `ReleaseNV12Texture` frees them at once, and Metal keeps textures referenced by in-flight command buffers alive itself. The `CVPixelBuffer` is released by the decoder callback after the copy |
+| iOS | One `AVSampleBufferDisplayLayer` serves both the inline cell and system PiP (`AVPictureInPictureController` moves that layer) | No RmlUi texture is involved: each `CVPixelBuffer` is wrapped in a `CMSampleBuffer` and enqueued as is. The layer retains only queued and displayed buffers and releases them as newer frames replace them; `flushAndRemoveImage` releases everything when the stream ends or another stream is selected, returning the buffers to the VideoToolbox/dav1d pools |
+
+While the Windows main window is minimized or hidden to the tray, the render
+thread skips the main swap chain but keeps routing and rendering the PiP
+stream (paced by `DwmFlush`). Other streams keep only their newest decoded
+frame until the grid is visible again. On iOS a background timer keeps
+`AppCore::tick` running, because per-frame video streams leave their reorder
+buffers only from the tick.
+
 ## Portable I420 and NV12
 
 Software decoders still return CPU planes. `Dx12VideoConverter` keeps one set
@@ -204,3 +243,7 @@ NVDEC on the renderer adapter, waits the CUDA-signalled D3D12 fence, reads both
 D3D12 presentation planes, and rejects empty luma or incomplete chroma output. The
 multi-window RmlUI test covers teardown of multiple HWND renderers and validates
 that a packed NV12 resource can be registered as two plane SRVs.
+`parties_stream_pip_model` moves a stream between a grid context and a PiP
+context with separate counting renderers and checks that each surface's
+textures are created and released only by its own renderer, and that a PiP
+frame never reaches the grid.

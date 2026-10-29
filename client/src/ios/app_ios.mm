@@ -13,6 +13,7 @@
 
 // RmlUi Metal backend
 #import "RmlUi_Backend_iOS_Metal.h"
+#import "StreamPictureInPicture.h"
 
 // RmlUi core
 #include <RmlUi/Core/Core.h>
@@ -39,6 +40,7 @@
 #include <client/sound_player.h>
 #include <client/rmlui_backend.h>
 #include <client/video_element.h>
+#include <client/video_frame_router.h>
 #include <client/gradient_circle_element.h>
 #include <client/custom_elements.h>
 #include <client/ios_audio_routes.h>
@@ -403,6 +405,13 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     // Video decoder (receive screen shares)
     std::unique_ptr<VideoDecoderIOS> _decoder;
     bool                    _streamRevealed;
+    // Inline + system PiP surface of the watched stream (null when PiP is not
+    // supported; frames then go to the grid's video element).
+    PartiesStreamPictureInPicture* _streamPip;
+    // Keeps AppCore ticking in the background, where the view stops drawing
+    // but PiP and stream audio continue.
+    NSTimer*                _backgroundTick;
+    bool                    _streamAudioSession;   // session currently set up for a watched stream
     uint32_t                _streamWidth;
     uint32_t                _streamHeight;
     bool                    _streamFullscreen;
@@ -615,6 +624,42 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
 
     bridge.open_share_picker = nullptr;  // iOS: receive-only, no screen share send
 
+    // System picture-in-picture. AppCore owns the state; the AVKit controller
+    // presents it and reports system-initiated starts, stops and restores.
+    if (!_previewMode && [PartiesStreamPictureInPicture isSupported]) {
+        _streamPip = [[PartiesStreamPictureInPicture alloc] initWithHostView:self.view];
+        [_streamPip setOnStarted:[bself]() {
+            // Started by the system (app went to the background) or by the
+            // PiP button; open_pip is a no-op if AppCore already opened it.
+            const UserId stream = bself->_core.viewing_sharer_.load();
+            if (stream != 0 && bself->_core.pip_.stream() != stream)
+                bself->_core.open_pip(stream);
+        }];
+        [_streamPip setOnStopped:[bself]() {
+            if (bself->_core.pip_.is_open())
+                bself->_core.close_pip(PipCloseReason::UserClosed);
+        }];
+        [_streamPip setOnRestore:[bself](void (^completion)(BOOL)) {
+            // System restore button: back to the Streams route on this stream.
+            bself->_core.return_from_pip();
+            bself->_rmlContext->Update();
+            [bself updateStreamSurface];
+            completion(YES);
+        }];
+        bridge.show_pip = [bself](UserId, const std::string&) {
+            // AppCore left fullscreen in the model; drop the iOS landscape lock.
+            [bself exitStreamFullscreen];
+            [bself->_streamPip start];
+        };
+        bridge.hide_pip = [bself](UserId, PipCloseReason reason) {
+            [bself->_streamPip stop];
+            if (reason == PipCloseReason::StreamUnwatched) {
+                [bself->_streamPip flush];
+                [bself->_streamPip hideInline];
+            }
+        };
+    }
+
     bridge.on_authenticated = [bself]() {
         bself->_core.net_.open_av_streams();
         // AppCore fills its desktop device cache after this callback returns.
@@ -696,6 +741,12 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
         _core.on_video_frame_received = [bself](uint32_t sender_id, const uint8_t* data, size_t len) {
             [bself onVideoFrameData:sender_id data:data len:len];
         };
+        _backgroundTick = [[NSTimer timerWithTimeInterval:1.0 / 60.0
+                                                   target:self
+                                                 selector:@selector(backgroundTick:)
+                                                 userInfo:nil
+                                                  repeats:YES] retain];
+        [[NSRunLoop mainRunLoop] addTimer:_backgroundTick forMode:NSRunLoopCommonModes];
 
         NSString* deviceName = [[UIDevice currentDevice] name];
         _core.load_or_generate_identity(std::string(deviceName.UTF8String));
@@ -885,18 +936,26 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     }
     _core.stream_frame_count_.fetch_add(1, std::memory_order_relaxed);
 
-    if (!_doc) return;
-    // Route to this sharer's grid cell (single-select on iOS).
-    std::string elem_id = "screen-share-" + std::to_string(_core.viewing_sharer_.load());
-    auto* el = dynamic_cast<VideoElement*>(_doc->GetElementById(elem_id));
-    if (!el) return;
-
-    CVPixelBufferLockBaseAddress(buf, kCVPixelBufferLock_ReadOnly);
-
     uint32_t w = (uint32_t)CVPixelBufferGetWidth(buf);
     uint32_t h = (uint32_t)CVPixelBufferGetHeight(buf);
     _streamWidth  = w;
     _streamHeight = h;
+
+    // One destination per frame. With PiP support the stream's only surface
+    // is the sample-buffer layer: inline over its grid cell, or in system PiP.
+    // The decoded buffer is enqueued as is; the layer retains it.
+    if (_streamPip) {
+        [_streamPip enqueuePixelBuffer:buf];
+        return;
+    }
+
+    if (!_doc) return;
+    // Route to this sharer's grid cell (single-select on iOS).
+    VideoElement* el = find_stream_grid_video(_doc->GetElementById("stream-grid"),
+                                              _core.viewing_sharer_.load());
+    if (!el) return;
+
+    CVPixelBufferLockBaseAddress(buf, kCVPixelBufferLock_ReadOnly);
 
     const uint8_t* y_plane  = (const uint8_t*)CVPixelBufferGetBaseAddressOfPlane(buf, 0);
     const uint8_t* uv_plane = (const uint8_t*)CVPixelBufferGetBaseAddressOfPlane(buf, 1);
@@ -910,6 +969,8 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
 
 - (void)watchSharer:(UserId)uid
 {
+    // The surface must not show the previous stream's last frame.
+    if (uid != _core.viewing_sharer_.load()) [_streamPip flush];
     _core.viewing_sharer_   = uid;
     _core.awaiting_keyframe_ = true;
     _decoder = std::make_unique<VideoDecoderIOS>();
@@ -925,6 +986,75 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     _core.set_single_watched(uid);
     _streamRevealed = false;
     // Don't dirty yet — onVideoDecoded dirties on first frame to avoid black flash
+}
+
+// ── Picture-in-picture surface (iOS) ──────────────────────────────────────────
+
+// Keeps the inline sample-buffer surface exactly over the watched stream's
+// <video_frame>. The element stays in the layout (it receives the taps); the
+// layer only draws the picture. Hidden while the cell is hidden: another
+// route, the PiP placeholder, or no watched stream.
+- (void)updateStreamSurface
+{
+    if (!_streamPip) return;
+    Rml::Element* grid = _doc ? _doc->GetElementById("stream-grid") : nullptr;
+    VideoElement* cell = find_stream_grid_video(grid, _core.viewing_sharer_.load());
+    if (!cell || !cell->IsVisible(true)) {
+        // Between the PiP request and willStart the cell already shows the
+        // placeholder; the source layer stays where it was until AVKit owns it.
+        const bool pip_starting = cell && _core.pip_.is_open() && ![_streamPip isActive];
+        if (!pip_starting) [_streamPip hideInline];
+        return;
+    }
+    // RmlUi physical pixels start _viewportTopPx below the top of the view.
+    auto toPoints = [&](Rml::Element* element, Rml::BoxArea area) {
+        const Rml::Vector2f offset = element->GetAbsoluteOffset(area);
+        const Rml::Vector2f size = element->GetBox().GetSize(area);
+        return CGRectMake(offset.x / _dpRatio, (offset.y + _viewportTopPx) / _dpRatio,
+                          size.x / _dpRatio, size.y / _dpRatio);
+    };
+    CGRect exclude = CGRectNull;
+    if (Rml::Element* dock = _doc->QuerySelector(".stream-call-dock"); dock && dock->IsVisible(true))
+        exclude = toPoints(dock, Rml::BoxArea::Border);
+    [_streamPip setInlineFrame:toPoints(cell, Rml::BoxArea::Content) exclude:exclude];
+}
+
+// Automatic picture-in-picture requires the app to own playback: a mixable
+// session never qualifies. While a stream is watched the session drops
+// MixWithOthers (other apps' audio pauses, as with any video player) and
+// returns to the mixable voice-chat configuration afterwards.
+- (void)syncStreamAudioSession
+{
+    if (!_streamPip || !_coreInitialized) return;
+    const bool watching = _core.model_.watching_count.get() > 0;
+    if (watching == _streamAudioSession) return;
+    // No watched stream: release every buffer the surface still holds.
+    if (!watching) [_streamPip flush];
+    AVAudioSessionCategoryOptions options = AVAudioSessionCategoryOptionDefaultToSpeaker |
+                                            AVAudioSessionCategoryOptionAllowBluetoothHFP |
+                                            AVAudioSessionCategoryOptionAllowBluetoothA2DP;
+    if (!watching) options |= AVAudioSessionCategoryOptionMixWithOthers;
+    NSError* error = nil;
+    [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayAndRecord
+                                     withOptions:options
+                                           error:&error];
+    if (error) {
+        NSLog(@"[Parties] Audio session update for streams failed: %@", error);
+        return;   // retried on the next tick
+    }
+    _streamAudioSession = watching;
+}
+
+// In the background the Metal view stops drawing, which also stops the
+// AppCore tick it drives. Network messages, reorder-buffer delivery of
+// per-frame video streams and PiP state changes must continue for PiP.
+- (void)backgroundTick:(NSTimer*)timer
+{
+    if (!_coreInitialized ||
+        UIApplication.sharedApplication.applicationState != UIApplicationStateBackground)
+        return;
+    _core.tick();
+    [self syncStreamAudioSession];
 }
 
 - (void)toggleStreamFullscreen
@@ -959,21 +1089,27 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     }
 }
 
+// Leaves stream fullscreen and its landscape lock. AppCore clears the shared
+// model flag on its own paths (PiP), so the local flag follows here too.
+- (void)exitStreamFullscreen
+{
+    if (!_streamFullscreen) return;
+    _streamFullscreen = false;
+    _core.model_.stream_fullscreen = false;
+    [self setNeedsUpdateOfSupportedInterfaceOrientations];
+    auto scene = self.view.window.windowScene;
+    if (scene) {
+        auto prefs = [[UIWindowSceneGeometryPreferencesIOS alloc]
+            initWithInterfaceOrientations:UIInterfaceOrientationMaskPortrait];
+        [scene requestGeometryUpdateWithPreferences:prefs
+            errorHandler:^(NSError* error) {}];
+        [prefs release];
+    }
+}
+
 - (void)stopWatching
 {
-    // Exit fullscreen if active
-    if (_streamFullscreen) {
-        _streamFullscreen = false;
-        _core.model_.stream_fullscreen = false;
-        [self setNeedsUpdateOfSupportedInterfaceOrientations];
-        auto scene = self.view.window.windowScene;
-        if (scene) {
-            auto prefs = [[UIWindowSceneGeometryPreferencesIOS alloc]
-                initWithInterfaceOrientations:UIInterfaceOrientationMaskPortrait];
-            [scene requestGeometryUpdateWithPreferences:prefs
-                errorHandler:^(NSError* error) {}];
-        }
-    }
+    [self exitStreamFullscreen];
 
     _core.viewing_sharer_   = 0;
     _decoder.reset();
@@ -1085,6 +1221,10 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     if (self.presentedViewController) return;
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 
+    [_backgroundTick invalidate];
+    [_backgroundTick release];
+    _backgroundTick = nil;
+
     if (_coreInitialized) {
         _core.shutdown();
         _coreInitialized = false;
@@ -1094,6 +1234,9 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
         _decoder->shutdown();
         _decoder.reset();
     }
+    [_streamPip stop];
+    [_streamPip release];
+    _streamPip = nil;
 
 #ifdef RMLUI_DEBUG
     if (_debuggerInitialized) {
@@ -1226,6 +1369,8 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
     }
 
     _rmlContext->Update();
+    [self updateStreamSurface];
+    [self syncStreamAudioSession];
     if (_doc) {
         const auto canvas = _doc->GetComputedValues().background_color();
         pass.colorAttachments[0].clearColor = MTLClearColorMake(
