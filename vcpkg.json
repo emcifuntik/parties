@@ -37,7 +37,7 @@
         "openh264",
         {
           "name": "rmlui",
-          "features": ["svg", "lottie"]
+          "features": ["svg"]
         },
         "rnnoise",
         "speexdsp"
@@ -50,7 +50,7 @@
         "miniaudio",
         {
           "name": "rmlui",
-          "features": ["svg", "lottie"]
+          "features": ["svg"]
         },
         "rnnoise",
         "speexdsp"
@@ -63,7 +63,7 @@
         "miniaudio",
         {
           "name": "rmlui",
-          "features": ["svg", "lottie"]
+          "features": ["svg"]
         },
         "rnnoise",
         "speexdsp"

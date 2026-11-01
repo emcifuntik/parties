@@ -1,23 +1,9 @@
 find_package(unofficial-sqlite3 CONFIG REQUIRED)
 find_package(rnnoise CONFIG REQUIRED)
-# rlottie's exported target links RapidJSON by target name, but its package
-# config does not import that target itself. Make it available before RmlUi
-# loads the optional Lottie plugin.
+# The Windows auto-updater parses its release feed with RapidJSON.
 find_package(RapidJSON CONFIG REQUIRED)
 find_package(RmlUi CONFIG REQUIRED)
 find_path(MINIAUDIO_INCLUDE_DIRS "miniaudio.h")
-
-# rlottie's exported Apple target carries an explicit `-undefined error` flag.
-# Modern ld treats that mode as the default and warns that the explicit option
-# is deprecated, so remove only that exact stale interface item.
-if(APPLE AND TARGET rlottie::rlottie)
-    get_target_property(_RLottie_INTERFACE_LIBS rlottie::rlottie INTERFACE_LINK_LIBRARIES)
-    if(_RLottie_INTERFACE_LIBS)
-        list(REMOVE_ITEM _RLottie_INTERFACE_LIBS "-Wl, -undefined error")
-        set_property(TARGET rlottie::rlottie PROPERTY
-            INTERFACE_LINK_LIBRARIES "${_RLottie_INTERFACE_LIBS}")
-    endif()
-endif()
 
 
 find_path(SPEEXDSP_INCLUDE_DIRS "speex/speex_echo.h" REQUIRED)

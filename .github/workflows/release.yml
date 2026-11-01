@@ -17,11 +17,29 @@ jobs:
   windows:
     runs-on: windows-latest
     env:
+      VCPKG_DOWNLOADS: ${{ github.workspace }}/.vcpkg-downloads
       VCPKG_BINARY_SOURCES: "clear;nuget,https://nuget.pkg.github.com/emcifuntik/index.json,readwrite"
     steps:
       - uses: actions/checkout@v6
         with:
           submodules: recursive
+
+      # Source archives vcpkg downloads. A binary-cache miss (new runner image,
+      # compiler or CMake) then rebuilds from these instead of fetching every
+      # tarball from GitHub again, which fails whenever GitHub has a bad minute.
+      - name: Locate vcpkg downloads
+        id: vcpkg-downloads
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_DOWNLOADS | Out-Null
+          "rev=$(git -C vcpkg rev-parse HEAD)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Cache vcpkg downloads
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.VCPKG_DOWNLOADS }}
+          key: vcpkg-downloads-${{ runner.os }}-${{ steps.vcpkg-downloads.outputs.rev }}-${{ hashFiles('vcpkg.json', 'vendor/ports/**') }}
+          restore-keys: vcpkg-downloads-${{ runner.os }}-
 
       - name: Configure vcpkg NuGet binary caching
         shell: pwsh
@@ -132,10 +150,29 @@ jobs:
   # ── macOS retail build ──────────────────────────────────────────────────────
   macos:
     runs-on: macos-26
+    env:
+      VCPKG_DOWNLOADS: ${{ github.workspace }}/.vcpkg-downloads
     steps:
       - uses: actions/checkout@v6
         with:
           submodules: recursive
+
+      # Source archives vcpkg downloads. A binary-cache miss (new runner image,
+      # compiler or CMake) then rebuilds from these instead of fetching every
+      # tarball from GitHub again, which fails whenever GitHub has a bad minute.
+      - name: Locate vcpkg downloads
+        id: vcpkg-downloads
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_DOWNLOADS | Out-Null
+          "rev=$(git -C vcpkg rev-parse HEAD)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Cache vcpkg downloads
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.VCPKG_DOWNLOADS }}
+          key: vcpkg-downloads-${{ runner.os }}-${{ steps.vcpkg-downloads.outputs.rev }}-${{ hashFiles('vcpkg.json', 'vendor/ports/**') }}
+          restore-keys: vcpkg-downloads-${{ runner.os }}-
 
       - name: Cache vcpkg binary packages
         uses: actions/cache@v5
