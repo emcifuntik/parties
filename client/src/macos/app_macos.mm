@@ -614,7 +614,8 @@ static int macos_modifiers_to_rml(NSEventModifierFlags flags)
         // RML document and data models, with no audio, database or network I/O.
         if (!_core.server_model_.init(_rmlContext) ||
             !_core.model_.init(_rmlContext) ||
-            !_core.chat_model_.init(_rmlContext)) {
+            !_core.chat_model_.init(_rmlContext) ||
+            !_core.diag_model_.init(_rmlContext)) {
             NSLog(@"[Parties] Failed to initialize macOS UI fixture models");
             return;
         }

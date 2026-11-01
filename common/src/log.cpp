@@ -2,9 +2,12 @@
 
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/sinks/rotating_file_sink.h>
+#include <spdlog/sinks/base_sink.h>
 
 #include <chrono>
 #include <algorithm>
+#include <ctime>
+#include <deque>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -27,6 +30,50 @@ namespace {
 
 std::mutex g_log_path_mutex;
 std::string g_log_path;
+
+// In-memory tail of the client log for the diagnostics overlay.
+constexpr size_t RECENT_LOG_LINES = 300;
+std::mutex g_recent_mutex;
+std::deque<RecentLogLine> g_recent;
+uint64_t g_recent_seq = 0;
+
+class recent_lines_sink final : public spdlog::sinks::base_sink<std::mutex> {
+protected:
+    void sink_it_(const spdlog::details::log_msg& msg) override {
+        if (msg.level < spdlog::level::info) return;
+        const auto t = std::chrono::system_clock::to_time_t(msg.time);
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            msg.time.time_since_epoch()).count() % 1000;
+        std::tm tm{};
+#ifdef _WIN32
+        localtime_s(&tm, &t);
+#else
+        localtime_r(&t, &tm);
+#endif
+        char stamp[16];
+        std::snprintf(stamp, sizeof(stamp), "%02d:%02d:%02d.%03d", tm.tm_hour, tm.tm_min, tm.tm_sec,
+                      static_cast<int>(ms));
+        RecentLogLine line;
+        line.level = static_cast<int>(msg.level);
+        line.text = stamp;
+        if (msg.source.filename) {
+            const char* file = msg.source.filename;
+            for (const char* p = file; *p; ++p)
+                if (*p == '/' || *p == '\\') file = p + 1;
+            line.text += ' ';
+            line.text += file;
+            line.text += ':';
+            line.text += std::to_string(msg.source.line);
+        }
+        line.text += ' ';
+        line.text.append(msg.payload.data(), msg.payload.size());
+        std::lock_guard<std::mutex> lock(g_recent_mutex);
+        line.seq = ++g_recent_seq;
+        g_recent.push_back(std::move(line));
+        while (g_recent.size() > RECENT_LOG_LINES) g_recent.pop_front();
+    }
+    void flush_() override {}
+};
 
 std::string environment_value(const char* name) {
 #ifdef _WIN32
@@ -150,6 +197,7 @@ void log_init(LogTarget target) {
     }
 
     if (target == LogTarget::Client) {
+        sinks.push_back(std::make_shared<recent_lines_sink>());
 #ifdef _WIN32
         // Always log to OutputDebugString (visible in debugger / DebugView)
         sinks.push_back(std::make_shared<spdlog::sinks::msvc_sink_mt>());
@@ -196,6 +244,17 @@ void log_init(LogTarget target) {
 std::string log_file_path() {
     std::lock_guard lock(g_log_path_mutex);
     return g_log_path;
+}
+
+std::vector<RecentLogLine> log_recent(uint64_t after_seq, size_t max_lines) {
+    std::lock_guard<std::mutex> lock(g_recent_mutex);
+    std::vector<RecentLogLine> out;
+    auto it = std::find_if(g_recent.begin(), g_recent.end(),
+                           [after_seq](const RecentLogLine& l) { return l.seq > after_seq; });
+    const size_t available = static_cast<size_t>(std::distance(it, g_recent.end()));
+    if (available > max_lines) it += static_cast<std::ptrdiff_t>(available - max_lines);
+    out.assign(it, g_recent.end());
+    return out;
 }
 
 void log_shutdown() {

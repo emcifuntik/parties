@@ -720,6 +720,7 @@ struct NetClient::Impl {
         out.suspected_lost_packets = stats.SendSuspectedLostPackets;
         out.spurious_lost_packets  = stats.SendSpuriousLostPackets;
         out.sent_bytes             = stats.SendTotalBytes;
+        out.recv_bytes             = stats.RecvTotalBytes;
         out.congestion_window      = stats.SendCongestionWindow;
         return out;
     }

@@ -2,7 +2,9 @@
 
 #include <spdlog/spdlog.h>
 
+#include <cstdint>
 #include <string>
+#include <vector>
 
 // Logging macros — include source file:line via spdlog's SPDLOG_* macros.
 // SPDLOG_ACTIVE_LEVEL (set in CMakeLists.txt) controls compile-time filtering.
@@ -28,5 +30,15 @@ std::string log_file_path();
 
 // Flush and shut down logging. Call at shutdown.
 void log_shutdown();
+
+// The most recent client log lines (info and above), kept in memory for the
+// diagnostics overlay. Empty for the server target.
+struct RecentLogLine {
+    uint64_t    seq = 0;        // increases by one per line
+    int         level = 0;      // spdlog::level::level_enum
+    std::string text;           // "HH:MM:SS.mmm file.cpp:123 message"
+};
+// Lines with seq > after_seq, at most max_lines, oldest first. Thread-safe.
+std::vector<RecentLogLine> log_recent(uint64_t after_seq, size_t max_lines);
 
 } // namespace parties

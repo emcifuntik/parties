@@ -182,6 +182,15 @@ enum class ControlMessageType : uint16_t {
 };
 
 // Data plane packet types (first byte of every datagram/stream)
+// KEEPALIVE_PING payload (optional): [flags(1)]. With WANT_LINK_REPORT the
+// server answers with KEEPALIVE_PONG [version(1)=1][srtt_us(4)]
+// [loss_permille(2)][video_outstanding(4)][video_threshold(4)]
+// [video_dropped(4)][video_aborted(4)]: its view of the link to this client
+// (see docs/protocol.md). Older servers ignore the flag and send an empty
+// PONG; older clients send an empty PING and get an empty PONG.
+constexpr uint8_t KEEPALIVE_WANT_LINK_REPORT    = 0x01;
+constexpr uint8_t KEEPALIVE_LINK_REPORT_VERSION = 1;
+
 constexpr uint8_t VOICE_PACKET_TYPE        = 0x01;
 constexpr uint8_t VIDEO_FRAME_PACKET_TYPE  = 0x02;
 constexpr uint8_t VIDEO_CONTROL_TYPE       = 0x03;

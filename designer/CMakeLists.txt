@@ -14,6 +14,9 @@ set(DESIGNER_SOURCES
 	${CMAKE_SOURCE_DIR}/client/src/chat_model.cpp
 	${CMAKE_SOURCE_DIR}/client/src/gradient_circle_element.cpp
 	${CMAKE_SOURCE_DIR}/client/src/level_meter_element.cpp
+	${CMAKE_SOURCE_DIR}/client/src/diagnostics.cpp
+	${CMAKE_SOURCE_DIR}/client/src/diagnostics_graph_element.cpp
+	${CMAKE_SOURCE_DIR}/client/src/diagnostics_model.cpp
 	${CMAKE_SOURCE_DIR}/client/src/video_element.cpp
 )
 
@@ -160,6 +163,16 @@ if(BUILD_TESTING)
             --size 1440x900
             --frames 5
             --screenshot "${CMAKE_BINARY_DIR}/ui-designer-settings-select-open.bmp"
+    )
+    add_test(
+        NAME parties_ui_designer_diagnostics
+        COMMAND rmlui_designer
+            "${CMAKE_SOURCE_DIR}/client/ui/lobby.rml"
+            --asset-dir "${CMAKE_SOURCE_DIR}/client/ui"
+            --fixture diagnostics
+            --size 1440x900
+            --frames 5
+            --screenshot "${CMAKE_BINARY_DIR}/ui-designer-diagnostics.bmp"
     )
     add_test(
         NAME parties_ui_designer_settings_screen_share

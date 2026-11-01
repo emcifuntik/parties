@@ -246,11 +246,32 @@ Sent immediately after the user joins a channel. The key is generated on first j
 
 #### KEEPALIVE_PING (0x0004) -- C->S
 
-No payload. Client sends periodically to prevent idle timeout.
+Sent every 2 s (every 500 ms while the diagnostics overlay is open); the
+client times the PONG for the ping shown in the UI. Payload, optional:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| flags | u8 | Bit 0 (`KEEPALIVE_WANT_LINK_REPORT`): answer with the link report |
+
+Older clients send no payload.
 
 #### KEEPALIVE_PONG (0x0107) -- S->C
 
-No payload. Server echoes back immediately.
+Sent immediately. No payload, unless the ping asked for the link report: the
+server's view of its connection to this client, for the diagnostics overlay.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| version | u8 | `KEEPALIVE_LINK_REPORT_VERSION` (1) |
+| srtt_us | u32 | Smoothed RTT the server measures |
+| loss_permille | u16 | Packet loss server -> client over the last ~1 s sample, 1/1000 |
+| video_outstanding | u32 | Video bytes queued or in flight to this client |
+| video_threshold | u32 | Backlog budget those bytes are compared with (see the per-viewer backlog gate) |
+| video_dropped | u32 | Cumulative frames the backlog gate dropped for this client |
+| video_aborted | u32 | Cumulative queued frame streams aborted for this client |
+
+Older servers ignore the flag and answer with an empty PONG. No protocol
+version change: both directions stay compatible.
 
 ### 5.4 Screen Sharing Signaling
 

@@ -13,6 +13,7 @@
     <link type="text/rcss" href="dialogs.rcss" />
     <link type="text/rcss" href="desktop.rcss" />
     <link type="text/rcss" href="mobile.rcss" />
+    <link type="text/rcss" href="diagnostics.rcss" />
     <link type="text/rcss" href="typography.rcss" />
 </head>
 <body class="fullscreen">
@@ -473,6 +474,13 @@
                                 <span class="settings-feature-copy ui-caption">Try this if streams or voice stall on your connection. Turns off UDP offloading and sends smaller packets.</span>
                             </div>
                             <span class="settings-switch" id="settings-network-compat-switch" data-class-on="network_compat_enabled"><span class="settings-switch-knob"></span></span>
+                        </div>
+                        <div class="settings-feature-card" id="settings-diag-overlay-card" data-event-click="toggle_diag_overlay">
+                            <div>
+                                <span class="settings-feature-title ui-control">Diagnostics Overlay</span>
+                                <span class="settings-feature-copy ui-caption">Traffic, packet loss, freezes and log on top of Parties. Ctrl+Shift+D (Cmd+Shift+D on Mac) toggles it anywhere.</span>
+                            </div>
+                            <span class="settings-switch" id="settings-diag-overlay-switch" data-class-on="diag_overlay_enabled"><span class="settings-switch-knob"></span></span>
                         </div>
                     </div>
                     <div class="settings-camera-hint settings-network-hint ui-caption" id="settings-network-compat-restart" data-if="network_compat_restart">Restart Parties to finish applying this change.</div>
@@ -1196,6 +1204,52 @@
         </div>
     </div>
 
+    <!-- Diagnostics overlay (Ctrl+Shift+D). Never takes input except its close button. -->
+    <div class="diag-overlay" id="diag-overlay" data-model="diag" data-if="visible">
+        <div class="diag-header">
+            <span class="diag-title ui-heading">Diagnostics</span>
+            <div class="diag-close ui-icon-button" id="diag-close" data-event-click="close_diagnostics" title="Close diagnostics">
+                <svg src="icon-close.svg" width="12" height="12" />
+            </div>
+        </div>
+        <div class="diag-section">
+            <div class="diag-line ui-caption">{{ link_rtt }}</div>
+            <div class="diag-line ui-caption">{{ link_rates }}</div>
+            <div class="diag-line ui-caption">{{ link_loss }}</div>
+            <div class="diag-line diag-muted ui-micro">{{ link_server }}</div>
+        </div>
+        <div class="diag-chart">
+            <div class="diag-chart-heading"><span class="diag-label ui-micro">Traffic <span class="diag-key diag-key-down">down</span> <span class="diag-key diag-key-up">up</span></span><span class="diag-scale ui-micro">{{ net_scale }}</span></div>
+            <diag_graph class="diag-graph" id="diag-graph-net" kind="net" data-attr-scale="net_scale_value" data-attr-revision="revision" />
+        </div>
+        <div class="diag-chart">
+            <div class="diag-chart-heading"><span class="diag-label ui-micro">RTT <span class="diag-key diag-key-loss">loss</span></span><span class="diag-scale ui-micro">{{ rtt_scale }}</span></div>
+            <diag_graph class="diag-graph" id="diag-graph-rtt" kind="rtt" data-attr-scale="rtt_scale_value" data-attr-revision="revision" />
+        </div>
+        <div class="diag-chart" data-if="primary_stream != 0">
+            <div class="diag-chart-heading"><span class="diag-label ui-micro">Shown fps: {{ primary_stream_name }} <span class="diag-key diag-key-loss">freeze</span></span><span class="diag-scale ui-micro">{{ fps_scale }}</span></div>
+            <diag_graph class="diag-graph" id="diag-graph-video" kind="video" data-attr-stream="primary_stream" data-attr-scale="fps_scale_value" data-attr-revision="revision" />
+        </div>
+        <div class="diag-section" data-if="streams.size > 0">
+            <div class="diag-stream" data-for="s : streams" data-class-stalled="s.stalled">
+                <div class="diag-line ui-label">{{ s.name }}</div>
+                <div class="diag-line ui-caption">{{ s.rates }}</div>
+                <div class="diag-line diag-muted ui-micro">{{ s.counters }}</div>
+                <div class="diag-line diag-freeze-summary ui-micro">{{ s.freezes }}</div>
+            </div>
+        </div>
+        <div class="diag-section" data-if="freezes.size > 0">
+            <div class="diag-label ui-micro">Recent freezes</div>
+            <div class="diag-line ui-micro" data-for="f : freezes" data-class-diag-cause-sender="f.cause == 'sender'" data-class-diag-cause-network="f.cause == 'network'" data-class-diag-cause-lost="f.cause == 'lost'" data-class-diag-cause-decode="f.cause == 'decode'">{{ f.text }}</div>
+        </div>
+        <div class="diag-section" data-if="sender != ''">
+            <div class="diag-line diag-pre ui-micro">{{ sender }}</div>
+        </div>
+        <div class="diag-section diag-log">
+            <div class="diag-label ui-micro">Log (newest first)</div>
+            <div class="diag-log-line ui-micro" data-for="l : logs" data-class-diag-log-warn="l.level == 'warn'" data-class-diag-log-error="l.level == 'error'">{{ l.text }}</div>
+        </div>
+    </div>
 
 </body>
 </rml>

@@ -4,6 +4,7 @@
 #include <RmlUi/Core/ElementInstancer.h>
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -19,6 +20,11 @@ class VideoElement : public Rml::Element {
 public:
     explicit VideoElement(const Rml::String& tag);
     ~VideoElement() override;
+
+    // Called with the element's id whenever any element receives a new frame
+    // (the diagnostics overlay's presented-frame count). Set once at startup,
+    // from the thread that updates the elements (the UI thread).
+    static void set_frame_listener(std::function<void(const Rml::String& element_id)> listener);
 
     // Upload I420 YUV planes directly — GPU converts to RGB in pixel shader.
     void UpdateYUVFrame(
@@ -76,6 +82,7 @@ protected:
     void OnResize() override;
 
 private:
+    void notify_frame_listener();
     void ReleaseResources();
     void RebuildGeometry();
     void SetTextureCrop(uint32_t texture_width, uint32_t texture_height,

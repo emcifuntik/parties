@@ -8,12 +8,17 @@
 #include <parties/permissions.h>
 #include <parties/server_query.h>
 #include <parties/quic_common.h>
+#include <client/diagnostics_graph_element.h>
+#include <client/rml_elements.h>
+#include <client/video_element.h>
 #include <parties/log.h>
 
 #include <RmlUi/Core/Core.h>
 
 #include <algorithm>
 #include <cctype>
+#include <cstdarg>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -215,6 +220,31 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
         LOG_ERROR("chat_model init failed");
         return false;
     }
+    diag_model_.on_close = [this] { set_diagnostics_visible(false); };
+    if (!diag_model_.init(rml_context)) {
+        LOG_ERROR("diag_model init failed");
+        return false;
+    }
+    DiagnosticsGraphElement::set_source(&diag_);
+    // Presented frames of watched streams ("screen-share-<stream id>"); our
+    // own self-preview is not a received stream.
+    VideoElement::set_frame_listener([this](const Rml::String& id) {
+        static constexpr const char prefix[] = "screen-share-";
+        if (id.compare(0, sizeof(prefix) - 1, prefix) != 0) return;
+        const uint32_t stream = static_cast<uint32_t>(std::strtoul(id.c_str() + sizeof(prefix) - 1, nullptr, 10));
+        if (stream == 0 || protocol::video_stream_owner(stream) == user_id_) return;
+        diag_.on_frame_presented(stream, steady_now_us());
+    });
+    // Ctrl+Shift+D (Cmd+Shift+D on macOS) toggles the overlay from anywhere.
+    if (rml_context) {
+        rml_context->AddEventListener("keydown", new rml::OwnedListener([this](Rml::Event& e) {
+            if (e.GetParameter<int>("key_identifier", 0) != Rml::Input::KI_D) return;
+            const bool command = e.GetParameter<int>("ctrl_key", 0) || e.GetParameter<int>("meta_key", 0);
+            if (!command || !e.GetParameter<int>("shift_key", 0)) return;
+            set_diagnostics_visible(!diag_model_.visible.get());
+            e.StopPropagation();
+        }));
+    }
 
     // Initialize audio
     audio_.init();
@@ -232,6 +262,8 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
 
 void AppCore::shutdown()
 {
+    DiagnosticsGraphElement::set_source(nullptr);
+    VideoElement::set_frame_listener(nullptr);
 #ifdef _WIN32
     if (updater_) updater_->stop();
     updater_.reset();
@@ -322,6 +354,7 @@ void AppCore::tick()
             return awaiting_keyframe_.load(std::memory_order_relaxed) &&
                    viewing_sharer_.load(std::memory_order_relaxed) == stream;
         });
+        tick_diagnostics(now);
     }
 
 #ifdef _WIN32
@@ -383,12 +416,17 @@ void AppCore::tick()
                 now - ping_sent_at_).count());
             if (waiting >= model_.ping_ms + 500) model_.ping_ms = waiting;
         } else {
+            // Faster while the diagnostics overlay is open, and asking for
+            // the server's view of the link (older servers ignore the flag).
+            const bool diag = diag_model_.visible.get();
             auto since_last = std::chrono::duration_cast<std::chrono::milliseconds>(now - ping_last_send_).count();
-            if (since_last >= 2000) {
+            if (since_last >= (diag ? 500 : 2000)) {
                 ping_sent_at_ = now;
                 ping_pending_ = true;
                 ping_last_send_ = now;
-                net_.send_message(protocol::ControlMessageType::KEEPALIVE_PING, nullptr, 0);
+                const uint8_t flags = protocol::KEEPALIVE_WANT_LINK_REPORT;
+                net_.send_message(protocol::ControlMessageType::KEEPALIVE_PING, diag ? &flags : nullptr,
+                                  diag ? 1 : 0);
             }
         }
 
@@ -491,6 +529,8 @@ void AppCore::load_saved_prefs()
 
     // Network compatibility mode. Runs before the first connect, so the
     // datapath (created by the first connection) starts without offloads.
+    if (pref("diag.overlay") == "1") set_diagnostics_visible(true);
+
     v = pref("net.compatibility_mode");
     if (v == "1") {
         model_.network_compat_enabled = true;
@@ -1837,6 +1877,14 @@ void AppCore::route_video_stream_aborted(uint32_t sender_id, uint32_t frame_seq,
     video_rx_.on_frame_aborted(sender_id, frame_seq, have_seq, steady_now_us());
 }
 
+// video_rx_ playout thread (inline: MsQuic worker): a frame leaves the
+// receive router for the platform decoder.
+void AppCore::deliver_video_frame(uint32_t stream, const VideoFrameHeader& hdr, std::vector<uint8_t>&& frame)
+{
+    diag_.on_frame_delivered(stream, hdr, frame.size(), steady_now_us());
+    if (on_video_frame_received) on_video_frame_received(stream, frame.data(), frame.size());
+}
+
 // Main thread: a watch starts. A fresh buffer per watch, so nothing of an
 // earlier share of the same stream (its frame counter) can survive into it.
 void AppCore::open_video_rx(UserId stream)
@@ -1920,6 +1968,7 @@ void AppCore::handle_server_message(protocol::ControlMessageType type,
                 std::chrono::steady_clock::now() - ping_sent_at_).count();
             model_.ping_ms = static_cast<int>(rtt);
         }
+        on_link_report(data, len);
         break;
     default: break;
     }
@@ -2620,6 +2669,7 @@ void AppCore::setup_model_callbacks()
     model_.on_normalize_changed         = [this](bool e) { audio_.set_normalize_enabled(e); settings_.set_pref("audio.normalize", e?"1":"0"); };
     model_.on_normalize_target_changed  = [this](float t) { audio_.set_normalize_target(t); save_pref_debounced("audio.normalize_target", std::to_string(t)); };
     model_.on_aec_changed               = [this](bool e) { audio_.set_aec_enabled(e); settings_.set_pref("audio.aec", e?"1":"0"); };
+    model_.on_diag_overlay_changed      = [this](bool e) { set_diagnostics_visible(e); };
     model_.on_network_compat_changed    = [this](bool e) {
         settings_.set_pref("net.compatibility_mode", e ? "1" : "0");
         net_.set_compatibility_mode(e);   // packet size: from the next connection
@@ -3735,6 +3785,258 @@ void AppCore::on_chat_file_ready(const uint8_t* data, size_t len) {
         }
     }
     chat_model_.messages.notify();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Diagnostics overlay
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+Rml::String diag_format(const char* fmt, ...) {
+    char buf[512];
+    va_list args;
+    va_start(args, fmt);
+    std::vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    return buf;
+}
+
+Rml::String diag_rate(double kbps) {
+    return kbps >= 1000.0 ? diag_format("%.1f Mbps", kbps / 1000.0) : diag_format("%.0f kbps", kbps);
+}
+
+// A round number at or above `value` for a chart's full height.
+float diag_ceiling(float value, float minimum) {
+    value = (std::max)(value, minimum);
+    float step = 1.0f;
+    while (step * 10.0f < value) step *= 10.0f;
+    for (float m : {1.0f, 2.0f, 5.0f, 10.0f})
+        if (step * m >= value) return step * m;
+    return step * 10.0f;
+}
+
+float diag_max(const DiagnosticsRecorder::History& h) {
+    return *std::max_element(h.begin(), h.end());
+}
+
+} // namespace
+
+void AppCore::set_diagnostics_visible(bool visible)
+{
+    if (diag_model_.visible.get() == visible) return;
+    diag_model_.visible = visible;
+    model_.diag_overlay_enabled = visible;
+    settings_.set_pref("diag.overlay", visible ? "1" : "0");
+    diag_empty_pongs_ = 0;
+    if (visible) update_diagnostics_model(steady_now_us());
+}
+
+// KEEPALIVE_PONG payload: the server's view of our link (protocol.h).
+void AppCore::on_link_report(const uint8_t* data, size_t len)
+{
+    if (!diag_model_.visible.get()) return;
+    BinaryReader r(data, len);
+    if (len == 0 || r.read_u8() != protocol::KEEPALIVE_LINK_REPORT_VERSION) {
+        ++diag_empty_pongs_;
+        return;
+    }
+    DiagServerReport rep;
+    rep.srtt_us = r.read_u32();
+    rep.loss_permille = r.read_u16();
+    rep.video_outstanding = r.read_u32();
+    rep.video_threshold = r.read_u32();
+    rep.video_dropped = r.read_u32();
+    rep.video_aborted = r.read_u32();
+    if (r.error()) return;
+    rep.valid = true;
+    diag_server_ = rep;
+    diag_empty_pongs_ = 0;
+}
+
+void AppCore::tick_diagnostics(int64_t now_us)
+{
+    if (now_us - diag_sampled_us_ < DiagnosticsRecorder::BUCKET_US) return;
+    diag_sampled_us_ = now_us;
+
+    DiagConnectionSample c;
+    if (authenticated_) {
+        const NetClient::ConnectionStats st = net_.connection_stats();
+        if (st.valid) {
+            c.valid = true;
+            c.rtt_us = st.rtt_us;
+            c.sent_bytes = st.sent_bytes;
+            c.recv_bytes = st.recv_bytes;
+            c.sent_packets = st.sent_packets;
+            c.lost_packets = st.suspected_lost_packets > st.spurious_lost_packets
+                ? st.suspected_lost_packets - st.spurious_lost_packets : 0;
+            c.congestion_window = st.congestion_window;
+        }
+    }
+    diag_.sample(now_us, c, diag_server_);
+
+    // Every freeze also goes to the log file, overlay or not: the record a
+    // user can send after the fact.
+    for (const auto& f : diag_.freezes()) {
+        if (f.at_us <= diag_logged_freeze_us_) continue;
+        diag_logged_freeze_us_ = f.at_us;
+        if (f.cause == DiagnosticsRecorder::FreezeCause::Lost)
+            LOG_INFO("Video freeze on stream {}: {} ms ({}, {} frames)", f.stream, f.duration_us / 1000,
+                     DiagnosticsRecorder::cause_name(f.cause), f.frames_lost);
+        else
+            LOG_INFO("Video freeze on stream {}: {} ms ({})", f.stream, f.duration_us / 1000,
+                     DiagnosticsRecorder::cause_name(f.cause));
+    }
+
+    if (diag_model_.visible.get()) update_diagnostics_model(now_us);
+}
+
+void AppCore::update_diagnostics_model(int64_t now_us)
+{
+    using Series = DiagnosticsRecorder::Series;
+    const DiagConnectionSample conn = diag_.last_connection();
+    const DiagServerReport server = diag_.server_report();
+
+    // ── Link ──
+    const auto down = diag_.history(Series::DownKbps);
+    const auto up = diag_.history(Series::UpKbps);
+    const auto up_loss = diag_.history(Series::UpLossPct);
+    const auto rtt = diag_.history(Series::RttMs);
+    float up_loss_1s = 0;
+    for (size_t i = up_loss.size() - 4; i < up_loss.size(); ++i) up_loss_1s += up_loss[i] / 4.0f;
+    if (!authenticated_ || !conn.valid) {
+        diag_model_.link_rtt = "Not connected";
+        diag_model_.link_rates = "";
+        diag_model_.link_loss = "";
+    } else {
+        diag_model_.link_rtt = diag_format("RTT %u ms  ·  ping %d ms  ·  window %u KB",
+                                           conn.rtt_us / 1000, model_.ping_ms.get(),
+                                           conn.congestion_window / 1024);
+        diag_model_.link_rates = "Down " + diag_rate(down.back()) + "  ·  Up " + diag_rate(up.back());
+        diag_model_.link_loss = server.valid
+            ? diag_format("Packet loss  down %.1f %%  ·  up %.1f %%", server.loss_permille / 10.0, up_loss_1s)
+            : diag_format("Packet loss  up %.1f %%", up_loss_1s);
+    }
+    if (!authenticated_)
+        diag_model_.link_server = "";
+    else if (server.valid)
+        diag_model_.link_server = diag_format(
+            "Server: RTT %u ms  ·  video queued to you %u / %u KB  ·  dropped %u  ·  aborted %u",
+            server.srtt_us / 1000, server.video_outstanding / 1024, server.video_threshold / 1024,
+            server.video_dropped, server.video_aborted);
+    else if (diag_empty_pongs_ >= 2)
+        diag_model_.link_server = "Server: no link report (the server needs an update)";
+    else
+        diag_model_.link_server = "Server: waiting for the link report";
+
+    // ── Chart scales ──
+    const float net_scale = diag_ceiling((std::max)(diag_max(down), diag_max(up)), 100.0f);
+    const float rtt_scale = diag_ceiling(diag_max(rtt), 50.0f);
+    diag_model_.net_scale = diag_rate(net_scale);
+    diag_model_.rtt_scale = diag_format("%.0f ms  ·  loss %.0f %%", rtt_scale,
+                                        DiagnosticsGraphElement::LOSS_SCALE_PCT);
+    diag_model_.net_scale_value = net_scale;
+    diag_model_.rtt_scale_value = rtt_scale;
+
+    // ── Streams ──
+    auto stream_name = [this](uint32_t stream) {
+        auto it = active_sharers_.find(stream);
+        std::string name = it != active_sharers_.end() && !it->second.name.empty()
+            ? it->second.name : "Stream " + std::to_string(stream);
+        if (protocol::video_stream_source(stream) == protocol::VideoSource::Camera) name += " (camera)";
+        return Rml::String(name);
+    };
+    Rml::Vector<DiagStreamRow> rows;
+    uint32_t primary = 0;
+    float fps_scale = 60.0f;
+    for (const auto& s : diag_.streams(now_us)) {
+        if (!video_rx_.is_open(s.stream)) {
+            diag_.forget_stream(s.stream);
+            continue;
+        }
+        const auto rs = video_rx_.stats(s.stream);
+        DiagStreamRow row;
+        row.name = stream_name(s.stream);
+        row.rates = diag_format("%.0f fps shown  ·  %.0f delivered  ·  ", s.fps_presented, s.fps_delivered) +
+                    diag_rate(s.recv_kbps);
+        row.counters = diag_format("lost %llu  ·  keyframes %llu  ·  requests %llu  ·  playout %lld ms",
+                                   static_cast<unsigned long long>(s.frames_lost),
+                                   static_cast<unsigned long long>(s.keyframes),
+                                   static_cast<unsigned long long>(rs.requests_sent),
+                                   static_cast<long long>(rs.playout_delay_us / 1000));
+        row.freezes = s.freezes_minute == 0
+            ? Rml::String("No freezes in the last minute")
+            : diag_format("%u freeze%s in the last minute, longest %lld ms", s.freezes_minute,
+                          s.freezes_minute == 1 ? "" : "s", static_cast<long long>(s.longest_freeze_us / 1000));
+        if (s.stalled_us > 0)
+            row.freezes += diag_format("  ·  frozen for %.1f s", s.stalled_us / 1e6);
+        row.stalled = s.stalled_us > 0;
+        if (primary == 0) {
+            primary = s.stream;
+            fps_scale = diag_ceiling(diag_max(diag_.stream_fps(s.stream)), 60.0f);
+        }
+        rows.push_back(std::move(row));
+    }
+    diag_model_.streams = std::move(rows);
+    diag_model_.primary_stream = static_cast<int>(primary);
+    diag_model_.primary_stream_name = primary ? stream_name(primary) : Rml::String();
+    diag_model_.fps_scale = diag_format("%.0f fps", fps_scale);
+    diag_model_.fps_scale_value = fps_scale;
+
+    // ── Freezes, newest first ──
+    Rml::Vector<DiagFreezeRow> freezes;
+    const auto all = diag_.freezes();
+    for (auto it = all.rbegin(); it != all.rend() && freezes.size() < 6; ++it) {
+        DiagFreezeRow row;
+        row.text = diag_format("%lld s ago  ·  ", static_cast<long long>((now_us - it->at_us) / 1'000'000)) +
+                   stream_name(it->stream) +
+                   diag_format("  ·  %lld ms  ·  %s", static_cast<long long>(it->duration_us / 1000),
+                               DiagnosticsRecorder::cause_name(it->cause));
+        if (it->cause == DiagnosticsRecorder::FreezeCause::Lost)
+            row.text += diag_format(" (%u)", it->frames_lost);
+        switch (it->cause) {
+        case DiagnosticsRecorder::FreezeCause::Sender:  row.cause = "sender"; break;
+        case DiagnosticsRecorder::FreezeCause::Network: row.cause = "network"; break;
+        case DiagnosticsRecorder::FreezeCause::Lost:    row.cause = "lost"; break;
+        case DiagnosticsRecorder::FreezeCause::Decode:  row.cause = "decode"; break;
+        }
+        freezes.push_back(std::move(row));
+    }
+    diag_model_.freezes = std::move(freezes);
+
+    // ── Our own streams ──
+    Rml::String sender;
+    auto describe = [](const char* what, const VideoSendController::Stats& st) {
+        return diag_format("%s ", what) + diag_rate(st.bitrate_bps / 1000.0) +
+               diag_format(" (acked %s)  ·  queue %u ms  ·  in flight %lld KB  ·  skipped %u  ·  decreases %u",
+                           diag_rate(st.goodput_bps / 1000.0).c_str(), st.queue_delay_ms,
+                           static_cast<long long>(st.outstanding_bytes / 1024), st.admission_drops, st.decreases);
+    };
+    if (model_.is_sharing.get()) sender = describe("Sharing", video_sender_.stats());
+    if (model_.is_camera_on.get()) {
+        if (!sender.empty()) sender += "\n";
+        sender += describe("Camera", camera_sender_.stats());
+    }
+    diag_model_.sender = sender;
+
+    // ── Log tail ──
+    constexpr size_t LOG_ROWS = 14;
+    const auto lines = parties::log_recent(diag_log_seq_, LOG_ROWS);
+    if (!lines.empty()) {
+        for (const auto& l : lines) {
+            DiagLogRow row;
+            row.text = l.text.size() > 220 ? l.text.substr(0, 220) + "..." : l.text;
+            row.level = l.level >= spdlog::level::err ? "error" : l.level == spdlog::level::warn ? "warn" : "info";
+            diag_log_rows_.push_back(std::move(row));
+            diag_log_seq_ = l.seq;
+        }
+        if (diag_log_rows_.size() > LOG_ROWS)
+            diag_log_rows_.erase(diag_log_rows_.begin(),
+                                 diag_log_rows_.begin() + static_cast<std::ptrdiff_t>(diag_log_rows_.size() - LOG_ROWS));
+        diag_model_.logs = Rml::Vector<DiagLogRow>(diag_log_rows_.rbegin(), diag_log_rows_.rend());
+    }
+
+    diag_model_.revision = static_cast<int>(diag_.revision());
 }
 
 } // namespace parties::client

@@ -1,0 +1,95 @@
+/* Diagnostics overlay (Ctrl+Shift+D). Layout and colour only; text roles
+   come from typography.rcss. The panel never takes input (pointer-events),
+   so the app underneath stays usable; only the close button does. */
+
+.diag-overlay {
+    display: block;
+    position: absolute;
+    top: 44dp;
+    right: 12dp;
+    width: 460dp;
+    max-height: 92%;
+    overflow: hidden;
+    padding: 10dp 12dp 12dp 12dp;
+    box-sizing: border-box;
+    background-color: #0A0D12;
+    border: 1dp #FFFFFF1F;
+    border-radius: 10dp;
+    color: #D6DCE5;
+    z-index: 1000;
+    pointer-events: none;
+}
+.platform-ios .diag-overlay {
+    top: 60dp;
+    left: 8dp;
+    right: 8dp;
+    width: auto;
+}
+
+.diag-header {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+}
+.diag-title { display: block; color: #EEF1F6; }
+.diag-close {
+    display: flex;
+    width: 22dp;
+    height: 22dp;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6dp;
+    background-color: #FFFFFF0A;
+    cursor: pointer;
+    pointer-events: auto;
+}
+.diag-close svg { display: block; image-color: #7D8795; }
+.diag-close:hover { background-color: #FFFFFF1A; }
+.diag-close:hover svg { image-color: #D6DCE5; }
+
+.diag-section { display: block; margin-top: 8dp; }
+.diag-line { display: block; }
+.diag-pre { white-space: pre-line; }
+.diag-muted { color: #8B93A1; }
+.diag-label { display: block; color: #8B93A1; }
+
+.diag-chart { display: block; margin-top: 8dp; }
+.diag-chart-heading {
+    display: flex;
+    flex-direction: row;
+    justify-content: space-between;
+}
+.diag-scale { display: block; color: #667180; }
+.diag-graph {
+    display: block;
+    width: 100%;
+    height: 44dp;
+    margin-top: 3dp;
+    background-color: #FFFFFF08;
+    border-radius: 4dp;
+}
+.diag-key { margin-left: 5dp; }
+.diag-key-down { color: #5EEAD4; }
+.diag-key-up { color: #F59E0B; }
+.diag-key-loss { color: #F87171; }
+
+.diag-stream {
+    display: block;
+    margin-top: 4dp;
+    padding: 6dp 8dp;
+    background-color: #FFFFFF08;
+    border-left: 2dp #34D399;
+    border-radius: 6dp;
+}
+.diag-stream.stalled { border-left-color: #F87171; }
+.diag-freeze-summary { color: #A0A8B8; }
+
+.diag-cause-sender { color: #8B93A1; }
+.diag-cause-network { color: #FBBF24; }
+.diag-cause-lost { color: #F87171; }
+.diag-cause-decode { color: #C084FC; }
+
+.diag-log-line { display: block; color: #A0A8B8; }
+.diag-log-warn { color: #FBBF24; }
+.diag-log-error { color: #F87171; }

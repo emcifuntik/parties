@@ -565,6 +565,7 @@ void QuicServer::abort_video_frames(const std::shared_ptr<Session>& viewer, uint
         // SHUTDOWN_COMPLETE removes the entry. The viewer sees the abort and
         // knows the frame is gone.
         api_->StreamShutdown(s.stream, QUIC_STREAM_SHUTDOWN_FLAG_ABORT_SEND, 0);
+        viewer->video_streams_aborted.fetch_add(1, std::memory_order_relaxed);
     }
 }
 

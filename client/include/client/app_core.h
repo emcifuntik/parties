@@ -6,6 +6,8 @@
 #include <client/settings.h>
 #include <client/lobby_model.h>
 #include <client/chat_model.h>
+#include <client/diagnostics.h>
+#include <client/diagnostics_model.h>
 #include <client/idle_sleep_inhibitor.h>
 #include <client/server_list_model.h>
 #include <client/server_query_wake.h>
@@ -115,7 +117,11 @@ public:
     LobbyModel        model_;
     ChatModel         chat_model_;
     ServerListModel   server_model_;
+    DiagnosticsModel  diag_model_;
     StreamAudioPlayer stream_audio_player_;
+
+    // On-screen diagnostics overlay (Ctrl+Shift+D / Cmd+Shift+D, or Settings).
+    void set_diagnostics_visible(bool visible);
 
     // Shared state. authenticated_ and server_protocol_version_ are also read
     // by the encoder threads (send_video_frame), hence atomic.
@@ -308,11 +314,14 @@ private:
     // not watch are dropped. Fed on the MsQuic worker thread, ticked from
     // tick(). Delivered frames go to on_video_frame_received with the same
     // [header][encoded] layout the stream-1 path produces.
+    // Declared before video_rx_: its playout thread reports into it.
+    DiagnosticsRecorder diag_;
     VideoReceiveRouter video_rx_{
-        [this](uint32_t stream, const VideoFrameHeader&, std::vector<uint8_t>&& frame) {
-            if (on_video_frame_received) on_video_frame_received(stream, frame.data(), frame.size());
+        [this](uint32_t stream, const VideoFrameHeader& hdr, std::vector<uint8_t>&& frame) {
+            deliver_video_frame(stream, hdr, std::move(frame));
         },
         [this](uint32_t stream) { send_pli_packet(stream); }};
+    void deliver_video_frame(uint32_t stream, const VideoFrameHeader& hdr, std::vector<uint8_t>&& frame);
     void send_pli_packet(UserId target);   // unpaced: video_rx_ paces
     int64_t video_rx_rtt_sampled_us_ = 0;   // main thread
     void route_video_stream_frame(uint32_t sender_id, std::vector<uint8_t>&& frame);
@@ -377,6 +386,17 @@ private:
     std::chrono::steady_clock::time_point ping_sent_at_{};
     std::chrono::steady_clock::time_point ping_last_send_{};
     bool ping_pending_ = false;
+
+    // ── Diagnostics overlay (main thread) ───────────────────────────────────
+    void tick_diagnostics(int64_t now_us);
+    void update_diagnostics_model(int64_t now_us);
+    void on_link_report(const uint8_t* data, size_t len);
+    int64_t  diag_sampled_us_ = 0;
+    DiagServerReport diag_server_;
+    int      diag_empty_pongs_ = 0;      // answered pings without a link report (older server)
+    uint64_t diag_log_seq_ = 0;
+    int64_t  diag_logged_freeze_us_ = 0; // newest freeze already written to the log
+    Rml::Vector<DiagLogRow> diag_log_rows_;
     // Last NetClient::datagram_backlog().dropped value written to the log.
     std::chrono::steady_clock::time_point datagram_drop_log_last_{};
     uint64_t datagram_drops_logged_ = 0;

@@ -3,6 +3,7 @@
 #include <client/rml_elements.h>
 #include <client/video_element.h>
 #include <client/level_meter_element.h>
+#include <client/diagnostics_graph_element.h>
 #include <client/gradient_circle_element.h>
 #include <client/chat_selection.h>
 
@@ -14,6 +15,7 @@ namespace parties::client {
 inline void register_custom_elements(parties::rml::ElementRegistry& registry) {
     registry.add<VideoElement>("video_frame");
     registry.add<LevelMeterElement>("level_meter");
+    registry.add<DiagnosticsGraphElement>("diag_graph");
     registry.add<GradientCircleElement>("gradient_circle");
     registry.add<SelectableTextElement>("selectable_text");
 }

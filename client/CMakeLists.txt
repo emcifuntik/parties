@@ -78,6 +78,9 @@ set(CLIENT_COMMON_SOURCES
     src/RmlUI_Backend.cpp
     src/video_element.cpp
     src/level_meter_element.cpp
+    src/diagnostics.cpp
+    src/diagnostics_graph_element.cpp
+    src/diagnostics_model.cpp
     src/gradient_circle_element.cpp
     src/stream_audio_player.cpp
     src/app_core.cpp

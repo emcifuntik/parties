@@ -65,6 +65,12 @@ struct Session {
     // (spurious losses excluded). A viewer on a lossy link keeps more video
     // unacknowledged (retransmissions) without being too slow for it.
     std::atomic<uint32_t> loss_permille{0};
+    // Diagnostics (link report in KEEPALIVE_PONG): the backlog budget last
+    // applied to this viewer, frames its gate dropped, queued frame streams
+    // aborted for it. Cumulative, wrapping.
+    std::atomic<int64_t>  video_last_threshold{0};
+    std::atomic<uint32_t> video_gate_dropped{0};
+    std::atomic<uint32_t> video_streams_aborted{0};
     int64_t rtt_sample_last_us = 0;  // connection's MsQuic worker only
     uint64_t loss_sample_sent = 0;   // connection's MsQuic worker only
     uint64_t loss_sample_lost = 0;

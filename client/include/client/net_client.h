@@ -111,6 +111,7 @@ public:
         uint64_t suspected_lost_packets = 0;  // SendSuspectedLostPackets
         uint64_t spurious_lost_packets = 0;   // SendSpuriousLostPackets
         uint64_t sent_bytes = 0;              // SendTotalBytes
+        uint64_t recv_bytes = 0;              // RecvTotalBytes
         uint32_t congestion_window = 0;       // SendCongestionWindow
     };
     ConnectionStats connection_stats() const;

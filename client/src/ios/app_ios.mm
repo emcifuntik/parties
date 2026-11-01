@@ -651,7 +651,8 @@ void PopulateIOSPreview(AppCore& core, const std::string& scenario)
         // startup so screenshots are deterministic and appear immediately.
         if (!_core.server_model_.init(_rmlContext) ||
             !_core.model_.init(_rmlContext) ||
-            !_core.chat_model_.init(_rmlContext)) {
+            !_core.chat_model_.init(_rmlContext) ||
+            !_core.diag_model_.init(_rmlContext)) {
             NSLog(@"[Parties] Failed to initialize iOS UI fixture models");
             return;
         }

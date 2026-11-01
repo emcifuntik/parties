@@ -6,6 +6,9 @@
 #include <client/context_window_model.h>
 #include <client/gradient_circle_element.h>
 #include <client/level_meter_element.h>
+#include <client/diagnostics.h>
+#include <client/diagnostics_graph_element.h>
+#include <client/diagnostics_model.h>
 #include <client/lobby_model.h>
 #include <client/rml_elements.h>
 #include <client/server_list_model.h>
@@ -228,6 +231,8 @@ struct DesignerApp::PartiesFixture {
 	parties::client::ServerListModel server_list;
 	parties::client::ChatModel chat;
 	parties::client::ContextWindowModel context_window;
+	parties::client::DiagnosticsModel diag;
+	parties::client::DiagnosticsRecorder diag_recorder;
 	int room_watch_request_count = 0;
 	int room_watched_user_id = 0;
 
@@ -590,12 +595,90 @@ struct DesignerApp::PartiesFixture {
 			scenario != "stream-fps-overflow" &&
 			scenario != "member" && scenario != "share" && scenario != "audio-share" &&
 			scenario != "context-user" && scenario != "context-channel" &&
-			scenario != "room-camera" && scenario != "streams-camera" && scenario != "settings-camera")
+			scenario != "room-camera" && scenario != "streams-camera" && scenario != "settings-camera" &&
+			scenario != "diagnostics")
 			return false;
 		Populate(scenario);
+		if (scenario == "diagnostics") PopulateDiagnostics();
 		if (scenario == "context-user" || scenario == "context-channel")
 			return context_window.init(context);
-		return lobby.init(context) && server_list.init(context) && chat.init(context);
+		return lobby.init(context) && server_list.init(context) && chat.init(context) && diag.init(context);
+	}
+
+	// The diagnostics overlay over the room: a minute of synthetic history
+	// with a network freeze, so the charts and every row have content.
+	void PopulateDiagnostics() {
+		using parties::client::DiagConnectionSample;
+		using parties::client::DiagServerReport;
+		constexpr uint32_t stream = 7;
+		constexpr int64_t frame_us = 16'667;
+		int64_t now = 1'000'000;
+		int64_t capture = now;
+		uint32_t seq = 0;
+		DiagConnectionSample c;
+		c.valid = true;
+		DiagServerReport srv;
+		srv.valid = true;
+		for (int bucket = 0; bucket <= 240; ++bucket) {
+			const bool stall = bucket >= 180 && bucket < 183;
+			const double phase = static_cast<double>(bucket % 40) / 40.0;
+			c.rtt_us = static_cast<uint32_t>(24'000 + (stall ? 160'000 : phase * 12'000));
+			c.recv_bytes += static_cast<uint64_t>((stall ? 0.2 : 1.0 + 0.15 * phase) * 1'250'000 / 4);
+			c.sent_bytes += 4'000;
+			c.sent_packets += 40;
+			c.lost_packets += bucket % 23 == 0 ? 1 : 0;
+			srv.loss_permille = stall ? 40 : (bucket % 30 == 0 ? 8 : 2);
+			srv.srtt_us = c.rtt_us;
+			for (int f = 0; f < 15; ++f, ++seq, capture += frame_us, now += frame_us) {
+				if (stall) continue;
+				diag_recorder.on_frame_delivered(stream, Frame(seq, capture), 20'000, now);
+				diag_recorder.on_frame_presented(stream, now + 4'000);
+			}
+			if (bucket == 183) {
+				// The frames held during the stall, released together.
+				for (int f = 0; f < 3; ++f) {
+					diag_recorder.on_frame_delivered(stream, Frame(seq - 45 + f, capture - (45 - f) * frame_us),
+					                                20'000, now);
+				}
+			}
+			now = (bucket + 1) * 250'000 + 1'000'000;
+			diag_recorder.sample(now, c, srv);
+		}
+		parties::client::DiagnosticsGraphElement::set_source(&diag_recorder);
+
+		diag.visible = true;
+		diag.revision = static_cast<int>(diag_recorder.revision());
+		diag.primary_stream = static_cast<int>(stream);
+		diag.primary_stream_name = "IceTroll";
+		diag.link_rtt = "RTT 26 ms  ·  ping 28 ms  ·  window 412 KB";
+		diag.link_rates = "Down 10.8 Mbps  ·  Up 128 kbps";
+		diag.link_loss = "Packet loss  down 0.2 %  ·  up 0.0 %";
+		diag.link_server = "Server: RTT 25 ms  ·  video queued to you 38 / 611 KB  ·  dropped 0  ·  aborted 2";
+		diag.net_scale = "20.0 Mbps";
+		diag.net_scale_value = 20'000.0f;
+		diag.rtt_scale = "200 ms  ·  loss 20 %";
+		diag.rtt_scale_value = 200.0f;
+		diag.fps_scale = "60 fps";
+		diag.fps_scale_value = 60.0f;
+		diag.streams = Rml::Vector<parties::client::DiagStreamRow>{
+			{"IceTroll", "60 fps shown  ·  60 delivered  ·  9.9 Mbps",
+			 "lost 0  ·  keyframes 14  ·  requests 0  ·  playout 42 ms",
+			 "1 freeze in the last minute, longest 762 ms", false}};
+		diag.freezes = Rml::Vector<parties::client::DiagFreezeRow>{
+			{"14 s ago  ·  IceTroll  ·  762 ms  ·  network", "network"},
+			{"52 s ago  ·  IceTroll  ·  240 ms  ·  sender", "sender"}};
+		diag.logs = Rml::Vector<parties::client::DiagLogRow>{
+			{"17:20:31.104 app_core.cpp:3021 Video freeze on stream 7: 762 ms (network)", "info"},
+			{"17:20:30.342 app.cpp:2379 Decode queue backed up (17 contiguous frames); draining without resetting the warm decoder", "warn"},
+			{"17:19:02.017 app_core.cpp:1501 Video sender reset: target 10000 kbps, per-frame streams transport", "info"}};
+	}
+
+	static parties::VideoFrameHeader Frame(uint32_t seq, int64_t capture_us) {
+		parties::VideoFrameHeader h;
+		h.frame_seq = seq;
+		h.timestamp = static_cast<uint32_t>(capture_us / 1000);
+		h.flags = parties::VIDEO_FLAG_CAPTURE_TIME;
+		return h;
 	}
 
 	static std::vector<uint8_t> MockStreamFrame(int variant) {
@@ -770,7 +853,8 @@ struct DesignerApp::PartiesFixture {
 			scenario == "chat-segment-churn" ||
 			scenario == "member" || scenario == "share" || scenario == "audio-share" ||
 			scenario == "stream-single" || scenario == "streams" ||
-			scenario == "stream-fps-overflow" || scenario == "room-camera" || scenario == "streams-camera";
+			scenario == "stream-fps-overflow" || scenario == "room-camera" || scenario == "streams-camera" ||
+			scenario == "diagnostics";
 		Rml::Element* channel_sidebar = document->GetElementById("channel-sidebar");
 		Rml::ElementList legacy_party_rails;
 		document->GetElementsByClassName(legacy_party_rails, "stream-rail");
@@ -1670,6 +1754,7 @@ bool DesignerApp::Init(const std::string& initial_file) {
 	element_registry_ = std::make_unique<parties::rml::ElementRegistry>();
 	element_registry_->add<parties::client::GradientCircleElement>("gradient_circle");
 	element_registry_->add<parties::client::LevelMeterElement>("level_meter");
+	element_registry_->add<parties::client::DiagnosticsGraphElement>("diag_graph");
 	element_registry_->add<parties::client::VideoElement>("video_frame");
 
 	// DPI

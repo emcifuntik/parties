@@ -190,6 +190,12 @@ add_executable(parties_video_receive_router_test
 )
 target_include_directories(parties_video_receive_router_test PRIVATE ../common/include)
 
+add_executable(parties_diagnostics_test
+    diagnostics_test.cpp
+    ../client/src/diagnostics.cpp
+)
+target_include_directories(parties_diagnostics_test PRIVATE ../client/include ../common/include)
+
 add_executable(parties_video_frame_reorder_test
     video_frame_reorder_test.cpp
     ../common/src/video_frame_reorder.cpp
@@ -330,6 +336,7 @@ add_test(NAME parties_datagram_backlog COMMAND parties_datagram_backlog_test)
 add_test(NAME parties_integration COMMAND parties_integration_test)
 add_test(NAME parties_voice_congestion COMMAND parties_voice_congestion_test)
 add_test(NAME parties_video_network COMMAND parties_video_network_test)
+add_test(NAME parties_diagnostics COMMAND parties_diagnostics_test)
 set_tests_properties(parties_video_network PROPERTIES TIMEOUT 400 RUN_SERIAL TRUE)
 set_tests_properties(parties_integration PROPERTIES TIMEOUT 120)
 add_test(NAME parties_application_audio_downmix COMMAND parties_application_audio_test)

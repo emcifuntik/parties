@@ -115,6 +115,7 @@ public:
     // Network compatibility mode: no UDP offloads, small fixed packets.
     rml::Prop<bool>        network_compat_enabled{false};
     rml::Prop<bool>        network_compat_restart{false};   // a restart is needed to apply it fully
+    rml::Prop<bool>        diag_overlay_enabled{false};     // mirrors the diagnostics overlay
 
     // Master output volume for the two received audio streams (0.0 - 2.0).
     // voice_volume = primary mic-voice mix; secondary_volume = aux stream
@@ -250,6 +251,7 @@ public:
     std::function<void(float)> on_normalize_target_changed;
     std::function<void(bool)>  on_aec_changed;
     std::function<void(bool)>  on_network_compat_changed;
+    std::function<void(bool)>  on_diag_overlay_changed;
     std::function<void(bool)>  on_vad_changed;
     std::function<void(float)> on_vad_threshold_changed;
     std::function<void(float)> on_voice_volume_changed;

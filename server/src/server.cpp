@@ -631,8 +631,25 @@ void Server::handle_message(const IncomingMessage& msg) {
 
     // ── Keepalive ───────────────────────────────────────────────────────
     case protocol::ControlMessageType::KEEPALIVE_PING: {
+        // [flags(1)], optional: bit 0 asks for the link report (the client's
+        // diagnostics overlay). Older clients send an empty ping.
+        if (msg.payload.empty() || (msg.payload[0] & protocol::KEEPALIVE_WANT_LINK_REPORT) == 0) {
+            quic_.send_to(msg.session_id, protocol::ControlMessageType::KEEPALIVE_PONG,
+                         nullptr, 0);
+            break;
+        }
+        BinaryWriter w;
+        w.write_u8(protocol::KEEPALIVE_LINK_REPORT_VERSION);
+        w.write_u32(session->srtt_us.load(std::memory_order_relaxed));
+        w.write_u16(static_cast<uint16_t>(session->loss_permille.load(std::memory_order_relaxed)));
+        w.write_u32(static_cast<uint32_t>((std::max<int64_t>)(
+            0, session->video_outstanding_bytes.load(std::memory_order_relaxed))));
+        w.write_u32(static_cast<uint32_t>((std::max<int64_t>)(
+            0, session->video_last_threshold.load(std::memory_order_relaxed))));
+        w.write_u32(session->video_gate_dropped.load(std::memory_order_relaxed));
+        w.write_u32(session->video_streams_aborted.load(std::memory_order_relaxed));
         quic_.send_to(msg.session_id, protocol::ControlMessageType::KEEPALIVE_PONG,
-                     nullptr, 0);
+                     w.data().data(), w.data().size());
         break;
     }
 
@@ -1897,6 +1914,7 @@ void Server::forward_video_frame(uint32_t session_id, protocol::VideoSource sour
 
             // Budget of THIS viewer: all its sharers' rates, its own MinRtt.
             const int64_t threshold = viewer_backlog_threshold(*s, sharer_rates, keyframe_headroom);
+            s->video_last_threshold.store(threshold, std::memory_order_relaxed);
             auto& gate = s->video_gates[sharer];
             const bool was_awaiting = gate.awaiting_keyframe;
             bool needs_key = false;
@@ -1906,6 +1924,7 @@ void Server::forward_video_frame(uint32_t session_id, protocol::VideoSource sour
                 if (keyframe) abort_older.push_back(s);
             } else {
                 ++dropped;
+                s->video_gate_dropped.fetch_add(1, std::memory_order_relaxed);
                 if (!was_awaiting && gate.awaiting_keyframe) abort_all.push_back(s);
             }
             if (needs_key && gate.allow_keyframe_request(now)) want_keyframe = true;

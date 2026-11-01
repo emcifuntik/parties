@@ -12,6 +12,18 @@
 
 namespace parties::client {
 
+namespace {
+std::function<void(const Rml::String&)> g_frame_listener;
+} // namespace
+
+void VideoElement::set_frame_listener(std::function<void(const Rml::String& element_id)> listener) {
+    g_frame_listener = std::move(listener);
+}
+
+void VideoElement::notify_frame_listener() {
+    if (g_frame_listener) g_frame_listener(GetId());
+}
+
 // ── VideoElement ────────────────────────────────────────────────────
 
 VideoElement::VideoElement(const Rml::String& tag)
@@ -50,6 +62,7 @@ void VideoElement::UpdateYUVFrame(
     const uint8_t* y_data, uint32_t y_stride,
     const uint8_t* u_data, const uint8_t* v_data, uint32_t uv_stride,
     uint32_t width, uint32_t height) {
+    notify_frame_listener();
 	ZoneScopedN("VideoElement::UpdateYUVFrame");
 
     bool size_changed = (frame_width_ != width || frame_height_ != height);
@@ -92,6 +105,7 @@ void VideoElement::UpdateYUVFrame(
     std::vector<uint8_t>& y_data, uint32_t y_stride,
     std::vector<uint8_t>& u_data, std::vector<uint8_t>& v_data, uint32_t uv_stride,
     uint32_t width, uint32_t height) {
+    notify_frame_listener();
     ZoneScopedN("VideoElement::UpdateYUVFrame(swap)");
 
     const bool size_changed = (frame_width_ != width || frame_height_ != height);
@@ -125,6 +139,7 @@ void VideoElement::UpdateNV12Frame(
     const uint8_t* y_data, uint32_t y_stride,
     const uint8_t* uv_data, uint32_t uv_stride,
     uint32_t width, uint32_t height) {
+    notify_frame_listener();
 	ZoneScopedN("VideoElement::UpdateNV12Frame");
 
     bool size_changed = (frame_width_ != width || frame_height_ != height);
@@ -163,6 +178,7 @@ void VideoElement::UpdateNV12Frame(
     std::vector<uint8_t>& y_data, uint32_t y_stride,
     std::vector<uint8_t>& uv_data, uint32_t uv_stride,
     uint32_t width, uint32_t height) {
+    notify_frame_listener();
 	ZoneScopedN("VideoElement::UpdateNV12Frame(swap)");
 
     bool size_changed = (frame_width_ != width || frame_height_ != height);
@@ -200,6 +216,7 @@ void VideoElement::UpdateNativeNV12Frame(
     uint32_t width, uint32_t height,
     uint32_t texture_width, uint32_t texture_height,
     uint32_t crop_x, uint32_t crop_y) {
+    notify_frame_listener();
     ZoneScopedN("VideoElement::UpdateNativeNV12Frame");
     if (!d3d12_resource || !owner) return;
 
@@ -225,6 +242,7 @@ void VideoElement::UpdateNativeNV12Frame(
 }
 
 void VideoElement::UpdateFrame(std::vector<uint8_t>&& rgba_data, uint32_t width, uint32_t height) {
+    notify_frame_listener();
     bool size_changed = (frame_width_ != width || frame_height_ != height);
     frame_width_  = width;
     frame_height_ = height;
@@ -247,6 +265,7 @@ void VideoElement::UpdateFrame(std::vector<uint8_t>&& rgba_data, uint32_t width,
 }
 
 void VideoElement::UpdateFrame(const uint8_t* rgba_data, uint32_t width, uint32_t height) {
+    notify_frame_listener();
     bool size_changed = (frame_width_ != width || frame_height_ != height);
     frame_width_  = width;
     frame_height_ = height;
