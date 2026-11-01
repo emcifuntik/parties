@@ -33,8 +33,15 @@ public:
     // Force next frame to be a keyframe
     virtual void force_keyframe() = 0;
 
-    // Dynamically change the average VBR target (bits per second).
+    // Dynamically change the CBR target (bits per second). The VBV follows
+    // the stream policy in encdec/rate_control.h.
     virtual void set_bitrate(uint32_t bitrate) = 0;
+
+    // True when set_bitrate could not fully apply the policy at runtime (for
+    // example a backend whose VBV size is fixed at initialization) and the
+    // encoder should be recreated at the current bitrate. Polled by the owner
+    // after set_bitrate; a fresh encoder starts with a keyframe.
+    virtual bool needs_reinit() const { return false; }
 
     // Metadata about the active encoder
     virtual EncoderInfo info() const = 0;

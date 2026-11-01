@@ -40,12 +40,17 @@ bool OpenH264Encoder::init(ID3D11Device* device, uint32_t width, uint32_t height
     params.iUsageType = SCREEN_CONTENT_REAL_TIME;
     params.iPicWidth = static_cast<int>(width);
     params.iPicHeight = static_cast<int>(height);
-    const auto rate_control = make_stream_vbr_rate_control(bitrate, fps);
+    // OpenH264 has no real CBR / VBV model. The closest to the stream policy
+    // (rate_control.h) is bitrate mode with the max bitrate pinned to the
+    // target and frame skipping enabled: when a frame (typically a keyframe)
+    // overshoots, the encoder skips the following frames instead of letting
+    // the excess pile up as link delay.
+    const auto rate_control = make_stream_cbr_rate_control(bitrate, fps);
     params.iTargetBitrate = static_cast<int>(rate_control.average_bitrate);
     params.iMaxBitrate = static_cast<int>(rate_control.peak_bitrate);
     params.iRCMode = RC_BITRATE_MODE;
     params.fMaxFrameRate = static_cast<float>(fps);
-    params.bEnableFrameSkip = false;
+    params.bEnableFrameSkip = true;
     params.iMultipleThreadIdc = 0;  // auto
     params.uiIntraPeriod = fps * (parties::VIDEO_KEYFRAME_INTERVAL_MS / 1000);
     params.iNumRefFrame = 1;
@@ -71,6 +76,7 @@ bool OpenH264Encoder::init(ID3D11Device* device, uint32_t width, uint32_t height
         encoder_ = nullptr;
         return false;
     }
+    current_bitrate_ = rate_control.average_bitrate;
 
     // Allocate I420 buffer for BGRA→I420 conversion
     i420_buffer_.resize(static_cast<size_t>(width) * height * 3 / 2);
@@ -103,7 +109,8 @@ bool OpenH264Encoder::encode(ID3D11Texture2D* bgra_texture, int64_t timestamp_10
     if (!encoder_) return false;
 
     // Force keyframe if requested
-    if (force_keyframe_.exchange(false))
+    const bool requested_keyframe = force_keyframe_.exchange(false);
+    if (requested_keyframe)
         encoder_->ForceIntraFrame(true);
 
     // GPU → CPU readback
@@ -177,8 +184,12 @@ bool OpenH264Encoder::encode(ID3D11Texture2D* bgra_texture, int64_t timestamp_10
         return false;
     }
 
-    if (bs_info.eFrameType == videoFrameTypeSkip)
+    if (bs_info.eFrameType == videoFrameTypeSkip) {
+        // Rate control skipped this frame (frame skipping is enabled). Keep a
+        // requested IDR pending so it is not lost with the skipped frame.
+        if (requested_keyframe) force_keyframe_.store(true);
         return true;  // No output this frame
+    }
 
     // Collect all NAL layers into a single buffer and fire callback
     if (on_encoded) {
@@ -212,14 +223,32 @@ void OpenH264Encoder::force_keyframe() {
 void OpenH264Encoder::set_bitrate(uint32_t bitrate) {
     if (!encoder_) return;
 
-    const auto rate_control = make_stream_vbr_rate_control(bitrate, fps_);
-    SBitrateInfo info = {};
-    info.iLayer = SPATIAL_LAYER_ALL;
-    info.iBitrate = static_cast<int>(rate_control.average_bitrate);
-    encoder_->SetOption(ENCODER_OPTION_BITRATE, &info);
+    const auto rate_control = make_stream_cbr_rate_control(bitrate, fps_);
 
-    float max_br = static_cast<float>(rate_control.peak_bitrate);
-    encoder_->SetOption(ENCODER_OPTION_MAX_BITRATE, &max_br);
+    // Both options take an SBitrateInfo* (the max used to be passed as a
+    // float*, which OpenH264 read past). Apply each to the whole stream and to
+    // the single spatial layer. Raise the max first when the rate goes up and
+    // lower it last when it goes down, so the target is never above the max
+    // in between (OpenH264 validates the pair on every update).
+    auto set = [this](ENCODER_OPTION option, uint32_t value) {
+        int ret = cmResultSuccess;
+        for (LAYER_NUM layer : {SPATIAL_LAYER_ALL, SPATIAL_LAYER_0}) {
+            SBitrateInfo info = {};
+            info.iLayer = layer;
+            info.iBitrate = static_cast<int>(value);
+            ret |= encoder_->SetOption(option, &info);
+        }
+        return ret;
+    };
+
+    const bool increase = rate_control.average_bitrate > current_bitrate_;
+    int ret = cmResultSuccess;
+    if (increase) ret |= set(ENCODER_OPTION_MAX_BITRATE, rate_control.peak_bitrate);
+    ret |= set(ENCODER_OPTION_BITRATE, rate_control.average_bitrate);
+    if (!increase) ret |= set(ENCODER_OPTION_MAX_BITRATE, rate_control.peak_bitrate);
+    if (ret != cmResultSuccess)
+        LOG_WARN("OpenH264 bitrate update to {} bps failed: {}", bitrate, ret);
+    current_bitrate_ = rate_control.average_bitrate;
 }
 
 EncoderInfo OpenH264Encoder::info() const {

@@ -201,6 +201,7 @@ private:
     std::shared_ptr<ScreenShareStartJob> screen_share_start_job_;
     std::shared_ptr<ScreenCapture> capture_;
     std::unique_ptr<VideoEncoder> encoder_;
+    std::chrono::steady_clock::time_point encoder_reinit_at_{};   // encode thread only
     std::unique_ptr<VideoDecoder> decoder_;
     parties::rml::ElementRegistry element_registry_;
     std::atomic<bool> sharing_screen_{false};
@@ -241,6 +242,10 @@ private:
     int   encode_write_slot_  = 0;
     int   encode_ready_slot_  = -1;
     int   encode_active_slot_ = -1;
+    int   encode_last_slot_   = -1;   // newest captured frame (re-encoded on a keyframe request)
+    // Set by bridge.request_keyframe (any thread); the encode thread, which
+    // owns encoder_, consumes it.
+    std::atomic<bool> screen_keyframe_requested_{false};
     int64_t encode_ready_ts_  = 0;
 
     uint32_t encode_fps_ = 60;
@@ -280,6 +285,7 @@ private:
         std::unique_ptr<VideoEncoder> encoder;
         bool encoder_failed = false;
         int  encode_failures = 0;                // consecutive encode_frame failures
+        std::chrono::steady_clock::time_point encoder_reinit_at{};   // last needs_reinit() re-create
         int64_t next_frame_ts = 0;               // frame limiter phase (100 ns)
         // Any thread: the first failure after the open.
         std::mutex error_mutex;

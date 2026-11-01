@@ -1,0 +1,119 @@
+diff --git a/src/inc/msquic.h b/src/inc/msquic.h
+index 385edfa..9017c06 100644
+--- a/src/inc/msquic.h
++++ b/src/inc/msquic.h
+@@ -973,6 +973,14 @@ void
+ #define QUIC_PARAM_GLOBAL_STATELESS_RESET_KEY           0x0100000B  // uint8_t[] - Array size is QUIC_STATELESS_RESET_KEY_LENGTH
+ #define QUIC_PARAM_GLOBAL_STATISTICS_V2_SIZES           0x0100000C  // uint32_t[] - Array of sizes for each QUIC_STATISTICS_V2 version. Get-only. Pass a buffer of uint32_t, output count is variable. See documentation for details.
+ #define QUIC_PARAM_GLOBAL_STATELESS_RETRY_CONFIG        0x0100000D  // QUIC_STATELESS_RETRY_CONFIG
++//
++// Parties patch: uint32_t bitmask of datapath offloads NOT to use. Set it
++// after MsQuicOpen2 and before the first RegistrationOpen (the datapath is
++// created there); later calls fail with QUIC_STATUS_INVALID_STATE.
++//
++#define QUIC_PARAM_GLOBAL_DATAPATH_DISABLE_OFFLOADS     0x810000F0  // uint32_t
++#define QUIC_DATAPATH_OFFLOAD_SEND_SEGMENTATION         0x00000001  // USO / GSO
++#define QUIC_DATAPATH_OFFLOAD_RECV_COALESCING           0x00000002  // URO / GRO
+ 
+ //
+ // Parameters for Registration.
+diff --git a/src/inc/quic_datapath.h b/src/inc/quic_datapath.h
+--- a/src/inc/quic_datapath.h
++++ b/src/inc/quic_datapath.h
+@@ -476,6 +476,14 @@
+     // the Windows fast path causing a large performance regression.
+     //
+     BOOLEAN EnableDscpOnRecv;
++
++    //
++    // Parties patch: never use UDP send segmentation (USO/GSO) or receive
++    // coalescing (URO/GRO), even when the stack supports them. Faulty NIC,
++    // VPN and filter drivers corrupt or stall offloaded traffic.
++    //
++    BOOLEAN DisableSendSegmentation;
++    BOOLEAN DisableRecvCoalescing;
+ } CXPLAT_DATAPATH_INIT_CONFIG;
+ 
+ //
+diff --git a/src/core/library.h b/src/core/library.h
+--- a/src/core/library.h
++++ b/src/core/library.h
+@@ -91,6 +91,12 @@
+     //
+     BOOLEAN EnableDscpOnRecv : 1;
+ 
++    //
++    // Parties patch: QUIC_PARAM_GLOBAL_DATAPATH_DISABLE_OFFLOADS.
++    //
++    BOOLEAN DisableSendSegmentation : 1;
++    BOOLEAN DisableRecvCoalescing : 1;
++
+ #ifdef CxPlatVerifierEnabled
+     //
+     // The app or driver verifier is globally enabled.
+diff --git a/src/core/library.c b/src/core/library.c
+--- a/src/core/library.c
++++ b/src/core/library.c
+@@ -909,6 +909,8 @@
+ 
+     CXPLAT_DATAPATH_INIT_CONFIG InitConfig = {0};
+     InitConfig.EnableDscpOnRecv = MsQuicLib.EnableDscpOnRecv;
++    InitConfig.DisableSendSegmentation = MsQuicLib.DisableSendSegmentation;
++    InitConfig.DisableRecvCoalescing = MsQuicLib.DisableRecvCoalescing;
+ 
+     Status =
+         CxPlatDataPathInitialize(
+@@ -1352,6 +1354,32 @@
+     }
+ #endif
+ 
++    case QUIC_PARAM_GLOBAL_DATAPATH_DISABLE_OFFLOADS: {
++
++        if (BufferLength != sizeof(uint32_t) || Buffer == NULL) {
++            Status = QUIC_STATUS_INVALID_PARAMETER;
++            break;
++        }
++
++        if (MsQuicLib.LazyInitComplete) {
++            //
++            // The datapath already exists (it is created by the first
++            // RegistrationOpen and lives until the last MsQuicClose).
++            //
++            Status = QUIC_STATUS_INVALID_STATE;
++            break;
++        }
++
++        const uint32_t Flags = *(uint32_t*)Buffer;
++        MsQuicLib.DisableSendSegmentation =
++            (Flags & QUIC_DATAPATH_OFFLOAD_SEND_SEGMENTATION) ? TRUE : FALSE;
++        MsQuicLib.DisableRecvCoalescing =
++            (Flags & QUIC_DATAPATH_OFFLOAD_RECV_COALESCING) ? TRUE : FALSE;
++
++        Status = QUIC_STATUS_SUCCESS;
++        break;
++    }
++
+     case QUIC_PARAM_GLOBAL_DATAPATH_DSCP_RECV_ENABLED: {
+ 
+         if (BufferLength != sizeof(BOOLEAN)) {
+diff --git a/src/platform/datapath_winuser.c b/src/platform/datapath_winuser.c
+--- a/src/platform/datapath_winuser.c
++++ b/src/platform/datapath_winuser.c
+@@ -515,7 +515,7 @@
+             DatapathQueryUdpSendMsgFailed,
+             "[data] Query for UDP_SEND_MSG_SIZE failed, 0x%x",
+             WsaError);
+-    } else {
++    } else if (!InitConfig->DisableSendSegmentation) {
+         Datapath->Features |= CXPLAT_DATAPATH_FEATURE_SEND_SEGMENTATION;
+     }
+ }
+@@ -536,7 +536,7 @@
+             DatapathQueryRecvMaxCoalescedSizeFailed,
+             "[data] Query for UDP_RECV_MAX_COALESCED_SIZE failed, 0x%x",
+             WsaError);
+-    } else {
++    } else if (!InitConfig->DisableRecvCoalescing) {
+         Datapath->Features |= CXPLAT_DATAPATH_FEATURE_RECV_COALESCING;
+     }
+ }

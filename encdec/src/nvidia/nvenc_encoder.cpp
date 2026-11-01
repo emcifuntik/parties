@@ -90,24 +90,29 @@ bool NvencEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
         return false;
     }
 
-    const auto rate_control = make_stream_vbr_rate_control(bitrate, fps);
-    LOG_INFO("Selected codec: {} ({}x{} @ {} fps), VBR average: {} bps, peak: {} bps, VBV: {} bits",
-             codec_name(codec_), width, height, fps,
-             rate_control.average_bitrate, rate_control.peak_bitrate,
-             rate_control.vbv_buffer_size);
+    const auto rate_control = make_stream_cbr_rate_control(bitrate, fps);
 
     GUID encode_guid = (codec_ == VideoCodecId::AV1)  ? NV_ENC_CODEC_AV1_GUID
                      : (codec_ == VideoCodecId::H265) ? NV_ENC_CODEC_HEVC_GUID
                                                        : NV_ENC_CODEC_H264_GUID;
 
+    // Ultra-low-latency tuning is NVIDIA's recommended setting for CBR game /
+    // desktop streaming with a single-frame-scale VBV. Fall back to plain
+    // low-latency tuning if the driver rejects it for this codec.
     NV_ENC_PRESET_CONFIG preset_config{};
-    preset_config.version = NV_ENC_PRESET_CONFIG_VER;
-    preset_config.presetCfg.version = NV_ENC_CONFIG_VER;
-
-    status = funcs_.nvEncGetEncodePresetConfigEx(
-        encoder_, encode_guid,
-        NV_ENC_PRESET_P4_GUID, NV_ENC_TUNING_INFO_LOW_LATENCY,
-        &preset_config);
+    NV_ENC_TUNING_INFO tuning_info = NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY;
+    for (NV_ENC_TUNING_INFO candidate : {NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY,
+                                         NV_ENC_TUNING_INFO_LOW_LATENCY}) {
+        preset_config = {};
+        preset_config.version = NV_ENC_PRESET_CONFIG_VER;
+        preset_config.presetCfg.version = NV_ENC_CONFIG_VER;
+        status = funcs_.nvEncGetEncodePresetConfigEx(
+            encoder_, encode_guid, NV_ENC_PRESET_P4_GUID, candidate, &preset_config);
+        if (status == NV_ENC_SUCCESS) {
+            tuning_info = candidate;
+            break;
+        }
+    }
     if (status != NV_ENC_SUCCESS) {
         LOG_ERROR("GetEncodePresetConfigEx failed: {}", (int)status);
         funcs_.nvEncDestroyEncoder(encoder_);
@@ -117,7 +122,10 @@ bool NvencEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
 
     encode_config_ = preset_config.presetCfg;
     encode_config_.version = NV_ENC_CONFIG_VER;
-    encode_config_.rcParams.rateControlMode = NV_ENC_PARAMS_RC_VBR;
+    // CBR with a VBV of ~2 frame intervals (see rate_control.h). The quarter-
+    // resolution first pass lets the rate control size a keyframe correctly
+    // inside the small VBV instead of overshooting and recovering.
+    encode_config_.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR;
     encode_config_.rcParams.averageBitRate = rate_control.average_bitrate;
     encode_config_.rcParams.maxBitRate = rate_control.peak_bitrate;
     encode_config_.rcParams.vbvBufferSize = rate_control.vbv_buffer_size;
@@ -126,21 +134,25 @@ bool NvencEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
     encode_config_.rcParams.enableMinQP = 0;
     encode_config_.rcParams.enableMaxQP = 0;
     encode_config_.gopLength = fps * (VIDEO_KEYFRAME_INTERVAL_MS / 1000);
-    encode_config_.frameIntervalP = 1;
+    encode_config_.frameIntervalP = 1;  // no B-frames
 
     // Output sequence headers with every keyframe so decoders can join mid-stream.
     // idrPeriod is set explicitly (instead of relying on the "equal to gopLength
     // when unset" default) so every GOP boundary is a true IDR/key frame that a
     // late-joining viewer can start from.
+    // Filler data is kept off: CBR is used for its VBV bound, not to pad the
+    // stream up to the target rate (AV1 has no filler option).
     if (codec_ == VideoCodecId::AV1) {
         encode_config_.encodeCodecConfig.av1Config.repeatSeqHdr = 1;
         encode_config_.encodeCodecConfig.av1Config.idrPeriod = encode_config_.gopLength;
     } else if (codec_ == VideoCodecId::H265) {
         encode_config_.encodeCodecConfig.hevcConfig.repeatSPSPPS = 1;
         encode_config_.encodeCodecConfig.hevcConfig.idrPeriod = encode_config_.gopLength;
+        encode_config_.encodeCodecConfig.hevcConfig.enableFillerDataInsertion = 0;
     } else {
         encode_config_.encodeCodecConfig.h264Config.repeatSPSPPS = 1;
         encode_config_.encodeCodecConfig.h264Config.idrPeriod = encode_config_.gopLength;
+        encode_config_.encodeCodecConfig.h264Config.enableFillerDataInsertion = 0;
     }
 
     std::memset(&init_params_, 0, sizeof(init_params_));
@@ -155,7 +167,7 @@ bool NvencEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
     init_params_.frameRateDen = 1;
     init_params_.enablePTD = 1;
     init_params_.encodeConfig = &encode_config_;
-    init_params_.tuningInfo = NV_ENC_TUNING_INFO_LOW_LATENCY;
+    init_params_.tuningInfo = tuning_info;
     init_params_.maxEncodeWidth = width;
     init_params_.maxEncodeHeight = height;
 
@@ -166,6 +178,11 @@ bool NvencEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
         encoder_ = nullptr;
         return false;
     }
+    LOG_INFO("Selected codec: {} ({}x{} @ {} fps), {} tuning, CBR: {} bps, VBV: {} bits",
+             codec_name(codec_), width, height, fps,
+             tuning_info == NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY ? "ultra-low-latency"
+                                                                  : "low-latency",
+             rate_control.average_bitrate, rate_control.vbv_buffer_size);
 
     D3D11_TEXTURE2D_DESC desc{};
     desc.Width = width;
@@ -382,7 +399,7 @@ void NvencEncoder::set_bitrate(uint32_t bitrate) {
 
     // The send controller already coalesces automatic updates. Honor even a
     // small final step to its floor/ceiling, and explicit user changes.
-    const auto rate_control = make_stream_vbr_rate_control(bitrate, fps_);
+    const auto rate_control = make_stream_cbr_rate_control(bitrate, fps_);
     if (bitrate == encode_config_.rcParams.averageBitRate) return;
     const auto previous_rate_control = encode_config_.rcParams;
 
@@ -402,9 +419,8 @@ void NvencEncoder::set_bitrate(uint32_t bitrate) {
         LOG_ERROR("ReconfigureEncoder failed: {}", (int)status);
         return;
     }
-    LOG_DEBUG("NVENC reconfigured: average {} bps, peak {} bps, VBV {} bits",
-              rate_control.average_bitrate, rate_control.peak_bitrate,
-              rate_control.vbv_buffer_size);
+    LOG_DEBUG("NVENC reconfigured: CBR {} bps, VBV {} bits",
+              rate_control.average_bitrate, rate_control.vbv_buffer_size);
 }
 
 EncoderInfo NvencEncoder::info() const {

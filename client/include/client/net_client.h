@@ -3,6 +3,7 @@
 #include <parties/types.h>
 #include <parties/protocol.h>
 #include <parties/thread_queue.h>
+#include <parties/video_common.h>
 
 #include <cstdint>
 #include <functional>
@@ -36,6 +37,10 @@ public:
     // Start connecting (non-blocking). Poll is_connected() / connect_failed().
     bool connect(const std::string& host, uint16_t port,
                  const uint8_t* ticket = nullptr, size_t ticket_len = 0);
+
+    // Network compatibility mode (fixed 1280-byte path MTU); takes effect at
+    // the next connect(). See parties::apply_compatibility_transport_settings.
+    void set_compatibility_mode(bool enabled);
 
     // Disconnect (or cancel a pending connection).
     void disconnect();
@@ -137,6 +142,10 @@ public:
     // `frame` = [14-byte VideoFrameHeader][encoded] — the same layout that
     // on_data_received sees after the [type][sender] prefix on stream 1.
     std::function<void(uint32_t sender_id, std::vector<uint8_t>&& frame)> on_video_stream_frame;
+    // The header of a frame arrived on a per-frame stream, before the rest of
+    // it: the frame is on its way (used to wait for a keyframe that is
+    // already arriving instead of asking for another one).
+    std::function<void(uint32_t sender_id, const VideoFrameHeader& hdr)> on_video_stream_header;
     // A per-frame stream was aborted by the server before completing. frame_seq
     // is known only when at least the header had arrived; otherwise it is
     // reported with have_seq == false.

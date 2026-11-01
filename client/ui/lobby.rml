@@ -466,6 +466,16 @@
                                    data-value="share_bitrate" data-event-change="share_bitrate_changed" />
                         </div>
                     </div>
+                    <div class="settings-feature-grid settings-network-grid">
+                        <div class="settings-feature-card" id="settings-network-compat-card" data-event-click="toggle_network_compat">
+                            <div>
+                                <span class="settings-feature-title ui-control">Network Compatibility Mode</span>
+                                <span class="settings-feature-copy ui-caption">Try this if streams or voice stall on your connection. Turns off UDP offloading and sends smaller packets.</span>
+                            </div>
+                            <span class="settings-switch" id="settings-network-compat-switch" data-class-on="network_compat_enabled"><span class="settings-switch-knob"></span></span>
+                        </div>
+                    </div>
+                    <div class="settings-camera-hint settings-network-hint ui-caption" id="settings-network-compat-restart" data-if="network_compat_restart">Restart Parties to finish applying this change.</div>
                 </div>
 
                 <div class="settings-scroll" id="settings-camera-page" data-if="settings_section == 4">

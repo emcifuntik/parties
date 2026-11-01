@@ -58,7 +58,16 @@ class Decoder {
 public:
     virtual ~Decoder() = default;
 
-    // Feed encoded data. Fires on_decoded when a frame is ready.
+    // Feed one encoded access unit. Fires on_decoded when a frame is ready
+    // (possibly later, for backends with decode latency).
+    //
+    // Returns true when the access unit was consumed and the decoder's
+    // reference state is still trustworthy, whether or not a frame was output.
+    // Returns false when the access unit was dropped or decoded with missing /
+    // corrupt references (a refused input, lost reference, concealed error):
+    // later frames until the next keyframe would show corruption or nothing.
+    // The caller must then discard queued inter frames, recreate or resync the
+    // decoder at the next keyframe and request one from the sender (PLI).
     virtual bool decode(const uint8_t* data, size_t len, int64_t timestamp) = 0;
 
     // Flush any buffered frames

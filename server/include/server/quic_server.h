@@ -4,6 +4,7 @@
 #include <parties/thread_queue.h>
 #include <parties/protocol.h>
 #include <parties/quic_common.h>
+#include <parties/video_common.h>
 
 #include <string>
 #include <cstdint>
@@ -109,6 +110,14 @@ public:
     // video frame `data` starts with the header.
     std::function<void(uint32_t session_id, uint8_t packet_type, protocol::VideoSource source,
                        const uint8_t* data, size_t len)> on_video_frame;
+    // Per-frame ingress streams, from the QUIC receive thread: the header of
+    // a frame arrived (the frame is on its way), or the stream ended without
+    // a frame (aborted by the sharer, refused for size or the ingress cap,
+    // truncated). have_seq is false when the header never arrived.
+    std::function<void(uint32_t session_id, protocol::VideoSource source,
+                       const VideoFrameHeader& hdr)> on_video_frame_started;
+    std::function<void(uint32_t session_id, protocol::VideoSource source,
+                       uint32_t frame_seq, bool have_seq)> on_video_frame_aborted;
 
     // ── Data plane (replaces EnetServer) ──
 
@@ -149,6 +158,14 @@ public:
     // viewer closes an older frame stream, its bytes stay charged to
     // video_outstanding_bytes, and the backlog gate bounds the wait. Holds only
     // session->quic_mutex, never sessions_mutex_.
+    // Aborts per-frame streams toward `viewer` that carry `stream_id` and are
+    // still being sent: all of them, or only frames older than `before_seq`.
+    // Their bytes stop occupying the viewer's link (and its backlog budget),
+    // so a keyframe sent next is not queued behind frames nobody can use.
+    // Main-loop thread; never blocks (StreamShutdown is asynchronous).
+    void abort_video_frames(const std::shared_ptr<Session>& viewer, uint32_t stream_id,
+                            bool all, uint32_t before_seq = 0);
+
     bool send_video_frame_to(const std::shared_ptr<Session>& session,
                              std::shared_ptr<const std::vector<uint8_t>> frame);
 

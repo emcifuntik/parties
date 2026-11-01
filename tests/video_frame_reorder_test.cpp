@@ -316,11 +316,13 @@ bool test_max_held_frames_overflow() {
     feed(b, s, 15, false, T0 + 15 * MS);
     if (!same(s.lost, {11}) || !same(s.delivered, {10}) || !b.needs_keyframe())
         return fail("overflow: broken deltas advanced the baseline");
+    // The newest frame is dropped: the oldest ones are what the missing frame
+    // (or a keyframe at it) resumes from.
     if (b.held_frames() != 3 || b.held_bytes() != 3 * (VIDEO_FRAME_HEADER_SIZE + 100))
         return fail("overflow: bounded recovery accounting");
-    feed(b, s, 12, true, T0 + 20 * MS);
-    if (!same(s.delivered, {10, 12, 13, 14, 15}) || b.held_frames() || b.needs_keyframe())
-        return fail("overflow: late keyframe and successors did not recover");
+    feed(b, s, 11, false, T0 + 20 * MS);
+    if (!same(s.delivered, {10, 11, 12, 13, 14}) || b.held_frames() || b.needs_keyframe())
+        return fail("overflow: the late frame did not resume the retained chain");
     return true;
 }
 
@@ -338,7 +340,7 @@ bool test_max_bytes_overflow() {
     if (!same(s.lost, {11}) || !same(s.delivered, {10}) || b.held_bytes() != 828)
         return fail("bytes: overflow did not retain bounded recovery deltas");
     feed(b, s, 12, true, T0 + 4 * MS, 400);
-    if (!same(s.delivered, {10, 12, 13, 14}) || b.held_bytes() != 0)
+    if (!same(s.delivered, {10, 12, 13}) || b.held_bytes() != 0)
         return fail("bytes: recovery did not drain");
     return true;
 }
@@ -432,7 +434,110 @@ bool test_retransmitted_frame_after_timeout_resumes() {
 
 } // namespace
 
+VideoFrameHeader header(uint32_t seq, bool keyframe) {
+    VideoFrameHeader hdr;
+    hdr.frame_seq = seq;
+    hdr.flags = keyframe ? VIDEO_FLAG_KEYFRAME : 0;
+    return hdr;
+}
+
+// The hold follows the path RTT: a retransmission at 200 ms RTT needs more
+// than the 150 ms floor, and must not be mistaken for a lost frame.
+bool test_rtt_scaled_hold() {
+    VideoFrameReorderBuffer b;
+    if (b.hold_us() != 150 * MS) return fail("rtt: floor while the RTT is unknown");
+    b.set_rtt(200 * MS);
+    if (b.hold_us() != 700 * MS) return fail("rtt: 3 x RTT + 100 ms");
+    b.set_rtt(2'000 * MS);
+    if (b.hold_us() != 1500 * MS) return fail("rtt: capped");
+    b.set_rtt(200 * MS);
+    Sink s;
+    feed(b, s, 10, true, T0);
+    feed(b, s, 12, false, T0 + 10 * MS);
+    b.poll(T0 + 600 * MS, s.deliver_fn(), s.lost_fn());
+    if (!s.lost.empty()) return fail("rtt: a retransmission in flight was reported as lost");
+    feed(b, s, 11, false, T0 + 650 * MS);
+    if (!same(s.delivered, {10, 11, 12}) || !s.lost.empty()) return fail("rtt: late frame did not resume");
+    feed(b, s, 14, false, T0 + 700 * MS);
+    b.poll(T0 + 1400 * MS, s.deliver_fn(), s.lost_fn());
+    if (!same(s.lost, {13})) return fail("rtt: a real gap is still reported after the hold");
+    return true;
+}
+
+// A newer keyframe already arriving repairs a gap by itself: no keyframe
+// request, and the owner's retry stays quiet while it arrives.
+bool test_keyframe_in_flight_suppresses_loss() {
+    VideoFrameReorderBuffer b;
+    Sink s;
+    feed(b, s, 10, true, T0);
+    b.on_frame_started(header(13, true), T0 + 5 * MS);
+    feed(b, s, 12, false, T0 + 10 * MS);
+    b.poll(T0 + 200 * MS, s.deliver_fn(), s.lost_fn());
+    if (!s.lost.empty()) return fail("inflight: gap reported although a keyframe is arriving");
+    if (!b.needs_keyframe() || b.should_request_keyframe(T0 + 200 * MS))
+        return fail("inflight: must wait for the arriving keyframe, not request another");
+    feed(b, s, 13, true, T0 + 300 * MS);
+    if (!same(s.delivered, {10, 13}) || b.needs_keyframe() || b.keyframe_in_flight(T0 + 300 * MS))
+        return fail("inflight: the keyframe did not resume delivery");
+    // An old keyframe header changes nothing.
+    b.on_frame_started(header(5, true), T0 + 310 * MS);
+    if (b.keyframe_in_flight(T0 + 310 * MS)) return fail("inflight: stale keyframe tracked");
+    return true;
+}
+
+// The keyframe we waited for is aborted: the gap is reported at once.
+bool test_inflight_keyframe_aborted() {
+    VideoFrameReorderBuffer b;
+    Sink s;
+    feed(b, s, 10, true, T0);
+    b.on_frame_started(header(13, true), T0);
+    feed(b, s, 12, false, T0 + 10 * MS);
+    b.poll(T0 + 200 * MS, s.deliver_fn(), s.lost_fn());
+    if (!s.lost.empty()) return fail("inflight abort: reported too early");
+    b.on_frame_aborted(13, T0 + 210 * MS, s.deliver_fn(), s.lost_fn());
+    if (!same(s.lost, {11}) || !b.should_request_keyframe(T0 + 210 * MS))
+        return fail("inflight abort: the gap was not reported once the keyframe was lost");
+    return true;
+}
+
+// A keyframe stream that never completes stops being trusted.
+bool test_inflight_keyframe_expires() {
+    VideoFrameReorderBuffer b;
+    Sink s;
+    feed(b, s, 10, true, T0);
+    b.on_frame_started(header(12, true), T0);
+    b.on_frame_aborted(11, T0 + 5 * MS, s.deliver_fn(), s.lost_fn());
+    if (!s.lost.empty() || !b.needs_keyframe()) return fail("expire: abort with a keyframe arriving");
+    b.poll(T0 + 1'000 * MS, s.deliver_fn(), s.lost_fn());
+    if (!s.lost.empty()) return fail("expire: gave up on the keyframe too early");
+    b.poll(T0 + 2'100 * MS, s.deliver_fn(), s.lost_fn());
+    if (!same(s.lost, {11}) || !b.should_request_keyframe(T0 + 2'100 * MS))
+        return fail("expire: a stuck keyframe stream kept the request quiet");
+    return true;
+}
+
+// An aborted frame ahead of the chain fails as soon as the chain reaches it.
+bool test_remembered_abort() {
+    VideoFrameReorderBuffer b;
+    Sink s;
+    feed(b, s, 10, true, T0);
+    b.on_frame_aborted(13, T0 + 5 * MS, s.deliver_fn(), s.lost_fn());
+    if (!s.lost.empty()) return fail("remembered: reported before the chain got there");
+    feed(b, s, 11, false, T0 + 10 * MS);
+    feed(b, s, 12, false, T0 + 20 * MS);
+    if (!same(s.delivered, {10, 11, 12}) || !same(s.lost, {13}) || !b.needs_keyframe())
+        return fail("remembered: reaching the aborted frame did not request a keyframe");
+    feed(b, s, 14, false, T0 + 30 * MS);
+    if (!same(s.delivered, {10, 11, 12})) return fail("remembered: a broken delta was delivered");
+    return true;
+}
+
 int main() {
+    if (!test_rtt_scaled_hold()) return 1;
+    if (!test_keyframe_in_flight_suppresses_loss()) return 1;
+    if (!test_inflight_keyframe_aborted()) return 1;
+    if (!test_inflight_keyframe_expires()) return 1;
+    if (!test_remembered_abort()) return 1;
     if (!test_delayed_recovery_keyframes()) return 1;
     if (!test_recovery_wrap_and_independent_viewers()) return 1;
     if (!test_in_order()) return 1;

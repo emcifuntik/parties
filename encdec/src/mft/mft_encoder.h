@@ -14,6 +14,7 @@
 #include <condition_variable>
 #include <queue>
 #include <atomic>
+#include <vector>
 
 struct IMFMediaEventGenerator;
 
@@ -38,8 +39,15 @@ private:
                            uint32_t fps, uint32_t bitrate);
     bool create_color_converter(uint32_t in_w, uint32_t in_h,
                                 uint32_t out_w, uint32_t out_h);
-    bool collect_output();
+    // Calls ProcessOutput up to max_outputs times (0 = until it has nothing
+    // more). Async MFTs allow one call per METransformHaveOutput event.
+    bool collect_output(int max_outputs = 0);
     void encoder_loop();
+    // Async mode: feeds queued samples while the MFT has outstanding
+    // METransformNeedInput requests. Called with queue_mutex_ held through
+    // `lock`; releases it around each ProcessInput.
+    void feed_pending_input(std::unique_lock<std::mutex>& lock);
+    void submit_input(IMFSample* sample);
 
     Microsoft::WRL::ComPtr<ID3D11Device> device_;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> context_;
@@ -53,9 +61,17 @@ private:
 
     std::thread encoder_thread_;
     std::atomic<bool> encoder_running_{false};
+    // queue_mutex_ guards input_queue_, pending_input_requests_, feeding_
+    // and loop_exited_.
     std::mutex queue_mutex_;
-    std::condition_variable queue_cv_;
     std::queue<Microsoft::WRL::ComPtr<IMFSample>> input_queue_;
+    int pending_input_requests_ = 0;   // NeedInput events not yet answered
+    bool feeding_ = false;             // a thread is inside feed_pending_input
+    bool loop_exited_ = false;
+    std::condition_variable loop_exit_cv_;
+    bool rate_update_warned_ = false;  // set_bitrate failure logged once
+    // Output access unit with filler NAL units removed (collect_output only).
+    std::vector<uint8_t> filtered_output_;
 
     VideoCodecId codec_ = VideoCodecId::H264;
     uint32_t width_ = 0;

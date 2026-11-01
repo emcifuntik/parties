@@ -344,19 +344,14 @@ bool App::init(HWND hwnd) {
     bridge.stop_audio_share = [this]() { stop_application_audio_share(); };
 
     bridge.request_keyframe = [this]() {
-        if (encoder_) encoder_->force_keyframe();
-        // Wake the encode thread to re-encode last frame (handles static screens
-        // where capture stops delivering frames)
+        // encoder_ belongs to the encode thread: it forces the keyframe there.
+        screen_keyframe_requested_.store(true, std::memory_order_relaxed);
+        // Wake the encode thread to re-encode the newest frame (a static
+        // screen makes the capture stop delivering frames).
         if (sharing_screen_ && encode_running_.load(std::memory_order_relaxed)) {
             std::lock_guard<std::mutex> lock(encode_mutex_);
-            if (encode_ready_slot_ < 0 && encode_active_slot_ < 0) {
-                // Re-submit the last written slot
-                int last = encode_write_slot_;
-                // Find the most recently used slot that isn't the current write slot
-                for (int i = 0; i < ENCODE_SLOTS; i++) {
-                    if (i != encode_write_slot_) { last = i; break; }
-                }
-                encode_ready_slot_ = last;
+            if (encode_ready_slot_ < 0 && encode_active_slot_ < 0 && encode_last_slot_ >= 0) {
+                encode_ready_slot_ = encode_last_slot_;
                 LARGE_INTEGER now; QueryPerformanceCounter(&now);
                 encode_ready_ts_ = (now.QuadPart - capture_start_qpc_) * 10'000'000LL / qpc_frequency_;
             }
@@ -1426,7 +1421,7 @@ void App::finish_screen_share_start(uint32_t target_process_id) {
     };
     encode_on_encoded_ = on_encoded_cb;
 
-    encode_write_slot_ = 0; encode_ready_slot_ = -1; encode_active_slot_ = -1;
+    encode_write_slot_ = 0; encode_ready_slot_ = -1; encode_active_slot_ = -1; encode_last_slot_ = -1;
     encode_tex_w_ = 0; encode_tex_h_ = 0; encode_registered_ = false;
     for (int i = 0; i < ENCODE_SLOTS; i++) {
         encode_textures_[i].Reset();
@@ -1503,7 +1498,7 @@ void App::finish_screen_share_start(uint32_t target_process_id) {
                 }
             }
             encode_tex_w_ = tex_w; encode_tex_h_ = tex_h;
-            encode_write_slot_ = 0; encode_ready_slot_ = -1;
+            encode_write_slot_ = 0; encode_ready_slot_ = -1; encode_last_slot_ = -1;
 
             // Recreate full-res source texture + SRV for scale blit
             if (needs_scale) {
@@ -1572,6 +1567,7 @@ void App::finish_screen_share_start(uint32_t target_process_id) {
         {
             std::lock_guard<std::mutex> lock(encode_mutex_);
             encode_ready_slot_ = ws;
+            encode_last_slot_ = ws;
             encode_ready_ts_ = (now.QuadPart - capture_start_qpc_) * 10'000'000LL / qpc_frequency_;
             for (int i = 0; i < ENCODE_SLOTS; i++) {
                 if (i != encode_ready_slot_ && i != encode_active_slot_) { encode_write_slot_ = i; break; }
@@ -1844,6 +1840,18 @@ void App::on_camera_frame(CameraSession& s, ID3D11Texture2D* bgra,
     // Congestion admission before any GPU work, as for the screen share.
     if (!core_.video_admit_frame(protocol::VideoSource::Camera)) return;
 
+    // A bitrate the encoder can only reach by being created again (see
+    // encode_loop), at most every 2 s.
+    if (s.encoder && s.encoder->needs_reinit()) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - s.encoder_reinit_at >= std::chrono::seconds(2)) {
+            LOG_INFO("Recreating the camera encoder for the new bitrate");
+            s.encoder_reinit_at = now;
+            s.encoder->shutdown();
+            s.encoder.reset();
+        }
+    }
+
     if (!s.encoder || s.encoder->width() != width || s.encoder->height() != height) {
         if (s.encoder) { s.encoder->shutdown(); s.encoder.reset(); }
         if (!s.device_ref) bgra->GetDevice(&s.device_ref);
@@ -2021,6 +2029,21 @@ void App::encode_loop() {
 
         uint32_t w = encode_tex_w_, h = encode_tex_h_;
 
+        // Some encoders can only reach a much higher bitrate than they were
+        // created with by being created again (AMF HEVC): do that, at most
+        // every 2 s so a swinging controller cannot thrash it.
+        if (encoder_ && encoder_->needs_reinit()) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now - encoder_reinit_at_ >= std::chrono::seconds(2)) {
+                LOG_INFO("Recreating the screen encoder for the new bitrate");
+                encoder_reinit_at_ = now;
+                if (encode_registered_) encoder_->unregister_inputs();
+                encoder_->shutdown();
+                encoder_.reset();
+                encode_registered_ = false;
+            }
+        }
+
         if (!encoder_ || w != encoder_->width() || h != encoder_->height()) {
             VideoCodecId codec = core_.model_.share_codec == 2 ? VideoCodecId::H264
                                : core_.model_.share_codec == 1 ? VideoCodecId::H265
@@ -2076,7 +2099,9 @@ void App::encode_loop() {
             LOG_INFO("Encoder bitrate -> {} kbps", bitrate_bps / 1000);
             encoder_->set_bitrate(bitrate_bps);
         }
-        if (core_.take_video_keyframe_request())
+        // take_video_keyframe_request first: it must be consumed either way.
+        if (core_.take_video_keyframe_request() |
+            screen_keyframe_requested_.exchange(false, std::memory_order_relaxed))
             encoder_->force_keyframe();
 
         {

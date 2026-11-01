@@ -11,6 +11,7 @@
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 typedef struct QUIC_HANDLE *HQUIC;
 
@@ -55,7 +56,32 @@ struct Session {
     // MinRtt sampled in the connection's QUIC callbacks about once per second.
     // The server loop reads this cache without blocking the QUIC worker.
     std::atomic<uint32_t> min_rtt_us{VIDEO_BACKLOG_DEFAULT_RTT_US};
+    // Smoothed RTT, sampled with min_rtt_us. As a publisher it sets how long
+    // the ingress reorder buffer waits for a retransmitted frame; as a viewer
+    // it lets the backlog budget follow a path whose RTT grew (MinRtt never
+    // rises, e.g. after Wi-Fi -> LTE).
+    std::atomic<uint32_t> srtt_us{0};
+    // Packet loss toward this peer over the last sample interval, in 1/1000
+    // (spurious losses excluded). A viewer on a lossy link keeps more video
+    // unacknowledged (retransmissions) without being too slow for it.
+    std::atomic<uint32_t> loss_permille{0};
     int64_t rtt_sample_last_us = 0;  // connection's MsQuic worker only
+    uint64_t loss_sample_sent = 0;   // connection's MsQuic worker only
+    uint64_t loss_sample_lost = 0;
+
+    // Per-frame video streams toward this viewer that have not shut down yet,
+    // so stale ones can be aborted (QuicServer::abort_video_frames). An entry
+    // is added right after StreamOpen and removed in the stream's
+    // SHUTDOWN_COMPLETE before StreamClose, under video_out_mutex: a handle
+    // found here is always valid. Order: quic_mutex -> video_out_mutex.
+    struct VideoOutStream {
+        HQUIC    stream = nullptr;
+        uint32_t stream_id = 0;   // the video stream (sharer + source)
+        uint32_t frame_seq = 0;
+        bool     keyframe = false;
+    };
+    std::mutex video_out_mutex;
+    std::vector<VideoOutStream> video_out_streams;
 
     // ── Datagrams toward this peer (voice fan-out, screen-share audio, PLI) ──
     // Queued inside MsQuic; media is dropped at the source while the queue is

@@ -6,6 +6,8 @@ vcpkg_from_github(
     HEAD_REF main
     PATCHES
         0001-unconnected-query.patch   # adds out-of-RFC connectionless server-query listener event
+        0002-datapath-offload-toggle.patch   # QUIC_PARAM_GLOBAL_DATAPATH_DISABLE_OFFLOADS (USO/URO off)
+        0003-bbr-ignore-random-loss.patch    # BBR: no recovery-window cut on random loss (real-time media)
 )
 
 string(COMPARE EQUAL "${VCPKG_CRT_LINKAGE}" "static" STATIC_CRT)

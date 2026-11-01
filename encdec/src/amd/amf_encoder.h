@@ -30,12 +30,18 @@ public:
 
     void force_keyframe() override;
     void set_bitrate(uint32_t bitrate) override;
+    // HEVC only: true once set_bitrate moved the bitrate beyond 1.5x (up or
+    // down) of the rate the init-time VBV was sized for.
+    bool needs_reinit() const override {
+        return needs_reinit_.load(std::memory_order_relaxed);
+    }
     EncoderInfo info() const override;
 
 private:
     bool try_codec(const wchar_t* component_id, VideoCodecId id);
     bool ensure_staging_texture();
     bool do_encode(ID3D11Texture2D* texture, int64_t timestamp_100ns);
+    bool drain_output();
     bool deliver_output(amf::AMFData* data);
 
     amf::AMFFactory* factory_ = nullptr;
@@ -55,6 +61,12 @@ private:
     uint32_t height_ = 0;
     uint32_t fps_ = 30;
     bool initialized_ = false;
+    // Frames submitted whose encoded output has not been collected yet.
+    // Encode thread only.
+    int outstanding_outputs_ = 0;
+    // Bitrate the init-time VBV was sized for (HEVC applies the VBV at Init).
+    uint32_t vbv_sized_for_bitrate_ = 0;
+    std::atomic<bool> needs_reinit_{false};
     // Set by force_keyframe() from any thread (PLI handlers), consumed by the
     // thread that submits frames.
     std::atomic<bool> force_keyframe_{false};

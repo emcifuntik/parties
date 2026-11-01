@@ -15,6 +15,8 @@ add_library(parties_common STATIC
     src/thread_scheduling.cpp
     src/video_send_controller.cpp
     src/video_frame_reorder.cpp
+    src/video_receive_router.cpp
+    src/video_playout.cpp
 )
 set_target_properties(parties_common PROPERTIES XCODE_ATTRIBUTE_SKIP_INSTALL "YES")
 

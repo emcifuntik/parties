@@ -93,6 +93,25 @@ bool test_threshold_rtt() {
     if (video_backlog_threshold_bytes(0.0, 0, 5'000'000) != VIDEO_BACKLOG_MAX_THRESHOLD_BYTES)
         return fail("rtt threshold: 5 MB headroom must clamp to 2 MB");
 
+    // Loss-aware form: 0.4 s + 2.5 round trips. 250 KB/s at a 200 ms MinRtt:
+    // 250000 x (0.4 + 0.5) = 225000.
+    if (video_backlog_threshold_bytes(250'000.0, 200'000, 0, 0) != 225'000)
+        return fail("loss-aware threshold: 2.5 round trips at the MinRtt");
+    // A path whose smoothed RTT grew to 600 ms (MinRtt stuck at 20 ms) is
+    // budgeted at half of it: 250000 x (0.4 + 2.5 x 0.3) = 287500.
+    if (video_backlog_threshold_bytes(250'000.0, 20'000, 0, 600'000) != 287'500)
+        return fail("loss-aware threshold: half the smoothed RTT when MinRtt is stale");
+    // Queueing alone (smoothed RTT below 2 x MinRtt) does not raise it.
+    if (video_backlog_threshold_bytes(250'000.0, 200'000, 0, 350'000) != 225'000)
+        return fail("loss-aware threshold: moderate queueing must not inflate the budget");
+    // 6 % loss adds two round trips: 250000 x (0.4 + 4.5 x 0.2) = 325000.
+    if (video_backlog_threshold_bytes(250'000.0, 200'000, 0, 0, 60) != 325'000)
+        return fail("loss-aware threshold: loss must widen the budget");
+    if (video_backlog_threshold_bytes(250'000.0, 200'000, 0, 0, 500) != 325'000)
+        return fail("loss-aware threshold: the loss term is capped at two round trips");
+    static_assert(video_backlog_threshold_bytes(250'000.0, 200'000, 0, 0) == 225'000,
+                  "loss-aware threshold must be usable in constant expressions");
+
     // Floor: nothing, tiny rates and tiny headroom all clamp up to 64 KB.
     if (video_backlog_threshold_bytes(0.0, 0, 0) != VIDEO_BACKLOG_MIN_THRESHOLD_BYTES)
         return fail("rtt threshold: zero must clamp to the minimum");

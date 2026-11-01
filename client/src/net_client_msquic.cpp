@@ -161,6 +161,7 @@ struct VideoInCtx {
     NetClient*            parent = nullptr;
     const QUIC_API_TABLE* api    = nullptr;
     std::vector<uint8_t>  buf;
+    bool     have_sender = false;
     bool     have_header = false;
     bool     dead        = false;   // rejected or aborted: no longer accumulating
     bool     delivered   = false;   // frame (or its loss) already reported
@@ -204,9 +205,11 @@ static void video_in_complete(VideoInCtx* c)
         std::vector<uint8_t>().swap(c->buf);
         return;
     }
+    // Strip [type][sender] in place and hand the buffer over: no extra copy
+    // of the frame on the MsQuic worker.
+    c->buf.erase(c->buf.begin(), c->buf.begin() + VIDEO_IN_PREFIX);
     if (c->parent->on_video_stream_frame)
-        c->parent->on_video_stream_frame(
-            c->sender, std::vector<uint8_t>(c->buf.begin() + VIDEO_IN_PREFIX, c->buf.end()));
+        c->parent->on_video_stream_frame(c->sender, std::move(c->buf));
     std::vector<uint8_t>().swap(c->buf);
 }
 
@@ -229,13 +232,20 @@ static QUIC_STATUS QUIC_API s_video_in_stream_cb(HQUIC stream, void* ctx,
             video_in_reject(c, stream, "frame too large");
             break;
         }
-        if (!c->have_header && c->buf.size() >= VIDEO_IN_PREFIX + VIDEO_FRAME_HEADER_SIZE) {
+        // The sender is known after 5 bytes, so even a stream aborted before
+        // its header can be attributed (and its stream asked for a keyframe).
+        if (!c->have_sender && c->buf.size() >= VIDEO_IN_PREFIX) {
             std::memcpy(&c->sender, c->buf.data() + 1, 4);
+            c->have_sender = true;
+        }
+        if (!c->have_header && c->buf.size() >= VIDEO_IN_PREFIX + VIDEO_FRAME_HEADER_SIZE) {
             VideoFrameHeader hdr;
             if (VideoFrameHeader::parse(c->buf.data() + VIDEO_IN_PREFIX,
                                         c->buf.size() - VIDEO_IN_PREFIX, hdr)) {
                 c->frame_seq   = hdr.frame_seq;
                 c->have_header = true;
+                if (c->parent->on_video_stream_header)
+                    c->parent->on_video_stream_header(c->sender, hdr);
             }
         }
         if (ev->RECEIVE.Flags & QUIC_RECEIVE_FLAG_FIN)
@@ -252,7 +262,7 @@ static QUIC_STATUS QUIC_API s_video_in_stream_cb(HQUIC stream, void* ctx,
         // The server gave up on this frame (send failure / viewer dropped).
         if (!c->delivered) {
             c->delivered = true;
-            if (c->parent->on_video_stream_aborted)
+            if (c->have_sender && c->parent->on_video_stream_aborted)
                 c->parent->on_video_stream_aborted(c->sender, c->frame_seq, c->have_header);
         }
         c->dead = true;
@@ -311,6 +321,8 @@ struct NetClient::Impl {
     // either the live handle or nullptr.
     std::atomic<HQUIC> control_stream{nullptr};
     std::atomic<HQUIC> video_stream{nullptr};
+    // Network compatibility mode (set_compatibility_mode): applied at connect.
+    std::atomic<bool> compatibility_mode{false};
 
     // Send-vs-disconnect race guard. Every send path and connection_stats()
     // hold it shared while they read the handles and call into MsQuic;
@@ -395,6 +407,14 @@ struct NetClient::Impl {
         return true;
     }
 
+    // Control traffic (join, mute state, PLIs) goes ahead of video frames and
+    // file transfers, which keep MsQuic's default priority (0x7FFF).
+    static constexpr uint16_t CONTROL_STREAM_PRIORITY = 0xC000;
+    void set_stream_priority(HQUIC stream, uint16_t priority) {
+        if (QUIC_FAILED(api->SetParam(stream, QUIC_PARAM_STREAM_PRIORITY, sizeof(priority), &priority)))
+            LOG_WARN("Could not set a stream priority");
+    }
+
     // Creates registration/configuration/connection and starts the handshake.
     // The caller holds handles_mutex exclusively and closes whatever was
     // created if this returns false.
@@ -423,9 +443,12 @@ struct NetClient::Impl {
         // Per-frame video streams (1.2+): the server opens one unidirectional
         // stream per forwarded frame. The default 64 KB unidirectional receive
         // window would window-limit every keyframe.
-        settings.PeerUnidiStreamCount   = 128;   settings.IsSet.PeerUnidiStreamCount   = TRUE;
         settings.StreamRecvWindowUnidiDefault = 4u * 1024u * 1024u;
         settings.IsSet.StreamRecvWindowUnidiDefault = TRUE;
+        // BBR + per-frame stream credit, shared with the server.
+        parties::apply_media_transport_settings(settings);
+        if (compatibility_mode.load(std::memory_order_relaxed))
+            parties::apply_compatibility_transport_settings(settings);
 
         QUIC_BUFFER alpn = parties::make_alpn();
         status = api->ConfigurationOpen(registration, &alpn, 1, &settings,
@@ -728,6 +751,7 @@ struct NetClient::Impl {
             if (QUIC_SUCCEEDED(api->StreamOpen(conn, QUIC_STREAM_OPEN_FLAG_NONE,
                                                s_stream_cb, this, &stream)) &&
                 QUIC_SUCCEEDED(api->StreamStart(stream, QUIC_STREAM_START_FLAG_NONE))) {
+                set_stream_priority(stream, CONTROL_STREAM_PRIORITY);
                 control_stream = stream;
             } else {
                 LOG_ERROR("Control stream failed");
@@ -740,6 +764,9 @@ struct NetClient::Impl {
                 if (QUIC_SUCCEEDED(api->StreamOpen(conn, QUIC_STREAM_OPEN_FLAG_NONE,
                                                    s_stream_cb, this, &vs)) &&
                     QUIC_SUCCEEDED(api->StreamStart(vs, QUIC_STREAM_START_FLAG_IMMEDIATE))) {
+                    // Stream 1 carries the PLIs: a keyframe request must not
+                    // queue behind video frames.
+                    set_stream_priority(vs, CONTROL_STREAM_PRIORITY);
                     video_stream = vs;
                 } else {
                     LOG_ERROR("Video stream failed");
@@ -974,6 +1001,11 @@ static QUIC_STATUS QUIC_API s_file_stream_cb(HQUIC stream, void* ctx,
 
 NetClient::NetClient()  : impl_(std::make_unique<Impl>(*this)) {}
 NetClient::~NetClient() { disconnect(); }
+
+void NetClient::set_compatibility_mode(bool enabled)
+{
+    impl_->compatibility_mode.store(enabled, std::memory_order_relaxed);
+}
 
 bool NetClient::connect(const std::string& host, uint16_t port,
                         const uint8_t* ticket, size_t ticket_len)

@@ -63,11 +63,19 @@ void VideoSendController::reset(const VideoSendControllerConfig& cfg) {
 
     // Main-thread state
     rtt_us_ = cfg_.default_rtt_us;
+    rtt_block_min_us_ = 0;
+    rtt_prev_block_min_us_ = 0;
+    rtt_block_start_us_ = 0;
     window_start_us_ = NO_WINDOW;
     congested_windows_ = 0;
     clean_windows_ = 0;
     last_queue_delay_ms_ = 0;
     peak_queue_delay_ms_ = 0;
+    min_queue_delay_ms_ = 0;
+    queue_sampled_ = false;
+    last_goodput_bps_ = 0;
+    admitted_window_.store(0);
+    completed_bytes_window_.store(0);
     last_loss_ratio_ = 0.0;
     have_stats_ = false;
     last_suspected_lost_ = 0;
@@ -118,6 +126,7 @@ void VideoSendController::on_enqueued(size_t bytes) {
 
 void VideoSendController::on_completed(size_t bytes) {
     const int64_t delta = static_cast<int64_t>(bytes);
+    completed_bytes_window_.fetch_add(delta);
     int64_t after = outstanding_.fetch_sub(delta) - delta;
     // A completion for bytes that were never counted (e.g. a send issued
     // before reset()) must not leave the counter negative, otherwise later
@@ -149,7 +158,10 @@ int64_t VideoSendController::outstanding_bytes() const {
 }
 
 bool VideoSendController::admit_frame(int64_t /*now_us*/) {
-    if (outstanding_.load() <= allowance_bytes_.load()) return true;
+    if (outstanding_.load() <= allowance_bytes_.load()) {
+        admitted_window_.fetch_add(1);
+        return true;
+    }
     admission_drops_.fetch_add(1);
     admission_drops_window_.fetch_add(1);
     return false;
@@ -157,7 +169,7 @@ bool VideoSendController::admit_frame(int64_t /*now_us*/) {
 
 // ── Main thread ────────────────────────────────────────────────────────────
 
-void VideoSendController::on_connection_stats(int64_t /*now_us*/, uint32_t rtt_us,
+void VideoSendController::on_connection_stats(int64_t now_us, uint32_t rtt_us,
                                               uint64_t suspected_lost_packets,
                                               uint64_t spurious_lost_packets,
                                               uint64_t sent_packets) {
@@ -180,16 +192,34 @@ void VideoSendController::on_connection_stats(int64_t /*now_us*/, uint32_t rtt_u
     last_suspected_lost_ = suspected_lost_packets;
     last_spurious_lost_ = spurious_lost_packets;
     last_sent_packets_ = sent_packets;
-    if (rtt_us != 0) rtt_us_ = rtt_us;
+    if (rtt_us != 0) {
+        // Windowed minimum over two ~5 s blocks: follows a path that got
+        // longer within 5-10 s, ignores queueing spikes inside the window.
+        constexpr int64_t BLOCK_US = 5'000'000;
+        if (rtt_block_start_us_ == 0) rtt_block_start_us_ = now_us;
+        if (now_us - rtt_block_start_us_ >= BLOCK_US) {
+            rtt_prev_block_min_us_ = rtt_block_min_us_;
+            rtt_block_min_us_ = 0;
+            rtt_block_start_us_ = now_us;
+        }
+        if (rtt_block_min_us_ == 0 || rtt_us < rtt_block_min_us_) rtt_block_min_us_ = rtt_us;
+        rtt_us_ = rtt_prev_block_min_us_ == 0 ? rtt_block_min_us_
+                                              : std::min(rtt_block_min_us_, rtt_prev_block_min_us_);
+    }
     refresh_allowance();
 }
 
 void VideoSendController::tick(int64_t now_us) {
     if (window_start_us_ == NO_WINDOW) window_start_us_ = now_us;
 
-    // Sample the queueing delay on every tick and keep the window peak.
-    last_queue_delay_ms_ = queue_delay_ms(outstanding_bytes(), bitrate_bps_.load(), rtt_us_);
+    // Sample the queueing delay on every tick; keep the window peak (stats)
+    // and minimum (a queue that never drained in the whole window).
+    last_queue_delay_ms_ = queue_delay_ms(outstanding_bytes(), bitrate_bps_.load(),
+                                          in_flight_time_us(rtt_us_, last_loss_ratio_));
     peak_queue_delay_ms_ = std::max(peak_queue_delay_ms_, last_queue_delay_ms_);
+    min_queue_delay_ms_ = queue_sampled_ ? std::min(min_queue_delay_ms_, last_queue_delay_ms_)
+                                         : last_queue_delay_ms_;
+    queue_sampled_ = true;
 
     const int64_t window_us = static_cast<int64_t>(cfg_.window_ms) * 1000;
     if (now_us - window_start_us_ >= window_us) {
@@ -198,12 +228,18 @@ void VideoSendController::tick(int64_t now_us) {
             ? static_cast<double>(window_lost_) / static_cast<double>(window_sent_)
             : 0.0;
         const uint32_t admission_drops = admission_drops_window_.exchange(0);
+        const uint32_t admitted = admitted_window_.exchange(0);
         const uint32_t sender_drops = encoder_drops_window_.exchange(0);   // encoder drops + send failures
+        const int64_t  completed = completed_bytes_window_.exchange(0);
+        const double   window_s = static_cast<double>(now_us - window_start_us_) / 1e6;
+        last_goodput_bps_ = window_s > 0.0
+            ? static_cast<uint32_t>(std::min(4294967295.0, static_cast<double>(completed) * 8.0 / window_s))
+            : 0;
 
+        const uint32_t frames = admission_drops + admitted;
         const bool congested =
-            peak_queue_delay_ms_ >= cfg_.congestion_queue_ms ||
-            last_loss_ratio_ > cfg_.loss_threshold ||
-            admission_drops > 0 ||
+            (queue_sampled_ && min_queue_delay_ms_ >= cfg_.congestion_queue_ms) ||
+            (frames > 0 && admission_drops > cfg_.admission_drop_ratio * frames) ||
             sender_drops > 0;
 
         const uint32_t floor_bps = std::min(cfg_.min_bitrate_bps, cfg_.target_bitrate_bps);
@@ -213,8 +249,13 @@ void VideoSendController::tick(int64_t now_us) {
             clean_windows_ = 0;
             if (++congested_windows_ >= cfg_.congested_windows) {
                 congested_windows_ = 0;
-                // Multiplicative decrease, never below the adaptation floor.
-                const uint32_t reduced = std::max(floor_bps, scale_bitrate(current, cfg_.decrease_factor));
+                // Multiplicative decrease, or straight below what the link
+                // actually delivered when that is lower, never below the
+                // adaptation floor.
+                uint32_t reduced = scale_bitrate(current, cfg_.decrease_factor);
+                if (last_goodput_bps_ > 0)
+                    reduced = std::min(reduced, scale_bitrate(last_goodput_bps_, cfg_.goodput_factor));
+                reduced = std::max(floor_bps, reduced);
                 if (reduced < current) {
                     bitrate_bps_.store(reduced);
                     ++decreases_;
@@ -235,6 +276,8 @@ void VideoSendController::tick(int64_t now_us) {
         // Start the next window.
         window_start_us_ = now_us;
         peak_queue_delay_ms_ = 0;
+        min_queue_delay_ms_ = 0;
+        queue_sampled_ = false;
         window_lost_ = 0;
         window_sent_ = 0;
     }
@@ -265,6 +308,7 @@ VideoSendController::Stats VideoSendController::stats() const {
     s.outstanding_bytes = outstanding_bytes();
     s.rtt_us            = rtt_us_;
     s.queue_delay_ms    = last_queue_delay_ms_;
+    s.goodput_bps       = last_goodput_bps_;
     s.loss_ratio        = last_loss_ratio_;
     s.admission_drops   = admission_drops_.load();
     s.send_failures     = send_failures_.load();
@@ -288,11 +332,17 @@ uint32_t VideoSendController::queue_delay_ms(int64_t outstanding_bytes, uint32_t
     return delay >= max_u32 ? static_cast<uint32_t>(max_u32) : static_cast<uint32_t>(delay);
 }
 
+uint32_t VideoSendController::in_flight_time_us(uint32_t rtt_us, double loss_ratio) {
+    const double extra_rtts = std::clamp(loss_ratio * 30.0, 0.0, 1.5);
+    return static_cast<uint32_t>(static_cast<double>(rtt_us) * (1.0 + extra_rtts));
+}
+
 void VideoSendController::refresh_allowance() {
     // Bytes that may be queued/in flight before admission starts skipping:
-    // one RTT worth (in flight) plus queue_budget_ms of queueing.
+    // the normal in-flight time (RTT, more under loss) plus queue_budget_ms
+    // of queueing.
     const int64_t bitrate = bitrate_bps_.load();
-    const int64_t horizon_us = static_cast<int64_t>(rtt_us_)
+    const int64_t horizon_us = static_cast<int64_t>(in_flight_time_us(rtt_us_, last_loss_ratio_))
                              + static_cast<int64_t>(cfg_.queue_budget_ms) * 1000;
     // bitrate/8 bytes per second * horizon seconds
     const int64_t allowance = bitrate * horizon_us / 8 / 1'000'000;

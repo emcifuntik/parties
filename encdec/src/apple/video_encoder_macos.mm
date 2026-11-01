@@ -4,6 +4,7 @@
 // in the same output buffer so the server and receiver can parse them.
 
 #include <encdec/apple/video_encoder_macos.h>
+#include <encdec/rate_control.h>
 #include <parties/video_common.h>
 
 #import <Foundation/Foundation.h>
@@ -267,25 +268,47 @@ void VideoEncoderMac::apply_rate_limits(uint32_t bitrate_bps)
                          bps_num);
     CFRelease(bps_num);
 
-    // Hard data rate limit: 1.5x the target (the stream peak) over a 0.5 s
-    // window. Without this, AverageBitRate is just a soft hint that VT freely
-    // exceeds. The window is real-time only because we feed real host-clock
-    // PTS (see encode()). A short window at peak keeps a keyframe from turning
-    // into a multi-second burst on a link close to the average, which every
-    // viewer experiences as a stall followed by catch-up. The window length
-    // must be a double-typed CFNumber (seconds); an integer 0 would disable it.
-    const double  window_seconds = 0.5;
-    const SInt32  byte_limit     = (SInt32)(bitrate_bps * 1.5 / 8 * window_seconds);
-    CFNumberRef limit_bytes = CFNumberCreate(nullptr, kCFNumberSInt32Type, &byte_limit);
-    CFNumberRef limit_time  = CFNumberCreate(nullptr, kCFNumberDoubleType, &window_seconds);
-    CFTypeRef limits[] = { limit_bytes, limit_time };
-    CFArrayRef limit_array = CFArrayCreate(nullptr, limits, 2, &kCFTypeArrayCallBacks);
-    VTSessionSetProperty(session_,
-                         kVTCompressionPropertyKey_DataRateLimits,
-                         limit_array);
+    // Hard data rate limits express the CBR stream policy (rate_control.h):
+    // peak = average, VBV = ~2 frame intervals. Without them AverageBitRate is
+    // just a soft hint that VT freely exceeds. DataRateLimits takes
+    // [bytes, seconds] pairs:
+    //   - the VBV over its own duration, so a single frame (keyframes
+    //     included) never needs more than ~2 frame intervals of link time;
+    //   - the target over one second, which bounds the average.
+    // The windows are real-time only because we feed real host-clock PTS (see
+    // encode()). Window lengths must be double-typed CFNumbers (seconds); an
+    // integer 0 would disable the limit.
+    const auto rate_control = encdec::make_stream_cbr_rate_control(bitrate_bps, fps_);
+    const double vbv_seconds    = (double)rate_control.vbv_buffer_size / bitrate_bps;
+    const SInt32 vbv_bytes      = (SInt32)(rate_control.vbv_buffer_size / 8);
+    const double second_seconds = 1.0;
+    const SInt32 second_bytes   = (SInt32)(rate_control.peak_bitrate / 8);
+    CFNumberRef vbv_bytes_num    = CFNumberCreate(nullptr, kCFNumberSInt32Type, &vbv_bytes);
+    CFNumberRef vbv_time_num     = CFNumberCreate(nullptr, kCFNumberDoubleType, &vbv_seconds);
+    CFNumberRef second_bytes_num = CFNumberCreate(nullptr, kCFNumberSInt32Type, &second_bytes);
+    CFNumberRef second_time_num  = CFNumberCreate(nullptr, kCFNumberDoubleType, &second_seconds);
+    CFTypeRef limits[] = { vbv_bytes_num, vbv_time_num, second_bytes_num, second_time_num };
+    CFArrayRef limit_array = CFArrayCreate(nullptr, limits, 4, &kCFTypeArrayCallBacks);
+    OSStatus status = VTSessionSetProperty(session_,
+                                           kVTCompressionPropertyKey_DataRateLimits,
+                                           limit_array);
     CFRelease(limit_array);
-    CFRelease(limit_bytes);
-    CFRelease(limit_time);
+    if (status != noErr) {
+        // Keep at least the average bound if the short window is rejected.
+        fprintf(stderr, "[VideoEncoderMac] DataRateLimits with a %.3f s VBV window "
+                        "rejected (%d); using the 1 s limit only\n",
+                vbv_seconds, (int)status);
+        CFTypeRef second_limit[] = { second_bytes_num, second_time_num };
+        CFArrayRef second_array = CFArrayCreate(nullptr, second_limit, 2, &kCFTypeArrayCallBacks);
+        VTSessionSetProperty(session_,
+                             kVTCompressionPropertyKey_DataRateLimits,
+                             second_array);
+        CFRelease(second_array);
+    }
+    CFRelease(vbv_bytes_num);
+    CFRelease(vbv_time_num);
+    CFRelease(second_bytes_num);
+    CFRelease(second_time_num);
 }
 
 void VideoEncoderMac::set_bitrate(uint32_t bitrate_bps)

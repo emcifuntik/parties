@@ -2,6 +2,8 @@
 
 #include <mfidl.h>
 #include <mferror.h>
+#include <codecapi.h>
+#include <strmif.h>
 
 #include <cstring>
 #include <parties/log.h>
@@ -63,6 +65,30 @@ bool MftDecoder::init(VideoCodecId codec, uint32_t width, uint32_t height) {
     if (FAILED(hr)) {
         LOG_ERROR("Activate {} decoder failed: {:#010x}", name, hr);
         return false;
+    }
+
+    // Low-latency mode: output each frame as soon as it is decoded instead of
+    // buffering several for reordering (our encoders never emit B-frames).
+    // Without it the Microsoft decoders hold back frames, which is visible as
+    // latency and as a frame that only appears after the next one arrives.
+    {
+        bool low_latency = false;
+        ComPtr<ICodecAPI> codec_api;
+        if (SUCCEEDED(mft_.As(&codec_api))) {
+            VARIANT var;
+            VariantInit(&var);
+            var.vt = VT_BOOL;
+            var.boolVal = VARIANT_TRUE;
+            hr = codec_api->SetValue(&CODECAPI_AVLowLatencyMode, &var);
+            low_latency = SUCCEEDED(hr);
+        }
+        if (!low_latency) {
+            ComPtr<IMFAttributes> attrs;
+            if (SUCCEEDED(mft_->GetAttributes(&attrs)) && attrs)
+                low_latency = SUCCEEDED(attrs->SetUINT32(MF_LOW_LATENCY, TRUE));
+        }
+        if (!low_latency)
+            LOG_WARN("{} decoder MFT rejected low-latency mode", name);
     }
 
     // Set input type (compressed)
@@ -263,7 +289,14 @@ bool MftDecoder::decode(const uint8_t* data, size_t len, int64_t timestamp) {
         collect_output();
         hr = mft_->ProcessInput(0, in_sample.Get(), 0);
     }
-    if (FAILED(hr) && hr != MF_E_NOTACCEPTING) return false;
+    if (FAILED(hr)) {
+        // A refused access unit is lost, and every later inter frame would
+        // reference it: report the failure (see Decoder::decode) instead of
+        // silently dropping it, so the caller resyncs at a keyframe.
+        LOG_WARN("MFT decoder ProcessInput failed: {:#010x}",
+                 static_cast<unsigned>(hr));
+        return false;
+    }
 
     collect_output();
     return true;

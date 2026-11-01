@@ -73,6 +73,10 @@ void VideoEncoder::set_bitrate(uint32_t bitrate) {
     if (encoder_) encoder_->set_bitrate(bitrate);
 }
 
+bool VideoEncoder::needs_reinit() const {
+    return encoder_ && encoder_->needs_reinit();
+}
+
 const char* VideoEncoder::backend_name() const {
     if (encoder_) return encdec::backend_name(encoder_->info().backend);
     return "none";

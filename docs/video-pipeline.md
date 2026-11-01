@@ -108,13 +108,14 @@ waited for the next packet before releasing a picture.
 
 | Where | Component | Role |
 |-------|-----------|------|
-| Sharer | `VideoSendController` admission (`common/include/parties/video_send_controller.h`) | Counts bytes handed to QUIC minus bytes acknowledged in `SEND_COMPLETE`. On the WGC capture thread a frame is encoded only when the outstanding bytes imply no more than ~120 ms of queueing beyond the minimum RTT; otherwise the capture frame is skipped. Skipping at capture keeps the reference chain intact because `frame_seq` is stamped after encode. Atomics only, never blocks |
-| Sharer | `VideoSendController` AIMD bitrate | Evaluated on the main thread in 500 ms windows. A window is congested when its peak queueing delay is >= 80 ms, actual (spurious-corrected) packet loss exceeds 3 %, or any admission, encoder, or send drop occurred in it; after two consecutive congested windows the bitrate is multiplied by 0.8 (not below the 800 kbps floor), and a clean window resets the count. x1.08 after 2 s clean, up to the user target. Encoder reconfigurations are gated to one per 500 ms and a >= 10 % delta, except that the final step onto the user's target (or onto the floor) is always published even when it is smaller than the delta gate. The encoder picks the new bitrate up on the encode thread via `take_bitrate_update()` and a keyframe request via `take_keyframe_request()` |
+| Sharer | `VideoSendController` admission (`common/include/parties/video_send_controller.h`) | Counts bytes handed to QUIC minus bytes acknowledged in `SEND_COMPLETE`. On the WGC capture thread a frame is encoded only when the outstanding bytes imply no more than ~120 ms of queueing beyond the expected in-flight time, `RTT x (1 + min(30 x loss, 1.5))` (each lost packet costs about one more round trip before it is acknowledged); otherwise the capture frame is skipped. The RTT is the controller's own windowed minimum of the smoothed RTT (two 5 s blocks), not MsQuic's `MinRtt`, which can be stale from the handshake or a previous path. Skipping at capture keeps the reference chain intact because `frame_seq` is stamped after encode. Atomics only, never blocks |
+| Sharer | `VideoSendController` AIMD bitrate | Evaluated on the main thread in 500 ms windows. A window is congested when its *minimum* queueing delay is >= 100 ms (a standing queue: the link never drained) or more than 20 % of the frames were skipped by admission. After two consecutive congested windows the bitrate drops to `min(0.85 x current, 0.9 x goodput)`, goodput being the bytes acknowledged per second in that window (not below the 800 kbps floor). x1.10 after 1 s clean, up to the user target. Packet loss is deliberately not a congestion signal: the transport retransmits, random Wi-Fi/mobile loss says nothing about capacity, and treating it as congestion pinned streams at the floor. Encoder reconfigurations are gated to one per 500 ms and a >= 10 % delta, except that the final step onto the user's target (or onto the floor) is always published. The encoder picks the new bitrate up on the encode thread via `take_bitrate_update()` and a keyframe request via `take_keyframe_request()` |
 | Both hops | Per-frame unidirectional QUIC streams (protocol 1.2) | One stream per encoded frame, `[0x12][header 14 B][encoded]` sharer to server and `[0x12][sender_id][header][encoded]` server to viewer, one `StreamSend` with FIN. A lost packet delays only its frame. Stream 1 stays for pre-1.2 peers and PLI |
-| Server | Per-viewer backlog gate (`common/include/parties/video_backlog.h`) | Outstanding bytes per viewer connection; a frame is dropped as a whole for a viewer whose outstanding bytes exceed `clamp(viewer_rate x (MinRtt + 250 ms) + keyframe_headroom, 64 KB, 2 MB)`, where `viewer_rate` is the sum of the rates of every sharer the viewer is subscribed to (they share one counter), `MinRtt` is sampled from `QUIC_PARAM_CONN_STATISTICS_V2` inside the connection's QUIC callbacks about once per second; the server loop reads an atomic cache (the smoothed RTT already contains the queueing being detected; with send buffering disabled a send completes only on acknowledgement, so the RTT term keeps a long-RTT viewer from being throttled on a lossless link), and `keyframe_headroom` is the largest recent keyframe. After a drop the viewer resumes only at a keyframe, requested from the sharer once per 200 ms per sharer |
+| Server | Per-viewer backlog gate (`common/include/parties/video_backlog.h`) | Outstanding bytes per viewer connection, from `StreamSend` to `SEND_COMPLETE`; a frame is dropped as a whole for a viewer whose outstanding bytes exceed `viewer_rate x (0.4 s + (2.5 + min(loss_permille / 30, 2)) x max(MinRtt, SRTT / 2)) + keyframe_headroom` (clamped to 64 KB .. 2 MB), where `viewer_rate` is the sum of the rates of every sharer the viewer is subscribed to, the RTTs and the packet loss toward the viewer are sampled from `QUIC_PARAM_CONN_STATISTICS_V2` inside the connection's QUIC callbacks about once per second, and `keyframe_headroom` is the largest recent keyframe. Loss widens the budget because a viewer on a lossy link keeps more data unacknowledged without being too slow for the stream. When the gate starts dropping, every frame stream already queued for that viewer is aborted (`StreamShutdown(ABORT_SEND)`), and an admitted keyframe aborts the older ones, so stale frames stop using the link. The viewer resumes at a keyframe; its keyframe requests back off from 1 s to 4 s while it stays over budget and reset after 60 frames admitted without a drop |
 | Server | Per-frame ingress guard (`Session::video_ingress_allowed`, `Session::video_in_buffered_bytes`) | Per-frame streams are accepted only from authenticated sessions currently registered as sharers; any other session's unidirectional stream is aborted at start. At most 16 MB may be buffered across one session's unfinished per-frame streams, and the largest `[header][encoded]` a sharer may send is `VIDEO_FRAME_MAX_PAYLOAD_BYTES` (`VIDEO_FRAME_MAX_BYTES` - 5: 4 MB minus the 5-byte forwarding prefix) |
-| Server and viewer | `VideoFrameReorderBuffer` (`common/include/parties/video_frame_reorder.h`) | Per-frame streams complete out of order. The buffer delivers the next expected `frame_seq` immediately, holds newer complete frames for up to 150 ms / 8 frames / 8 MB while an older one is missing, delivers a held keyframe at once, and resets only on an explicit share lifecycle change. Before its first keyframe it holds bounded delta frames without committing a baseline, so a delayed first keyframe is still accepted. Arbitrarily late frames never rewind the active sequence. A gap that is closed by a keyframe is not reported as a loss and sends no PLI: that is how the server resumes a throttled viewer, and the decoder re-anchors on the keyframe. Only a gap resumed at a delta frame (150 ms hold timeout, aborted stream, or buffer overflow) is reported, once, and then the decode gate requests a keyframe through the PLI funnel |
-| Viewer | PLI funnel | Single client entry point with a 500 ms cooldown per sharer, retried every 500 ms while a watched stream still awaits a keyframe, subject to the escalation cap described under [Decode backlog policy](#decode-backlog-policy). The self-preview stream never sends PLIs |
+| Server and viewer | `VideoFrameReorderBuffer` (`common/include/parties/video_frame_reorder.h`) | Per-frame streams complete out of order. The buffer delivers the next expected `frame_seq` immediately and holds newer complete frames while an older one is missing, for `clamp(3 x RTT + 100 ms, 150 ms, 1.5 s)` (a retransmission needs at least one more round trip), at most 240 frames / 8 MB (the newest is evicted on overflow). A held keyframe is delivered at once. A frame stream that is aborted after its header was read fails its slot immediately instead of waiting out the hold. The early header of a keyframe stream (`on_frame_started`) marks a keyframe as in flight: no keyframe is requested for a gap while one is arriving. Before its first keyframe it holds bounded delta frames without committing a baseline. Arbitrarily late frames never rewind the active sequence; a reset is explicit (watch open, share restart). A gap closed by a keyframe is not reported as a loss; a gap resumed at a delta frame is reported once and leads to a keyframe request |
+| Viewer | `VideoReceiveRouter` (`common/include/parties/video_receive_router.h`) | Owns the viewer's reorder buffers and keyframe requests. A request is sent at once for a new gap and then backs off 500 ms, 1 s, 2 s, 4 s while the stream stays broken; a delivered keyframe resets the backoff. Opening a watch waits one base interval before the first request (the server already requests a keyframe on subscribe). The self-preview stream never sends requests |
+| Viewer | `VideoPlayoutClock` (`common/include/parties/video_playout.h`) | Jitter buffer. Reliable per-frame streams deliver in clumps (the frames behind a retransmission arrive together), which the renderer shows as a stall and a jump. With `VIDEO_FLAG_CAPTURE_TIME` the sender stamps its capture time in ms into the header `timestamp`; the router's playout thread hands each frame to the decoder at `capture + base + delay`, where `base` is the smallest transit in the last 3 s and `delay` the 95th percentile of the excess (up at once, down at 100 ms/s, at most 300 ms). Frames without the flag play on arrival |
 
 Completed ingress frames pass through a separate queue capped at 16 MB per
 session. The server loop restores frame order before backlog gating or legacy
@@ -156,28 +157,56 @@ The UI bitrate is an average. The old policy (peak 2x average, VBV = 2x average
 bits, i.e. a two-second reservoir) let one keyframe be several hundred kilobytes,
 which on a link close to the average is a stall followed by catch-up. The
 low-latency policy in `encdec/include/encdec/rate_control.h`
-(`make_stream_vbr_rate_control(average, fps)`) expresses the reservoir in frame
-intervals:
+(`make_stream_cbr_rate_control(bitrate, fps)`) is CBR with a reservoir of two
+frame intervals, so a frame, keyframes included, never needs more than about two
+frame intervals of link time. The first keyframe after a join is coarse and the
+following P frames refine it, which is far less visible than a freeze. Filler
+data stays disabled: CBR is used for its strict VBV bound, not to pad the stream.
 
 | Field | Value |
 |-------|-------|
-| `peak_bitrate` | 1.5 x average |
-| `vbv_buffer_size` | max(4 frame intervals at average, 250 kbit) |
+| `peak_bitrate` | = average (CBR) |
+| `vbv_buffer_size` | max(2 frame intervals at average, 50 kbit) |
 | `vbv_initial_delay` | = `vbv_buffer_size` |
-| `max_frame_bits` | 6 frame intervals at average (~200 ms of link time at 30 fps), never below `vbv_buffer_size` |
+| `max_frame_bits` | = `vbv_buffer_size` |
 
 Which fields each backend consumes:
 
 | Backend | Fields |
 |---------|--------|
-| NVENC | `average`, `peak`, `vbv_buffer_size`, `vbv_initial_delay` |
+| NVENC | `average` (CBR, ultra-low-latency tuning), `vbv_buffer_size`, `vbv_initial_delay` |
 | AMF | `average`, `peak`, `vbv_buffer_size`, `max_frame_bits` (`MAX_AU_SIZE` / `HEVC_MAX_AU_SIZE` / `AV1_MAX_COMPRESSED_FRAME_SIZE`) |
-| MFT | `average`, `peak`, `vbv_buffer_size` (`CODECAPI_AVEncCommonBufferSize`) |
+| MFT | `average` (CBR), `vbv_buffer_size` (`CODECAPI_AVEncCommonBufferSize`, in bytes, set before the output type) |
+| OpenH264 | `average` (= max bitrate); no VBV, frame skipping bounds it |
 | VideoToolbox | `average` plus a `DataRateLimits` window derived from `peak` |
 
 Bitrate changes reach the encoder only from the encode thread
 (`AppCore::take_video_bitrate_update()`); the UI slider merely updates the
-controller's target ceiling.
+controller's target ceiling. An encoder that can only reach a much higher rate
+by being created again reports `needs_reinit()` (AMF HEVC beyond 1.5x its
+creation rate); the encode thread re-creates it, at most every 2 s. Keyframe
+requests from the network reach the encoder through an atomic flag consumed on
+the encode thread; on a static screen the newest captured frame is re-encoded.
+
+## Transport tuning
+
+- **Congestion control: BBR** (`apply_media_transport_settings`, both client and
+  server). CUBIC treats every loss as congestion: in the network test a viewer
+  with 10 % loss on its downlink got 0.5 fps. MsQuic's BBR still entered
+  recovery (cwnd cut to the in-flight data) on every loss and never left it
+  under constant random loss; the overlay patch
+  `vendor/ports/msquic/0003-bbr-ignore-random-loss.patch` only does that on
+  persistent congestion. `PARTIES_QUIC_CC=cubic` switches back for A/B tests.
+- **Stream priorities**: control streams 0xC000 (above video), file transfers
+  0x1000 (below it).
+- **Network compatibility mode** (Settings > Screen Share): turns off the
+  Windows UDP send segmentation (USO) and receive coalescing (URO) offloads,
+  which misbehave with some NIC drivers, VPNs and routers, and pins the path
+  MTU to 1280 bytes. The offloads belong to MsQuic's datapath, which is created
+  by the first connection and lives until exit (overlay patch
+  `0002-datapath-offload-toggle.patch`, global param
+  `QUIC_PARAM_GLOBAL_DATAPATH_DISABLE_OFFLOADS`); a change after that needs a
+  restart.
 
 ## Fallbacks
 

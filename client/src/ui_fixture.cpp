@@ -131,6 +131,7 @@ void PopulateUIFixture(AppCore& core, const std::string& scenario, bool macos)
     lobby.normalize_enabled = true;
     lobby.normalize_target = 0.55f;
     lobby.aec_enabled = true;
+    lobby.network_compat_enabled = false;
     lobby.vad_enabled = true;
     lobby.vad_threshold = 0.36f;
     lobby.voice_level = 0.48f;

@@ -37,6 +37,7 @@ private:
     uint32_t width_ = 0;
     uint32_t height_ = 0;
     uint32_t fps_ = 30;
+    uint32_t current_bitrate_ = 0;  // last applied target, orders set_bitrate's updates
     // Set by force_keyframe() from any thread (PLI handlers), consumed by the
     // thread that submits frames.
     std::atomic<bool> force_keyframe_{false};

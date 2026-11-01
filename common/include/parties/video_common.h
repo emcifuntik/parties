@@ -14,6 +14,10 @@ enum class VideoCodecId : uint8_t {
 
 // Video frame flags (bitfield)
 constexpr uint8_t VIDEO_FLAG_KEYFRAME = 0x01;
+// VideoFrameHeader::timestamp holds the sender's capture time in milliseconds
+// (monotonic, wrapping); the viewer paces playout with it (VideoPlayoutClock).
+// Without it the field is opaque (older senders put frame_seq there).
+constexpr uint8_t VIDEO_FLAG_CAPTURE_TIME = 0x02;
 
 // Bitrate limits (bits per second)
 constexpr uint32_t VIDEO_MAX_BITRATE       = 20'000'000;  // 20 Mbps
@@ -25,9 +29,12 @@ constexpr uint32_t VIDEO_ADAPT_MIN_BITRATE =   800'000;   // 800 kbps
 
 // Timing
 constexpr uint32_t VIDEO_KEYFRAME_INTERVAL_MS = 5000;  // Max 5 seconds between keyframes
-constexpr uint32_t VIDEO_PLI_COOLDOWN_MS      =  500;  // Min time between PLI sends per target
-constexpr uint32_t VIDEO_PLI_RETRY_MS         =  500;  // Re-send PLI while still waiting for a keyframe
-constexpr uint32_t VIDEO_KEYFRAME_REQUEST_COOLDOWN_MS = 500;  // Min time between forced keyframes on the sharer
+// Viewer keyframe requests are paced per stream by VideoReceiveRouter
+// (500 ms, doubling to 4 s while the stream stays broken).
+// Min time between forced keyframes on the sharer. A keyframe takes more than
+// a round trip to land on a lossy path; forcing them faster only replaces one
+// in-flight keyframe with the next, for every viewer.
+constexpr uint32_t VIDEO_KEYFRAME_REQUEST_COOLDOWN_MS = 1000;
 
 // Largest on-wire video record accepted by any stream parser: the length
 // prefix / type byte plus everything after it ([type][sender][header][encoded]).
@@ -43,7 +50,8 @@ constexpr size_t VIDEO_FRAME_MAX_PAYLOAD_BYTES = VIDEO_FRAME_MAX_BYTES - 1 - 4;
 // video stream 1 ([0x02][sender][hdr][encoded] after server forwarding) and on
 // per-frame unidirectional streams ([0x12][sender][hdr][encoded]).
 //   [frame_seq u32][timestamp u32][flags u8][width u16][height u16][codec u8]
-// All little-endian. timestamp currently mirrors frame_seq; nothing consumes it.
+// All little-endian. timestamp: the capture time in ms when flags has
+// VIDEO_FLAG_CAPTURE_TIME, otherwise opaque (older senders: frame_seq).
 constexpr size_t VIDEO_FRAME_HEADER_SIZE = 14;
 
 struct VideoFrameHeader {

@@ -5,6 +5,9 @@
 #include <codecapi.h>
 #include <strmif.h>
 
+#include <chrono>
+#include <string>
+
 #include <parties/log.h>
 #include <parties/profiler.h>
 #include <parties/thread_scheduling.h>
@@ -14,19 +17,129 @@ using Microsoft::WRL::ComPtr;
 
 namespace parties::encdec::mft {
 
+namespace {
+
+HRESULT set_codec_u32(ICodecAPI* api, const GUID& key, UINT32 value) {
+    VARIANT var;
+    VariantInit(&var);
+    var.vt = VT_UI4;
+    var.ulVal = value;
+    return api->SetValue(&key, &var);
+}
+
+HRESULT set_codec_bool(ICodecAPI* api, const GUID& key, bool value) {
+    VARIANT var;
+    VariantInit(&var);
+    var.vt = VT_BOOL;
+    var.boolVal = value ? VARIANT_TRUE : VARIANT_FALSE;
+    return api->SetValue(&key, &var);
+}
+
+bool get_codec_u32(ICodecAPI* api, const GUID& key, UINT32& value) {
+    VARIANT var;
+    VariantInit(&var);
+    const HRESULT hr = api->GetValue(&key, &var);
+    const bool ok = SUCCEEDED(hr) && var.vt == VT_UI4;
+    if (ok) value = var.ulVal;
+    VariantClear(&var);
+    return ok;
+}
+
+// CODECAPI_AVEncCommonBufferSize is documented by Microsoft in BYTES, unlike
+// the bit-based StreamRateControl. Hardware MFTs are expected to follow the
+// documentation; this could not be cross-checked against every vendor MFT.
+UINT32 vbv_bytes(const StreamRateControl& rate_control) {
+    return rate_control.vbv_buffer_size / 8u;
+}
+
+// How long the destructor waits for the event loop to finish the drain before
+// it shuts the MFT down to unblock the loop's GetEvent.
+constexpr auto ENCODER_LOOP_EXIT_TIMEOUT = std::chrono::milliseconds(500);
+
+// Annex-B start code at data[i]: returns its length (3 or 4), or 0.
+size_t start_code_length(const uint8_t* data, size_t len, size_t i) {
+    if (i + 3 <= len && data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1) return 3;
+    if (i + 4 <= len && data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 0 &&
+        data[i + 3] == 1)
+        return 4;
+    return 0;
+}
+
+bool is_filler_nal(VideoCodecId codec, uint8_t header) {
+    if (codec == VideoCodecId::H264) return (header & 0x1f) == 12;          // filler data
+    if (codec == VideoCodecId::H265) return ((header >> 1) & 0x3f) == 38;   // FD_NUT
+    return false;
+}
+
+// There is no ICodecAPI switch for filler data, and some hardware MFTs (AMD's
+// H.264/HEVC encoders) pad CBR output with filler NAL units up to the exact
+// target rate. Filler only exists for HRD conformance on constant-rate
+// channels; on our link it is pure overhead that keeps the path saturated.
+// Copies the Annex-B access unit without filler NAL units into `out`.
+// Returns false (and leaves `out` untouched) when the unit has none.
+bool strip_filler_nal_units(VideoCodecId codec, const uint8_t* data, size_t len,
+                            std::vector<uint8_t>& out) {
+    if (codec != VideoCodecId::H264 && codec != VideoCodecId::H265) return false;
+
+    // First pass: locate the first NAL unit and look for any filler.
+    bool has_filler = false;
+    size_t first = len;
+    for (size_t i = 0; i < len; ++i) {
+        const size_t sc = start_code_length(data, len, i);
+        if (sc == 0) continue;
+        if (first == len) first = i;
+        if (i + sc < len && is_filler_nal(codec, data[i + sc])) {
+            has_filler = true;
+            break;
+        }
+        i += sc - 1;
+    }
+    if (!has_filler) return false;
+
+    out.clear();
+    out.reserve(len);
+    out.insert(out.end(), data, data + first);   // bytes before the first NAL (normally none)
+    size_t nal_start = first;
+    bool keep = true;
+    for (size_t i = first; i <= len; ++i) {
+        const size_t sc = i < len ? start_code_length(data, len, i) : 1;
+        if (sc == 0) continue;
+        if (i > nal_start && keep) out.insert(out.end(), data + nal_start, data + i);
+        if (i == len) break;
+        nal_start = i;
+        keep = !(i + sc < len && is_filler_nal(codec, data[i + sc]));
+        i += sc - 1;
+    }
+    return true;
+}
+
+} // namespace
+
 MftEncoder::~MftEncoder() {
     // No early-out on !initialized_: a failed init() may still owe MFShutdown
     // and have partially constructed members; everything below is null-safe.
     encoder_running_ = false;
-    queue_cv_.notify_all();
 
     if (encoder_) {
         encoder_->ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0);
         encoder_->ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0);
     }
 
-    if (encoder_thread_.joinable())
+    if (encoder_thread_.joinable()) {
+        // The loop leaves on the next event (the drain produces at least
+        // METransformDrainComplete). Async MFTs implement IMFShutdown, which
+        // also makes a GetEvent that would otherwise block forever return
+        // MF_E_SHUTDOWN, so shutdown never depends on the driver's drain.
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex_);
+            loop_exit_cv_.wait_for(lock, ENCODER_LOOP_EXIT_TIMEOUT,
+                                   [this] { return loop_exited_; });
+        }
+        ComPtr<IMFShutdown> shutdown;
+        if (encoder_ && SUCCEEDED(encoder_.As(&shutdown)) && shutdown)
+            shutdown->Shutdown();
         encoder_thread_.join();
+    }
 
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
@@ -193,7 +306,42 @@ bool MftEncoder::configure_encoder(uint32_t width, uint32_t height,
     if (FAILED(hr))
         LOG_ERROR("Failed to set D3D manager: {:#010x}", hr);
 
-    const auto rate_control = make_stream_vbr_rate_control(bitrate, fps);
+    const auto rate_control = make_stream_cbr_rate_control(bitrate, fps);
+
+    // Rate control and latency properties must be configured before the media
+    // types: encoders read them while negotiating SetOutputType, and several
+    // hardware MFTs ignore (or reset) rate-control changes made afterwards.
+    ComPtr<ICodecAPI> codec_api;
+    if (FAILED(encoder_.As(&codec_api)))
+        LOG_WARN("MFT encoder exposes no ICodecAPI; only MF_MT_AVG_BITRATE applies");
+    if (codec_api) {
+        auto check = [](HRESULT result, const char* name) {
+            if (FAILED(result))
+                LOG_WARN("MFT encoder rejected {}: {:#010x}", name,
+                         static_cast<unsigned>(result));
+        };
+        check(set_codec_bool(codec_api.Get(), CODECAPI_AVLowLatencyMode, true),
+              "AVLowLatencyMode");
+        // CBR with a VBV of ~2 frame intervals (see rate_control.h).
+        check(set_codec_u32(codec_api.Get(), CODECAPI_AVEncCommonRateControlMode,
+                            eAVEncCommonRateControlMode_CBR),
+              "AVEncCommonRateControlMode=CBR");
+        check(set_codec_u32(codec_api.Get(), CODECAPI_AVEncCommonMeanBitRate,
+                            rate_control.average_bitrate),
+              "AVEncCommonMeanBitRate");
+        check(set_codec_u32(codec_api.Get(), CODECAPI_AVEncCommonBufferSize,
+                            vbv_bytes(rate_control)),
+              "AVEncCommonBufferSize");
+        check(set_codec_u32(codec_api.Get(), CODECAPI_AVEncMPVGOPSize,
+                            fps * (VIDEO_KEYFRAME_INTERVAL_MS / 1000)),
+              "AVEncMPVGOPSize");
+        check(set_codec_u32(codec_api.Get(), CODECAPI_AVEncMPVDefaultBPictureCount, 0),
+              "AVEncMPVDefaultBPictureCount=0");
+        check(set_codec_u32(codec_api.Get(), CODECAPI_AVEncCommonQualityVsSpeed, 25),
+              "AVEncCommonQualityVsSpeed");
+        check(set_codec_u32(codec_api.Get(), CODECAPI_VideoEncoderDisplayContentType, 1),
+              "VideoEncoderDisplayContentType");
+    }
 
     // Output type (must be set BEFORE input type)
     ComPtr<IMFMediaType> output_type;
@@ -226,57 +374,30 @@ bool MftEncoder::configure_encoder(uint32_t width, uint32_t height,
         return false;
     }
 
-    // Configure codec properties via ICodecAPI
-    ComPtr<ICodecAPI> codec_api;
-    if (SUCCEEDED(encoder_.As(&codec_api))) {
-        VARIANT var;
-
-        VariantInit(&var);
-        var.vt = VT_BOOL;
-        var.boolVal = VARIANT_TRUE;
-        codec_api->SetValue(&CODECAPI_AVLowLatencyMode, &var);
-
-        VariantInit(&var);
-        var.vt = VT_UI4;
-        var.ulVal = eAVEncCommonRateControlMode_PeakConstrainedVBR;
-        codec_api->SetValue(&CODECAPI_AVEncCommonRateControlMode, &var);
-
-        VariantInit(&var);
-        var.vt = VT_UI4;
-        var.ulVal = rate_control.average_bitrate;
-        codec_api->SetValue(&CODECAPI_AVEncCommonMeanBitRate, &var);
-
-        VariantInit(&var);
-        var.vt = VT_UI4;
-        var.ulVal = rate_control.peak_bitrate;
-        codec_api->SetValue(&CODECAPI_AVEncCommonMaxBitRate, &var);
-
-        // VBV/HRD reservoir in bits: a few frame intervals, so a keyframe
-        // cannot become a multi-second burst on the link.
-        VariantInit(&var);
-        var.vt = VT_UI4;
-        var.ulVal = rate_control.vbv_buffer_size;
-        codec_api->SetValue(&CODECAPI_AVEncCommonBufferSize, &var);
-
-        VariantInit(&var);
-        var.vt = VT_UI4;
-        var.ulVal = fps * (VIDEO_KEYFRAME_INTERVAL_MS / 1000);
-        codec_api->SetValue(&CODECAPI_AVEncMPVGOPSize, &var);
-
-        VariantInit(&var);
-        var.vt = VT_UI4;
-        var.ulVal = 0;
-        codec_api->SetValue(&CODECAPI_AVEncMPVDefaultBPictureCount, &var);
-
-        VariantInit(&var);
-        var.vt = VT_UI4;
-        var.ulVal = 25;
-        codec_api->SetValue(&CODECAPI_AVEncCommonQualityVsSpeed, &var);
-
-        VariantInit(&var);
-        var.vt = VT_UI4;
-        var.ulVal = 1;
-        codec_api->SetValue(&CODECAPI_VideoEncoderDisplayContentType, &var);
+    // Report what the MFT actually runs with after type negotiation: some
+    // encoders silently keep their default rate control mode.
+    if (codec_api) {
+        UINT32 mode = 0, mean = 0, buffer = 0;
+        const bool have_mode =
+            get_codec_u32(codec_api.Get(), CODECAPI_AVEncCommonRateControlMode, mode);
+        const bool have_mean =
+            get_codec_u32(codec_api.Get(), CODECAPI_AVEncCommonMeanBitRate, mean);
+        const bool have_buffer =
+            get_codec_u32(codec_api.Get(), CODECAPI_AVEncCommonBufferSize, buffer);
+        if (!have_mode) {
+            LOG_WARN("MFT encoder does not report its rate control mode (requested CBR)");
+        } else if (mode != static_cast<UINT32>(eAVEncCommonRateControlMode_CBR)) {
+            LOG_WARN("MFT encoder runs rate control mode {} instead of CBR ({})",
+                     mode, static_cast<UINT32>(eAVEncCommonRateControlMode_CBR));
+        }
+        LOG_INFO("MFT encoder {} ({}x{} @ {} fps): rate control mode {}, mean {} bps, "
+                 "buffer {} bytes (requested CBR {} bps, VBV {} bits = {} bytes)",
+                 codec_name(codec_), width, height, fps,
+                 have_mode ? std::to_string(mode) : std::string("?"),
+                 have_mean ? std::to_string(mean) : std::string("?"),
+                 have_buffer ? std::to_string(buffer) : std::string("?"),
+                 rate_control.average_bitrate, rate_control.vbv_buffer_size,
+                 vbv_bytes(rate_control));
     }
 
     return true;
@@ -329,47 +450,82 @@ void MftEncoder::encoder_loop() {
     TracySetThreadName("MftEncoder");
     if (!parties::set_current_thread_highest_priority())
         LOG_WARN("Failed to set the MFT encoder thread to highest priority");
+    // The loop never waits for input: a METransformNeedInput only records a
+    // request, and samples are fed whenever a request and a queued sample are
+    // both present, by whichever thread completes the pair (this one, or the
+    // encode() caller). Blocking here until the next frame arrived used to
+    // leave a METransformHaveOutput queued behind the NeedInput, so output
+    // always lagged one frame and a forced keyframe on a static screen never
+    // left the encoder.
     while (encoder_running_) {
         ZoneScopedN("MftEncoder::encoder_loop");
         ComPtr<IMFMediaEvent> event;
         HRESULT hr = encoder_events_->GetEvent(0, &event);
-        if (FAILED(hr)) break;
+        if (FAILED(hr)) {
+            if (hr != MF_E_SHUTDOWN)
+                LOG_ERROR("MFT encoder GetEvent failed: {:#010x}",
+                          static_cast<unsigned>(hr));
+            break;
+        }
 
         MediaEventType event_type;
         event->GetType(&event_type);
 
         if (event_type == METransformNeedInput) {
-            ComPtr<IMFSample> sample;
-            {
-                std::unique_lock<std::mutex> lock(queue_mutex_);
-                queue_cv_.wait(lock, [this] {
-                    return !input_queue_.empty() || !encoder_running_;
-                });
-                if (!encoder_running_) break;
-                sample = input_queue_.front();
-                input_queue_.pop();
-            }
-
-            if (force_keyframe_.exchange(false)) {
-                ComPtr<ICodecAPI> codec_api;
-                if (SUCCEEDED(encoder_.As(&codec_api))) {
-                    VARIANT var;
-                    VariantInit(&var);
-                    var.vt = VT_UI4;
-                    var.ulVal = 1;
-                    codec_api->SetValue(&CODECAPI_AVEncVideoForceKeyFrame, &var);
-                }
-            }
-
-            hr = encoder_->ProcessInput(0, sample.Get(), 0);
-            if (FAILED(hr))
-                LOG_ERROR("ProcessInput failed: {:#010x}", hr);
+            std::unique_lock<std::mutex> lock(queue_mutex_);
+            ++pending_input_requests_;
+            feed_pending_input(lock);
         } else if (event_type == METransformHaveOutput) {
-            collect_output();
+            // Async contract: exactly one ProcessOutput per HaveOutput event.
+            collect_output(1);
         } else if (event_type == METransformDrainComplete) {
             break;
         }
     }
+
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        loop_exited_ = true;
+    }
+    // A dead loop accepts no more input; encode() reports that as a failure.
+    encoder_running_ = false;
+    loop_exit_cv_.notify_all();
+}
+
+void MftEncoder::feed_pending_input(std::unique_lock<std::mutex>& lock) {
+    // Only one thread feeds at a time, and never while holding queue_mutex_
+    // across ProcessInput, so neither thread can block on the other's call
+    // into the MFT. A thread that finds feeding_ set leaves its new request /
+    // sample to the feeding thread, which re-checks under the lock before it
+    // stops.
+    if (feeding_) return;
+    feeding_ = true;
+    while (encoder_running_ && pending_input_requests_ > 0 && !input_queue_.empty()) {
+        ComPtr<IMFSample> sample = std::move(input_queue_.front());
+        input_queue_.pop();
+        --pending_input_requests_;
+        lock.unlock();
+        submit_input(sample.Get());
+        lock.lock();
+    }
+    feeding_ = false;
+}
+
+void MftEncoder::submit_input(IMFSample* sample) {
+    if (force_keyframe_.exchange(false)) {
+        ComPtr<ICodecAPI> codec_api;
+        if (SUCCEEDED(encoder_.As(&codec_api))) {
+            const HRESULT hr =
+                set_codec_u32(codec_api.Get(), CODECAPI_AVEncVideoForceKeyFrame, 1);
+            if (FAILED(hr))
+                LOG_WARN("MFT encoder rejected AVEncVideoForceKeyFrame: {:#010x}",
+                         static_cast<unsigned>(hr));
+        }
+    }
+
+    const HRESULT hr = encoder_->ProcessInput(0, sample, 0);
+    if (FAILED(hr))
+        LOG_ERROR("ProcessInput failed: {:#010x}", static_cast<unsigned>(hr));
 }
 
 bool MftEncoder::encode(ID3D11Texture2D* bgra_texture, int64_t timestamp_100ns) {
@@ -422,22 +578,25 @@ bool MftEncoder::encode(ID3D11Texture2D* bgra_texture, int64_t timestamp_100ns) 
 
     // Feed NV12 to encoder
     if (async_mode_) {
-        {
-            std::lock_guard<std::mutex> lock(queue_mutex_);
-            while (input_queue_.size() >= 2)
-                input_queue_.pop();
-            input_queue_.push(nv12_sample);
-        }
-        queue_cv_.notify_one();
+        std::unique_lock<std::mutex> lock(queue_mutex_);
+        // The event loop has stopped (its GetEvent failure was logged).
+        if (!encoder_running_) return false;
+        // Keep at most two frames waiting for the encoder: when it falls
+        // behind, the oldest frame is the one not worth sending.
+        while (input_queue_.size() >= 2)
+            input_queue_.pop();
+        input_queue_.push(nv12_sample);
+        // Feed right away if the encoder already asked for input.
+        feed_pending_input(lock);
     } else {
         if (force_keyframe_.exchange(false)) {
             ComPtr<ICodecAPI> codec_api;
             if (SUCCEEDED(encoder_.As(&codec_api))) {
-                VARIANT var;
-                VariantInit(&var);
-                var.vt = VT_UI4;
-                var.ulVal = 1;
-                codec_api->SetValue(&CODECAPI_AVEncVideoForceKeyFrame, &var);
+                const HRESULT key_hr =
+                    set_codec_u32(codec_api.Get(), CODECAPI_AVEncVideoForceKeyFrame, 1);
+                if (FAILED(key_hr))
+                    LOG_WARN("MFT encoder rejected AVEncVideoForceKeyFrame: {:#010x}",
+                             static_cast<unsigned>(key_hr));
             }
         }
 
@@ -456,10 +615,10 @@ bool MftEncoder::encode(ID3D11Texture2D* bgra_texture, int64_t timestamp_100ns) 
     return true;
 }
 
-bool MftEncoder::collect_output() {
+bool MftEncoder::collect_output(int max_outputs) {
     ZoneScopedN("MftEncoder::collect_output");
     int collected = 0;
-    while (true) {
+    for (int call = 0; max_outputs <= 0 || call < max_outputs; ++call) {
         MFT_OUTPUT_DATA_BUFFER output_data = {};
         DWORD status = 0;
         HRESULT hr = encoder_->ProcessOutput(0, 1, &output_data, &status);
@@ -483,8 +642,12 @@ bool MftEncoder::collect_output() {
                     MFSampleExtension_CleanPoint, &clean_point)))
                 keyframe = (clean_point != 0);
 
-            if (on_encoded && data && len > 0)
-                on_encoded(data, len, keyframe);
+            if (on_encoded && data && len > 0) {
+                if (strip_filler_nal_units(codec_, data, len, filtered_output_))
+                    on_encoded(filtered_output_.data(), filtered_output_.size(), keyframe);
+                else
+                    on_encoded(data, len, keyframe);
+            }
 
             buf->Unlock();
             collected++;
@@ -510,22 +673,26 @@ void MftEncoder::set_bitrate(uint32_t bitrate) {
 
     ComPtr<ICodecAPI> codec_api;
     if (SUCCEEDED(encoder_.As(&codec_api))) {
-        const auto rate_control = make_stream_vbr_rate_control(bitrate, fps_);
-        VARIANT var;
-        VariantInit(&var);
-        var.vt = VT_UI4;
-        var.ulVal = rate_control.average_bitrate;
-        codec_api->SetValue(&CODECAPI_AVEncCommonMeanBitRate, &var);
-
-        VariantInit(&var);
-        var.vt = VT_UI4;
-        var.ulVal = rate_control.peak_bitrate;
-        codec_api->SetValue(&CODECAPI_AVEncCommonMaxBitRate, &var);
-
-        VariantInit(&var);
-        var.vt = VT_UI4;
-        var.ulVal = rate_control.vbv_buffer_size;
-        codec_api->SetValue(&CODECAPI_AVEncCommonBufferSize, &var);
+        const auto rate_control = make_stream_cbr_rate_control(bitrate, fps_);
+        const HRESULT mean_hr = set_codec_u32(
+            codec_api.Get(), CODECAPI_AVEncCommonMeanBitRate, rate_control.average_bitrate);
+        // Not every MFT accepts a VBV change while streaming; the mean bitrate
+        // is the part that matters most for the link.
+        const HRESULT buffer_hr = set_codec_u32(
+            codec_api.Get(), CODECAPI_AVEncCommonBufferSize, vbv_bytes(rate_control));
+        if (FAILED(mean_hr) || FAILED(buffer_hr)) {
+            // set_bitrate runs for every send-controller step: warn once.
+            if (!rate_update_warned_) {
+                LOG_WARN("MFT encoder rate update to {} bps: mean bitrate {:#010x}, "
+                         "buffer size {:#010x} (further failures are not logged)",
+                         bitrate, static_cast<unsigned>(mean_hr),
+                         static_cast<unsigned>(buffer_hr));
+                rate_update_warned_ = true;
+            }
+        } else {
+            LOG_DEBUG("MFT rate control updated: CBR {} bps, VBV {} bits",
+                      rate_control.average_bitrate, rate_control.vbv_buffer_size);
+        }
     }
 }
 

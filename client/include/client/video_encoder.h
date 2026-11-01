@@ -38,8 +38,16 @@ public:
     // Force next frame to be a keyframe
     void force_keyframe();
 
-    // Dynamically change the average VBR target.
+    // Dynamically change the CBR target (VBV per encdec/rate_control.h).
     void set_bitrate(uint32_t bitrate);
+
+    // True when the backend could not apply the last set_bitrate fully at
+    // runtime (AMF HEVC sizes its VBV only at initialization and reports this
+    // once the bitrate moved beyond 1.5x of the initial one). The owner should
+    // poll it after set_bitrate and, when true, shut this encoder down and
+    // init a new one at the current bitrate; the new encoder starts with a
+    // keyframe, so viewers resync without a PLI.
+    bool needs_reinit() const;
 
     // Which codec was selected?
     VideoCodecId codec() const { return encoder_ ? encoder_->codec() : VideoCodecId::H264; }

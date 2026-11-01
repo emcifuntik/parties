@@ -44,6 +44,10 @@ VideoSendControllerConfig default_cfg() {
     cfg.target_bitrate_bps = 2'000'000;
     cfg.min_bitrate_bps = 800'000;
     cfg.default_rtt_us = 50'000;
+    // The step tests below were written for these factors.
+    cfg.decrease_factor = 0.8;
+    cfg.increase_factor = 1.08;
+    cfg.clean_windows = 4;
     return cfg;
 }
 
@@ -106,9 +110,10 @@ bool test_decrease_and_floor() {
     const auto cfg = default_cfg();
     VideoSendController c(cfg);
     (void)c.take_bitrate_update();
-    c.tick(T0);
-    // 200 KB queued at 2 Mbps = 800 ms drain - 50 ms RTT = 750 ms of queueing.
+    // 200 KB queued at 2 Mbps = 800 ms drain - 50 ms RTT = 750 ms of queueing,
+    // standing from the first sample of the window on.
     c.on_enqueued(200'000);
+    c.tick(T0);
     int64_t t = run_windows(c, cfg, T0, 1);
     if (c.bitrate_bps() != 2'000'000) return fail("decrease: one congested window must not decrease");
     if (!expect_no_update(c, "decrease: no publish after one window")) return false;
@@ -141,8 +146,8 @@ bool test_increase_and_ceiling() {
     const auto cfg = default_cfg();
     VideoSendController c(cfg);
     (void)c.take_bitrate_update();
-    c.tick(T0);
     c.on_enqueued(200'000);
+    c.tick(T0);
     int64_t t = run_windows(c, cfg, T0, 2);
     if (c.bitrate_bps() != 1'600'000) return fail("increase: setup decrease");
     (void)c.take_bitrate_update();
@@ -164,8 +169,8 @@ bool test_clean_window_resets_congestion_count() {
     const auto cfg = default_cfg();
     VideoSendController c(cfg);
     (void)c.take_bitrate_update();
-    c.tick(T0);
     c.on_enqueued(200'000);
+    c.tick(T0);
     int64_t t = run_windows(c, cfg, T0, 1);      // congested
     c.on_completed(200'000);
     t = run_windows(c, cfg, t, 1);               // clean: resets the streak
@@ -194,19 +199,20 @@ bool test_loss_driven_decrease() {
     t = run_windows(c, cfg, t, 1);
     if (c.stats().loss_ratio != 0.0) return fail("loss: spurious losses were counted as loss");
     if (c.bitrate_bps() != 2'000'000) return fail("loss: decreased on a clean window");
-    // Windows 3 and 4: 10 % loss each -> decrease.
+    // Windows 3 and 4: 10 % loss each. Loss alone is not congestion (BBR
+    // carries the rate through random loss): no decrease.
     c.on_connection_stats(t + 250 * MS, 50'000, 30, 10, 300);
     t = run_windows(c, cfg, t, 1);
     c.on_connection_stats(t + 250 * MS, 50'000, 40, 10, 400);
     t = run_windows(c, cfg, t, 1);
-    if (c.bitrate_bps() != 1'600'000) return fail("loss: two lossy windows must decrease");
+    if (c.bitrate_bps() != 2'000'000) return fail("loss: random loss decreased the bitrate");
     if (c.stats().rtt_us != 50'000) return fail("loss: rtt not stored");
-    // Loss just under the threshold is clean: 2 lost / 100 sent.
-    c.on_connection_stats(t + 250 * MS, 50'000, 42, 10, 500);
-    t = run_windows(c, cfg, t, 1);
-    c.on_connection_stats(t + 250 * MS, 50'000, 44, 10, 600);
-    t = run_windows(c, cfg, t, 1);
-    if (c.bitrate_bps() != 1'600'000) return fail("loss: below-threshold loss decreased");
+    // ...but it widens the admission allowance: 10 % loss adds 1.5 RTTs of
+    // retransmission wait: 2 Mbps / 8 x (2.5 x 50 ms + 120 ms) = 61'250 bytes.
+    c.on_enqueued(61'250);
+    if (!c.admit_frame(t)) return fail("loss: allowance did not include the retransmission wait");
+    c.on_enqueued(1);
+    if (c.admit_frame(t)) return fail("loss: allowance too wide");
     return true;
 }
 
@@ -218,8 +224,8 @@ bool test_publish_rate_limit() {
     cfg.min_reconfigure_ms = 500;
     VideoSendController c(cfg);
     if (!expect_update(c, 2'000'000, "rate limit: initial publish")) return false;
-    c.tick(T0);
     c.on_enqueued(1'000'000);
+    c.tick(T0);
     int64_t t = run_windows(c, cfg, T0, 1);
     if (!expect_update(c, 1'600'000, "rate limit: first decrease publishes")) return false;
     t = run_windows(c, cfg, t, 1);   // 1'280'000 at +200 ms: too soon
@@ -240,8 +246,8 @@ bool test_publish_delta_gate() {
     const auto cfg = default_cfg();
     VideoSendController c(cfg);
     (void)c.take_bitrate_update();
-    c.tick(T0);
     c.on_enqueued(200'000);
+    c.tick(T0);
     int64_t t = run_windows(c, cfg, T0, 2);
     if (!expect_update(c, 1'600'000, "delta gate: decrease publishes")) return false;
     c.on_completed(200'000);
@@ -267,8 +273,8 @@ bool test_publish_at_target_bypasses_delta_gate() {
     cfg.min_reconfigure_ms = 500;
     VideoSendController c(cfg);
     if (!expect_update(c, 2'000'000, "at target: initial publish")) return false;
-    c.tick(T0);
     c.on_enqueued(200'000);
+    c.tick(T0);
     int64_t t = run_windows(c, cfg, T0, 1);   // T0 + 250 ms: congested -> 1'600'000
     if (c.bitrate_bps() != 1'600'000) return fail("at target: decrease");
     if (!expect_update(c, 1'600'000, "at target: decrease publishes")) return false;

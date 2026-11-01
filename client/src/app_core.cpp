@@ -7,6 +7,7 @@
 #include <parties/crypto.h>
 #include <parties/permissions.h>
 #include <parties/server_query.h>
+#include <parties/quic_common.h>
 #include <parties/log.h>
 
 #include <RmlUi/Core/Core.h>
@@ -179,6 +180,9 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
     net_.on_video_stream_aborted = [this](uint32_t sender_id, uint32_t frame_seq, bool have_seq) {
         route_video_stream_aborted(sender_id, frame_seq, have_seq);
     };
+    net_.on_video_stream_header = [this](uint32_t sender_id, const VideoFrameHeader& hdr) {
+        video_rx_.on_frame_started(sender_id, hdr, steady_now_us());
+    };
 
     // Fires on the MsQuic worker thread — don't touch sqlite here. Stash the
     // bytes; tick() persists them on the main thread.
@@ -300,9 +304,25 @@ void AppCore::tick()
     // Screen-share housekeeping: sender congestion control, receive-side
     // reorder timeouts and PLI retries. All cheap no-ops when idle.
     feed_video_sender_stats();
-    video_sender_.tick(steady_now_us());
-    poll_video_reorder_buffers();
-    retry_pending_plis();
+    {
+        const int64_t now = steady_now_us();
+        video_sender_.tick(now);
+        camera_sender_.tick(now);
+        // The reorder hold follows the RTT: a retransmission must not pass
+        // for a lost frame on a long path. Sampled once a second (the stats
+        // call round-trips to the MsQuic worker).
+        if (authenticated_ && now - video_rx_rtt_sampled_us_ >= 1'000'000) {
+            video_rx_rtt_sampled_us_ = now;
+            const NetClient::ConnectionStats st = net_.connection_stats();
+            if (st.valid) video_rx_.set_rtt(st.rtt_us);
+        }
+        // Expire reorder gaps and re-ask (paced) for keyframes still missing.
+        video_rx_.tick(now, [this](uint32_t stream) {
+            if (bridge_.stream_awaiting_keyframe) return bridge_.stream_awaiting_keyframe(stream);
+            return awaiting_keyframe_.load(std::memory_order_relaxed) &&
+                   viewing_sharer_.load(std::memory_order_relaxed) == stream;
+        });
+    }
 
 #ifdef _WIN32
     if (updater_ && updater_->poll()) {
@@ -468,6 +488,15 @@ void AppCore::load_saved_prefs()
 
     v = pref("audio.aec");
     if (!v.empty()) { bool e = (v != "0"); audio_.set_aec_enabled(e); model_.aec_enabled = e; }
+
+    // Network compatibility mode. Runs before the first connect, so the
+    // datapath (created by the first connection) starts without offloads.
+    v = pref("net.compatibility_mode");
+    if (v == "1") {
+        model_.network_compat_enabled = true;
+        net_.set_compatibility_mode(true);
+        parties::quic_disable_datapath_offloads(true);
+    }
 
     v = pref("audio.vad");
     if (!v.empty()) { bool e = (v != "0"); audio_.set_vad_enabled(e); model_.vad_enabled = e; }
@@ -894,13 +923,10 @@ void AppCore::on_disconnect_cleanup()
     video_sender_.clear_outstanding();
     camera_sender_.reset();
     camera_sender_.clear_outstanding();
-    {
-        std::lock_guard<std::mutex> lock(reorder_mutex_);
-        reorder_buffers_.clear();
-    }
+    video_rx_.close_all();
+    video_rx_rtt_sampled_us_ = 0;
     {
         std::lock_guard<std::mutex> lock(pli_mutex_);
-        pli_last_sent_.clear();
         keyframe_request_last_ = {};
         camera_keyframe_request_last_ = {};
     }
@@ -1179,12 +1205,15 @@ void AppCore::watch_sharer(UserId id)
     viewing_sharer_ = id;
     audio_sharer_ = protocol::video_stream_source(id) == protocol::VideoSource::Screen ? id : 0;
     awaiting_keyframe_ = true;
+    video_rx_.close_all();
+    open_video_rx(id);
     if (bridge_.start_video_stream) bridge_.start_video_stream(id);
 
+    // The subscription makes the server ask the sharer for a keyframe; the
+    // router only asks itself if none has arrived after its first backoff.
     uint32_t id32 = id;   // legacy single-select wire form ([target] only)
     net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_VIEW,
                       reinterpret_cast<const uint8_t*>(&id32), 4);
-    send_pli(id);
     model_.viewing_sharer_id = static_cast<int>(id);
     rebuild_watched_model();
 }
@@ -1211,11 +1240,13 @@ void AppCore::add_watch(UserId id)
         model_.show_voice_channel(static_cast<int>(current_channel_));
         return;
     }
+    open_video_rx(id);
+    // The subscription makes the server ask the sharer for a keyframe; the
+    // router only asks itself if none has arrived after its first backoff.
     BinaryWriter w; w.write_u32(id); w.write_u8(1);   // additive subscribe
     net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_VIEW,
                       w.data().data(), w.data().size());
     if (bridge_.start_video_stream) bridge_.start_video_stream(id);
-    send_pli(id);
     viewing_sharer_ = id;   // most-recently-added is the "primary" (fullscreen focus)
     // The most recently opened screen share also takes the stream audio.
     if (protocol::video_stream_source(id) == protocol::VideoSource::Screen)
@@ -1260,7 +1291,7 @@ void AppCore::remove_watch(UserId id)
     net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_VIEW,
                       w.data().data(), w.data().size());
     if (bridge_.stop_video_stream) bridge_.stop_video_stream(id);
-    erase_reorder_buffer(id);
+    video_rx_.close(id);
 
     if (empty_now) {
         viewing_sharer_ = 0;
@@ -1308,6 +1339,8 @@ void AppCore::set_single_watched(UserId id)
         watched_.clear();
         if (id != 0) watched_.insert(id);
     }
+    video_rx_.close_all();
+    if (id != 0) open_video_rx(id);
     viewing_sharer_ = id;
     audio_sharer_ = protocol::video_stream_source(id) == protocol::VideoSource::Screen ? id : 0;
     model_.viewing_sharer_id = static_cast<int>(id);
@@ -1331,10 +1364,7 @@ void AppCore::stop_watching()
     }
     for (UserId id : to_stop)
         if (bridge_.stop_video_stream) bridge_.stop_video_stream(id);
-    {
-        std::lock_guard<std::mutex> lock(reorder_mutex_);
-        reorder_buffers_.clear();
-    }
+    video_rx_.close_all();
 
     uint32_t zero = 0;   // target 0 = unsubscribe from everyone (both wire forms)
     net_.send_message(protocol::ControlMessageType::SCREEN_SHARE_VIEW,
@@ -1387,57 +1417,29 @@ void AppCore::rebuild_watched_model()
     }
 }
 
-// Single PLI funnel. Callers: watch start (main), the decode gate on a
-// discontinuity (decode/MsQuic thread), the reorder buffer on a lost frame
-// (MsQuic thread, under reorder_mutex_) and retry_pending_plis() (main).
-// Lock order: reorder_mutex_ -> pli_mutex_, never the reverse; this function
-// must therefore never touch reorder_mutex_ or watched_mutex_.
-// PLIs stay on the reliable stream 1 and are not part of the video send
-// accounting (see NetClient::send_video).
+// Single PLI funnel for consumers (the decode gate on a discontinuity, on the
+// decode or MsQuic thread; Apple's watch start). Paced by video_rx_ together
+// with its own requests (reorder gaps, tick() retries), which go out through
+// send_pli_packet. Takes only video_rx_'s pacing mutex, so it is safe from
+// inside a frame delivery. PLIs stay on the reliable stream 1 and are not
+// part of the video send accounting (see NetClient::send_video).
 void AppCore::send_pli(UserId target)
 {
     // Never toward our own streams: the local encoders keyframe on their own
     // interval and other viewers' PLIs already force them.
     if (target == 0 || protocol::video_stream_owner(target) == user_id_) return;
-    {
-        std::lock_guard<std::mutex> lock(pli_mutex_);
-        const auto now = std::chrono::steady_clock::now();
-        auto it = pli_last_sent_.find(target);
-        if (it != pli_last_sent_.end() &&
-            now - it->second < std::chrono::milliseconds(VIDEO_PLI_COOLDOWN_MS))
-            return;
-        pli_last_sent_[target] = now;
-    }
+    video_rx_.request_keyframe(target, steady_now_us());   // paced
+}
+
+// video_rx_ decided a keyframe request goes out now.
+void AppCore::send_pli_packet(UserId target)
+{
+    if (target == 0 || protocol::video_stream_owner(target) == user_id_) return;
     uint8_t pkt[6];
     pkt[0] = protocol::VIDEO_CONTROL_TYPE;
     pkt[1] = protocol::VIDEO_CTL_PLI;
     std::memcpy(pkt + 2, &target, 4);
     net_.send_video(pkt, sizeof(pkt), true);
-}
-
-// tick(): while a watched stream is still waiting for a keyframe, keep asking.
-// send_pli's cooldown turns this into one PLI per VIDEO_PLI_RETRY_MS.
-void AppCore::retry_pending_plis()
-{
-    std::vector<UserId> ids;
-    {
-        std::lock_guard<std::mutex> lock(watched_mutex_);
-        if (watched_.empty()) return;   // idle: no allocation
-        ids.assign(watched_.begin(), watched_.end());
-    }
-    for (UserId id : ids) {
-        bool awaiting_ingress = false;
-        {
-            std::lock_guard<std::mutex> lock(reorder_mutex_);
-            const auto it = reorder_buffers_.find(id);
-            awaiting_ingress = it != reorder_buffers_.end() && it->second.needs_keyframe();
-        }
-        const bool awaiting = awaiting_ingress || (bridge_.stream_awaiting_keyframe
-            ? bridge_.stream_awaiting_keyframe(id)
-            : (awaiting_keyframe_.load(std::memory_order_relaxed) &&
-               viewing_sharer_.load(std::memory_order_relaxed) == id));
-        if (awaiting) send_pli(id);
-    }
 }
 
 void AppCore::clear_all_sharers()
@@ -1452,10 +1454,7 @@ void AppCore::clear_all_sharers()
     }
     for (UserId id : to_stop)
         if (bridge_.stop_video_stream) bridge_.stop_video_stream(id);
-    {
-        std::lock_guard<std::mutex> lock(reorder_mutex_);
-        reorder_buffers_.clear();
-    }
+    video_rx_.close_all();
 
     viewing_sharer_ = 0;
     audio_sharer_ = 0;
@@ -1567,8 +1566,10 @@ AppCore::VideoSendResult AppCore::send_video_frame(protocol::VideoSource source,
 
     VideoFrameHeader hdr;
     hdr.frame_seq = result.frame_seq;
-    hdr.timestamp = result.frame_seq;
-    hdr.flags     = keyframe ? VIDEO_FLAG_KEYFRAME : 0;
+    // Capture time (send time after encode: the encode latency is steady) for
+    // the viewers' playout clocks.
+    hdr.timestamp = static_cast<uint32_t>(steady_now_us() / 1000);
+    hdr.flags     = static_cast<uint8_t>((keyframe ? VIDEO_FLAG_KEYFRAME : 0) | VIDEO_FLAG_CAPTURE_TIME);
     hdr.width     = width;
     hdr.height    = height;
     hdr.codec     = static_cast<uint8_t>(codec);
@@ -1637,7 +1638,9 @@ void AppCore::feed_video_sender_stats()
     const NetClient::ConnectionStats st = net_.connection_stats();
     if (!st.valid) return;
     const int64_t  now = steady_now_us();
-    const uint32_t rtt = st.min_rtt_us ? st.min_rtt_us : st.rtt_us;
+    // Smoothed RTT: the controller keeps its own windowed minimum (QUIC's
+    // MinRtt never rises, e.g. it keeps the handshake's value forever).
+    const uint32_t rtt = st.rtt_us;
     if (screen)
         video_sender_.on_connection_stats(now, rtt, st.suspected_lost_packets,
                                           st.spurious_lost_packets, st.sent_packets);
@@ -1647,8 +1650,8 @@ void AppCore::feed_video_sender_stats()
 }
 
 // MsQuic worker thread: a viewer (via the server) asks one of our encoders for
-// a keyframe. Viewers retry PLIs every VIDEO_PLI_RETRY_MS and the server
-// coalesces per stream, so gate the forced keyframe to one per
+// a keyframe. Viewers retry PLIs with backoff and the server coalesces per
+// stream, so gate the forced keyframe to one per
 // VIDEO_KEYFRAME_REQUEST_COOLDOWN_MS and source.
 void AppCore::on_keyframe_request(protocol::VideoSource source)
 {
@@ -1815,75 +1818,30 @@ void AppCore::stop_camera(bool tell_server)
 // Screen-share receive: per-frame streams -> reorder buffer -> decode path
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// Lock order: reorder_mutex_ -> pli_mutex_ (the reorder buffer's `lost`
-// callback calls send_pli while reorder_mutex_ is held), never the reverse.
-// The deliver callback runs on_video_frame_received under reorder_mutex_ too,
-// so the platform frame handler must not call back into watch mutation
-// (remove_watch / stop_watching / clear_all_sharers); it may call send_pli.
+// video_rx_ delivers frames (on_video_frame_received) under its buffers
+// mutex, so the platform frame handler must not call back into watch
+// mutation (remove_watch / stop_watching / clear_all_sharers, which close
+// video_rx_ streams); it may call send_pli.
 
 // MsQuic worker thread.
 void AppCore::route_video_stream_frame(uint32_t sender_id, std::vector<uint8_t>&& frame)
 {
-    if (protocol::video_stream_owner(sender_id) == user_id_ || !is_watching(sender_id)) return;
-    VideoFrameHeader hdr;
-    if (!VideoFrameHeader::parse(frame.data(), frame.size(), hdr)) return;
-
-    const int64_t now = steady_now_us();
-    const VideoFrameReorderBuffer::DeliverFn deliver =
-        [this, sender_id](const VideoFrameHeader&, std::vector<uint8_t>&& f) {
-            if (on_video_frame_received) on_video_frame_received(sender_id, f.data(), f.size());
-        };
-    const VideoFrameReorderBuffer::LostFn lost =
-        [this, sender_id](uint32_t) { send_pli(sender_id); };
-
-    std::lock_guard<std::mutex> lock(reorder_mutex_);
-    reorder_buffers_[sender_id].on_frame(hdr, std::move(frame), now, deliver, lost);
+    if (protocol::video_stream_owner(sender_id) == user_id_) return;
+    video_rx_.on_frame(sender_id, std::move(frame), steady_now_us());
 }
 
 // MsQuic worker thread.
 void AppCore::route_video_stream_aborted(uint32_t sender_id, uint32_t frame_seq, bool have_seq)
 {
-    if (protocol::video_stream_owner(sender_id) == user_id_ || !is_watching(sender_id)) return;
-    if (!have_seq) {
-        // Nothing arrived, not even the header: we cannot tell which frame is
-        // gone, so just ask for a fresh reference.
-        send_pli(sender_id);
-        return;
-    }
-    const int64_t now = steady_now_us();
-    const VideoFrameReorderBuffer::DeliverFn deliver =
-        [this, sender_id](const VideoFrameHeader&, std::vector<uint8_t>&& f) {
-            if (on_video_frame_received) on_video_frame_received(sender_id, f.data(), f.size());
-        };
-    const VideoFrameReorderBuffer::LostFn lost =
-        [this, sender_id](uint32_t) { send_pli(sender_id); };
-
-    std::lock_guard<std::mutex> lock(reorder_mutex_);
-    reorder_buffers_[sender_id].on_frame_aborted(frame_seq, now, deliver, lost);
+    if (protocol::video_stream_owner(sender_id) == user_id_) return;
+    video_rx_.on_frame_aborted(sender_id, frame_seq, have_seq, steady_now_us());
 }
 
-// Main thread (tick): timer-driven give-up on gaps at the tail.
-void AppCore::poll_video_reorder_buffers()
+// Main thread: a watch starts. A fresh buffer per watch, so nothing of an
+// earlier share of the same stream (its frame counter) can survive into it.
+void AppCore::open_video_rx(UserId stream)
 {
-    std::lock_guard<std::mutex> lock(reorder_mutex_);
-    if (reorder_buffers_.empty()) return;
-    const int64_t now = steady_now_us();
-    for (auto& [sender_id, buffer] : reorder_buffers_) {
-        const UserId id = sender_id;
-        const VideoFrameReorderBuffer::DeliverFn deliver =
-            [this, id](const VideoFrameHeader&, std::vector<uint8_t>&& f) {
-                if (on_video_frame_received) on_video_frame_received(id, f.data(), f.size());
-            };
-        const VideoFrameReorderBuffer::LostFn lost =
-            [this, id](uint32_t) { send_pli(id); };
-        buffer.poll(now, deliver, lost);
-    }
-}
-
-void AppCore::erase_reorder_buffer(UserId sharer_id)
-{
-    std::lock_guard<std::mutex> lock(reorder_mutex_);
-    reorder_buffers_.erase(sharer_id);
+    video_rx_.open(stream, steady_now_us());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2345,6 +2303,9 @@ void AppCore::on_screen_share_started(const uint8_t* data, size_t len)
 
     // Ignore delayed/irrelevant notifications from a channel we have left.
     if (!model_.add_channel_sharer(static_cast<int>(sharer_id))) return;
+    // A live start of a stream we still watch (its STOPPED was missed) is a
+    // new share: its frame counter starts over, so start a fresh buffer.
+    if (replay == 0 && video_rx_.is_open(sharer_id)) open_video_rx(sharer_id);
     const bool own    = protocol::video_stream_owner(sharer_id) == user_id_;
     const bool camera = protocol::video_stream_source(sharer_id) == protocol::VideoSource::Camera;
     // Only a new screen share is worth a sound; cameras come and go quietly.
@@ -2659,6 +2620,14 @@ void AppCore::setup_model_callbacks()
     model_.on_normalize_changed         = [this](bool e) { audio_.set_normalize_enabled(e); settings_.set_pref("audio.normalize", e?"1":"0"); };
     model_.on_normalize_target_changed  = [this](float t) { audio_.set_normalize_target(t); save_pref_debounced("audio.normalize_target", std::to_string(t)); };
     model_.on_aec_changed               = [this](bool e) { audio_.set_aec_enabled(e); settings_.set_pref("audio.aec", e?"1":"0"); };
+    model_.on_network_compat_changed    = [this](bool e) {
+        settings_.set_pref("net.compatibility_mode", e ? "1" : "0");
+        net_.set_compatibility_mode(e);   // packet size: from the next connection
+        // The UDP offloads belong to the datapath, which lives from the first
+        // connection to exit: only a restart changes them once it exists.
+        const bool applied = parties::quic_disable_datapath_offloads(e);
+        model_.network_compat_restart = !applied || net_.is_connected();
+    };
     model_.on_vad_changed               = [this](bool e) { audio_.set_vad_enabled(e); settings_.set_pref("audio.vad", e?"1":"0"); };
     model_.on_vad_threshold_changed     = [this](float t) { audio_.set_vad_threshold(t); save_pref_debounced("audio.vad_threshold", std::to_string(t)); };
     model_.on_voice_volume_changed      = [this](float v) { mixer_.set_master_volume(v); save_pref_debounced("audio.voice_volume", std::to_string(v)); };

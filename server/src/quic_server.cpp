@@ -29,6 +29,17 @@ static void sample_min_rtt(const QUIC_API_TABLE* api, Session& session, HQUIC st
     if (QUIC_SUCCEEDED(api->GetParam(stream, QUIC_PARAM_CONN_STATISTICS_V2, &size, &stats))) {
         session.min_rtt_us.store(std::clamp<uint32_t>(stats.MinRtt, 1'000, VIDEO_BACKLOG_MAX_RTT_US),
                                  std::memory_order_relaxed);
+        session.srtt_us.store(std::clamp<uint32_t>(stats.Rtt, 1'000, VIDEO_BACKLOG_MAX_RTT_US),
+                              std::memory_order_relaxed);
+        const uint64_t lost = stats.SendSuspectedLostPackets > stats.SendSpuriousLostPackets
+            ? stats.SendSuspectedLostPackets - stats.SendSpuriousLostPackets : 0;
+        const uint64_t d_sent = stats.SendTotalPackets - session.loss_sample_sent;
+        const uint64_t d_lost = lost >= session.loss_sample_lost ? lost - session.loss_sample_lost : 0;
+        if (d_sent >= 20)   // too few packets say nothing
+            session.loss_permille.store(static_cast<uint32_t>(std::min<uint64_t>(1000, d_lost * 1000 / d_sent)),
+                                        std::memory_order_relaxed);
+        session.loss_sample_sent = stats.SendTotalPackets;
+        session.loss_sample_lost = lost;
     }
 }
 
@@ -146,6 +157,19 @@ struct QuicServer::VideoInStreamContext {
     // source (1.4+). 0 until enough bytes have arrived.
     size_t      prefix_len = 0;
     protocol::VideoSource source = protocol::VideoSource::Screen;
+    bool        have_header = false;     // reported through on_video_frame_started
+    uint32_t    frame_seq = 0;
+    bool        finished = false;        // delivered (or reported lost): report nothing more
+
+    // The frame of this stream will never arrive: tell the server loop, so
+    // its reorder buffer does not have to time out. Only for streams of a
+    // known source (a refused prefix never reached a reorder buffer).
+    void report_lost() {
+        if (finished || prefix_len == 0) return;
+        finished = true;
+        if (server->on_video_frame_aborted)
+            server->on_video_frame_aborted(session_id, source, frame_seq, have_header);
+    }
 
     // Returns this stream's bytes to the session's ingress budget exactly once.
     void uncharge() {
@@ -158,6 +182,7 @@ struct QuicServer::VideoInStreamContext {
     // aborts the stream (SHUTDOWN_COMPLETE follows and frees the context).
     void abort(HQUIC stream) {
         if (dead) return;
+        report_lost();
         dead = true;
         std::vector<uint8_t>().swap(buf);
         uncharge();
@@ -183,6 +208,20 @@ struct QuicServer::VideoOutStreamContext {
     QuicServer* server = nullptr;
     std::shared_ptr<Session> session;
     std::shared_ptr<const std::vector<uint8_t>> frame;
+    HQUIC       stream = nullptr;
+    bool        registered = false;   // listed in session->video_out_streams
+
+    // Drops this stream from the viewer's abortable list. Must run before
+    // StreamClose (SHUTDOWN_COMPLETE).
+    void unregister() {
+        if (!registered || !session) return;
+        std::lock_guard<std::mutex> lock(session->video_out_mutex);
+        auto& list = session->video_out_streams;
+        list.erase(std::remove_if(list.begin(), list.end(),
+                                  [this](const Session::VideoOutStream& s) { return s.stream == stream; }),
+                   list.end());
+        registered = false;
+    }
     uint8_t     type_byte = protocol::STREAM_TYPE_VIDEO_FRAME;
     QUIC_BUFFER bufs[2]{};
     std::atomic<uint32_t> charged{0};   // bytes still counted in video_outstanding_bytes
@@ -237,11 +276,10 @@ bool QuicServer::start(const std::string& listen_ip, uint16_t port, size_t max_c
     settings.PeerBidiStreamCount = 10;  // Control + video + up to 8 file transfers
     settings.IsSet.PeerBidiStreamCount = TRUE;
     // Per-frame video streams (protocol 1.2): one unidirectional stream per
-    // encoded frame. 128 in flight covers a few seconds of frames at 60 fps
-    // under loss; the default 64 KB receive window would window-limit
-    // keyframes, so raise it to the largest frame we accept.
-    settings.PeerUnidiStreamCount = 128;
-    settings.IsSet.PeerUnidiStreamCount = TRUE;
+    // encoded frame; the default 64 KB receive window would window-limit
+    // keyframes, so raise it to the largest frame we accept. BBR and the
+    // stream credit are shared with the client.
+    parties::apply_media_transport_settings(settings);
     settings.StreamRecvWindowUnidiDefault = 4 * 1024 * 1024;
     settings.IsSet.StreamRecvWindowUnidiDefault = TRUE;
     settings.DatagramReceiveEnabled = TRUE;
@@ -516,6 +554,20 @@ bool QuicServer::send_video_to(uint32_t session_id, const uint8_t* data, size_t 
     return true;
 }
 
+void QuicServer::abort_video_frames(const std::shared_ptr<Session>& viewer, uint32_t stream_id,
+                                    bool all, uint32_t before_seq) {
+    if (!viewer) return;
+    std::lock_guard<std::mutex> lock(viewer->video_out_mutex);
+    for (const auto& s : viewer->video_out_streams) {
+        if (s.stream_id != stream_id) continue;
+        if (!all && !video_seq_newer(before_seq, s.frame_seq)) continue;
+        // Asynchronous: SEND_COMPLETE (canceled) settles the accounting and
+        // SHUTDOWN_COMPLETE removes the entry. The viewer sees the abort and
+        // knows the frame is gone.
+        api_->StreamShutdown(s.stream, QUIC_STREAM_SHUTDOWN_FLAG_ABORT_SEND, 0);
+    }
+}
+
 bool QuicServer::send_video_frame_to(const std::shared_ptr<Session>& session,
                                      std::shared_ptr<const std::vector<uint8_t>> frame) {
 	ZoneScopedN("QuicServer::send_video_frame_to");
@@ -551,6 +603,21 @@ bool QuicServer::send_video_frame_to(const std::shared_ptr<Session>& session,
             delete ctx;
             reliable_send_failures_.fetch_add(1, std::memory_order_relaxed);
             return false;
+        }
+
+        // Abortable until its SHUTDOWN_COMPLETE (which cannot run before the
+        // send below starts the stream). frame = [sender u32][header][...].
+        ctx->stream = stream;
+        {
+            VideoFrameHeader hdr;
+            uint32_t stream_id = 0;
+            if (ctx->frame->size() >= 4 + VIDEO_FRAME_HEADER_SIZE &&
+                VideoFrameHeader::parse(ctx->frame->data() + 4, ctx->frame->size() - 4, hdr)) {
+                std::memcpy(&stream_id, ctx->frame->data(), 4);
+                std::lock_guard<std::mutex> lock(session->video_out_mutex);
+                session->video_out_streams.push_back({stream, stream_id, hdr.frame_seq, hdr.keyframe()});
+                ctx->registered = true;
+            }
         }
 
         // Charge before the send so a completion racing ahead never underflows.
@@ -798,6 +865,7 @@ QUIC_STATUS QuicServer::on_connection_event(HQUIC connection, uint32_t session_i
         // Client opened a bidirectional stream: control, then video 1, then
         // file transfers (positional).
         bool is_file_stream = false;
+        bool is_control_stream = false;
         {
             std::lock_guard<std::mutex> lock(sessions_mutex_);
             auto it = sessions_.find(session_id);
@@ -805,6 +873,7 @@ QUIC_STATUS QuicServer::on_connection_event(HQUIC connection, uint32_t session_i
                 std::lock_guard<std::mutex> qlock(it->second->quic_mutex);
                 if (!it->second->quic_control_stream) {
                     it->second->quic_control_stream = stream;
+                    is_control_stream = true;
                     LOG_INFO("Session {} opened control stream", session_id);
                 } else if (!it->second->quic_video_stream) {
                     it->second->quic_video_stream = stream;
@@ -815,14 +884,23 @@ QUIC_STATUS QuicServer::on_connection_event(HQUIC connection, uint32_t session_i
             }
         }
 
+        // Control messages go ahead of video; a whole-file download goes
+        // behind it, so a transfer never delays a join or a mute update.
+        // Stream 1 (legacy video, PLIs) keeps the default priority.
+        uint16_t priority = 0;
         if (is_file_stream) {
             auto* fctx = new FileStreamContext{ this, session_id, {}, false, 0, 0 };
             api_->SetCallbackHandler(stream, (void*)file_stream_callback, fctx);
             LOG_INFO("Session {} opened file transfer stream", session_id);
+            priority = 0x1000;
         } else {
             auto* ctx = new ConnectionContext{ this, session_id };
             api_->SetCallbackHandler(stream, (void*)stream_callback, ctx);
+            if (is_control_stream) priority = 0xC000;
         }
+        if (priority != 0 &&
+            QUIC_FAILED(api_->SetParam(stream, QUIC_PARAM_STREAM_PRIORITY, sizeof(priority), &priority)))
+            LOG_WARN("Session {}: could not set a stream priority", session_id);
         break;
     }
 
@@ -1293,6 +1371,17 @@ QUIC_STATUS QUIC_API QuicServer::video_in_stream_callback(
                 break;
             }
         }
+        if (ctx->prefix_len && !ctx->have_header &&
+            ctx->buf.size() >= ctx->prefix_len + VIDEO_FRAME_HEADER_SIZE) {
+            VideoFrameHeader hdr;
+            if (VideoFrameHeader::parse(ctx->buf.data() + ctx->prefix_len,
+                                        ctx->buf.size() - ctx->prefix_len, hdr)) {
+                ctx->have_header = true;
+                ctx->frame_seq = hdr.frame_seq;
+                if (self->on_video_frame_started)
+                    self->on_video_frame_started(ctx->session_id, ctx->source, hdr);
+            }
+        }
         if (ctx->buf.size() > (ctx->prefix_len ? ctx->prefix_len : 2) + VIDEO_FRAME_MAX_PAYLOAD_BYTES) {
             uint32_t suppressed = 0;
             if (video_ingress_log_throttle.allow(suppressed)) {
@@ -1305,6 +1394,7 @@ QUIC_STATUS QUIC_API QuicServer::video_in_stream_callback(
 
         if (event->RECEIVE.Flags & QUIC_RECEIVE_FLAG_FIN) {
             if (ctx->prefix_len && ctx->buf.size() >= ctx->prefix_len + VIDEO_FRAME_HEADER_SIZE) {
+                ctx->finished = true;
                 const uint8_t* frame = ctx->buf.data() + ctx->prefix_len;
                 const size_t   flen  = ctx->buf.size() - ctx->prefix_len;
                 if (self->on_video_frame) {
@@ -1322,6 +1412,7 @@ QUIC_STATUS QUIC_API QuicServer::video_in_stream_callback(
             } else {
                 LOG_DEBUG("Session {}: dropping truncated per-frame video stream ({} bytes)",
                           ctx->session_id, ctx->buf.size());
+                ctx->report_lost();
             }
             // Frame delivered (on_video_frame copies what it forwards):
             // release the accumulator and its share of the ingress budget.
@@ -1391,8 +1482,10 @@ QUIC_STATUS QUIC_API QuicServer::video_out_stream_callback(
 
     case QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE:
         // Final event: settle the accounting (a no-op unless SEND_COMPLETE was
-        // never delivered), close the handle and free the context.
+        // never delivered), leave the abortable list, close the handle and
+        // free the context.
         ctx->uncharge();
+        ctx->unregister();
         api->StreamClose(stream);
         delete ctx;
         break;

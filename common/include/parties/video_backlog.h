@@ -33,6 +33,10 @@ namespace parties {
 constexpr int64_t VIDEO_BACKLOG_MIN_THRESHOLD_BYTES = 64 * 1024;
 constexpr int64_t VIDEO_BACKLOG_MAX_THRESHOLD_BYTES = 2 * 1024 * 1024;
 constexpr double  VIDEO_BACKLOG_QUEUE_SECONDS       = 0.25;
+// Loss-aware form only: frames reach the server in clumps (the sharer's own
+// retransmissions, the ingress reorder buffer releasing what it held), so the
+// queue allowance there is larger.
+constexpr double  VIDEO_BACKLOG_BURST_QUEUE_SECONDS = 0.4;
 constexpr uint32_t VIDEO_BACKLOG_DEFAULT_RTT_US     = 50'000;   // until the first sample
 constexpr uint32_t VIDEO_BACKLOG_MAX_RTT_US         = 1'000'000;
 
@@ -61,10 +65,62 @@ constexpr int64_t video_backlog_threshold_bytes(double viewer_rate_bytes_per_s,
                                VIDEO_BACKLOG_MAX_THRESHOLD_BYTES);
 }
 
+// Loss-aware form (the server's). A frame stays counted until its last packet
+// is acknowledged; on a lossy path some packet of most frames is retransmitted,
+// which costs about one more RTT, sometimes two. So the RTT term is
+// VIDEO_BACKLOG_RTT_FACTOR round trips, not one: at 5 % loss and 300 ms RTT a
+// single round trip would throttle a viewer whose link has room to spare.
+// The RTT is the larger of MinRtt and half the smoothed RTT: MinRtt never
+// rises (a path that changed from Wi-Fi to LTE keeps the old minimum), while
+// half the smoothed RTT follows such a change without letting queueing on the
+// path inflate the budget one for one.
+constexpr double VIDEO_BACKLOG_RTT_FACTOR = 2.5;
+
+// loss_permille (optional): packet loss toward the viewer. Under loss more
+// frames wait for a retransmission at any moment, so the RTT term grows with
+// it (about one round trip more per 3 % of loss, at most 2 more).
+constexpr int64_t video_backlog_threshold_bytes(double viewer_rate_bytes_per_s,
+                                                uint32_t min_rtt_us,
+                                                int64_t keyframe_headroom_bytes,
+                                                uint32_t smoothed_rtt_us,
+                                                uint32_t loss_permille = 0) {
+    uint32_t rtt = min_rtt_us > smoothed_rtt_us / 2 ? min_rtt_us : smoothed_rtt_us / 2;
+    if (rtt > VIDEO_BACKLOG_MAX_RTT_US) rtt = VIDEO_BACKLOG_MAX_RTT_US;
+    double loss_rtts = static_cast<double>(loss_permille) / 30.0;
+    if (loss_rtts > 2.0) loss_rtts = 2.0;
+    const double window_s = VIDEO_BACKLOG_BURST_QUEUE_SECONDS +
+                            (VIDEO_BACKLOG_RTT_FACTOR + loss_rtts) * static_cast<double>(rtt) / 1e6;
+    const double raw = viewer_rate_bytes_per_s * window_s;
+    int64_t v = raw <= 0.0 ? 0 : static_cast<int64_t>(raw);
+    if (keyframe_headroom_bytes > 0) v += keyframe_headroom_bytes;
+    return std::clamp<int64_t>(v, VIDEO_BACKLOG_MIN_THRESHOLD_BYTES,
+                               VIDEO_BACKLOG_MAX_THRESHOLD_BYTES);
+}
+
 // Per (viewer, sharer) forwarding gate. Mutated only under the owner's lock
 // (server: Server::subscriptions_mutex_).
 struct ViewerVideoGate {
     bool awaiting_keyframe = false;   // a frame was dropped; only a keyframe may resume delivery
+
+    // Keyframe requests on behalf of this viewer (its own PLIs and the gate's
+    // recovery requests). Every forced keyframe costs every viewer quality,
+    // so a viewer whose link cannot carry the stream must not force one per
+    // second: its requests back off from 1 s to 4 s, and the backoff only
+    // resets once the viewer took HEALTHY_FRAMES frames in a row without a
+    // drop. A keyframe that reaches it is not enough: a viewer on a link that
+    // cannot carry the stream gets every keyframe and loses what follows.
+    static constexpr uint32_t HEALTHY_FRAMES = 60;
+    int64_t  request_next_us = 0;
+    int64_t  request_backoff_us = 0;
+    uint32_t healthy_frames = 0;
+
+    bool allow_keyframe_request(int64_t now_us) {
+        if (now_us < request_next_us) return false;
+        if (request_backoff_us == 0) request_backoff_us = 1'000'000;
+        request_next_us = now_us + request_backoff_us;
+        request_backoff_us = (std::min)(request_backoff_us * 2, int64_t{4'000'000});
+        return true;
+    }
 
     // Decide whether to forward one frame.
     //   outstanding  bytes queued + in flight toward this viewer
@@ -79,6 +135,7 @@ struct ViewerVideoGate {
             // Over budget: drop this frame whatever it is. Dropping a keyframe
             // is deliberate — queuing it would only add more delay.
             awaiting_keyframe = true;
+            healthy_frames = 0;
             return false;
         }
         if (awaiting_keyframe) {
@@ -87,6 +144,10 @@ struct ViewerVideoGate {
                 return false;
             }
             awaiting_keyframe = false;
+        }
+        if (++healthy_frames >= HEALTHY_FRAMES) {
+            request_backoff_us = 0;
+            request_next_us = 0;
         }
         return true;
     }

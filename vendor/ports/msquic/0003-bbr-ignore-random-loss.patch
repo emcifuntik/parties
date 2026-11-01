@@ -1,0 +1,27 @@
+diff --git a/src/core/bbr.c b/src/core/bbr.c
+--- a/src/core/bbr.c
++++ b/src/core/bbr.c
+@@ -935,6 +935,23 @@
+     uint32_t RecoveryWindow = Bbr->RecoveryWindow;
+     uint32_t MinCongestionWindow = kMinCwndInMss * DatagramPayloadLength;
+ 
++    //
++    // Parties patch: real-time media. Random loss (Wi-Fi, mobile, a lossy
++    // last mile) says nothing about the path's capacity, but BBR's recovery
++    // window (packet conservation) shrinks to the bytes in flight on every
++    // loss and is only left after a loss-free ACK, which never comes under
++    // steady random loss. The window then stays a frame or two wide, every
++    // keyframe needs several round trips and everything behind it stalls.
++    // Here only persistent congestion (everything lost for a whole PTO
++    // period) enters recovery; otherwise the pacing rate and window keep
++    // following BBR's bandwidth and RTT model, and lost data is simply
++    // retransmitted. The application bounds its own queue on top.
++    //
++    if (!LossEvent->PersistentCongestion) {
++        BbrCongestionControlUpdateBlockedState(Cc, PreviousCanSendState);
++        return;
++    }
++
+     if (!BbrCongestionControlInRecovery(Cc)) {
+         Bbr->RecoveryState = RECOVERY_STATE_CONSERVATIVE;
+         RecoveryWindow = Bbr->BytesInFlight;

@@ -76,6 +76,14 @@ bool Server::start(const Config& cfg) {
 
     // Queue completed frames with a per-session byte cap. The server loop
     // restores encode order before applying gates and forwarding to viewers.
+    quic_.on_video_frame_started = [this](uint32_t session_id, protocol::VideoSource source,
+                                          const VideoFrameHeader& hdr) {
+        enqueue_video_event(session_id, source, PendingVideoFrame::Kind::Started, hdr, 0, false);
+    };
+    quic_.on_video_frame_aborted = [this](uint32_t session_id, protocol::VideoSource source,
+                                          uint32_t frame_seq, bool have_seq) {
+        enqueue_video_event(session_id, source, PendingVideoFrame::Kind::Aborted, {}, frame_seq, have_seq);
+    };
     quic_.on_video_frame = [this](uint32_t session_id, uint8_t packet_type,
                                   protocol::VideoSource source,
                                   const uint8_t* data, size_t len) {
@@ -1711,6 +1719,22 @@ void Server::enqueue_video_frame(uint32_t session_id, protocol::VideoSource sour
     video_incoming_.push({session, source, generation, std::vector<uint8_t>(data, data + len)});
 }
 
+void Server::enqueue_video_event(uint32_t session_id, protocol::VideoSource source,
+                                 PendingVideoFrame::Kind kind, const VideoFrameHeader& hdr,
+                                 uint32_t frame_seq, bool have_seq) {
+    if (!protocol::video_source_valid(static_cast<uint8_t>(source))) return;
+    auto session = quic_.get_session(session_id);
+    if (!session) return;
+    auto& state = session->video_source(source);
+    if (!state.ingress_allowed.load(std::memory_order_acquire)) return;
+    PendingVideoFrame ev{session, source, state.generation.load(std::memory_order_acquire), {}};
+    ev.kind = kind;
+    ev.header = hdr;
+    ev.frame_seq = frame_seq;
+    ev.have_seq = have_seq;
+    video_incoming_.push(std::move(ev));
+}
+
 void Server::process_video_frames() {
     auto pending = video_incoming_.drain();
     for (auto& frame : pending) {
@@ -1720,12 +1744,27 @@ void Server::process_video_frames() {
         auto& state = session->video_source(frame.source);
         if (!session->alive || !state.ingress_allowed.load(std::memory_order_acquire) ||
             frame.generation != state.generation.load(std::memory_order_acquire)) continue;
-        VideoFrameHeader hdr;
-        if (!VideoFrameHeader::parse(frame.data.data(), frame.data.size(), hdr)) continue;
         const uint32_t stream_id = protocol::video_stream_id(session->user_id, frame.source);
         auto& ingress = video_ingress_[stream_id];
         ingress.session = session;
         ingress.source  = frame.source;
+        // The sharer's uplink RTT sets how long a missing frame is waited for.
+        ingress.reorder.set_rtt(session->srtt_us.load(std::memory_order_relaxed));
+        if (frame.kind == PendingVideoFrame::Kind::Started) {
+            ingress.reorder.on_frame_started(frame.header, now_us());
+            continue;
+        }
+        if (frame.kind == PendingVideoFrame::Kind::Aborted) {
+            if (frame.have_seq) {
+                ingress.reorder.on_frame_aborted(frame.frame_seq, now_us(), {},
+                    [this, stream_id](uint32_t) { request_keyframe_from_sharer(stream_id, 0); });
+            } else if (!ingress.reorder.keyframe_in_flight(now_us())) {
+                request_keyframe_from_sharer(stream_id, 0);   // which frame died is unknown
+            }
+            continue;
+        }
+        VideoFrameHeader hdr;
+        if (!VideoFrameHeader::parse(frame.data.data(), frame.data.size(), hdr)) continue;
         ingress.reorder.on_frame(hdr, std::move(frame.data), now_us(),
             [this, id = session->id, source = frame.source](const VideoFrameHeader&,
                                                             std::vector<uint8_t>&& data) {
@@ -1748,11 +1787,14 @@ void Server::process_video_frames() {
             },
             [this, stream_id](uint32_t) { request_keyframe_from_sharer(stream_id, 0); });
         // Recovery no longer forwards undecodable deltas. Keep retrying even
-        // when the publisher is idle or the requested keyframe is itself lost.
-        if (it->second.reorder.needs_keyframe())
+        // when the publisher is idle or the requested keyframe is itself lost
+        // (paced by the per-stream keyframe coalescer), but not while the
+        // keyframe that repairs it is already arriving.
+        if (it->second.reorder.should_request_keyframe(now))
             request_keyframe_from_sharer(stream_id, 0);
         ++it;
     }
+    send_deferred_keyframe_requests(now);
 }
 
 void Server::forward_video_frame(uint32_t session_id, protocol::VideoSource source,
@@ -1800,6 +1842,7 @@ void Server::forward_video_frame(uint32_t session_id, protocol::VideoSource sour
         st.last_frame_seq = hdr.frame_seq;
         st.have_frame = true;
         if (keyframe) {
+            st.last_keyframe_us = now;
             const int64_t size  = static_cast<int64_t>(len);
             const bool    stale = st.max_keyframe_at_us == 0 ||
                                   now - st.max_keyframe_at_us > KEYFRAME_HEADROOM_TTL_US;
@@ -1837,6 +1880,11 @@ void Server::forward_video_frame(uint32_t session_id, protocol::VideoSource sour
     std::vector<std::shared_ptr<Session>> targets;
     bool     want_keyframe = false;
     uint32_t dropped = 0;
+    // Frames already queued toward a viewer that became useless: everything,
+    // once the viewer fell behind (it resumes at a keyframe, and the queued
+    // frames would only delay that keyframe), and everything older than a
+    // keyframe it is about to receive.
+    std::vector<std::shared_ptr<Session>> abort_all, abort_older;
     {
         auto all_sessions = quic_.get_sessions();
         std::lock_guard<std::mutex> lock(subscriptions_mutex_);
@@ -1850,16 +1898,22 @@ void Server::forward_video_frame(uint32_t session_id, protocol::VideoSource sour
             // Budget of THIS viewer: all its sharers' rates, its own MinRtt.
             const int64_t threshold = viewer_backlog_threshold(*s, sharer_rates, keyframe_headroom);
             auto& gate = s->video_gates[sharer];
+            const bool was_awaiting = gate.awaiting_keyframe;
             bool needs_key = false;
             if (gate.admit(s->video_outstanding_bytes.load(std::memory_order_relaxed),
                            threshold, keyframe, &needs_key)) {
                 targets.push_back(s);
+                if (keyframe) abort_older.push_back(s);
             } else {
                 ++dropped;
+                if (!was_awaiting && gate.awaiting_keyframe) abort_all.push_back(s);
             }
-            if (needs_key) want_keyframe = true;
+            if (needs_key && gate.allow_keyframe_request(now)) want_keyframe = true;
         }
     }
+
+    for (auto& s : abort_all)   quic_.abort_video_frames(s, sharer, /*all=*/true);
+    for (auto& s : abort_older) quic_.abort_video_frames(s, sharer, /*all=*/false, hdr.frame_seq);
 
     for (auto& s : targets) {
         if (!quic_.send_video_frame_to(s, shared_frame)) {
@@ -1899,7 +1953,9 @@ int64_t Server::viewer_backlog_threshold(const Session& viewer,
     }
     return video_backlog_threshold_bytes(viewer_rate,
                                          viewer.min_rtt_us.load(std::memory_order_relaxed),
-                                         keyframe_headroom);
+                                         keyframe_headroom,
+                                         viewer.srtt_us.load(std::memory_order_relaxed),
+                                         viewer.loss_permille.load(std::memory_order_relaxed));
 }
 
 void Server::handle_video_control(const DataPacket& pkt) {
@@ -1966,6 +2022,8 @@ void Server::handle_video_control(const DataPacket& pkt) {
                 if (session->video_outstanding_bytes.load(std::memory_order_relaxed) > threshold)
                     return;
             }
+            // Paced per viewer (see ViewerVideoGate::allow_keyframe_request).
+            if (!session->video_gates[target_id].allow_keyframe_request(now_us())) return;
         }
 
         request_keyframe_from_sharer(target_id, session->user_id);
@@ -1975,12 +2033,45 @@ void Server::handle_video_control(const DataPacket& pkt) {
 void Server::request_keyframe_from_sharer(uint32_t stream_id, UserId requester) {
 	ZoneScopedN("Server::request_keyframe_from_sharer");
     if (!protocol::video_stream_valid(stream_id)) return;
-    // Coalesce: one PLI per stream per 200 ms, whoever asks.
+    // Coalesce: one forced keyframe per stream per cooldown, whoever asks; a
+    // request inside the window is sent when it ends (unless a keyframe
+    // passes through first, see send_deferred_keyframe_requests).
     {
         std::lock_guard<std::mutex> lock(video_state_mutex_);
-        if (!sharer_video_state_[stream_id].pli.allow(now_us()))
+        auto& st = sharer_video_state_[stream_id];
+        if (!st.pli.allow(now_us())) {
+            if (!st.pli_deferred) {
+                st.pli_deferred = true;
+                st.pli_deferred_requester = requester;
+                st.pli_deferred_at_us = now_us();
+            }
             return;
+        }
+        st.pli_deferred = false;
     }
+    send_keyframe_request(stream_id, requester);
+}
+
+void Server::send_deferred_keyframe_requests(int64_t now) {
+    std::vector<std::pair<uint32_t, UserId>> due;
+    {
+        std::lock_guard<std::mutex> lock(video_state_mutex_);
+        for (auto& [stream_id, st] : sharer_video_state_) {
+            if (!st.pli_deferred) continue;
+            if (st.last_keyframe_us > st.pli_deferred_at_us) {
+                st.pli_deferred = false;   // a keyframe went out after the request
+                continue;
+            }
+            if (!st.pli.allow(now)) continue;
+            st.pli_deferred = false;
+            due.emplace_back(stream_id, st.pli_deferred_requester);
+        }
+    }
+    for (const auto& [stream_id, requester] : due)
+        send_keyframe_request(stream_id, requester);
+}
+
+void Server::send_keyframe_request(uint32_t stream_id, UserId requester) {
 
     auto sharer = session_for_user(protocol::video_stream_owner(stream_id));
     if (!sharer || !sharer->authenticated) return;

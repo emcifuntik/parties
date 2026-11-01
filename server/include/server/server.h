@@ -81,6 +81,8 @@ private:
     // when server-originated. Callable from the MsQuic thread and the main
     // loop (guarded internally).
     void request_keyframe_from_sharer(uint32_t stream_id, UserId requester);
+    void send_deferred_keyframe_requests(int64_t now_us);
+    void send_keyframe_request(uint32_t stream_id, UserId requester);
     // SCREEN_SHARE_VIEWER to the publisher of a SCREEN stream (skipped for
     // cameras, when viewer == publisher, or when the publisher runs a pre-1.2
     // client). Main loop.
@@ -100,12 +102,23 @@ private:
     std::atomic<bool> running_{false};
 
     struct PendingVideoFrame {
+        // Frame: data holds [header][encoded]. Started / Aborted: ingress
+        // stream events, ordered with the frames (see QuicServer callbacks).
+        enum class Kind : uint8_t { Frame, Started, Aborted };
         std::shared_ptr<Session> session;
         protocol::VideoSource source;
         uint64_t generation;
         std::vector<uint8_t> data;
+        Kind kind = Kind::Frame;
+        VideoFrameHeader header{};   // Started
+        uint32_t frame_seq = 0;      // Aborted
+        bool have_seq = false;       // Aborted
     };
     ThreadQueue<PendingVideoFrame> video_incoming_;
+    // QUIC receive thread: an ingress stream event, queued in order with the frames.
+    void enqueue_video_event(uint32_t session_id, protocol::VideoSource source,
+                             PendingVideoFrame::Kind kind, const VideoFrameHeader& hdr,
+                             uint32_t frame_seq, bool have_seq);
     struct VideoIngress {
         std::shared_ptr<Session> session;
         protocol::VideoSource source;
@@ -129,7 +142,14 @@ private:
     // Erased in stop_video_stream.
     struct SharerVideoState {
         RateEstimator rate{1.0};            // bytes/s forwarded (drives the backlog threshold)
-        Coalescer     pli{200'000};         // one forwarded/originated PLI per 200 ms
+        // One forced keyframe per VIDEO_KEYFRAME_REQUEST_COOLDOWN_MS, whoever
+        // asks. A request inside the window is deferred to its end, not
+        // dropped, unless a keyframe passes through meanwhile.
+        Coalescer     pli{static_cast<int64_t>(VIDEO_KEYFRAME_REQUEST_COOLDOWN_MS) * 1000};
+        bool          pli_deferred = false;
+        UserId        pli_deferred_requester = 0;
+        int64_t       pli_deferred_at_us = 0;
+        int64_t       last_keyframe_us = 0;
         uint32_t      last_frame_seq = 0;
         bool          have_frame = false;
         Coalescer     drop_log{1'000'000};  // rate-limits the per-sharer drop log line

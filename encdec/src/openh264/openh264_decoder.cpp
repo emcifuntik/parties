@@ -51,9 +51,16 @@ bool OpenH264Decoder::decode(const uint8_t* data, size_t len, int64_t timestamp)
     DECODING_STATE state = decoder_->DecodeFrameNoDelay(
         data, static_cast<int>(len), dst, &buf_info);
 
-    if (state != dsErrorFree && state != dsFramePending) {
-        // Non-fatal: OpenH264 can recover from corrupted frames
-        return true;
+    // DECODING_STATE is a bit mask. Anything beyond "frame pending" (lost
+    // reference, bitstream error, concealed data, missing parameter sets, ...)
+    // means this and the following inter frames reference pictures the decoder
+    // does not have: error concealment would only smear the damage forward
+    // until the next IDR. Do not show the concealed picture, and report the
+    // failure so the caller resyncs at a keyframe and requests one.
+    if ((state & ~dsFramePending) != 0) {
+        LOG_DEBUG("OpenH264 decode error state {:#x} ({} bytes)",
+                  static_cast<unsigned>(state), len);
+        return false;
     }
 
     if (buf_info.iBufferStatus == 1 && dst[0] && on_decoded) {
