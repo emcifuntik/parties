@@ -8,6 +8,7 @@ vcpkg_from_github(
         0001-unconnected-query.patch   # adds out-of-RFC connectionless server-query listener event
         0002-datapath-offload-toggle.patch   # QUIC_PARAM_GLOBAL_DATAPATH_DISABLE_OFFLOADS (USO/URO off)
         0003-bbr-ignore-random-loss.patch    # BBR: no recovery-window cut on random loss (real-time media)
+        0004-bbr-gentle-probe-rtt.patch      # BBR: ProbeRTT keeps ~1 BDP in flight, not 4 packets (no 250 ms freeze every 10 s)
 )
 
 string(COMPARE EQUAL "${VCPKG_CRT_LINKAGE}" "static" STATIC_CRT)

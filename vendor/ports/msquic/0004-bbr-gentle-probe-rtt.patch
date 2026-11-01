@@ -1,0 +1,24 @@
+diff --git a/src/core/bbr.c b/src/core/bbr.c
+--- a/src/core/bbr.c
++++ b/src/core/bbr.c
+@@ -225,7 +225,19 @@ BbrCongestionControlGetCongestionWindow(
+     uint32_t MinCongestionWindow = kMinCwndInMss * DatagramPayloadLength;
+ 
+     if (Bbr->BbrState == BBR_STATE_PROBE_RTT) {
+-        return MinCongestionWindow;
++        //
++        // Parties patch: real-time media. BBRv1 drains to four packets for
++        // 200 ms plus a round trip whenever MinRtt is 10 s old, which on a
++        // stable path is every 10 s: video frames sent meanwhile wait, and the
++        // viewer sees a ~250 ms freeze (with sharer and viewer connections
++        // probing independently, about every 5 s). Like BBRv2/v3, which keep
++        // half a BDP, keep enough in flight to carry the stream: half the
++        // regular window (CwndGain 2), i.e. about one estimated BDP. That
++        // still drains the standing queue the regular window can build, so
++        // the probe still sees the path's MinRtt; our flows are app-limited
++        // media and rarely build a queue of their own.
++        //
++        return CXPLAT_MAX(MinCongestionWindow, Bbr->CongestionWindow / 2);
+     }
+ 
+     if (BbrCongestionControlInRecovery(Cc)) {

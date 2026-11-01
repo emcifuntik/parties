@@ -456,6 +456,16 @@ std::vector<Scenario> scenarios() {
     std::vector<Scenario> s;
     s.push_back({"clean", 4'000'000, impair(0, 10), impair(0, 10), impair(0, 10),
                  healthy, healthy});
+    // A clean 50 ms RTT path for longer than BBR's 10 s MinRtt expiry: every
+    // connection enters ProbeRTT at least once. Stock BBRv1 drains to four
+    // packets for 200 ms + a round trip there (a ~250 ms freeze every 10 s per
+    // connection, or the playout cushion stretching to hide it); MsQuic patch
+    // 0004 keeps the stream flowing. Unpatched: freeze ~120 ms, p95 ~250 ms.
+    {
+        const Expect steady{55.0, 100, 120, 2, 1};
+        s.push_back({"steady-rtt-50ms", 4'000'000, impair(0, 12), impair(0, 12), impair(0, 12),
+                     steady, steady, 3000, 22000});
+    }
     // Loss on the viewer's own link only: V copes, D (clean path) is untouched
     // apart from the keyframes V's recoveries cost.
     s.push_back({"viewer-loss-10pct", 4'000'000, impair(0, 10), impair(0.10, 30, 3), impair(0.10, 30, 3),

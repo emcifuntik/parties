@@ -203,7 +203,14 @@ the encode thread; on a static screen the newest captured frame is re-encoded.
   recovery (cwnd cut to the in-flight data) on every loss and never left it
   under constant random loss; the overlay patch
   `vendor/ports/msquic/0003-bbr-ignore-random-loss.patch` only does that on
-  persistent congestion. `PARTIES_QUIC_CC=cubic` switches back for A/B tests.
+  persistent congestion. BBR's ProbeRTT drained the window to four packets for
+  200 ms plus a round trip whenever MinRtt was 10 s old, i.e. every 10 s on a
+  stable path: a ~250 ms "network" freeze, about every 5 s with the sharer's
+  and the viewer's connections probing independently.
+  `0004-bbr-gentle-probe-rtt.patch` keeps about one BDP in flight there
+  instead (half the regular window; BBRv2/v3 keep half a BDP), which the
+  network test's `steady-rtt-50ms` scenario checks.
+  `PARTIES_QUIC_CC=cubic` switches back for A/B tests.
 - **Stream priorities**: control streams 0xC000 (above video), file transfers
   0x1000 (below it).
 - **Network compatibility mode** (Settings > Screen Share): turns off the
