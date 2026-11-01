@@ -1465,9 +1465,14 @@ void AppCore::rebuild_watched_model()
 // part of the video send accounting (see NetClient::send_video).
 void AppCore::send_pli(UserId target)
 {
-    // Never toward our own streams: the local encoders keyframe on their own
-    // interval and other viewers' PLIs already force them.
-    if (target == 0 || protocol::video_stream_owner(target) == user_id_) return;
+    if (target == 0) return;
+    // Our own stream (the self-preview): ask the local encoder directly, under
+    // the same cooldown as viewers' PLIs. The encoders send no periodic
+    // keyframes, so nothing else would resynchronize the preview.
+    if (protocol::video_stream_owner(target) == user_id_) {
+        on_keyframe_request(protocol::video_stream_source(target));
+        return;
+    }
     video_rx_.request_keyframe(target, steady_now_us());   // paced
 }
 

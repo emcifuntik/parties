@@ -190,9 +190,9 @@ bool VideoEncoderMac::init(MacVideoCodec codec, uint32_t width, uint32_t height,
                          fps_num);
     CFRelease(fps_num);
 
-    // Periodic keyframes at the shared VIDEO_KEYFRAME_INTERVAL_MS cadence, the
-    // same GOP length the Windows encoders use, so late joiners never wait
-    // longer than that for a sync point.
+    // The shared VIDEO_KEYFRAME_INTERVAL_MS safety GOP, the same length the
+    // Windows encoders use. Joiners and losses get their keyframe from a PLI
+    // (force_keyframe), not from this interval.
     int32_t kf_interval = (int32_t)(fps_ * (parties::VIDEO_KEYFRAME_INTERVAL_MS / 1000));
     CFNumberRef kf_num = CFNumberCreate(nullptr, kCFNumberSInt32Type, &kf_interval);
     VTSessionSetProperty(session_,

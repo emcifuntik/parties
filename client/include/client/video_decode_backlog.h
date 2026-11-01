@@ -21,16 +21,18 @@ inline constexpr int64_t kVideoDecodeBacklogMaxAgeUs = 500'000;
 // flush -> PLI -> keyframe (the most expensive frame) -> deltas back up ->
 // flush again, at ~1 Hz, spiking the sharer's bitrate and dropping frames for
 // every viewer that was keeping up. Only the first kVideoDecodeStaleFlushPliLimit
-// consecutive flushes may request a keyframe; after that the stream waits for
-// the sharer's periodic keyframe.
+// consecutive flushes may request a keyframe; after that the stream asks at
+// most once per kVideoDecodeStaleFlushSlowPliUs (sharers send no periodic
+// keyframes any more, see VIDEO_KEYFRAME_INTERVAL_MS).
 inline constexpr uint32_t kVideoDecodeStaleFlushPliLimit = 2;
+// Keyframe cadence for a stream whose decoder is too slow: the 5 s the old
+// periodic keyframes provided, now only for the viewer that needs it.
+inline constexpr int64_t kVideoDecodeStaleFlushSlowPliUs = 5'000'000;
 // A run of flushes ends only once the decoder has demonstrably kept up: a
-// keyframe decoded in sequence (not the recovery keyframe the gate was waiting
+// frame decoded in sequence (not the recovery keyframe the gate was waiting
 // for — every flush is necessarily followed by one of those) at least this
-// long after decoding resumed. Sized to most of one sharer keyframe interval
-// (VIDEO_KEYFRAME_INTERVAL_MS = 5 s, checked by a static_assert in app.cpp) so
-// a periodic keyframe landing shortly after a recovery cannot end the run,
-// while one interval of clean decoding always does despite delivery jitter.
+// long after decoding resumed, with no flush in between. Must not exceed the
+// safety keyframe interval (static_assert in app.cpp).
 inline constexpr int64_t kVideoDecodeStaleFlushRecoveryUs = 4'000'000;
 
 struct VideoDecodeBacklogTrim {
@@ -90,20 +92,33 @@ struct VideoDecodeStaleFlushTracker {
     // decoded) at resumed_us; nothing has resumed yet while `resumed` is false.
     bool    resumed = false;
     int64_t resumed_us = 0;
+    // Last keyframe request this run made (a flush within the limit, or a
+    // slow-cadence request while suppressed).
+    int64_t requested_us = 0;
 
     // Records a whole-batch flush. True when this flush may request a keyframe.
-    bool on_stale_flush() {
+    bool on_stale_flush(int64_t now_us) {
         ++stale_flushes_in_a_row;
         resumed = false;
-        return should_request_keyframe_after_stale_flush(stale_flushes_in_a_row);
+        const bool request = should_request_keyframe_after_stale_flush(stale_flushes_in_a_row);
+        if (request) requested_us = now_us;
+        return request;
     }
 
-    // A keyframe was decoded. `recovery` means the gate was waiting for a
-    // keyframe when it was accepted (the frame that ends a flush, a
-    // discontinuity or the stream start): decoding resumes, but that proves
-    // nothing about the decoder's speed. An in-sequence keyframe decoded at
-    // least kVideoDecodeStaleFlushRecoveryUs after resumption ends the run.
-    void on_keyframe_decoded(int64_t now_us, bool recovery) {
+    // While suppressed: true (and recorded) when the slow cadence allows the
+    // next keyframe request.
+    bool take_slow_request(int64_t now_us) {
+        if (now_us - requested_us < kVideoDecodeStaleFlushSlowPliUs) return false;
+        requested_us = now_us;
+        return true;
+    }
+
+    // A frame was decoded. `recovery` means it is the keyframe the gate was
+    // waiting for (the frame that ends a flush, a discontinuity or the stream
+    // start): decoding resumes, but that proves nothing about the decoder's
+    // speed. Any frame decoded at least kVideoDecodeStaleFlushRecoveryUs
+    // after resumption ends the run.
+    void on_frame_decoded(int64_t now_us, bool recovery) {
         if (stale_flushes_in_a_row == 0) return;
         if (recovery || !resumed) {
             resumed = true;
@@ -116,8 +131,8 @@ struct VideoDecodeStaleFlushTracker {
         }
     }
 
-    // True while keyframe requests are suppressed: the stream waits for the
-    // sharer's periodic keyframe instead of asking for one.
+    // True while keyframe requests are suppressed: the stream asks only at
+    // the slow cadence (take_slow_request) instead of after every flush.
     bool suppressed() const {
         return !should_request_keyframe_after_stale_flush(stale_flushes_in_a_row);
     }

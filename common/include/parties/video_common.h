@@ -28,7 +28,13 @@ constexpr uint32_t VIDEO_MIN_BITRATE       =   200'000;   // 200 kbps (UI floor)
 constexpr uint32_t VIDEO_ADAPT_MIN_BITRATE =   800'000;   // 800 kbps
 
 // Timing
-constexpr uint32_t VIDEO_KEYFRAME_INTERVAL_MS = 5000;  // Max 5 seconds between keyframes
+// Keyframes are on demand: a viewer subscribing, a lost or aborted frame, or a
+// decoder resync sends a PLI and the sharer forces one. The encoders' own GOP is
+// only a last-resort safety net. It used to be 5 s, but under the two-frame CBR
+// VBV (encdec/rate_control.h) a keyframe is coded far coarser than the picture
+// the P frames have refined on static content, so every periodic keyframe was
+// a visible "the image falls apart for 0.1-0.2 s" pulse for every viewer.
+constexpr uint32_t VIDEO_KEYFRAME_INTERVAL_MS = 120'000;
 // Viewer keyframe requests are paced per stream by VideoReceiveRouter
 // (500 ms, doubling to 4 s while the stream stays broken).
 // Min time between forced keyframes on the sharer. A keyframe takes more than

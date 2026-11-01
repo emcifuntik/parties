@@ -125,53 +125,65 @@ int main() {
         std::cerr << "fresh stream suppresses keyframe requests\n";
         return 1;
     }
-    if (!tracker.on_stale_flush()) {
+    if (!tracker.on_stale_flush(100'000)) {
         std::cerr << "first stale flush did not request a keyframe\n";
         return 1;
     }
-    tracker.on_keyframe_decoded(200'000, true);
+    tracker.on_frame_decoded(200'000, true);
     if (tracker.stale_flushes_in_a_row != 1) {
         std::cerr << "recovery keyframe ended the stale flush run\n";
         return 1;
     }
-    if (!tracker.on_stale_flush()) {
+    if (!tracker.on_stale_flush(1'000'000)) {
         std::cerr << "second stale flush did not request a keyframe\n";
         return 1;
     }
-    tracker.on_keyframe_decoded(1'700'000, true);
-    if (tracker.on_stale_flush() || !tracker.suppressed() ||
+    tracker.on_frame_decoded(1'700'000, true);
+    if (tracker.on_stale_flush(2'000'000) || !tracker.suppressed() ||
         tracker.stale_flushes_in_a_row != 3) {
         std::cerr << "third consecutive stale flush still requested a keyframe\n";
         return 1;
     }
-    // The sharer's periodic keyframe arrives while the gate waits for one: it
+    // Suppressed, the stream still asks at the slow cadence, counted from the
+    // last request (the second flush): sharers send no periodic keyframes.
+    constexpr int64_t slow = parties::client::kVideoDecodeStaleFlushSlowPliUs;
+    if (tracker.take_slow_request(1'000'000 + slow - 1)) {
+        std::cerr << "slow keyframe request came before its cadence" << std::endl;
+        return 1;
+    }
+    if (!tracker.take_slow_request(1'000'000 + slow) || tracker.take_slow_request(1'000'000 + slow + 1)) {
+        std::cerr << "slow keyframe request cadence is wrong" << std::endl;
+        return 1;
+    }
+    // The keyframe that answers it arrives while the gate waits for one: it
     // resumes decoding but proves nothing about the decoder's speed.
-    tracker.on_keyframe_decoded(4'900'000, true);
+    tracker.on_frame_decoded(4'900'000, true);
     if (!tracker.suppressed()) {
-        std::cerr << "periodic recovery keyframe lifted the suppression\n";
+        std::cerr << "recovery keyframe lifted the suppression\n";
         return 1;
     }
     // An in-sequence keyframe landing before the recovery window has elapsed
     // (e.g. another viewer's PLI shortly after we resumed) does not count.
-    tracker.on_keyframe_decoded(4'900'000 + recovery - 1, false);
+    tracker.on_frame_decoded(4'900'000 + recovery - 1, false);
     if (!tracker.suppressed()) {
         std::cerr << "in-sequence keyframe before the recovery window lifted the suppression\n";
         return 1;
     }
-    // One clean recovery window of decoding ends the run: requests resume.
-    tracker.on_keyframe_decoded(4'900'000 + recovery, false);
+    // One clean recovery window of decoding ends the run (any frame: in-sequence
+    // keyframes no longer come by themselves): requests resume.
+    tracker.on_frame_decoded(4'900'000 + recovery, false);
     if (tracker.suppressed() || tracker.stale_flushes_in_a_row != 0) {
-        std::cerr << "keyframe decoded normally after a clean interval did not reset the counter\n";
+        std::cerr << "frame decoded normally after a clean interval did not reset the counter\n";
         return 1;
     }
-    if (!tracker.on_stale_flush() || tracker.stale_flushes_in_a_row != 1) {
+    if (!tracker.on_stale_flush(19'000'000) || tracker.stale_flushes_in_a_row != 1) {
         std::cerr << "stale flush after a recovery did not request a keyframe\n";
         return 1;
     }
     // A flush restarts the recovery clock: the next in-sequence keyframe must
     // again wait for a full window after decoding resumes.
-    tracker.on_keyframe_decoded(20'000'000, true);
-    tracker.on_keyframe_decoded(20'000'000 + recovery - 1, false);
+    tracker.on_frame_decoded(20'000'000, true);
+    tracker.on_frame_decoded(20'000'000 + recovery - 1, false);
     if (tracker.stale_flushes_in_a_row != 1) {
         std::cerr << "recovery clock was not restarted by the flush\n";
         return 1;

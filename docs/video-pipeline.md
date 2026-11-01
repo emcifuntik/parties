@@ -140,11 +140,18 @@ published only for the last frame of a batch. Catching up therefore costs decode
 time, not upload and presentation time.
 
 The PLI side of this policy is capped. After two consecutive stale-backlog
-flushes that were not followed by a keyframe, the viewer stops sending PLIs for
-that stream (it logs "decoder too slow") and waits for the sharer's periodic
-keyframe (at most 5 s apart) instead of asking for keyframes it cannot decode in
-time. The self-preview stream (the sharer watching its own output) never sends
-PLIs.
+flushes that were not followed by a keyframe, the viewer asks for that stream
+at most every 5 s (it logs "decoder too slow") instead of asking after every
+flush for keyframes it cannot decode in time; the cap lifts after 4 s of clean
+decoding. The self-preview stream (the sharer watching its own output) sends no
+PLIs: it asks the local encoder directly, once per resync.
+
+Sharers send no periodic keyframes. Under the two-frame CBR VBV a keyframe is
+coded much coarser than the picture the P frames have refined on static
+content, so a periodic keyframe showed as the picture falling apart for
+0.1-0.2 s every interval. Keyframes come from PLIs (a subscribe, a lost or
+aborted frame, a decoder resync); the encoders' GOP of
+`VIDEO_KEYFRAME_INTERVAL_MS` (120 s) is only a safety net.
 
 NVDEC packets are submitted with `CUVID_PKT_ENDOFPICTURE`, so the decoder emits
 a picture as soon as its data is in rather than waiting for the first packet of

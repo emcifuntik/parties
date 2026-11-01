@@ -669,7 +669,7 @@ encoded frame to be a keyframe.
 | Default bitrate | 2 Mbps |
 | Minimum bitrate (UI floor) | 200 kbps |
 | Adaptation floor | 800 kbps |
-| Max keyframe interval | 5 seconds |
+| Max keyframe interval | 120 seconds (a safety net; keyframes are sent on request, see below) |
 | PLI pacing | Viewer: 500 ms, then backing off to 4 s while a stream stays broken; sharer: one forced keyframe per 1 s |
 
 ### Video control (PLI)
@@ -686,8 +686,8 @@ different transports:
   (the trailing stream id since 1.4 tells the sharer which encoder; older
   sharers read the first 6 bytes), so a keyframe request is never
   queued behind video. Delivery is best effort: a lost PLI is covered by the
-  viewer's paced retry while a keyframe is pending and by the sharer's 5 s
-  maximum keyframe interval.
+  viewer's paced retry while a keyframe is pending and by the server, which
+  keeps asking while a gated viewer waits for one.
 
 Both forms are accepted on receive. The body is:
 
@@ -710,7 +710,7 @@ PLI rate limits:
 
 | Where | Rule |
 |-------|------|
-| Client (sender of PLI) | `VideoReceiveRouter`: a new gap is requested at once, then 500 ms, 1 s, 2 s, 4 s, 4 s ... while the stream stays broken; a delivered keyframe resets the backoff. No request while a keyframe stream is already arriving (its header was read). Opening a watch waits 500 ms (the server requests a keyframe on subscribe). Escalation cap: after two consecutive stale-backlog flushes without a keyframe the viewer stops sending PLIs for that stream (logs "decoder too slow") and waits for the sharer's periodic keyframe. The self-preview stream never sends PLIs |
+| Client (sender of PLI) | `VideoReceiveRouter`: a new gap is requested at once, then 500 ms, 1 s, 2 s, 4 s, 4 s ... while the stream stays broken; a delivered keyframe resets the backoff. No request while a keyframe stream is already arriving (its header was read). Opening a watch waits 500 ms (the server requests a keyframe on subscribe). Escalation cap: after two consecutive stale-backlog flushes without a keyframe the viewer asks for that stream at most every 5 s (logs "decoder too slow") until it has decoded cleanly for 4 s. The self-preview stream sends no PLIs: it asks the local encoder directly (same 1 s cooldown), once per resync |
 | Client (receiver of PLI, sharer) | Incoming PLIs force a keyframe through a 1 s cooldown (`VIDEO_KEYFRAME_REQUEST_COOLDOWN_MS`) |
 | Server | Per-session token bucket of 4 PLIs/s with a burst of 4, checked before any work. A viewer's own PLIs are paced by its backlog gate (1 s backing off to 4 s while it keeps dropping); PLIs from a viewer that is over its backlog threshold are not forwarded. Toward the sharer at most one keyframe request per 1 s per stream: a request inside the cooldown is deferred to its end, not dropped, and one is not sent while the sharer's keyframe for that stream is already arriving |
 

@@ -6,7 +6,8 @@
 //
 // The sharer runs the production send path: VideoSendController (admission +
 // bitrate adaptation, fed with the connection's statistics), per-frame QUIC
-// streams and keyframes on request (PLI, 1 s cooldown, plus every 5 s). Its
+// streams and keyframes on request (PLI, 1 s cooldown, plus the long
+// VIDEO_KEYFRAME_INTERVAL_MS safety interval, as the real encoders). Its
 // "encoder" is a CBR model: every frame is bitrate / fps bytes, a keyframe 3
 // frames' worth. Viewers run the production receive path (VideoReceiveRouter:
 // reorder buffers + paced keyframe requests) into a decoder model that needs
@@ -212,7 +213,9 @@ private:
             }
 
             if (ctl_.admit_frame(now)) {
-                bool key = seq == 0 || now - last_key >= 5'000'000 || ctl_.take_keyframe_request();
+                bool key = seq == 0 ||
+                           now - last_key >= int64_t{VIDEO_KEYFRAME_INTERVAL_MS} * 1000 ||
+                           ctl_.take_keyframe_request();
                 if (pli_pending_.load(std::memory_order_relaxed) &&
                     now - last_forced >= int64_t{VIDEO_KEYFRAME_REQUEST_COOLDOWN_MS} * 1000) {
                     pli_pending_ = false;

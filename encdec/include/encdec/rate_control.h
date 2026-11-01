@@ -30,7 +30,9 @@ struct StreamRateControl {
 // a frame, keyframes included, never needs more than ~2 frame intervals of
 // link time. The first keyframe after a join or PLI is therefore coarse; the
 // following P frames refine it within a fraction of a second, which is far
-// less visible than a freeze. The 50 kbit floor only matters at very low
+// less visible than a freeze. For the same reason the encoders do not emit
+// periodic keyframes (VIDEO_KEYFRAME_INTERVAL_MS is a long safety net): on a
+// static screen each one would be a visible pulse. The 50 kbit floor only matters at very low
 // bitrates / high frame rates, where two frame intervals would leave too
 // little room to code a keyframe at all.
 //

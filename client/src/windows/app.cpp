@@ -205,6 +205,14 @@ void App::on_window_visibility_changed(bool visible) {
     }
 }
 
+// Monotonic microseconds shared by the decode backlog age rule and the
+// stale-flush recovery and slow-request clocks (DecodeWork::arrival_us uses
+// the same origin).
+static int64_t steady_now_us() {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 bool App::init(HWND hwnd) {
     hwnd_ = hwnd;
 
@@ -378,15 +386,16 @@ bool App::init(HWND hwnd) {
     // Main thread (AppCore::tick PLI retry). Same lock order as
     // enqueue_decode_work: streams_mutex_ then the stream's queue_mutex.
     // Deliberately false in two cases even though the gate may be waiting:
-    //  - the self-preview stream: a PLI would travel to the server and back
-    //    only to force our own encoder's keyframe for every viewer. The encoder
-    //    emits keyframes on its own interval and other viewers' PLIs already
-    //    force them, so the preview resynchronizes by itself;
+    //  - the self-preview stream: its resyncs ask our own encoder directly
+    //    (AppCore::send_pli), once; repeating that would only force keyframes
+    //    for every viewer. A preview that still misses one waits for a
+    //    viewer's PLI or the safety interval;
     //  - while the stale-flush suppression is active (stale_flushes_in_a_row
-    //    >= 3, i.e. the decoder is too slow for the stream): the decode thread
-    //    stopped requesting keyframes on purpose and waits for the sharer's
-    //    periodic one, so the retry must not re-issue PLIs behind its back.
-    //    The suppression ends when a keyframe is decoded normally again
+    //    >= 3, i.e. the decoder is too slow for the stream), except once per
+    //    kVideoDecodeStaleFlushSlowPliUs: a PLI per flush would make the
+    //    sharer keyframe at ~1 Hz for every viewer, and with no periodic
+    //    keyframes the stream would otherwise never recover. The suppression
+    //    ends once the decoder demonstrably keeps up again
     //    (VideoDecodeStaleFlushTracker), after which retries resume.
     bridge.stream_awaiting_keyframe = [this](UserId id) -> bool {
         std::lock_guard<std::mutex> slock(streams_mutex_);
@@ -395,8 +404,8 @@ bool App::init(HWND hwnd) {
         VideoStream* s = it->second.get();
         if (s->self_preview) return false;
         std::lock_guard<std::mutex> qlock(s->queue_mutex);
-        if (s->stale_flushes.suppressed()) return false;
-        return s->decode_gate.awaiting_keyframe();
+        if (!s->decode_gate.awaiting_keyframe()) return false;
+        return !s->stale_flushes.suppressed() || s->stale_flushes.take_slow_request(steady_now_us());
     };
 
     // Grid cells are created/destroyed by the data-for binding over model_.watched,
@@ -1936,13 +1945,6 @@ void App::on_video_frame_received(uint32_t sender_id, const uint8_t* data, size_
                         codec, width, height, is_keyframe);
 }
 
-// Monotonic microseconds shared by the decode backlog age rule and the
-// stale-flush recovery clock (DecodeWork::arrival_us uses the same origin).
-static int64_t steady_now_us() {
-    return std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
-}
-
 // The stale-flush run must be able to end after one clean sharer keyframe
 // interval: the recovery window may not exceed it.
 static_assert(kVideoDecodeStaleFlushRecoveryUs <=
@@ -1991,14 +1993,11 @@ void App::enqueue_decode_work(UserId sharer_id, std::vector<uint8_t>&& encoded,
         }
     }
     if (request_keyframe) {
-        if (self_preview) {
-            // Never PLI our own share: the encoder's next keyframe (its own
-            // interval, or another viewer's PLI) resynchronizes the preview.
-            LOG_WARN("Self-preview video frame discontinuity; waiting for the encoder's next keyframe");
-        } else {
+        if (self_preview)
+            LOG_WARN("Self-preview video frame discontinuity; requesting a keyframe from our encoder");
+        else
             LOG_WARN("Video frame discontinuity from user {}; requesting a keyframe", sharer_id);
-            core_.send_pli(sharer_id);
-        }
+        core_.send_pli(sharer_id);   // our own stream: straight to the local encoder
     }
 }
 
@@ -2286,10 +2285,10 @@ void App::decode_loop(VideoStream* s) {
     // force the sharer to emit a keyframe per flush (~1 Hz), spiking its
     // bitrate and — through the server backlog gate — dropping frames for
     // viewers that keep up. On the third flush this logs once and the stream
-    // waits for the sharer's periodic keyframe until a keyframe is decoded
-    // normally again (VideoDecodeStaleFlushTracker resets the counter). The
-    // self-preview never requests: our encoder emits keyframes on its own
-    // interval and other viewers' PLIs already force them.
+    // asks only at the slow cadence (the tick retry, see
+    // bridge.stream_awaiting_keyframe) until the decoder keeps up again
+    // (VideoDecodeStaleFlushTracker resets the counter). The self-preview asks
+    // our own encoder (AppCore::send_pli) and, once suppressed, not at all.
     auto resync_warm_decoder_at_keyframe = [this, s](const char* reason) {
         bool request_keyframe = false;
         uint32_t flushes = 0;
@@ -2297,27 +2296,25 @@ void App::decode_loop(VideoStream* s) {
             std::lock_guard<std::mutex> lock(s->queue_mutex);
             s->decode_gate.require_keyframe();
             while (!s->queue.empty()) s->queue.pop();
-            request_keyframe = s->stale_flushes.on_stale_flush();
+            request_keyframe = s->stale_flushes.on_stale_flush(steady_now_us());
             flushes = s->stale_flushes.stale_flushes_in_a_row;
         }
         if (flushes == kVideoDecodeStaleFlushPliLimit + 1) {
             if (s->self_preview)
-                LOG_WARN("Self-preview decoder too slow (user {}); waiting for the encoder's periodic keyframe",
+                LOG_WARN("Self-preview decoder too slow (user {}); waiting for a viewer's keyframe request",
                          s->sharer_id);
             else
-                LOG_WARN("Decoder too slow for user {}; waiting for the sharer's periodic keyframe",
-                         s->sharer_id);
+                LOG_WARN("Decoder too slow for user {}; requesting keyframes at most every {} s",
+                         s->sharer_id, kVideoDecodeStaleFlushSlowPliUs / 1'000'000);
             return;
         }
         if (!request_keyframe) return;   // suppression active, already logged once
-        if (s->self_preview) {
-            LOG_WARN("Resynchronizing self-preview video decoder after {}; keeping warm decoder, "
-                     "waiting for the encoder's next keyframe", reason);
-            return;
-        }
-        LOG_WARN("Resynchronizing video decoder for user {} after {}; keeping warm decoder",
-                 s->sharer_id, reason);
-        core_.send_pli(s->sharer_id);
+        if (s->self_preview)
+            LOG_WARN("Resynchronizing self-preview video decoder after {}; keeping warm decoder", reason);
+        else
+            LOG_WARN("Resynchronizing video decoder for user {} after {}; keeping warm decoder",
+                     s->sharer_id, reason);
+        core_.send_pli(s->sharer_id);   // our own stream: straight to the local encoder
     };
 
     auto recover_at_keyframe = [this, s](const char* reason, bool disable_hardware) {
@@ -2334,16 +2331,13 @@ void App::decode_loop(VideoStream* s) {
         // The next batch re-creates the decoder; until it delivers a frame the
         // backlog rules treat it as cold again.
         s->decoded_since_init = false;
-        if (s->self_preview) {
-            // Same rule as the flush paths: a self-PLI would only force our own
-            // encoder's keyframe for every viewer; its own interval suffices.
-            LOG_WARN("Resetting self-preview video decoder after {}; waiting for the encoder's next keyframe",
+        if (s->self_preview)
+            LOG_WARN("Resetting self-preview video decoder after {}; requesting a keyframe from our encoder",
                      reason);
-            return;
-        }
-        LOG_WARN("Resetting video decoder for user {} after {}; waiting for keyframe",
-                 s->sharer_id, reason);
-        core_.send_pli(s->sharer_id);
+        else
+            LOG_WARN("Resetting video decoder for user {} after {}; waiting for keyframe",
+                     s->sharer_id, reason);
+        core_.send_pli(s->sharer_id);   // our own stream: straight to the local encoder
     };
 
     while (s->running.load(std::memory_order_relaxed)) {
@@ -2472,13 +2466,15 @@ void App::decode_loop(VideoStream* s) {
                 recover_at_keyframe("bitstream decode failure", lost_context);
                 break;
             }
-            if (work.keyframe) {
-                // A keyframe decoded normally may end a run of stale flushes
-                // (the tracker ignores recovery keyframes and requires the
-                // decoder to have kept up since it resumed). Written under
-                // queue_mutex because the main thread reads the tracker.
+            if (s->stale_flushes.stale_flushes_in_a_row != 0) {
+                // A frame decoded normally may end a run of stale flushes (the
+                // tracker ignores recovery keyframes and requires the decoder
+                // to have kept up since it resumed). This thread is the only
+                // writer of the counter, so the unlocked check is exact; the
+                // update takes queue_mutex because the main thread uses the
+                // tracker too.
                 std::lock_guard<std::mutex> lock(s->queue_mutex);
-                s->stale_flushes.on_keyframe_decoded(steady_now_us(), work.recovery_keyframe);
+                s->stale_flushes.on_frame_decoded(steady_now_us(), work.recovery_keyframe);
             }
             batch.pop();
         }

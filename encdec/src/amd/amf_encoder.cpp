@@ -221,7 +221,10 @@ bool AmfEncoder::init(ID3D11Device* device, uint32_t width, uint32_t height,
         encoder_->SetProperty(AMF_VIDEO_ENCODER_FRAMERATE, AMFConstructRate(fps, 1));
         encoder_->SetProperty(AMF_VIDEO_ENCODER_IDR_PERIOD, keyframe_period);
         encoder_->SetProperty(AMF_VIDEO_ENCODER_B_PIC_PATTERN, static_cast<amf_int64>(0));
-        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEADER_INSERTION_SPACING, keyframe_period);
+        // Documented range 0-1000. Forced keyframes insert SPS/PPS themselves
+        // (encode()), so spacing them out further than that costs nothing.
+        encoder_->SetProperty(AMF_VIDEO_ENCODER_HEADER_INSERTION_SPACING,
+                              (std::min)(keyframe_period, static_cast<amf_int64>(1000)));
     }
 
     res = encoder_->Init(amf::AMF_SURFACE_BGRA, width, height);
