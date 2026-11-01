@@ -773,9 +773,11 @@ void App::render_loop() {
             ui_.on_dpi_change(scale);
         }
         if (ui_.is_render_suspended()) {
+            core_.note_render_tick(false);
             Sleep(16);          // nothing to draw — don't spin
             continue;
         }
+        core_.note_render_tick(true);
         render_frame();         // self-paced by vsync (BeginFrame wait + present)
     }
 }

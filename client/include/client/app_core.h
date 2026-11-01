@@ -122,6 +122,9 @@ public:
 
     // On-screen diagnostics overlay (Ctrl+Shift+D / Cmd+Shift+D, or Settings).
     void set_diagnostics_visible(bool visible);
+    // Render thread, once per render-loop iteration; drawing = false while
+    // rendering is suspended (DiagnosticsRecorder::on_render_tick).
+    void note_render_tick(bool drawing);
 
     // Shared state. authenticated_ and server_protocol_version_ are also read
     // by the encoder threads (send_video_frame), hence atomic.
@@ -395,7 +398,7 @@ private:
     DiagServerReport diag_server_;
     int      diag_empty_pongs_ = 0;      // answered pings without a link report (older server)
     uint64_t diag_log_seq_ = 0;
-    int64_t  diag_logged_freeze_us_ = 0; // newest freeze already written to the log
+    uint64_t diag_logged_freeze_id_ = 0; // newest freeze already written to the log
     Rml::Vector<DiagLogRow> diag_log_rows_;
     // Last NetClient::datagram_backlog().dropped value written to the log.
     std::chrono::steady_clock::time_point datagram_drop_log_last_{};

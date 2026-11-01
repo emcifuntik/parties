@@ -89,6 +89,7 @@
 .diag-cause-network { color: #FBBF24; }
 .diag-cause-lost { color: #F87171; }
 .diag-cause-decode { color: #C084FC; }
+.diag-cause-render { color: #60A5FA; }
 
 .diag-log-line { display: block; color: #A0A8B8; }
 .diag-log-warn { color: #FBBF24; }

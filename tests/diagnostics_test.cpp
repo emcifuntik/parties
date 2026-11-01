@@ -125,6 +125,108 @@ bool test_decode_freeze() {
     return only_freeze(rec, Cause::Decode, 390 * MS, 430 * MS, "decode");
 }
 
+// A 130 ms network hitch is short of the old 200 ms threshold but visible.
+bool test_short_network_hitch() {
+    DiagnosticsRecorder rec;
+    int64_t capture = T0, now = T0 + 30 * MS;
+    uint32_t seq = play(rec, 0, 60, capture, now);
+    now += 130 * MS;
+    for (int i = 0; i < 8; ++i, ++seq) {
+        rec.on_frame_delivered(STREAM, frame(seq, capture), 20'000, now);
+        rec.on_frame_presented(STREAM, now + 5 * MS);
+        capture += FRAME_US;
+        now += 1 * MS;
+    }
+    return only_freeze(rec, Cause::Network, 130 * MS, 160 * MS, "short network hitch");
+}
+
+// A 150 ms pause in what the sharer captured (a static screen) is not shown.
+bool test_short_sender_pause_ignored() {
+    DiagnosticsRecorder rec;
+    int64_t capture = T0, now = T0 + 30 * MS;
+    uint32_t seq = play(rec, 0, 60, capture, now);
+    capture += 150 * MS;
+    now += 150 * MS;
+    play(rec, seq, 10, capture, now);
+    if (!rec.freezes().empty()) return fail("short sender pause: recorded");
+    return true;
+}
+
+// One frame lost, the rest keep arriving on time, but the decoder waits for
+// the keyframe that comes 250 ms later: a lost-frames freeze, not decode.
+bool test_lost_without_delivery_gap() {
+    DiagnosticsRecorder rec;
+    int64_t capture = T0, now = T0 + 30 * MS;
+    uint32_t seq = play(rec, 0, 60, capture, now);
+    ++seq;
+    capture += FRAME_US;
+    now += FRAME_US;
+    for (int i = 0; i < 15; ++i, ++seq) {   // delivered, not decodable
+        rec.on_frame_delivered(STREAM, frame(seq, capture), 20'000, now);
+        capture += FRAME_US;
+        now += FRAME_US;
+    }
+    rec.on_frame_delivered(STREAM, frame(seq, capture, true), 60'000, now);
+    rec.on_frame_presented(STREAM, now + 5 * MS);
+    if (!only_freeze(rec, Cause::Lost, 250 * MS, 300 * MS, "lost without delivery gap")) return false;
+    if (rec.freezes()[0].frames_lost != 1) return fail("lost without delivery gap: frame count");
+    return true;
+}
+
+// The render loop stalls 150 ms: one app-wide render freeze, and the video's
+// presentation gap it caused is not counted again as decode.
+bool test_render_stall() {
+    DiagnosticsRecorder rec;
+    int64_t capture = T0, now = T0 + 30 * MS;
+    for (int i = 0; i < 60; ++i) {
+        rec.on_render_tick(now, true);
+        rec.on_frame_delivered(STREAM, frame(static_cast<uint32_t>(i), capture), 20'000, now);
+        rec.on_frame_presented(STREAM, now + 1 * MS);
+        capture += FRAME_US;
+        now += FRAME_US;
+    }
+    uint32_t seq = 60;
+    // Frames keep arriving; nothing renders for 150 ms.
+    for (int i = 0; i < 9; ++i, ++seq) {
+        rec.on_frame_delivered(STREAM, frame(seq, capture), 20'000, now);
+        capture += FRAME_US;
+        now += FRAME_US;
+    }
+    rec.on_render_tick(now, true);
+    rec.on_frame_presented(STREAM, now + 1 * MS);
+    const auto f = rec.freezes();
+    if (f.size() != 1 || f[0].cause != Cause::Render || f[0].stream != DiagnosticsRecorder::APP_STREAM ||
+        f[0].duration_us < 150 * MS || f[0].duration_us > 180 * MS)
+        return fail("render stall: not recorded once for the app");
+    return true;
+}
+
+// A minimized window draws nothing for 5 s: neither a render stall nor a
+// video freeze when it comes back.
+bool test_minimized_not_frozen() {
+    DiagnosticsRecorder rec;
+    int64_t capture = T0, now = T0 + 30 * MS;
+    uint32_t seq = 0;
+    for (int i = 0; i < 60; ++i, ++seq) {
+        rec.on_render_tick(now, true);
+        rec.on_frame_delivered(STREAM, frame(seq, capture), 20'000, now);
+        rec.on_frame_presented(STREAM, now + 1 * MS);
+        capture += FRAME_US;
+        now += FRAME_US;
+    }
+    for (int i = 0; i < 300; ++i, ++seq) {
+        rec.on_render_tick(now, false);
+        rec.on_frame_delivered(STREAM, frame(seq, capture), 20'000, now);
+        capture += FRAME_US;
+        now += FRAME_US;
+    }
+    rec.on_render_tick(now, true);
+    rec.on_frame_delivered(STREAM, frame(seq, capture), 20'000, now);
+    rec.on_frame_presented(STREAM, now + 1 * MS);
+    if (!rec.freezes().empty()) return fail("minimized: recorded as a freeze");
+    return true;
+}
+
 // A share restart (sequence back at 0) is not counted as lost frames.
 bool test_restart_not_lost() {
     DiagnosticsRecorder rec;
@@ -196,6 +298,11 @@ int main() {
     if (!test_sender_freeze()) return 1;
     if (!test_lost_freeze()) return 1;
     if (!test_decode_freeze()) return 1;
+    if (!test_short_network_hitch()) return 1;
+    if (!test_short_sender_pause_ignored()) return 1;
+    if (!test_lost_without_delivery_gap()) return 1;
+    if (!test_render_stall()) return 1;
+    if (!test_minimized_not_frozen()) return 1;
     if (!test_restart_not_lost()) return 1;
     if (!test_history()) return 1;
     if (!test_stream_buckets()) return 1;

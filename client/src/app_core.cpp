@@ -3837,6 +3837,11 @@ void AppCore::set_diagnostics_visible(bool visible)
     if (visible) update_diagnostics_model(steady_now_us());
 }
 
+void AppCore::note_render_tick(bool drawing)
+{
+    diag_.on_render_tick(steady_now_us(), drawing);
+}
+
 // KEEPALIVE_PONG payload: the server's view of our link (protocol.h).
 void AppCore::on_link_report(const uint8_t* data, size_t len)
 {
@@ -3883,9 +3888,11 @@ void AppCore::tick_diagnostics(int64_t now_us)
     // Every freeze also goes to the log file, overlay or not: the record a
     // user can send after the fact.
     for (const auto& f : diag_.freezes()) {
-        if (f.at_us <= diag_logged_freeze_us_) continue;
-        diag_logged_freeze_us_ = f.at_us;
-        if (f.cause == DiagnosticsRecorder::FreezeCause::Lost)
+        if (f.id <= diag_logged_freeze_id_) continue;
+        diag_logged_freeze_id_ = f.id;
+        if (f.cause == DiagnosticsRecorder::FreezeCause::Render)
+            LOG_INFO("Render stall: {} ms (the whole window froze)", f.duration_us / 1000);
+        else if (f.cause == DiagnosticsRecorder::FreezeCause::Lost)
             LOG_INFO("Video freeze on stream {}: {} ms ({}, {} frames)", f.stream, f.duration_us / 1000,
                      DiagnosticsRecorder::cause_name(f.cause), f.frames_lost);
         else
@@ -3945,6 +3952,7 @@ void AppCore::update_diagnostics_model(int64_t now_us)
 
     // ── Streams ──
     auto stream_name = [this](uint32_t stream) {
+        if (stream == DiagnosticsRecorder::APP_STREAM) return Rml::String("Parties window");
         auto it = active_sharers_.find(stream);
         std::string name = it != active_sharers_.end() && !it->second.name.empty()
             ? it->second.name : "Stream " + std::to_string(stream);
@@ -4004,6 +4012,7 @@ void AppCore::update_diagnostics_model(int64_t now_us)
         case DiagnosticsRecorder::FreezeCause::Network: row.cause = "network"; break;
         case DiagnosticsRecorder::FreezeCause::Lost:    row.cause = "lost"; break;
         case DiagnosticsRecorder::FreezeCause::Decode:  row.cause = "decode"; break;
+        case DiagnosticsRecorder::FreezeCause::Render:  row.cause = "render"; break;
         }
         freezes.push_back(std::move(row));
     }

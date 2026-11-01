@@ -1240,7 +1240,7 @@
         </div>
         <div class="diag-section" data-if="freezes.size > 0">
             <div class="diag-label ui-micro">Recent freezes</div>
-            <div class="diag-line ui-micro" data-for="f : freezes" data-class-diag-cause-sender="f.cause == 'sender'" data-class-diag-cause-network="f.cause == 'network'" data-class-diag-cause-lost="f.cause == 'lost'" data-class-diag-cause-decode="f.cause == 'decode'">{{ f.text }}</div>
+            <div class="diag-line ui-micro" data-for="f : freezes" data-class-diag-cause-sender="f.cause == 'sender'" data-class-diag-cause-network="f.cause == 'network'" data-class-diag-cause-lost="f.cause == 'lost'" data-class-diag-cause-decode="f.cause == 'decode'" data-class-diag-cause-render="f.cause == 'render'">{{ f.text }}</div>
         </div>
         <div class="diag-section" data-if="sender != ''">
             <div class="diag-line diag-pre ui-micro">{{ sender }}</div>

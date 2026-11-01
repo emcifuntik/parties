@@ -24,6 +24,7 @@ const char* DiagnosticsRecorder::cause_name(FreezeCause cause) {
     case FreezeCause::Network: return "network";
     case FreezeCause::Lost:    return "lost frames";
     case FreezeCause::Decode:  return "decode";
+    case FreezeCause::Render:  return "render";
     }
     return "?";
 }
@@ -37,8 +38,8 @@ void DiagnosticsRecorder::trim(std::deque<int64_t>& q, int64_t now_us) {
     while (!q.empty() && now_us - q.front() > SECOND_US) q.pop_front();
 }
 
-void DiagnosticsRecorder::record_freeze(StreamState& st, const Freeze& f) {
-    st.bucket_freeze = true;
+void DiagnosticsRecorder::record_freeze(Freeze f) {
+    f.id = next_freeze_id_++;
     freezes_.push_back(f);
     while (freezes_.size() > MAX_FREEZES) freezes_.pop_front();
 }
@@ -74,25 +75,33 @@ void DiagnosticsRecorder::on_frame_delivered(uint32_t stream, const VideoFrameHe
         const int64_t gap = now_us - prev.at_us;
         // Negative: the sequence restarted (new share); not a loss.
         const int32_t skipped = static_cast<int32_t>(hdr.frame_seq - prev.frame_seq) - 1;
-        if (skipped > 0) st.frames_lost += static_cast<uint32_t>(skipped);
-        if (gap >= FREEZE_US) {
-            Freeze f;
-            f.at_us = now_us;
-            f.duration_us = gap;
-            f.stream = stream;
-            if (skipped > 0) {
-                f.cause = FreezeCause::Lost;
-                f.frames_lost = static_cast<uint32_t>(skipped);
-            } else if (mark.has_capture && prev.has_capture &&
-                       static_cast<double>(mark.capture_ms - prev.capture_ms) * 1000.0 >=
-                           SENDER_GAP_SHARE * static_cast<double>(gap)) {
-                f.cause = FreezeCause::Sender;
-            } else {
-                f.cause = FreezeCause::Network;
+        if (skipped > 0) {
+            st.frames_lost += static_cast<uint32_t>(skipped);
+            st.lost_since_present += static_cast<uint32_t>(skipped);
+        }
+        if (gap >= FREEZE_US / 2) {
+            DeliveryGap& g = st.delivery_gap;
+            g.end_us = now_us;
+            g.duration_us = gap;
+            if (skipped > 0)
+                g.cause = FreezeCause::Lost;
+            else if (mark.has_capture && prev.has_capture &&
+                     static_cast<double>(mark.capture_ms - prev.capture_ms) * 1000.0 >=
+                         SENDER_GAP_SHARE * static_cast<double>(gap))
+                g.cause = FreezeCause::Sender;
+            else
+                g.cause = FreezeCause::Network;
+            g.recorded = gap >= (g.cause == FreezeCause::Sender ? SENDER_FREEZE_US : FREEZE_US);
+            if (g.recorded) {
+                Freeze f;
+                f.at_us = now_us;
+                f.duration_us = gap;
+                f.stream = stream;
+                f.cause = g.cause;
+                if (skipped > 0) f.frames_lost = static_cast<uint32_t>(skipped);
+                st.bucket_freeze = true;
+                record_freeze(f);
             }
-            st.last_delivery_freeze_end_us = now_us;
-            st.last_delivery_freeze_us = gap;
-            record_freeze(st, f);
         }
     }
     st.last_delivery = mark;
@@ -108,22 +117,58 @@ void DiagnosticsRecorder::on_frame_presented(uint32_t stream, int64_t now_us) {
     trim(st.presented_times, now_us);
     if (st.last_present_us != 0 && now_us - st.last_present_us >= FREEZE_US) {
         const int64_t gap = now_us - st.last_present_us;
-        // A delivery gap that ended inside this one and covers most of it
-        // already explains it (and was recorded with its cause).
-        const bool explained = st.last_delivery_freeze_end_us >= st.last_present_us &&
-                               st.last_delivery_freeze_us * 2 >= gap;
-        if (explained) {
-            st.bucket_freeze = true;
+        // A stall that ended inside this gap and covers most of it explains it.
+        auto covers = [&](int64_t end_us, int64_t duration_us) {
+            return end_us >= st.last_present_us && duration_us * 2 >= gap;
+        };
+        const DeliveryGap& g = st.delivery_gap;
+        const bool by_delivery = covers(g.end_us, g.duration_us);
+        Freeze f;
+        f.at_us = now_us;
+        f.duration_us = gap;
+        f.stream = stream;
+        bool record = true;
+        if (covers(render_stall_end_us_, render_stall_us_)) {
+            record = false;                       // recorded once, for the app
+        } else if (by_delivery && (g.recorded || g.cause == FreezeCause::Sender)) {
+            record = false;                       // recorded with its cause, or a short static pause
+        } else if (st.lost_since_present > 0) {
+            // Frames went missing (perhaps without a long delivery gap) and
+            // the decoder waited for the keyframe that resumed playback.
+            f.cause = FreezeCause::Lost;
+            f.frames_lost = st.lost_since_present;
         } else {
-            Freeze f;
-            f.at_us = now_us;
-            f.duration_us = gap;
-            f.stream = stream;
-            f.cause = FreezeCause::Decode;
-            record_freeze(st, f);
+            f.cause = by_delivery ? g.cause : FreezeCause::Decode;
         }
+        st.bucket_freeze = true;
+        if (record) record_freeze(f);
     }
     st.last_present_us = now_us;
+    st.lost_since_present = 0;
+}
+
+void DiagnosticsRecorder::on_render_tick(int64_t now_us, bool drawing) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!drawing) {
+        // Nothing can be presented while paused: restart every stream's
+        // presentation clock instead of reporting the pause as a freeze.
+        render_paused_ = true;
+        for (auto& [id, st] : streams_) st.last_present_us = 0;
+        return;
+    }
+    const int64_t prev = last_render_us_;
+    const bool resumed = render_paused_;
+    last_render_us_ = now_us;
+    render_paused_ = false;
+    if (prev == 0 || resumed || now_us - prev < FREEZE_US) return;
+    render_stall_end_us_ = now_us;
+    render_stall_us_ = now_us - prev;
+    Freeze f;
+    f.at_us = now_us;
+    f.duration_us = render_stall_us_;
+    f.stream = APP_STREAM;
+    f.cause = FreezeCause::Render;
+    record_freeze(f);
 }
 
 void DiagnosticsRecorder::forget_stream(uint32_t stream) {
