@@ -55,6 +55,10 @@ static constexpr unsigned char embed_dialogs_rcss[] = {
     #embed "../ui/dialogs.rcss"
 };
 
+static constexpr unsigned char embed_diagnostics_rcss[] = {
+    #embed "../ui/diagnostics.rcss"
+};
+
 static constexpr unsigned char embed_components_rcss[] = {
     #embed "../ui/components.rcss"
 };
@@ -249,6 +253,7 @@ EmbeddedFileInterface::EmbeddedFileInterface() {
     entries_["ui/streaming.rcss"] = { embed_streaming_rcss, sizeof(embed_streaming_rcss) };
     entries_["ui/dialogs.rcss"] = { embed_dialogs_rcss, sizeof(embed_dialogs_rcss) };
     entries_["ui/components.rcss"] = { embed_components_rcss, sizeof(embed_components_rcss) };
+    entries_["ui/diagnostics.rcss"] = { embed_diagnostics_rcss, sizeof(embed_diagnostics_rcss) };
     entries_["ui/typography.rcss"] = { embed_typography_rcss, sizeof(embed_typography_rcss) };
     entries_["ui/desktop.rcss"] = { embed_desktop_rcss, sizeof(embed_desktop_rcss) };
     entries_["ui/mobile.rcss"] = { embed_mobile_rcss, sizeof(embed_mobile_rcss) };

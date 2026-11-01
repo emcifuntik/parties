@@ -433,8 +433,50 @@ bool CheckIOSPageBackTransitions() {
 
 } // namespace
 
+// The client loads its documents from an in-binary table, not from disk, so a
+// stylesheet or icon a document references but the table lacks silently goes
+// missing in the app while the designer (which reads the folder) looks fine.
+bool CheckEmbeddedAssets() {
+	namespace fs = std::filesystem;
+	const fs::path ui_directory = PARTIES_UI_SOURCE_DIR;
+	const auto read = [](const fs::path& path) {
+		std::ifstream stream(path, std::ios::binary);
+		std::ostringstream buffer;
+		buffer << stream.rdbuf();
+		return buffer.str();
+	};
+	const std::string backend = read(ui_directory / ".." / "src" / "rmlui_backend.cpp");
+	if (!Check(!backend.empty(), "rmlui_backend.cpp was not found"))
+		return false;
+	bool success = true;
+	for (const fs::directory_entry& entry : fs::directory_iterator(ui_directory)) {
+		if (!entry.is_regular_file() || entry.path().extension() != ".rml")
+			continue;
+		const std::string source = read(entry.path());
+		for (const char* attribute : {"href=\"", "src=\""}) {
+			size_t offset = 0;
+			while ((offset = source.find(attribute, offset)) != std::string::npos) {
+				offset += std::char_traits<char>::length(attribute);
+				const size_t end = source.find('"', offset);
+				if (end == std::string::npos)
+					break;
+				const std::string name = source.substr(offset, end - offset);
+				if (name.empty() || name.find(':') != std::string::npos || name.find('{') != std::string::npos)
+					continue;
+				if (backend.find("entries_[\"ui/" + name + "\"]") == std::string::npos) {
+					std::fprintf(stderr, "%s references %s, which is not embedded in rmlui_backend.cpp\n",
+						entry.path().filename().string().c_str(), name.c_str());
+					success = false;
+				}
+			}
+		}
+	}
+	return success;
+}
+
 int main() {
 	bool success = CheckTypographyContract();
+	success &= CheckEmbeddedAssets();
 	NullRenderInterface renderer;
 	TestSystemInterface system;
 	Rml::SetSystemInterface(&system);
