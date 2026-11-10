@@ -191,6 +191,10 @@ private:
     // AUTH_IDENTITY whose signed blob we've already seen inside the freshness
     // window, defeating replay of a captured handshake. Pruned by timestamp.
     std::unordered_map<Fingerprint, uint64_t> recent_auth_;
+
+    // sha256_hex of our TLS leaf certificate: what a 1.5+ client saw in the
+    // handshake and signed into its AUTH_IDENTITY. Set in start().
+    std::string server_cert_fingerprint_;
 };
 
 } // namespace parties::server

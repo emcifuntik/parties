@@ -46,8 +46,12 @@ public:
     void disconnect();
 
     // SHA-256 hex fingerprint of the server's TLS certificate (TOFU).
-    // Available after a successful handshake.
+    // Available after a successful handshake. Empty when the TLS session was
+    // resumed from a ticket: no certificate is exchanged then.
     std::string get_server_fingerprint() const;
+    // The current connection resumed an earlier TLS session. Only then may an
+    // empty fingerprint be taken to mean "the server that issued the ticket".
+    bool session_resumed() const;
 
     bool is_connected()  const;
     bool is_connecting() const;

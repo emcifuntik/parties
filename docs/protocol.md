@@ -1,10 +1,12 @@
 # Parties Networking Protocol
 
-> Version 1.4 -- October 2026
+> Version 1.5 -- November 2026
 
 The wire version is a `u16` (major in the high byte, minor in the low byte) sent in
-AUTH_IDENTITY and, since 1.2, echoed back in AUTH_RESPONSE. The server rejects only
-on a **major** mismatch; every minor bump is additive.
+AUTH_IDENTITY and, since 1.2, echoed back in AUTH_RESPONSE. The server rejects on a
+**major** mismatch; minor bumps are additive, with one exception: since 1.5 a server
+refuses the login of clients older than 1.5 unless its operator opts in (see
+[Server-bound login](#server-bound-login-15)).
 
 | Version | Date | Changes |
 |---------|------|---------|
@@ -13,6 +15,7 @@ on a **major** mismatch; every minor bump is additive.
 | 1.2 | September 2026 | Per-frame unidirectional video streams (`0x12`), SCREEN_SHARE_VIEWER (0x010D), trailing `protocol_version` in AUTH_RESPONSE, trailing `replay` flag in SCREEN_SHARE_STARTED, QUIC pacing enabled |
 | 1.3 | October 2026 | Trailing voice state `[muted][deafened]` in CHANNEL_JOIN and USER_JOINED_CHANNEL; the server never forwards the voice of a session it lists as muted or deafened; media datagrams are dropped at the source while a peer's datagram queue is stale (behavioural, no wire change) |
 | 1.4 | October 2026 | Cameras: one video stream per user and source, addressed by a stream id (`user_id \| source << 30`, a screen share's id is still the user id); trailing `source` byte in SCREEN_SHARE_START, SCREEN_SHARE_UPDATE and SCREEN_SHARE_STOP; per-frame ingress type `0x13` for non-screen sources; trailing `stream_id` in server -> sharer PLIs; cameras are announced only to 1.4+ peers (see [Video sources and stream ids](#video-sources-and-stream-ids-14)) |
+| 1.5 | November 2026 | Server-bound login: AUTH_CHALLENGE (0x010E) sent by the server when the control stream opens; the AUTH_IDENTITY signature covers the challenge and the server's certificate fingerprint; older clients' unbound login is refused unless `allow_legacy_auth` is set; a 1.5 client does not log in to a server that sends no challenge. File-transfer streams are admitted only from authenticated sessions, for announced attachments, at the announced size and within a memory reservation; completed upload streams are closed (behavioural, no wire change) |
 
 ## 1. Overview
 
@@ -85,8 +88,9 @@ sequenceDiagram
 
     C->>S: Open Stream 0 (control)
     C->>S: Open Stream 1 (video)
+    S->>C: AUTH_CHALLENGE [nonce] (1.5+)
 
-    C->>S: AUTH_IDENTITY [pubkey, display_name, timestamp, signature]
+    C->>S: AUTH_IDENTITY [version, pubkey, display_name, timestamp, signature over nonce + server certificate, password]
     Note over S: Auto-create user if unknown pubkey
     S->>C: AUTH_RESPONSE [user_id, session_token, role, server_name, protocol_version]
     S->>C: CHANNEL_LIST [channels...]
@@ -134,16 +138,62 @@ All control messages on Stream 0 use length-prefixed framing:
 
 ### 5.1 Authentication
 
+#### AUTH_CHALLENGE (0x010E) -- S->C (1.5+)
+
+| Field | Type | Size | Description |
+|-------|------|------|-------------|
+| nonce | bytes | 32 | Random, fresh for every connection |
+
+Sent once, as soon as the server sees the control stream, before the client has
+sent anything. Clients older than 1.5 ignore it.
+
 #### AUTH_IDENTITY (0x0001) -- C->S
 
 | Field | Type | Size | Description |
 |-------|------|------|-------------|
+| protocol_version | u16 | 2 | Version the client speaks |
 | public_key | bytes | 32 | Ed25519 public key |
 | display_name | string | 2+N | User-chosen display name |
-| timestamp | u64 | 8 | Unix timestamp (replay protection) |
-| signature | bytes | 64 | Ed25519 signature over (public_key + display_name + timestamp) |
+| timestamp | u64 | 8 | Unix timestamp; the server accepts ±30 s and, per identity, only a timestamp newer than the last accepted one |
+| signature | bytes | 64 | Ed25519 signature, see below |
+| password | string | 2+N (optional) | Server password, when the server has one |
 
 Server auto-creates user on first auth with an unknown public key. No separate registration step.
+
+#### Server-bound login (1.5+)
+
+The signed bytes are defined once, in `parties/auth_message.h`:
+
+| Client version | Signed message |
+|----------------|----------------|
+| 1.5+ | `string("parties-auth-1.5")`, `string(server certificate fingerprint)`, `nonce(32)`, `public_key(32)`, `string(display_name)`, `u64 timestamp` |
+| < 1.5 (legacy) | `public_key(32)`, `string(display_name)`, `u64 timestamp` |
+
+The fingerprint is the lowercase, colon-separated SHA-256 of the server's leaf
+certificate (DER), the same string the client pins. The client signs the
+certificate it saw in the TLS handshake (on a resumed session, the pinned one);
+the server verifies with its own certificate and with the nonce it sent on that
+connection.
+
+The legacy message names no server, so any server a user logs in to could
+replay the whole AUTH_IDENTITY to another server within the timestamp window
+and act as that user there. The bound message closes that: another server has
+a different certificate, a relaying server cannot present a certificate it has
+no key for, and the nonce makes a captured login useless on any other
+connection.
+
+Because a resumed TLS session exchanges no certificate, the resumption ticket
+stands in for the pin check. A client therefore stores a ticket only from a
+server whose certificate matched its pin (or was accepted by the user), and
+discards tickets when a changed certificate is rejected.
+
+Compatibility rules:
+
+| Peer pair | Behaviour |
+|-----------|-----------|
+| 1.5 client, 1.5 server | Bound login |
+| Older client, 1.5 server | Refused with SERVER_ERROR `BadVersion` ("update the app"), unless the operator sets `allow_legacy_auth` (`[auth] allow_legacy_auth = true`, or `PARTIES_ALLOW_LEGACY_AUTH=1`). With it, the legacy message is accepted from clients that report a version below 1.5 |
+| 1.5 client, older server | No AUTH_CHALLENGE arrives. The client waits 5 s, then fails the login with "server is out of date". It never falls back to the legacy signature, because a hostile server could simply withhold the challenge |
 
 #### AUTH_RESPONSE (0x0101) -- S->C
 
@@ -420,6 +470,36 @@ Requires `KickFromServer` permission.
 |-------|------|-------------|
 | success | u8 | 1 = success, 0 = failure |
 | message | string | Result description |
+
+### 5.6 File transfer streams
+
+Attachments travel on extra client-opened bidirectional streams (the third and
+later), one per transfer, starting with `[type(1)][attachment_id(8)]`: type
+`0x10` followed by the file bytes and FIN for an upload, type `0x11` and FIN
+for a download request, which the server answers with the file and FIN.
+
+An upload is held in memory until it is complete, so the server decides what a
+stream may deliver before it keeps any file bytes (1.5, no wire change):
+
+| Rule | Effect when violated |
+|------|----------------------|
+| The session is authenticated | The stream is aborted as it arrives |
+| The attachment was announced in a CHAT_SEND by this same session, is not already being received, and its announced size is within `max_file_size` | Aborted once the 9-byte header is read |
+| The stream carries exactly the announced size | Aborted as soon as it exceeds it; dropped if it ends short |
+| A download stream carries nothing after its header | Aborted |
+
+Memory is bounded by reservation, not by refusal. When an upload is admitted
+its announced size is reserved; one session may hold reservations of at most
+`max_file_size` at a time (a single file always fits), and all sessions
+together at most four times that. An upload that does not fit waits: the server
+stops reading the stream, QUIC flow control holds the sender back, and reading
+resumes when another upload ends. Clients need no retry logic.
+
+An announcement lapses when the upload completes, when the session
+disconnects, and when the session has announced 512 newer attachments without
+uploading it; an aborted upload may be attempted again. After a completed
+upload the server finishes its side of the stream, so the stream closes and no
+longer counts against the connection's stream limit.
 
 ## 6. Voice Data Plane
 
@@ -873,7 +953,8 @@ Users authenticate via Ed25519 keypairs derived from a 12-word BIP-39 seed phras
 | Key derivation | SHA-256(seed phrase) → 32-byte Ed25519 seed |
 | Public key | 32 bytes |
 | Signature | 64 bytes |
-| Replay protection | Timestamp within ±60s of server time |
+| Replay protection | Per-connection server nonce (1.5+); timestamp within ±30 s of server time and newer than the identity's last accepted login |
+| Server binding | The signature covers the server's certificate fingerprint (1.5+), see [Server-bound login](#server-bound-login-15) |
 
 ### Channel key
 

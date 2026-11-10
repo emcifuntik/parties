@@ -54,6 +54,8 @@
 
 #include <client/net_client.h>
 
+#include "test_auth.h"
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -284,23 +286,9 @@ uint32_t connect_and_join(NetClient& client, uint16_t port, const char* mnemonic
     if (!derive_keypair(mnemonic, sk, pk)) return 0;
     if (!client.connect("127.0.0.1", port) || !wait_for_connect(client)) return 0;
 
-    const auto now = static_cast<uint64_t>(std::time(nullptr));
-    BinaryWriter sign_buf;
-    sign_buf.write_bytes(pk.data(), pk.size());
-    sign_buf.write_string(name);
-    sign_buf.write_u64(now);
-    Signature sig{};
-    if (!ed25519_sign(sign_buf.data().data(), sign_buf.data().size(), sk, pk, sig)) return 0;
-
-    BinaryWriter auth;
-    auth.write_u16(PROTOCOL_VERSION);
-    auth.write_bytes(pk.data(), pk.size());
-    auth.write_string(name);
-    auth.write_u64(now);
-    auth.write_bytes(sig.data(), sig.size());
-    auth.write_string("");
+    // Protocol 1.5 login: answer the server's challenge (tests/test_auth.h).
     std::vector<uint8_t> payload;
-    if (!client.send_message(ControlMessageType::AUTH_IDENTITY, auth.data().data(), auth.data().size()) ||
+    if (!parties::test::send_bound_auth(client, sk, pk, name, TIMEOUT_MS) ||
         !wait_for_message(client, ControlMessageType::AUTH_RESPONSE, payload))
         return 0;
     BinaryReader r(payload.data(), payload.size());

@@ -1,4 +1,5 @@
 #include <server/server.h>
+#include <parties/auth_message.h>
 #include <parties/crypto.h>
 #include <parties/protocol.h>
 #include <parties/serialization.h>
@@ -61,6 +62,21 @@ bool Server::start(const Config& cfg) {
         }
         LOG_INFO("Certificate written to {} / {}", config_.cert_file, config_.key_file);
     }
+
+    // Clients bind their login to this fingerprint (protocol 1.5), so without
+    // it nobody could authenticate.
+    server_cert_fingerprint_ = parties::certificate_file_fingerprint(config_.cert_file);
+    if (server_cert_fingerprint_.empty()) {
+        LOG_ERROR("Could not read the certificate in {}", config_.cert_file);
+        return false;
+    }
+    LOG_INFO("Server certificate fingerprint: {}", server_cert_fingerprint_);
+    if (config_.allow_legacy_auth) {
+        LOG_WARN("allow_legacy_auth is on: clients older than protocol 1.5 may log in with a "
+                 "signature that another server could replay here");
+    }
+
+    quic_.set_max_upload_bytes(config_.chat.max_file_size);
 
     // Info reported to connectionless server queries (server-browser style).
     quic_.set_server_info(config_.server_name,
@@ -414,6 +430,20 @@ void Server::handle_message(const IncomingMessage& msg) {
             break;
         }
 
+        // Clients older than 1.5 sign a message that is not tied to this
+        // server (see parties/auth_message.h): any other server they log in to
+        // could replay it here. Refused unless the operator opted in.
+        const bool bound_auth = protocol::protocol_supports_bound_auth(client_version);
+        if (!bound_auth && !config_.allow_legacy_auth) {
+            LOG_WARN("Session {}: refused the unbound login of a protocol {}.{} client",
+                     msg.session_id, protocol::protocol_major(client_version),
+                     protocol::protocol_minor(client_version));
+            send_error(msg.session_id,
+                       "This server requires a newer version of Parties. Please update the app.",
+                       protocol::ServerErrorCode::BadVersion);
+            break;
+        }
+
         // Read public key (32 bytes)
         PublicKey pubkey{};
         reader.read_bytes(pubkey.data(), 32);
@@ -460,15 +490,26 @@ void Server::handle_message(const IncomingMessage& msg) {
             }
         }
 
-        // Reconstruct signed message: pubkey(32) + display_name + timestamp(8)
-        BinaryWriter sig_msg;
-        sig_msg.write_bytes(pubkey.data(), 32);
-        sig_msg.write_string(display_name);
-        sig_msg.write_u64(timestamp);
+        // Reconstruct the signed message. A 1.5+ client also signed this
+        // server's certificate fingerprint and the nonce of this connection's
+        // AUTH_CHALLENGE, so a login made for another server, or captured on
+        // another connection, does not verify here.
+        std::vector<uint8_t> sig_msg;
+        if (bound_auth) {
+            if (!session->auth_nonce_ready.load(std::memory_order_acquire)) {
+                send_error(msg.session_id, "Authentication is not ready; please reconnect",
+                           protocol::ServerErrorCode::BadAuth);
+                break;
+            }
+            sig_msg = protocol::auth_signed_message_bound(
+                server_cert_fingerprint_, session->auth_nonce.data(),
+                pubkey, display_name, timestamp);
+        } else {
+            sig_msg = protocol::auth_signed_message_legacy(pubkey, display_name, timestamp);
+        }
 
         // Verify Ed25519 signature
-        if (!parties::ed25519_verify(sig_msg.data().data(), sig_msg.data().size(),
-                                      sig, pubkey)) {
+        if (!parties::ed25519_verify(sig_msg.data(), sig_msg.size(), sig, pubkey)) {
             send_error(msg.session_id, "Invalid signature",
                        protocol::ServerErrorCode::BadAuth);
             break;
@@ -552,6 +593,7 @@ void Server::handle_message(const IncomingMessage& msg) {
                     process_disconnect(s->id, s->user_id, s->channel_id);
                     s->channel_id = 0;
                     s->authenticated = false;
+                    s->file_streams_allowed.store(false, std::memory_order_release);
                     quic_.disconnect(s->id);
                 }
             }
@@ -566,6 +608,9 @@ void Server::handle_message(const IncomingMessage& msg) {
         // Decides the video delivery path (per-frame streams for >= 1.2) and
         // which notifications this client understands.
         session->protocol_version = client_version;
+        // Last: publishes the fields above to the MsQuic workers, which admit
+        // this session's file-transfer streams from now on.
+        session->file_streams_allowed.store(true, std::memory_order_release);
 
         // user_id -> session index (the duplicate, if any, was erased by
         // process_disconnect above).
@@ -1398,6 +1443,11 @@ void Server::handle_message(const IncomingMessage& msg) {
 
             uint64_t att_id = db_.insert_attachment(msg_id, fname,
                 static_cast<int64_t>(fsize), mime, disk_path);
+            // Only an announced attachment may be uploaded, by this session
+            // and up to this size (QuicServer refuses everything else before
+            // buffering it). An oversize file is listed but never accepted.
+            if (att_id != 0 && fsize <= static_cast<uint64_t>(config_.chat.max_file_size))
+                quic_.expect_upload(att_id, msg.session_id, static_cast<int64_t>(fsize));
             attachments.push_back({fname, fsize, mime, att_id});
         }
 

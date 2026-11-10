@@ -27,6 +27,11 @@ bool generate_self_signed_cert(const std::string& common_name,
                                const std::string& cert_path,
                                const std::string& key_path);
 
+// sha256_hex of the DER encoding of the first certificate in a PEM file (or of
+// a single DER certificate): the fingerprint a client computes from the leaf
+// certificate it receives in the TLS handshake. Empty string on failure.
+std::string certificate_file_fingerprint(const std::string& cert_path);
+
 // --- Seed phrase identity ---
 
 // Generate 12-word seed phrase from embedded BIP-39 wordlist

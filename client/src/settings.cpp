@@ -222,6 +222,25 @@ Settings::TofuResult Settings::check_fingerprint(const std::string& host, int po
     return (stored == fingerprint) ? TofuResult::Trusted : TofuResult::Mismatch;
 }
 
+std::string Settings::pinned_fingerprint(const std::string& host, int port) {
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "SELECT fingerprint FROM tofu_certs WHERE host = ? AND port = ?";
+
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK)
+        return {};
+
+    sqlite3_bind_text(stmt, 1, host.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, port);
+
+    std::string stored;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        if (const unsigned char* text = sqlite3_column_text(stmt, 0))
+            stored = reinterpret_cast<const char*>(text);
+    }
+    sqlite3_finalize(stmt);
+    return stored;
+}
+
 bool Settings::trust_fingerprint(const std::string& host, int port,
                                   const std::string& fingerprint) {
     sqlite3_stmt* stmt = nullptr;
@@ -376,6 +395,10 @@ bool Settings::delete_resumption_ticket(const std::string& host, int port) {
     bool ok = sqlite3_step(stmt) == SQLITE_DONE;
     sqlite3_finalize(stmt);
     return ok;
+}
+
+bool Settings::delete_all_resumption_tickets() {
+    return exec("DELETE FROM resumption_tickets");
 }
 
 // --- Preferences ---

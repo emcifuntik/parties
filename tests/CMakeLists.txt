@@ -32,6 +32,31 @@ if(WIN32)
     target_link_libraries(parties_integration_test PRIVATE ncrypt.lib crypt32.lib)
 endif()
 
+# ── Connection security: server-bound login, file-stream admission ───────────
+# Three servers and several headless clients over real MsQuic on loopback.
+add_executable(parties_connection_security_test
+    connection_security_test.cpp
+    ../server/src/server.cpp
+    ../server/src/quic_server.cpp
+    ../server/src/database.cpp
+    ../server/src/config.cpp
+    ../client/src/net_client_msquic.cpp
+)
+target_include_directories(parties_connection_security_test
+    PRIVATE
+        ../server/include
+        ../client/include
+)
+target_link_libraries(parties_connection_security_test
+    PRIVATE
+        parties_common
+        unofficial::sqlite3::sqlite3
+        toml11::toml11
+)
+if(WIN32)
+    target_link_libraries(parties_connection_security_test PRIVATE ncrypt.lib crypt32.lib)
+endif()
+
 # ── Voice under a congested last mile (server + MsQuic + UDP relay) ──────────
 # End-to-end screen share through an impaired network (loss, bursts, RTT,
 # bandwidth collapse): what a viewer actually gets, frame by frame.
@@ -334,6 +359,9 @@ add_test(NAME parties_hotkey_combo COMMAND parties_hotkey_combo_test)
 add_test(NAME parties_datagram_backlog COMMAND parties_datagram_backlog_test)
 # Server + two headless clients over real MsQuic on a loopback port.
 add_test(NAME parties_integration COMMAND parties_integration_test)
+# Generates two RSA-4096 certificates, hence the generous timeout.
+add_test(NAME parties_connection_security COMMAND parties_connection_security_test)
+set_tests_properties(parties_connection_security PROPERTIES TIMEOUT 240)
 add_test(NAME parties_voice_congestion COMMAND parties_voice_congestion_test)
 add_test(NAME parties_video_network COMMAND parties_video_network_test)
 add_test(NAME parties_diagnostics COMMAND parties_diagnostics_test)

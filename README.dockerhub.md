@@ -45,6 +45,7 @@ Configure via environment variables, a `server.toml` file in `/data`, or both. E
 | `PARTIES_PORT` | QUIC UDP port | `7800` |
 | `PARTIES_MAX_CLIENTS` | Max concurrent connections | `64` |
 | `PARTIES_PASSWORD` | Server password (empty = no password) | — |
+| `PARTIES_ALLOW_LEGACY_AUTH` | Set to `1` to let clients older than protocol 1.5 log in. Their login is not tied to this server, so another server they use could replay it here. Leave off unless such clients cannot be updated | off |
 | `PARTIES_CERT_FILE` | TLS certificate path (relative to `/data`) | `server.pem` |
 | `PARTIES_KEY_FILE` | TLS private key path (relative to `/data`) | `server.key.pem` |
 | `PARTIES_DB_PATH` | SQLite database path | `parties.db` |
@@ -64,6 +65,9 @@ listen_ip = "0.0.0.0"
 port = 7800
 max_clients = 64
 # password = "optional-server-password"
+
+[auth]
+# allow_legacy_auth = true   # accept clients older than protocol 1.5 (see above)
 
 [tls]
 cert_file = "server.pem"

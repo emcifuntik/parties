@@ -23,6 +23,12 @@ struct Config {
     int         max_clients    = 64;
     std::string server_password;
 
+    // Accept the pre-1.5 login signature, which is not tied to this server:
+    // any other server such a client logs in to can replay the login here and
+    // act as that user. Off by default; turn it on only while clients that
+    // cannot be updated still need to connect.
+    bool        allow_legacy_auth = false;
+
     std::string cert_file      = "server.pem";
     std::string key_file       = "server.key.pem";
 

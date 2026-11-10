@@ -1,4 +1,5 @@
 #include <server/quic_server.h>
+#include <parties/crypto.h>
 #include <parties/quic_common.h>
 #include <parties/protocol.h>
 #include <parties/server_query.h>
@@ -124,6 +125,7 @@ struct LogThrottle {
 static LogThrottle video_reject_log_throttle;    // refused per-frame streams
 static LogThrottle video_ingress_log_throttle;   // malformed / oversize / over-cap streams
 static LogThrottle datagram_backlog_log_throttle; // media dropped toward a stale datagram queue
+static LogThrottle file_stream_log_throttle;      // refused or aborted file-transfer streams
 
 // Peer-opened unidirectional stream refused at PEER_STREAM_STARTED (session
 // unknown, unauthenticated or not an active sharer): aborted on arrival. This
@@ -238,10 +240,40 @@ struct QuicServer::VideoOutStreamContext {
 struct QuicServer::FileStreamContext {
     QuicServer* server;
     uint32_t session_id;
-    std::vector<uint8_t> buffer;   // accumulated received data
+    std::vector<uint8_t> buffer;   // header bytes until parsed, then the upload's bytes
     bool header_parsed;
     uint8_t stream_type;           // STREAM_TYPE_FILE_UPLOAD or STREAM_TYPE_FILE_DOWNLOAD
     uint64_t attachment_id;
+    // Upload admission (see quic_server.h, "File transfer").
+    HQUIC   stream = nullptr;
+    int64_t expected_size = 0;     // size announced for this attachment, reserved once admitted
+    bool    admitted = false;      // holds a reservation of expected_size bytes
+    bool    waiting = false;       // was told to wait; may be listed in upload_waiters_
+    bool    completed = false;     // the whole file was handed to the main loop
+    bool    dead = false;          // refused or aborted: ignore whatever still arrives
+
+    // Returns the reservation and leaves the waiters' list, exactly once.
+    void release() {
+        if (!admitted && !waiting) return;
+        server->end_upload(attachment_id, session_id, stream,
+                           admitted ? expected_size : 0, admitted, completed);
+        admitted = false;
+        waiting = false;
+    }
+
+    // Gives up on this stream: frees what it buffered and aborts it
+    // (SHUTDOWN_COMPLETE follows and frees the context). Counted as a refusal
+    // only after the reservation is back, so whoever observes the count can
+    // rely on the attachment being free again.
+    void abort(bool refused) {
+        if (dead) return;
+        dead = true;
+        std::vector<uint8_t>().swap(buffer);
+        release();
+        if (refused)
+            server->file_streams_refused_.fetch_add(1, std::memory_order_relaxed);
+        server->api_->StreamShutdown(stream, QUIC_STREAM_SHUTDOWN_FLAG_ABORT, 0);
+    }
 };
 
 QuicServer::QuicServer() = default;
@@ -867,22 +899,42 @@ QUIC_STATUS QuicServer::on_connection_event(HQUIC connection, uint32_t session_i
         // file transfers (positional).
         bool is_file_stream = false;
         bool is_control_stream = false;
+        std::shared_ptr<Session> session;
         {
             std::lock_guard<std::mutex> lock(sessions_mutex_);
             auto it = sessions_.find(session_id);
             if (it != sessions_.end()) {
-                std::lock_guard<std::mutex> qlock(it->second->quic_mutex);
-                if (!it->second->quic_control_stream) {
-                    it->second->quic_control_stream = stream;
+                session = it->second;
+                std::lock_guard<std::mutex> qlock(session->quic_mutex);
+                if (!session->quic_control_stream) {
+                    session->quic_control_stream = stream;
                     is_control_stream = true;
                     LOG_INFO("Session {} opened control stream", session_id);
-                } else if (!it->second->quic_video_stream) {
-                    it->second->quic_video_stream = stream;
+                } else if (!session->quic_video_stream) {
+                    session->quic_video_stream = stream;
                     LOG_INFO("Session {} opened video stream", session_id);
                 } else {
                     is_file_stream = true;
                 }
             }
+        }
+
+        // File transfers are for authenticated sessions only. An upload is
+        // buffered in memory until it completes, so a stream from a peer that
+        // has not logged in is aborted here, before it can deliver a byte.
+        // (The acquire load pairs with the main loop's release store.)
+        if (is_file_stream &&
+            !session->file_streams_allowed.load(std::memory_order_acquire)) {
+            file_streams_refused_.fetch_add(1, std::memory_order_relaxed);
+            uint32_t suppressed = 0;
+            if (file_stream_log_throttle.allow(suppressed)) {
+                LOG_WARN("Session {}: refused file-transfer stream (not authenticated); {} more refusal(s) since the last line",
+                         session_id, suppressed);
+            }
+            auto* rctx = new RejectedStreamCtx{ api_ };
+            api_->SetCallbackHandler(stream, (void*)rejected_stream_callback, rctx);
+            api_->StreamShutdown(stream, QUIC_STREAM_SHUTDOWN_FLAG_ABORT, 0);
+            break;
         }
 
         // Control messages go ahead of video; a whole-file download goes
@@ -891,6 +943,7 @@ QUIC_STATUS QuicServer::on_connection_event(HQUIC connection, uint32_t session_i
         uint16_t priority = 0;
         if (is_file_stream) {
             auto* fctx = new FileStreamContext{ this, session_id, {}, false, 0, 0 };
+            fctx->stream = stream;
             api_->SetCallbackHandler(stream, (void*)file_stream_callback, fctx);
             LOG_INFO("Session {} opened file transfer stream", session_id);
             priority = 0x1000;
@@ -902,6 +955,23 @@ QUIC_STATUS QuicServer::on_connection_event(HQUIC connection, uint32_t session_i
         if (priority != 0 &&
             QUIC_FAILED(api_->SetParam(stream, QUIC_PARAM_STREAM_PRIORITY, sizeof(priority), &priority)))
             LOG_WARN("Session {}: could not set a stream priority", session_id);
+
+        // Server-bound authentication (protocol 1.5): challenge the client as
+        // soon as its control stream exists. No data can arrive on the stream
+        // before this callback returns, so the nonce is in place before the
+        // main loop can see an AUTH_IDENTITY. Clients older than 1.5 ignore
+        // the message.
+        if (is_control_stream) {
+            if (!parties::random_bytes(session->auth_nonce.data(), session->auth_nonce.size())) {
+                LOG_ERROR("Session {}: no randomness for the auth challenge; closing", session_id);
+                api_->ConnectionShutdown(connection, QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, 0);
+                break;
+            }
+            session->auth_nonce_ready.store(true, std::memory_order_release);
+            if (!send_control_on_stream(stream, protocol::ControlMessageType::AUTH_CHALLENGE,
+                                        session->auth_nonce.data(), session->auth_nonce.size()))
+                LOG_WARN("Session {}: could not send the auth challenge", session_id);
+        }
         break;
     }
 
@@ -992,6 +1062,7 @@ QUIC_STATUS QuicServer::on_connection_event(HQUIC connection, uint32_t session_i
             recv_buffers_.erase(session_id);
             video_recv_buffers_.erase(session_id);
         }
+        forget_uploads_of(session_id);
 
         // ConnectionContext is freed in connection_callback after this returns
         api_->ConnectionClose(connection);
@@ -1206,41 +1277,228 @@ QUIC_STATUS QUIC_API QuicServer::file_stream_callback(
     auto* ctx = static_cast<FileStreamContext*>(context);
     auto status = ctx->server->on_file_stream_event(stream, ctx, event);
     if (event->Type == QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE) {
+        ctx->release();   // an upload that never completed returns its budget and claim
         ctx->server->api_->StreamClose(stream);
         delete ctx;
     }
     return status;
 }
 
+void QuicServer::set_max_upload_bytes(int64_t bytes) {
+    max_upload_bytes_ = std::max<int64_t>(0, bytes);
+    // Room for a few of the largest files at once (saturating).
+    constexpr int64_t kLargestFilesAtOnce = 4;
+    upload_budget_bytes_ = max_upload_bytes_ > INT64_MAX / kLargestFilesAtOnce
+        ? INT64_MAX : kLargestFilesAtOnce * max_upload_bytes_;
+}
+
+void QuicServer::expect_upload(uint64_t attachment_id, uint32_t session_id, int64_t size) {
+    if (size < 0 || size > max_upload_bytes_) return;
+    // Only for a session that still exists, checked under sessions_mutex_: a
+    // session is erased under that mutex before forget_uploads_of() runs, so
+    // an entry can never be added after its session's entries were dropped.
+    // (Order: sessions_mutex_ -> uploads_mutex_.)
+    std::lock_guard<std::mutex> slock(sessions_mutex_);
+    if (sessions_.find(session_id) == sessions_.end()) return;
+    std::lock_guard<std::mutex> lock(uploads_mutex_);
+    if (pending_uploads_.find(attachment_id) != pending_uploads_.end()) return;
+
+    // A session that keeps announcing without uploading does not grow the
+    // table: its oldest announcement that no stream is receiving makes room.
+    SessionUploads& uploads = session_uploads_[session_id];
+    while (uploads.announced.size() >= MAX_PENDING_UPLOADS_PER_SESSION) {
+        auto oldest_idle = std::find_if(uploads.announced.begin(), uploads.announced.end(),
+            [this](uint64_t id) {
+                auto it = pending_uploads_.find(id);
+                return it == pending_uploads_.end() || !it->second.in_progress;
+            });
+        if (oldest_idle == uploads.announced.end()) return;   // all of them are in progress
+        pending_uploads_.erase(*oldest_idle);
+        uploads.announced.erase(oldest_idle);
+    }
+    pending_uploads_.emplace(attachment_id, PendingUpload{ session_id, size, false });
+    uploads.announced.push_back(attachment_id);
+}
+
+QuicServer::UploadAdmission QuicServer::admit_upload(uint64_t attachment_id, uint32_t session_id,
+                                                     HQUIC stream, int64_t& size) {
+    std::lock_guard<std::mutex> lock(uploads_mutex_);
+    auto it = pending_uploads_.find(attachment_id);
+    auto uploads = session_uploads_.find(session_id);
+    if (it == pending_uploads_.end() || uploads == session_uploads_.end() ||
+        it->second.session_id != session_id || it->second.in_progress)
+        return UploadAdmission::Refused;
+
+    // A single upload always fits (its size is at most max_upload_bytes_).
+    // Further ones are admitted while the session stays within one largest
+    // file and the server within its budget; otherwise the stream waits. A
+    // stream only ever waits for one that was admitted, so it is woken.
+    size = it->second.size;
+    if (uploads->second.reserved + size > max_upload_bytes_ ||
+        upload_reserved_bytes_ + size > upload_budget_bytes_) {
+        if (std::find(upload_waiters_.begin(), upload_waiters_.end(), stream) == upload_waiters_.end())
+            upload_waiters_.push_back(stream);
+        return UploadAdmission::Wait;
+    }
+    it->second.in_progress = true;
+    uploads->second.reserved += size;
+    upload_reserved_bytes_ += size;
+    return UploadAdmission::Admitted;
+}
+
+void QuicServer::end_upload(uint64_t attachment_id, uint32_t session_id, HQUIC stream,
+                            int64_t reserved, bool admitted, bool completed) {
+    std::lock_guard<std::mutex> lock(uploads_mutex_);
+    std::erase(upload_waiters_, stream);
+    if (!admitted) return;
+
+    upload_reserved_bytes_ -= reserved;
+    auto uploads = session_uploads_.find(session_id);
+    if (uploads != session_uploads_.end()) uploads->second.reserved -= reserved;
+
+    auto it = pending_uploads_.find(attachment_id);
+    if (it != pending_uploads_.end() && it->second.session_id == session_id) {
+        if (completed) {
+            pending_uploads_.erase(it);
+            if (uploads != session_uploads_.end())
+                std::erase(uploads->second.announced, attachment_id);
+        } else {
+            it->second.in_progress = false;   // the uploader may try again
+        }
+    }
+
+    // Room was freed: let every paused stream try again. The call only queues
+    // an operation on the stream's own worker, so it is safe under the mutex
+    // and from this thread; a stream that still does not fit lists itself
+    // again.
+    for (HQUIC waiter : upload_waiters_)
+        api_->StreamReceiveSetEnabled(waiter, TRUE);
+    upload_waiters_.clear();
+}
+
+void QuicServer::forget_uploads_of(uint32_t session_id) {
+    std::lock_guard<std::mutex> lock(uploads_mutex_);
+    auto uploads = session_uploads_.find(session_id);
+    if (uploads == session_uploads_.end()) return;
+    for (uint64_t id : uploads->second.announced) pending_uploads_.erase(id);
+    // Its streams ended before the connection did and returned their
+    // reservations in end_upload, which also copes with this entry being gone.
+    session_uploads_.erase(uploads);
+}
+
 QUIC_STATUS QuicServer::on_file_stream_event(HQUIC stream, FileStreamContext* ctx,
                                               QUIC_STREAM_EVENT* event) {
     switch (event->Type) {
     case QUIC_STREAM_EVENT_RECEIVE: {
-        for (uint32_t i = 0; i < event->RECEIVE.BufferCount; i++) {
-            auto& buf = event->RECEIVE.Buffers[i];
-            ctx->buffer.insert(ctx->buffer.end(), buf.Buffer, buf.Buffer + buf.Length);
-        }
+        // Nothing is kept that the stream is not entitled to (see
+        // quic_server.h, "File transfer"): only the 9-byte header until it is
+        // complete, then exactly the announced size of an admitted upload.
+        constexpr size_t kHeaderLen = 9;   // [type(1)][attachment_id(8)]
+        auto refuse = [&](const char* why) {
+            uint32_t suppressed = 0;
+            if (file_stream_log_throttle.allow(suppressed)) {
+                LOG_WARN("Session {}: refused file stream for attachment {} ({}); {} more since the last line",
+                         ctx->session_id, ctx->attachment_id, why, suppressed);
+            }
+            ctx->abort(/*refused=*/true);
+        };
 
-        // Parse header: [type(1)][attachment_id(8)] = 9 bytes
-        if (!ctx->header_parsed && ctx->buffer.size() >= 9) {
-            ctx->stream_type = ctx->buffer[0];
-            std::memcpy(&ctx->attachment_id, ctx->buffer.data() + 1, 8);
-            ctx->header_parsed = true;
-            ctx->buffer.erase(ctx->buffer.begin(), ctx->buffer.begin() + 9);
+        uint64_t consumed = 0;   // bytes of this event taken so far
+        bool paused = false;     // stop here and leave the rest with MsQuic
+        for (uint32_t i = 0; i < event->RECEIVE.BufferCount && !ctx->dead && !paused; i++) {
+            const uint8_t* data = event->RECEIVE.Buffers[i].Buffer;
+            size_t len = event->RECEIVE.Buffers[i].Length;
+
+            if (!ctx->header_parsed) {
+                const size_t take = std::min<size_t>(len, kHeaderLen - ctx->buffer.size());
+                ctx->buffer.insert(ctx->buffer.end(), data, data + take);
+                data += take;
+                len -= take;
+                consumed += take;
+                if (ctx->buffer.size() < kHeaderLen) continue;
+
+                ctx->stream_type = ctx->buffer[0];
+                std::memcpy(&ctx->attachment_id, ctx->buffer.data() + 1, 8);
+                ctx->header_parsed = true;
+                ctx->buffer.clear();
+                if (ctx->stream_type != protocol::STREAM_TYPE_FILE_UPLOAD &&
+                    ctx->stream_type != protocol::STREAM_TYPE_FILE_DOWNLOAD) {
+                    refuse("unknown stream type");
+                    break;
+                }
+            }
+
+            const bool is_upload = ctx->stream_type == protocol::STREAM_TYPE_FILE_UPLOAD;
+            if (is_upload && !ctx->admitted) {
+                int64_t size = 0;
+                switch (admit_upload(ctx->attachment_id, ctx->session_id, stream, size)) {
+                case UploadAdmission::Refused:
+                    refuse("not announced by this session, or already being received");
+                    break;
+                case UploadAdmission::Wait:
+                    // No room yet. Accepting only part of this event pauses
+                    // the stream, so QUIC flow control holds the sender back,
+                    // until end_upload re-enables it; MsQuic then indicates
+                    // the rest again and admission is retried.
+                    ctx->waiting = true;
+                    paused = true;
+                    break;
+                case UploadAdmission::Admitted:
+                    ctx->admitted = true;
+                    ctx->expected_size = size;
+                    // Exactly what was reserved: letting the vector grow step
+                    // by step would transiently hold more than that.
+                    ctx->buffer.reserve(static_cast<size_t>(size));
+                    break;
+                }
+                if (ctx->dead || paused) break;
+            }
+            if (len == 0) continue;
+
+            // Payload: a download request has none, and an upload may not
+            // exceed the size it announced.
+            if (!is_upload ||
+                ctx->buffer.size() + len > static_cast<size_t>(ctx->expected_size)) {
+                refuse(is_upload ? "more data than the announced size"
+                                 : "data after a download request");
+                break;
+            }
+            ctx->buffer.insert(ctx->buffer.end(), data, data + len);
+            consumed += len;
         }
+        if (paused) event->RECEIVE.TotalBufferLength = consumed;
         break;
     }
 
     case QUIC_STREAM_EVENT_PEER_SEND_SHUTDOWN: {
-        if (!ctx->header_parsed) break;
+        if (ctx->dead) break;
+        if (!ctx->header_parsed) {
+            // Ended before the header: nothing to serve, do not keep it open.
+            ctx->abort(/*refused=*/false);
+            break;
+        }
 
         if (ctx->stream_type == protocol::STREAM_TYPE_FILE_UPLOAD) {
+            if (!ctx->admitted ||
+                static_cast<int64_t>(ctx->buffer.size()) != ctx->expected_size) {
+                LOG_WARN("Session {}: upload for attachment {} ended after {} of {} bytes; dropped",
+                         ctx->session_id, ctx->attachment_id, ctx->buffer.size(), ctx->expected_size);
+                ctx->abort(/*refused=*/true);
+                break;
+            }
             // Upload complete — push event for server main loop
             FileUploadEvent ev;
             ev.session_id = ctx->session_id;
             ev.attachment_id = ctx->attachment_id;
             ev.data = std::move(ctx->buffer);
             file_uploads_.push(std::move(ev));
+            ctx->completed = true;
+            ctx->release();
+            // Our half of the stream carries nothing: finish it, so the stream
+            // closes and gives its slot of the connection's stream limit back.
+            // Left open, every finished upload kept a slot until disconnect,
+            // and the ninth file transfer on a connection never started.
+            api_->StreamShutdown(stream, QUIC_STREAM_SHUTDOWN_FLAG_GRACEFUL, 0);
         } else if (ctx->stream_type == protocol::STREAM_TYPE_FILE_DOWNLOAD) {
             // Download request — push for server main loop to handle
             FileDownloadRequest req;
@@ -1263,7 +1521,12 @@ QUIC_STATUS QuicServer::on_file_stream_event(HQUIC stream, FileStreamContext* ct
 
     case QUIC_STREAM_EVENT_PEER_SEND_ABORTED:
     case QUIC_STREAM_EVENT_PEER_RECEIVE_ABORTED:
-        api_->StreamShutdown(stream, QUIC_STREAM_SHUTDOWN_FLAG_ABORT, 0);
+        if (ctx->completed) {
+            // The file is with the main loop already; just close the stream.
+            api_->StreamShutdown(stream, QUIC_STREAM_SHUTDOWN_FLAG_ABORT, 0);
+        } else {
+            ctx->abort(/*refused=*/false);   // frees the partial upload now, not at shutdown
+        }
         break;
 
     case QUIC_STREAM_EVENT_SHUTDOWN_COMPLETE:

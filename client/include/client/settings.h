@@ -48,6 +48,8 @@ public:
                                   const std::string& fingerprint);
     bool trust_fingerprint(const std::string& host, int port,
                            const std::string& fingerprint);
+    // The fingerprint pinned for host:port, or an empty string.
+    std::string pinned_fingerprint(const std::string& host, int port);
 
     // --- Saved servers ---
     bool save_server(const std::string& name, const std::string& host, int port,
@@ -62,6 +64,7 @@ public:
                                 const uint8_t* data, size_t len);
     std::vector<uint8_t> load_resumption_ticket(const std::string& host, int port);
     bool delete_resumption_ticket(const std::string& host, int port);
+    bool delete_all_resumption_tickets();
 
     // --- Preferences ---
     bool set_pref(const std::string& key, const std::string& value);

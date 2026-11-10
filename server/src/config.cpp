@@ -50,6 +50,11 @@ Config Config::load(const std::string& toml_path) {
                 cfg.server_password = toml::find_or(s, "password", cfg.server_password);
             }
 
+            if (data.contains("auth")) {
+                auto& a = data.at("auth");
+                cfg.allow_legacy_auth = toml::find_or(a, "allow_legacy_auth", cfg.allow_legacy_auth);
+            }
+
             if (data.contains("tls")) {
                 auto& t = data.at("tls");
                 cfg.cert_file = toml::find_or(t, "cert_file", cfg.cert_file);
@@ -108,6 +113,9 @@ Config Config::load(const std::string& toml_path) {
 
     e = env("PARTIES_PASSWORD");
     if (!e.empty()) cfg.server_password = e;
+
+    e = env("PARTIES_ALLOW_LEGACY_AUTH");
+    if (!e.empty()) cfg.allow_legacy_auth = (e == "1" || e == "true" || e == "TRUE" || e == "yes");
 
     e = env("PARTIES_CERT_FILE");
     if (!e.empty()) cfg.cert_file = e;

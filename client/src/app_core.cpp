@@ -2,6 +2,7 @@
 #ifdef _WIN32
 #include <client/auto_updater.h>
 #endif
+#include <parties/auth_message.h>
 #include <parties/protocol.h>
 #include <parties/serialization.h>
 #include <parties/crypto.h>
@@ -75,6 +76,16 @@ bool AppCore::init(const std::string& settings_path, PlatformBridge bridge, Rml:
 
     if (!settings_.open(settings_path)) {
         LOG_ERROR("Failed to open settings: {}", settings_path);
+    }
+
+    // Earlier versions stored a resumption ticket from every server they
+    // connected to, including one whose changed certificate the user went on
+    // to reject. A resumed session skips the certificate check, so such a
+    // ticket would let that server in next time. Tickets are only a speed-up:
+    // drop the ones stored under the old rule, once.
+    if (settings_.get_pref("security.ticket_trust_epoch").value_or("") != "1") {
+        settings_.delete_all_resumption_tickets();
+        settings_.set_pref("security.ticket_trust_epoch", "1");
     }
 
     // Wire audio subsystems
@@ -294,12 +305,15 @@ void AppCore::tick()
         on_disconnect_cleanup();
     }
 
-    // Persist a resumption ticket received on the QUIC worker thread.
+    // Persist a resumption ticket received on the QUIC worker thread, but only
+    // once the server that sent it is known to be the pinned one (see
+    // server_cert_trusted_). Until then it waits here; reset_auth_state()
+    // discards it if the connection ends or the certificate is rejected.
     {
         std::vector<uint8_t> ticket;
         {
             std::lock_guard<std::mutex> lock(pending_ticket_mutex_);
-            if (pending_ticket_dirty_) {
+            if (pending_ticket_dirty_ && server_cert_trusted_) {
                 ticket.swap(pending_resumption_ticket_);
                 pending_ticket_dirty_ = false;
             }
@@ -329,6 +343,33 @@ void AppCore::tick()
     }
 
     process_server_messages();
+
+    // No AUTH_CHALLENGE yet: either the server predates protocol 1.5, or the
+    // link is losing packets. Never fall back to the old login signature,
+    // which the server could replay to another one. The login stays pending,
+    // so a challenge that arrives late still goes through.
+    if (auth_waiting_for_challenge_ && !auth_challenge_overdue_ &&
+        std::chrono::steady_clock::now() >= auth_challenge_deadline_) {
+        auth_challenge_overdue_ = true;
+        LOG_ERROR("No auth challenge from {}:{} (a server older than protocol 1.5 sends none)",
+                  server_host_, server_port_);
+        if (reconnecting_) {
+            // An automatic reconnect counts it as a failed attempt and tries
+            // again later, as it does when the connection cannot be made.
+            net_.disconnect();
+            reconnect_attempts_++;
+            reconnect_next_attempt_ = std::chrono::steady_clock::now()
+                + std::chrono::milliseconds(reconnect_backoff_ms(reconnect_attempts_));
+            server_model_.reconnect_status = Rml::String("Reconnecting… (attempt ")
+                + std::to_string(reconnect_attempts_ + 1).c_str() + ")";
+        } else {
+            server_model_.show_login   = true;
+            server_model_.login_error  = "This server is out of date and cannot sign you in "
+                                         "securely. Ask its operator to update it.";
+            server_model_.login_status = "";
+        }
+    }
+
     update_speaking_state();
     flush_pending_prefs();
     apply_sleep_inhibit(authenticated_ && current_channel_ != 0);
@@ -826,6 +867,11 @@ void AppCore::do_connect()
 
     server_model_.login_status = "Connecting...";
 
+    // A new connection: forget the previous one's challenge, and whatever it
+    // left in the queue (its challenge must not be taken for the new one's).
+    reset_auth_state();
+    (void)net_.incoming().drain();
+
     auto ticket = settings_.load_resumption_ticket(server_host_, server_port_);
     if (!net_.connect(server_host_, server_port_,
                       ticket.empty() ? nullptr : ticket.data(), ticket.size())) {
@@ -871,7 +917,17 @@ void AppCore::finish_connect()
     // that issued it, so a successful resumption confirms identity. We already
     // have the fingerprint stored in the TOFU database from the initial handshake.
     if (fp.empty()) {
-        // PSK resumption — server already trusted (ticket wouldn't exist otherwise)
+        // PSK resumption: no certificate is exchanged. The ticket was stored
+        // only after its server's certificate matched the pin (see
+        // server_cert_trusted_), so the server is the pinned one, and the
+        // login is bound to the pinned certificate. That holds only when TLS
+        // says the session really was resumed; a handshake that showed no
+        // certificate for any other reason proves nothing, and
+        // send_auth_identity() then refuses to sign.
+        auth_server_fingerprint_ = net_.session_resumed()
+            ? settings_.pinned_fingerprint(server_host_, server_port_)
+            : std::string();
+        server_cert_trusted_ = !auth_server_fingerprint_.empty();
     } else {
         auto result = settings_.check_fingerprint(server_host_, server_port_, fp);
 
@@ -885,25 +941,85 @@ void AppCore::finish_connect()
         }
         if (result == Settings::TofuResult::Unknown)
             settings_.trust_fingerprint(server_host_, server_port_, fp);
+        auth_server_fingerprint_ = fp;
+        server_cert_trusted_ = true;
     }
 
     server_model_.login_status = "Authenticating...";
-    send_auth_identity();
+    begin_auth();
+}
+
+void AppCore::reset_auth_state()
+{
+    auth_challenge_received_    = false;
+    auth_waiting_for_challenge_ = false;
+    auth_challenge_overdue_     = false;
+    auth_server_fingerprint_.clear();
+    auth_nonce_.fill(0);
+    server_cert_trusted_ = false;
+    // A ticket that was still waiting for its server to be trusted is dropped.
+    std::lock_guard<std::mutex> lock(pending_ticket_mutex_);
+    pending_resumption_ticket_.clear();
+    pending_ticket_dirty_ = false;
+}
+
+void AppCore::begin_auth()
+{
+    if (auth_challenge_received_) {
+        send_auth_identity();
+        return;
+    }
+    // A 1.5 server sends AUTH_CHALLENGE as soon as the control stream opens,
+    // so it is normally here already. tick() reports a server that has sent
+    // none by the deadline as out of date (or retries, when reconnecting).
+    auth_waiting_for_challenge_ = true;
+    auth_challenge_overdue_     = false;
+    auth_challenge_deadline_ = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+}
+
+void AppCore::on_auth_challenge(const uint8_t* data, size_t len)
+{
+    // One challenge per connection; anything else is ignored.
+    if (len < protocol::AUTH_NONCE_SIZE || auth_challenge_received_ || authenticated_) return;
+    std::memcpy(auth_nonce_.data(), data, protocol::AUTH_NONCE_SIZE);
+    auth_challenge_received_ = true;
+    if (auth_waiting_for_challenge_) {
+        auth_waiting_for_challenge_ = false;
+        if (auth_challenge_overdue_) {
+            // It was only late: take back the "out of date" message.
+            server_model_.login_error  = "";
+            server_model_.login_status = "Authenticating...";
+        }
+        send_auth_identity();
+    }
 }
 
 void AppCore::send_auth_identity()
 {
     if (!has_identity_) return;
 
+    // Never sign a login that is not tied to this server and this connection.
+    if (!auth_challenge_received_ || auth_server_fingerprint_.empty()) {
+        LOG_ERROR("Cannot authenticate: {}",
+                  auth_challenge_received_ ? "no certificate fingerprint for this server"
+                                           : "no challenge from the server");
+        // Without a pinned certificate a resumed session cannot be bound;
+        // drop the ticket so the next attempt does a full handshake.
+        if (auth_server_fingerprint_.empty())
+            settings_.delete_resumption_ticket(server_host_, server_port_);
+        server_model_.login_error  = "Could not verify the server's identity. Disconnect and try again.";
+        server_model_.login_status = "";
+        server_model_.show_login   = true;
+        return;
+    }
+
     auto now = static_cast<uint64_t>(std::time(nullptr));
 
-    BinaryWriter sig_msg;
-    sig_msg.write_bytes(public_key_.data(), public_key_.size());
-    sig_msg.write_string(username_);
-    sig_msg.write_u64(now);
+    const std::vector<uint8_t> sig_msg = protocol::auth_signed_message_bound(
+        auth_server_fingerprint_, auth_nonce_.data(), public_key_, username_, now);
 
     parties::Signature sig{};
-    if (!parties::ed25519_sign(sig_msg.data().data(), sig_msg.data().size(),
+    if (!parties::ed25519_sign(sig_msg.data(), sig_msg.size(),
                                 secret_key_, public_key_, sig)) {
         server_model_.login_error = "Failed to sign auth message";
         server_model_.show_login = true;
@@ -951,6 +1067,7 @@ void AppCore::on_disconnect_cleanup()
     voice_seq_ = 0;
     ping_pending_ = false;
     tofu_pending_ = false;
+    reset_auth_state();
     server_protocol_version_ = protocol::PROTOCOL_VERSION_ASSUMED_LEGACY;
 
     // Video state: both senders' controllers (the transport reported or
@@ -1117,6 +1234,15 @@ void AppCore::attempt_reconnect()
 
     LOG_INFO("Auto-reconnect: dialing {}:{} (attempt {})",
              server_host_, server_port_, reconnect_attempts_ + 1);
+
+    // See do_connect(): a new connection starts with no challenge. Not while a
+    // connection is still up (this can run again while one waits for the
+    // server's answer; connect() then refuses and that connection must keep
+    // its state and its queued messages).
+    if (!net_.is_connected()) {
+        reset_auth_state();
+        (void)net_.incoming().drain();
+    }
 
     auto ticket = settings_.load_resumption_ticket(server_host_, server_port_);
     if (!net_.connect(server_host_, server_port_,
@@ -1926,6 +2052,8 @@ void AppCore::handle_server_message(protocol::ControlMessageType type,
                                      const uint8_t* data, size_t len)
 {
     switch (type) {
+    case protocol::ControlMessageType::AUTH_CHALLENGE:
+        on_auth_challenge(data, len); break;
     case protocol::ControlMessageType::AUTH_RESPONSE:
         on_auth_response(data, len); break;
     case protocol::ControlMessageType::CHANNEL_LIST:
@@ -3230,10 +3358,15 @@ void AppCore::setup_server_model_callbacks()
         server_model_.show_tofu_warning = false;
         server_model_.show_login        = true;
         server_model_.login_status      = "Authenticating...";
-        send_auth_identity();
+        auth_server_fingerprint_ = tofu_pending_fingerprint_;
+        server_cert_trusted_ = true;
+        begin_auth();
     };
 
     server_model_.on_tofu_reject = [this]() {
+        // Nothing this server sent is kept: no ticket of its own (it was never
+        // stored, see server_cert_trusted_), and none for this address at all.
+        settings_.delete_resumption_ticket(server_host_, server_port_);
         tofu_pending_ = false;
         server_model_.show_tofu_warning = false;
         server_model_.show_login        = false;

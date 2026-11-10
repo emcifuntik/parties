@@ -5,6 +5,7 @@
 #include <parties/datagram_backlog.h>
 #include <parties/video_backlog.h>
 
+#include <array>
 #include <string>
 #include <cstdint>
 #include <atomic>
@@ -29,6 +30,19 @@ struct Session {
     // and check `alive`; the shutdown path takes it, sets alive=false and only
     // then closes the handles. Never take sessions_mutex_ while holding this.
     std::mutex       quic_mutex;
+
+    // Server challenge for AUTH_IDENTITY (protocol 1.5): random bytes sent in
+    // AUTH_CHALLENGE when the control stream opens. Written once on the
+    // connection's MsQuic worker before auth_nonce_ready is set (release); the
+    // main loop reads it after an acquire load.
+    std::array<uint8_t, protocol::AUTH_NONCE_SIZE> auth_nonce{};
+    std::atomic<bool> auth_nonce_ready{false};
+
+    // Set by the main loop once the session is authenticated (after user_id is
+    // written), cleared when it is kicked. A file-transfer stream from a
+    // session without it is aborted on arrival (QuicServer, MsQuic worker), so
+    // an unauthenticated peer cannot make the server buffer upload data.
+    std::atomic<bool> file_streams_allowed{false};
 
     // Authenticated state (set after AUTH_RESPONSE)
     bool             authenticated = false;

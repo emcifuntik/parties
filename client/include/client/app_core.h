@@ -18,6 +18,7 @@
 #include <parties/video_receive_router.h>
 #include <parties/video_send_controller.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <functional>
@@ -227,6 +228,23 @@ public:
     int selected_camera_index() const { return model_.selected_camera.get(); }
     std::string tofu_pending_fingerprint_;
     bool        tofu_pending_ = false;
+    // Login state of the current connection (main thread; see begin_auth).
+    std::array<uint8_t, protocol::AUTH_NONCE_SIZE> auth_nonce_{};   // from AUTH_CHALLENGE
+    bool        auth_challenge_received_    = false;
+    bool        auth_waiting_for_challenge_ = false;
+    bool        auth_challenge_overdue_     = false;   // the deadline passed and was reported
+    std::chrono::steady_clock::time_point auth_challenge_deadline_{};
+    // Fingerprint of the certificate the login is bound to: the one seen in
+    // this handshake, or the pinned one when the TLS session was resumed (no
+    // certificate is exchanged then).
+    std::string auth_server_fingerprint_;
+    // The server of the current connection is the pinned one: its certificate
+    // matched the pin (or the user accepted it), or the TLS session was
+    // resumed from a ticket. Only then is a resumption ticket it sent stored.
+    // A resumed session shows no certificate, so a ticket stands in for the
+    // pin check on the next connection and must never come from a server
+    // whose certificate was not accepted.
+    bool        server_cert_trusted_ = false;
     // Set on the MsQuic worker thread when the connection drops; the actual
     // cleanup (which mutates the RmlUi data model) runs on the main thread in tick().
     std::atomic<bool> disconnect_pending_{false};
@@ -286,6 +304,15 @@ public:
     void do_connect();
     void poll_connecting();
     void finish_connect();
+    // Server-bound authentication (protocol 1.5). begin_auth() runs once the
+    // connection is up and the server's certificate is trusted: it sends
+    // AUTH_IDENTITY at once when the server's AUTH_CHALLENGE has arrived, and
+    // otherwise waits for it. A server that never sends one predates 1.5; the
+    // login then fails after auth_challenge_deadline_ instead of falling back
+    // to the old signature, which that server could replay elsewhere.
+    void begin_auth();
+    void on_auth_challenge(const uint8_t* data, size_t len);
+    void reset_auth_state();           // before every new connection
     void send_auth_identity();
     void on_disconnect_cleanup();
 

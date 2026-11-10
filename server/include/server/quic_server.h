@@ -8,6 +8,7 @@
 
 #include <string>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <vector>
 #include <mutex>
@@ -182,9 +183,41 @@ public:
                             const uint8_t* data, size_t len, uint32_t flags);
 
     // ── File transfer ──
+    //
+    // An upload is buffered in memory until it completes, so what a stream may
+    // buffer is decided before any of its file bytes are kept:
+    //   1. the session must be authenticated (Session::file_streams_allowed),
+    //      otherwise the stream is aborted on arrival;
+    //   2. the attachment must have been announced with expect_upload() for
+    //      that same session, and only one stream may receive it at a time,
+    //      otherwise the stream is aborted once its header is read;
+    //   3. the stream may carry exactly the size that was announced (itself
+    //      capped by set_max_upload_bytes), enforced while receiving;
+    //   4. the announced size is reserved against two limits: one session
+    //      holds at most one largest file's worth of uploads at a time, and
+    //      all sessions together a few times that. An upload that does not
+    //      fit is not refused: the stream stops being read, so QUIC flow
+    //      control holds the sender back, and it resumes when room is freed.
+    // A download stream may carry nothing but its 9-byte request.
 
     ThreadQueue<FileUploadEvent>& file_uploads() { return file_uploads_; }
     ThreadQueue<FileDownloadRequest>& file_downloads() { return file_downloads_; }
+
+    // Largest file an upload stream may carry. Call before start().
+    void set_max_upload_bytes(int64_t bytes);
+
+    // Main loop: `session_id` announced an attachment of `size` bytes it is
+    // about to upload (CHAT_SEND). Ignored for sizes outside
+    // [0, max upload bytes]; such an upload is then refused. An announcement
+    // lapses when the upload completes, when the session disconnects, and
+    // when the session has announced MAX_PENDING_UPLOADS_PER_SESSION newer
+    // ones without uploading it.
+    void expect_upload(uint64_t attachment_id, uint32_t session_id, int64_t size);
+
+    // Cumulative count of file-transfer streams refused by the rules above.
+    uint64_t file_streams_refused() const {
+        return file_streams_refused_.load(std::memory_order_relaxed);
+    }
 
     // Send raw data on a file stream and close it with FIN
     bool send_file_on_stream(HQUIC stream, const uint8_t* data, size_t len);
@@ -286,6 +319,47 @@ private:
     ThreadQueue<FileUploadEvent> file_uploads_;
     ThreadQueue<FileDownloadRequest> file_downloads_;
     ThreadQueue<SessionDisconnect> disconnects_;
+
+    // Upload admission (see "File transfer" above). Everything down to
+    // upload_waiters_ is guarded by uploads_mutex_, a leaf lock:
+    // sessions_mutex_ may be held when taking it, never the other way round.
+    struct PendingUpload {
+        uint32_t session_id = 0;
+        int64_t  size = 0;
+        bool     in_progress = false;   // a stream holds a reservation for it
+    };
+    struct SessionUploads {
+        std::deque<uint64_t> announced;  // attachment ids, oldest first
+        int64_t reserved = 0;            // bytes reserved by this session's streams
+    };
+    // Two CHAT_SENDs with the most attachments one message can carry.
+    static constexpr size_t MAX_PENDING_UPLOADS_PER_SESSION = 512;
+    std::mutex uploads_mutex_;
+    std::unordered_map<uint64_t, PendingUpload> pending_uploads_;      // by attachment id
+    std::unordered_map<uint32_t, SessionUploads> session_uploads_;
+    int64_t upload_reserved_bytes_ = 0;   // all sessions
+    // Streams that stopped being read because their upload did not fit.
+    // A handle stays valid while it is listed: its stream removes it (under
+    // the mutex, in end_upload) before the stream is closed.
+    std::vector<HQUIC> upload_waiters_;
+
+    enum class UploadAdmission { Admitted, Wait, Refused };
+    // Header of an upload stream read. Admitted: `size` bytes are reserved for
+    // it. Wait: no room right now; `stream` is listed in upload_waiters_ and
+    // gets StreamReceiveSetEnabled(TRUE) when room is freed. Refused: not
+    // announced by this session, or another stream is receiving it.
+    UploadAdmission admit_upload(uint64_t attachment_id, uint32_t session_id,
+                                 HQUIC stream, int64_t& size);
+    // An upload stream ended. Unlists it and, when it had been admitted,
+    // returns its reservation, forgets the announcement (completed) or lets
+    // it be uploaded again (aborted), and wakes the waiting streams.
+    void end_upload(uint64_t attachment_id, uint32_t session_id, HQUIC stream,
+                    int64_t reserved, bool admitted, bool completed);
+    void forget_uploads_of(uint32_t session_id);
+
+    int64_t max_upload_bytes_ = 50 * 1024 * 1024;
+    int64_t upload_budget_bytes_ = 4 * 50 * 1024 * 1024;   // a few of the largest files
+    std::atomic<uint64_t> file_streams_refused_{0};
 };
 
 } // namespace parties::server

@@ -192,6 +192,8 @@ jobs:
         run: |
           chmod +x build-linux/tests/parties_integration_test
           ./build-linux/tests/parties_integration_test
+          chmod +x build-linux/tests/parties_connection_security_test
+          ./build-linux/tests/parties_connection_security_test
 
       - name: Upload server artifact
         uses: actions/upload-artifact@v7

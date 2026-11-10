@@ -68,6 +68,8 @@
 
 #include <client/net_client.h>
 
+#include "test_auth.h"
+
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -261,6 +263,9 @@ int main() {
     cfg.key_file       = key_path;
     cfg.db_path        = db_path;
     cfg.max_clients    = 8;
+    // Client C is a protocol 1.1 peer and logs in with the pre-1.5 signature,
+    // which a server refuses by default (see connection_security_test.cpp).
+    cfg.allow_legacy_auth = true;
 
     Server server;
     TEST_ASSERT(server.start(cfg), "server start");
@@ -307,28 +312,11 @@ int main() {
 
     uint32_t user_a_id = 0;
     {
-        auto now = static_cast<uint64_t>(std::time(nullptr));
-
-        // Build message to sign: pubkey + display_name + timestamp
-        BinaryWriter sign_buf;
-        sign_buf.write_bytes(pk_a.data(), 32);
-        sign_buf.write_string("test_user_a");
-        sign_buf.write_u64(now);
-        Signature sig_a{};
-        TEST_ASSERT(ed25519_sign(sign_buf.data().data(), sign_buf.data().size(),
-                    sk_a, pk_a, sig_a), "client A sign");
-
-        // AUTH_IDENTITY: [version(2)][pubkey(32)][name][timestamp(8)][sig(64)][password]
-        BinaryWriter w;
-        w.write_u16(protocol::PROTOCOL_VERSION);
-        w.write_bytes(pk_a.data(), 32);
-        w.write_string("test_user_a");
-        w.write_u64(now);
-        w.write_bytes(sig_a.data(), 64);
-        w.write_string("");  // no password
-
-        TEST_ASSERT(client_a.send_message(ControlMessageType::AUTH_IDENTITY,
-                    w.data().data(), w.data().size()), "client A send auth");
+        // Protocol 1.5 login: wait for the server's AUTH_CHALLENGE, then send
+        // an AUTH_IDENTITY whose signature covers the challenge and the
+        // server's certificate fingerprint (tests/test_auth.h).
+        TEST_ASSERT(test::send_bound_auth(client_a, sk_a, pk_a, "test_user_a", TIMEOUT_MS),
+                    "client A challenge + send auth");
 
         std::vector<uint8_t> payload;
         TEST_ASSERT(wait_for_message(client_a, ControlMessageType::AUTH_RESPONSE, payload),
@@ -368,27 +356,8 @@ int main() {
 
     uint32_t user_b_id = 0;
     {
-        auto now = static_cast<uint64_t>(std::time(nullptr));
-
-        BinaryWriter sign_buf;
-        sign_buf.write_bytes(pk_b.data(), 32);
-        sign_buf.write_string("test_user_b");
-        sign_buf.write_u64(now);
-        Signature sig_b{};
-        TEST_ASSERT(ed25519_sign(sign_buf.data().data(), sign_buf.data().size(),
-                    sk_b, pk_b, sig_b), "client B sign");
-
-        // AUTH_IDENTITY: [version(2)][pubkey(32)][name][timestamp(8)][sig(64)][password]
-        BinaryWriter w;
-        w.write_u16(protocol::PROTOCOL_VERSION);
-        w.write_bytes(pk_b.data(), 32);
-        w.write_string("test_user_b");
-        w.write_u64(now);
-        w.write_bytes(sig_b.data(), 64);
-        w.write_string("");  // no password
-
-        TEST_ASSERT(client_b.send_message(ControlMessageType::AUTH_IDENTITY,
-                    w.data().data(), w.data().size()), "client B send auth");
+        TEST_ASSERT(test::send_bound_auth(client_b, sk_b, pk_b, "test_user_b", TIMEOUT_MS),
+                    "client B challenge + send auth");
 
         std::vector<uint8_t> payload;
         TEST_ASSERT(wait_for_message(client_b, ControlMessageType::AUTH_RESPONSE, payload),
@@ -987,28 +956,15 @@ int main() {
 
     uint32_t user_c_id = 0;
     {
-        auto now = static_cast<uint64_t>(std::time(nullptr));
-
-        BinaryWriter sign_buf;
-        sign_buf.write_bytes(pk_c.data(), 32);
-        sign_buf.write_string("test_user_c");
-        sign_buf.write_u64(now);
-        Signature sig_c{};
-        TEST_ASSERT(ed25519_sign(sign_buf.data().data(), sign_buf.data().size(),
-                    sk_c, pk_c, sig_c), "client C sign");
-
-        // AUTH_IDENTITY with protocol 1.1: the server checks the MAJOR only,
-        // records the minor, and treats C as a legacy (stream 1) peer.
-        BinaryWriter w;
-        w.write_u16(LEGACY_PROTOCOL_VERSION);
-        w.write_bytes(pk_c.data(), 32);
-        w.write_string("test_user_c");
-        w.write_u64(now);
-        w.write_bytes(sig_c.data(), 64);
-        w.write_string("");  // no password
-
+        // AUTH_IDENTITY with protocol 1.1 and the pre-1.5 signature: accepted
+        // because this server runs with allow_legacy_auth. The server records
+        // the minor and treats C as a legacy (stream 1) peer. C never reads
+        // the AUTH_CHALLENGE it was sent, as an old client would not.
+        const std::vector<uint8_t> auth =
+            test::legacy_auth_identity(sk_c, pk_c, "test_user_c", LEGACY_PROTOCOL_VERSION);
+        TEST_ASSERT(!auth.empty(), "client C sign");
         TEST_ASSERT(client_c.send_message(ControlMessageType::AUTH_IDENTITY,
-                    w.data().data(), w.data().size()), "client C send auth");
+                    auth.data(), auth.size()), "client C send auth");
 
         std::vector<uint8_t> payload;
         TEST_ASSERT(wait_for_message(client_c, ControlMessageType::AUTH_RESPONSE, payload),

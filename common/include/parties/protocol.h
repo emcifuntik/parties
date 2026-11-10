@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 namespace parties::protocol {
@@ -23,7 +24,15 @@ constexpr uint8_t  PROTOCOL_VERSION_MAJOR = 1;
 //      [source] in SCREEN_SHARE_START/UPDATE/STOP, per-frame ingress type
 //      STREAM_TYPE_VIDEO_SOURCE_FRAME, trailing [stream_id] on server -> sharer
 //      PLIs. Screen shares keep stream id == user id. Additive.
-constexpr uint8_t  PROTOCOL_VERSION_MINOR = 4;
+// 1.5: server-bound authentication. The server sends AUTH_CHALLENGE when the
+//      control stream opens and a 1.5 client signs the nonce and the server's
+//      certificate fingerprint (see parties/auth_message.h), so a login made
+//      for one server cannot be replayed to another. The AUTH_IDENTITY layout
+//      is unchanged; only the signed bytes differ. NOT additive by default: a
+//      1.5 server refuses the unbound signature of older clients unless the
+//      operator opts in (Config::allow_legacy_auth), and a 1.5 client never
+//      produces one.
+constexpr uint8_t  PROTOCOL_VERSION_MINOR = 5;
 constexpr uint16_t PROTOCOL_VERSION =
     (static_cast<uint16_t>(PROTOCOL_VERSION_MAJOR) << 8) | PROTOCOL_VERSION_MINOR;
 
@@ -94,6 +103,16 @@ constexpr bool protocol_supports_camera(uint16_t version) {
     return protocol_major(version) == 1 && version >= PROTOCOL_VERSION_CAMERA;
 }
 
+// Version from which a client signs the server-bound auth message. A client
+// that reports less is using the legacy signature (pubkey, name, timestamp),
+// which any server it logs in to could replay elsewhere.
+constexpr uint16_t PROTOCOL_VERSION_BOUND_AUTH = (1u << 8) | 5u;
+constexpr bool protocol_supports_bound_auth(uint16_t version) {
+    return protocol_major(version) == 1 && version >= PROTOCOL_VERSION_BOUND_AUTH;
+}
+// AUTH_CHALLENGE payload: this many random bytes, fresh per connection.
+constexpr size_t AUTH_NONCE_SIZE = 32;
+
 // SERVER_ERROR payload: [code(u16)][message(string)]. The code lets the client
 // react programmatically (retry vs. update vs. give up) instead of parsing the
 // human-readable string.
@@ -114,6 +133,8 @@ enum class ServerErrorCode : uint16_t {
 enum class ControlMessageType : uint16_t {
     // Client -> Server
     AUTH_IDENTITY         = 0x0001,  // [protocol_version(2)][pubkey(32)][display_name][timestamp(8)][signature(64)][password]
+                                     // The signature covers auth_signed_message_bound (1.5+) or
+                                     // auth_signed_message_legacy (older), see parties/auth_message.h.
     CHANNEL_JOIN          = 0x0002,
     CHANNEL_LEAVE         = 0x0003,
     KEEPALIVE_PING        = 0x0004,
@@ -141,6 +162,10 @@ enum class ControlMessageType : uint16_t {
     SCREEN_SHARE_VIEWER   = 0x010D,   // To the sharer only (1.2+): [viewer_id(4)][watching(1)] — a viewer
                                       // subscribed (1) to / unsubscribed (0) from your stream. Never sent
                                       // for the sharer's own self-preview subscription.
+    AUTH_CHALLENGE        = 0x010E,   // (1.5+) [nonce(AUTH_NONCE_SIZE)], sent once as soon as the control
+                                      // stream opens, before the client authenticates. Older clients
+                                      // ignore it. A 1.5 client waits for it and treats a server that
+                                      // never sends one as too old to log in to.
     SERVER_ERROR          = 0x01FF,
 
     // Admin operations (client -> server)

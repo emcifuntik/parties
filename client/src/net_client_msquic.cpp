@@ -357,6 +357,9 @@ struct NetClient::Impl {
         DatagramBacklogLimits{ .max_queued = 32, .max_delay_us = 200'000 } };
 
     std::string server_fingerprint;
+    // The TLS session of the current connection was resumed from a ticket, so
+    // no certificate was exchanged. Written before `connected`.
+    std::atomic<bool> session_resumed{false};
 
     explicit Impl(NetClient& p) : parent(p) {}
 
@@ -527,6 +530,7 @@ struct NetClient::Impl {
         { std::lock_guard lock(buffer_mutex);       recv_buffer.clear(); }
         { std::lock_guard lock(video_buffer_mutex); video_recv_buffer.clear(); }
         server_fingerprint.clear();
+        session_resumed = false;
     }
 
     // ── send ─────────────────────────────────────────────────────────────
@@ -746,12 +750,16 @@ struct NetClient::Impl {
         case QUIC_CONNECTION_EVENT_CONNECTED: {
             LOG_INFO("QUIC connected");
             connecting = false;
+            session_resumed = ev->CONNECTED.SessionResumed != 0;
 
             // Control stream
             HQUIC stream = nullptr;
+            // IMMEDIATE: the server must learn of this stream before we send
+            // anything on it, because since protocol 1.5 it speaks first
+            // (AUTH_CHALLENGE) and we wait for that before authenticating.
             if (QUIC_SUCCEEDED(api->StreamOpen(conn, QUIC_STREAM_OPEN_FLAG_NONE,
                                                s_stream_cb, this, &stream)) &&
-                QUIC_SUCCEEDED(api->StreamStart(stream, QUIC_STREAM_START_FLAG_NONE))) {
+                QUIC_SUCCEEDED(api->StreamStart(stream, QUIC_STREAM_START_FLAG_IMMEDIATE))) {
                 set_stream_priority(stream, CONTROL_STREAM_PRIORITY);
                 control_stream = stream;
             } else {
@@ -1016,6 +1024,7 @@ bool NetClient::connect(const std::string& host, uint16_t port,
 
 void        NetClient::disconnect()              { impl_->disconnect(); }
 std::string NetClient::get_server_fingerprint()  const { return impl_->server_fingerprint; }
+bool        NetClient::session_resumed()         const { return impl_->session_resumed; }
 bool        NetClient::is_connected()            const { return impl_->connected; }
 bool        NetClient::is_connecting()           const { return impl_->connecting && !impl_->connected && !impl_->connect_failed_; }
 bool        NetClient::connect_failed()          const { return impl_->connect_failed_; }

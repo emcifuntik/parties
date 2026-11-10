@@ -1,6 +1,7 @@
 #include <parties/crypto.h>
 #include <parties/bip39_wordlist.h>
 
+#include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 #include <openssl/sha.h>
@@ -10,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 #include <vector>
 
@@ -115,6 +117,45 @@ bool generate_self_signed_cert(const std::string& common_name,
     X509_free(x509);
     EVP_PKEY_free(pkey);
     return true;
+}
+
+std::string certificate_file_fingerprint(const std::string& cert_path) {
+    // PEM: hash the DER exactly as stored in the file, which is what the TLS
+    // handshake sends, rather than a re-encoding of the parsed certificate.
+    if (BIO* bio = BIO_new_file(cert_path.c_str(), "rb")) {
+        std::string result;
+        char* name = nullptr;
+        char* header = nullptr;
+        unsigned char* der = nullptr;
+        long der_len = 0;
+        while (result.empty() && PEM_read_bio(bio, &name, &header, &der, &der_len) == 1) {
+            const bool is_cert = std::strcmp(name, "CERTIFICATE") == 0 ||
+                                 std::strcmp(name, "X509 CERTIFICATE") == 0;
+            if (is_cert && der_len > 0)
+                result = sha256_hex(der, static_cast<size_t>(der_len));
+            OPENSSL_free(name);
+            OPENSSL_free(header);
+            OPENSSL_free(der);
+            name = nullptr;
+            header = nullptr;
+            der = nullptr;
+        }
+        BIO_free(bio);
+        ERR_clear_error();   // reaching the end of the file queues PEM_R_NO_START_LINE
+        if (!result.empty()) return result;
+    }
+
+    // Not PEM: accept a file that is one DER certificate.
+    std::ifstream in(cert_path, std::ios::binary);
+    std::vector<uint8_t> raw((std::istreambuf_iterator<char>(in)),
+                             std::istreambuf_iterator<char>());
+    if (raw.empty()) return {};
+    const unsigned char* p = raw.data();
+    X509* x509 = d2i_X509(nullptr, &p, static_cast<long>(raw.size()));
+    ERR_clear_error();
+    if (!x509) return {};
+    X509_free(x509);
+    return sha256_hex(raw.data(), static_cast<size_t>(p - raw.data()));
 }
 
 // --- Seed phrase identity ---
