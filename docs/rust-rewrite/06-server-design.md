@@ -34,7 +34,7 @@ parts in more detail:
 | Track forwarder | One per published video track | Ingress reorder buffer, per-viewer gates, keyframe request coalescing |
 | Storage thread | One writer thread, small reader pool | SQLite |
 | File workers | Blocking pool | Streaming uploads and downloads to and from disk |
-| Maintenance task | Timer | Retention, quota, expiry of bans, invites, timeouts and address records |
+| Maintenance task | Timer | Retention, quota, expiry of bans, join codes, timeouts and address records |
 
 ## 3. Admission
 
@@ -219,7 +219,7 @@ binary; the server backs up the database file before applying one.
 | `attachments` | Message, name, size, detected media type, storage key, state |
 | `reactions` | Message, user, emoji |
 | `read_states` | Per user and channel: last read message, mention count |
-| `invites` | Hashed code, creator, channel, uses, limits, expiry, roles granted |
+| `join_codes` | Hashed code, label, creator, uses and use limit, expiry, roles granted, who redeemed it |
 | `join_requests` | Pending approvals |
 | `bans` | Identity and/or address range, reason, actor, expiry |
 | `audit_log` | Actor, action, target, changes, reason, time |
@@ -277,7 +277,13 @@ max_file_storage_gb = 50
 [tls]                    # optional: CA-issued certificate
 cert_chain = "tls/fullchain.pem"
 private_key = "tls/privkey.pem"
+
+[owner]                  # optional: without it the first-run claim decides
+key = "<identity key>"   # changing the owner later is done here, never remotely
 ```
+
+The owner and the existence of the server belong to this layer: no request
+transfers ownership or deletes a server (decision D-27).
 
 Unknown keys are an error, so a stale or misspelled option is noticed
 (compare finding F20).

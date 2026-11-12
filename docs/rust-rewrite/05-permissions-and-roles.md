@@ -54,9 +54,13 @@ is one level to reason about.
 ## 3. Permission catalogue
 
 Permissions are bits in a 64-bit mask. Bit 63 is never used, so a mask fits a
-signed 64-bit integer in SQLite and in clients without unsigned types.
+signed 64-bit integer in SQLite and in clients without unsigned types. A mask
+with bit 63 set is invalid and is rejected when it is read.
 Scope **S** means the bit is evaluated server-wide only; **C** means it can
-also be allowed or denied per channel.
+also be allowed or denied per channel. A request that adds a scope-S bit to
+the `allow` or the `deny` mask of an overwrite is refused, for the owner too.
+A scope-S bit that a stored overwrite already carries has no effect; it may
+stay or be removed.
 
 ### General
 
@@ -67,8 +71,8 @@ also be allowed or denied per channel.
 | 2 | `ManageRoles` | C | Server-wide: create and edit roles below one's own. In a channel: edit its overwrites |
 | 3 | `ManageServer` | S | Edit server settings |
 | 4 | `ViewAuditLog` | S | Read the audit log |
-| 5 | `CreateInvite` | C | Create invites |
-| 6 | `ManageInvites` | S | List and revoke others' invites |
+| 5 | `CreateJoinCodes` | C | Create join codes |
+| 6 | `ManageJoinCodes` | S | List and revoke others' join codes |
 | 7 | `KickMembers` | S | Remove a member |
 | 8 | `BanMembers` | S | Ban and unban |
 | 9 | `TimeoutMembers` | S | Temporarily silence a member |
@@ -118,12 +122,24 @@ also be allowed or denied per channel.
 
 Bits 14–15, 25–31, 46–61 are reserved. Unknown bits are stored and passed
 through unchanged, so an older client can edit a role without erasing bits a
-newer server understands.
+newer server understands. In resolution and under rule H4 a reserved bit
+behaves like a scope-C bit: overwrites apply to it, and a member can change
+it only if they hold it. "All permissions", the result for the owner and for
+administrators, is every bit from 0 to 62, reserved bits included.
+
+The bit values, names, groups and scopes never change once released.
+`parties-perm` pins every one of them in a test and keeps the same table as
+JSON for clients that are not written in Rust.
 
 ## 4. Resolution
 
 ```rust
-pub fn effective(member: &MemberView, server: &ServerView, channel: Option<&ChannelView>) -> Permissions {
+pub fn effective(
+    member: &MemberView,
+    server: &ServerView,
+    channel: Option<&ChannelView>,
+    now: Timestamp,
+) -> Permissions {
     if member.user_id == server.owner_id {
         return Permissions::ALL;
     }
@@ -143,12 +159,15 @@ pub fn effective(member: &MemberView, server: &ServerView, channel: Option<&Chan
         if let Some(ow) = ch.overwrite_for_role(server.everyone.id) {
             perms = (perms & !ow.deny) | ow.allow;
         }
-        let (mut allow, mut deny) = (Permissions::empty(), Permissions::empty());
+        let (mut allow, mut deny) = (Permissions::EMPTY, Permissions::EMPTY);
         for role in &member.roles {
             if let Some(ow) = ch.overwrite_for_role(role.id) {
                 allow |= ow.allow;
                 deny |= ow.deny;
             }
+        }
+        if member.speak_grant == Some(ch.id) {
+            allow |= Permissions::SPEAK;          // temporary speak grant, section 8
         }
         perms = (perms & !deny) | allow;          // among roles, allow wins over deny
         if let Some(ow) = ch.overwrite_for_member(member.user_id) {
@@ -159,23 +178,59 @@ pub fn effective(member: &MemberView, server: &ServerView, channel: Option<&Chan
     }
 
     // 3. Implied restrictions.
-    apply_implications(perms, member, channel)
+    apply_implications(perms, member, server, channel.is_some(), now)
 }
 ```
 
-Implied restrictions, applied last:
+The function is pure. The current time is an argument: the server passes its
+clock, and tests pass any instant they like. Besides roles and overwrites it
+reads three things:
 
-| Condition | Effect |
+| Input | Rule |
 |---|---|
-| No `ViewChannel` in the channel | No permission in that channel at all |
-| No `Connect` | No voice or video permission in that channel |
-| No `SendMessages` | No `AttachFiles`, `EmbedLinks`, `MentionEveryone` |
-| Member is timed out | Only `ViewChannel` and `ReadMessageHistory` remain |
-| Member is younger than the server's new-member period | The bits listed in the server's "restricted until verified" setting are removed |
+| `now` | Milliseconds since the Unix epoch. Every comparison of times below uses it |
+| `member.timeout_until` | The member is timed out while `now` is before it. A timeout until T has ended at T |
+| `member.speak_grant` | The channel in which the member holds a temporary speak grant (section 8). In that channel it counts as one more role-level allow of `Speak`; it has no effect anywhere else |
 
-This is deliberately the algorithm Discord documents, so administrators who
-know Discord get the behaviour they expect, and so its edge cases are well
-understood.
+Notes on step 2:
+
+- `@everyone` is implied. Listing it among a member's roles changes nothing:
+  its overwrite is applied once, on the least specific level.
+- A reserved bit follows overwrites like a scope-C bit.
+- Storage allows one overwrite per channel and target (section 11). Should
+  two rows for one target ever reach resolution, a denial wins on the
+  `@everyone` level and on the member level, so the error fails closed.
+
+Implied restrictions, applied last and in this order:
+
+| # | Condition | Effect | Applies |
+|---|---|---|---|
+| 1 | Member is timed out | Only `ViewChannel` and `ReadMessageHistory` remain | Server-wide and in a channel |
+| 2 | Member is restricted as a new member | The bits listed in the server's "restricted until verified" setting are removed | Server-wide and in a channel |
+| 3 | No `ViewChannel` in the channel | No permission in that channel at all: the result is empty, server-scope and reserved bits included | In a channel only |
+| 4 | No `Connect` | No permission of the group "Voice and video" (bits 32–45). That includes `MuteMembers`, `DeafenMembers`, `MoveMembers` and `DisconnectMembers` | Server-wide and in a channel |
+| 5 | No `SendMessages` | No `AttachFiles`, `EmbedLinks`, `MentionEveryone` | Server-wide and in a channel |
+
+Rows 1 and 2 come first, so the result is always closed under rows 3 to 5,
+even when the "restricted until verified" setting names `ViewChannel`,
+`Connect` or `SendMessages`. Row 3 has no server-wide form: a member without
+`ViewChannel` server-wide keeps their other server-wide permissions and sees
+exactly the channels where an overwrite allows `ViewChannel`.
+
+A member is restricted as a new member (row 2) when either condition of the
+server's new-member setting holds:
+
+| Condition | Rule |
+|---|---|
+| Age | The member joined less than the new-member period ago: `now - joined_at < period`. At exactly the period the restriction is over. A period of 0 turns the condition off. A join time in the future counts as age 0 |
+| Without a role | The server requires a role and the member has none besides `@everyone`. The member's age does not matter. Off unless the server turns it on |
+
+The owner and administrators return before step 3. A timeout or the
+new-member restriction does not change what they resolve to (section 8).
+
+Steps 1 and 2 are deliberately the algorithm Discord documents, so
+administrators who know Discord get the behaviour they expect, and so its
+edge cases are well understood.
 
 ## 5. Hierarchy rules
 
@@ -184,20 +239,47 @@ Let `top(m)` be the highest position among a member's roles (0 with only
 
 | # | Rule |
 |---|---|
-| H1 | The owner passes every check and cannot be the target of any moderation action. Only the owner can transfer ownership |
-| H2 | A member can create, edit, delete or reorder a role only if the role's position is **strictly below** `top(actor)` |
-| H3 | A member can assign or revoke a role only if the role is strictly below `top(actor)`, and, when the target is someone else, `top(target)` is strictly below `top(actor)` |
-| H4 | **No escalation.** A member cannot put a permission bit into a role, or into the `allow` mask of an overwrite, unless they hold that bit themselves (server-wide for roles, in that channel for overwrites). The same applies to numeric limits: nobody can grant a limit above their own |
-| H5 | Kick, ban, timeout, nickname change, server mute and deafen, move and disconnect require `top(target)` strictly below `top(actor)` |
-| H6 | Editing a channel's overwrites needs `ManageRoles` in that channel. An overwrite for a role at or above `top(actor)` cannot be edited |
-| H7 | Equal top positions: neither member can act on the other |
-| H8 | `@everyone` cannot be deleted, moved or assigned. Its permissions can be edited under H4 |
-| H9 | `Administrator` holders are still bound by H2, H3 and H5. Only position decides who outranks whom |
-| H10 | The owner cannot leave the server or be removed; ownership must be transferred first |
+| H1 | The owner passes every check and cannot be the target of any moderation action, not even their own. Nobody but the owner can change the owner's roles or edit a member overwrite for the owner. Who the owner is is set on the server host and cannot be changed by any request (D-27) |
+| H2 | A member can create, edit, delete or reorder a role only if the role's position is **strictly below** `top(actor)`. A new role is created at a position strictly below `top(actor)`. A reordered role is strictly below `top(actor)` both before and after the move, so nobody lifts a role to their own level |
+| H3 | A member can assign or revoke a role only if the role is strictly below `top(actor)`, and, when the target is someone else, `top(target)` is strictly below `top(actor)`. A member can therefore take or drop roles below their top role, but cannot revoke their own top role. Assigning is also subject to H4 |
+| H4 | **No escalation.** A member can change a permission bit, in either direction, only if they hold that bit themselves: server-wide for the mask of a role, in that channel for the `allow` mask and the `deny` mask of an overwrite. A bit the actor does not hold stays exactly as it is. Assigning a role hands out its permissions and limits, so a member can assign a role only if they hold every bit of its mask server-wide. The same applies to numeric limits: a limit stays as it is or changes to a value that is at most the actor's own, and no limit of an assigned role exceeds the actor's own (section 6) |
+| H5 | Kick, ban, timeout, nickname change, server mute and deafen, move and disconnect require `top(target)` strictly below `top(actor)`. Nobody takes these actions against themself (H7); changing one's own nickname and leaving voice are separate requests |
+| H6 | Editing a channel's overwrites needs `ManageRoles` in that channel. An overwrite for a role at or above `top(actor)` cannot be edited. An overwrite for a member can be edited only if `top(target)` is strictly below `top(actor)`, so nobody edits their own member overwrite. Deleting an overwrite is editing both masks to empty and follows the same rules, H4 included |
+| H7 | Equal top positions: neither member can act on the other. Where a rule needs the target strictly below the actor, acting on oneself is refused under this rule too |
+| H8 | `@everyone` cannot be deleted, moved, assigned or revoked, and no other role can be created at or moved to position 0. Its permissions can be edited under H4 by any member who has at least one role (H2: position 0 is strictly below theirs) |
+| H9 | `Administrator` holders are still bound by H2, H3, H5 and the rank rule of H6. Only position decides who outranks whom |
+| H10 | The owner cannot leave the server or be removed; ownership changes only on the host |
+
+What a member **holds**, for H4, is their effective permission set at the
+time of the request (section 4), implied restrictions included. A timed-out
+member holds only `ViewChannel` and `ReadMessageHistory`; a member without
+`SendMessages` does not hold `AttachFiles`. The owner and administrators hold
+every bit.
+
+H4 covers clearing a bit as well as setting it. In a role mask this is what
+the role editor shows as "locked" ([07](07-server-management.md) section 4).
+In the `deny` mask of an overwrite it is necessary: lifting a denial hands
+out the permission just as an allow does.
 
 H4 and H9 together mean a moderator can never hand out more than they have,
 and two administrators cannot demote each other unless one outranks the
-other.
+other. Precisely, for every operation a member is permitted to perform:
+
+- the member's own server-wide permissions, limits and rank do not grow;
+- a permission anyone gains in the server-wide base (step 1 of section 4) is
+  one the member held, and a limit anyone gains is at most the member's own;
+- after an overwrite edit, a bit anyone gains in that channel before the
+  implied restrictions is one the member held there, and the member's own
+  permissions in the channel do not grow.
+
+H4 does not look at the overwrites that name a role. Taking, dropping or
+deleting a role can therefore open or close a channel for a member through
+that role's overwrites. The hierarchy governs that (H2, H3): a role below a
+member's top position is one that member may manage.
+
+Every refusal names the rule that refused, so the client can show the
+reason. H9 is never named: it only says that the other rules bind
+administrators too.
 
 ## 6. Role limits
 
@@ -213,12 +295,22 @@ Numeric limits answer "how much", where a bit can only answer "whether".
 | `daily_upload_quota` | MiB | 500 |
 | `max_published_video_tracks` | count | 2 |
 
-A member's limit is the **maximum** over their roles. The value actually
-applied is the minimum of that, the server-wide cap, and the channel's own
-cap where one exists (for example a channel bitrate). The owner and
-administrators get the server-wide cap. Limits are sent to the client in
-`Ready` so the UI can offer only what the server will accept; the server
-enforces them regardless.
+A member's limit is the **maximum** over their roles, `@everyone` included. A
+role that does not set a limit holds 0 for it and so contributes nothing. The
+value actually applied is the minimum of that, the server-wide cap, and the
+channel's own cap where one exists (for example a channel bitrate). The owner
+and administrators get the server-wide cap in place of their own limit; a
+channel's cap applies to them as it does to anyone. Limits are sent to the
+client in `Ready` so the UI can offer only what the server will accept; the
+server enforces them regardless.
+
+Under H4, the actor's own limit is the maximum over the actor's roles, before
+any cap. A cap bounds what is applied, not what a member holds, so changing
+the server-wide cap later neither turns an earlier grant into an escalation
+nor makes a role impossible to assign. The owner and administrators are not
+bounded by H4 on limits: the value applied to them is the server-wide cap,
+which already bounds every role. In both cases a grant never raises the value
+applied to a member above the value applied to whoever made it.
 
 ## 7. Enforcement
 
@@ -252,6 +344,11 @@ The world task calls `authorize(actor, requirement)` before it touches state.
 Handlers receive a proof-of-authorization value that only `authorize` can
 construct, so a handler cannot be called without the check.
 
+`Scope`, `Hierarchy`, the permission test and the hierarchy and escalation
+checks do not need the request types and live in `parties-perm`.
+`requirement()`, `authorize` and the proof-of-authorization value live in
+`parties-server`, which owns the request types.
+
 ### 7.2 Representative requirements
 
 | Request | Scope | Permission | Hierarchy / extra |
@@ -263,16 +360,17 @@ construct, so a handler cannot be called without the check.
 | `DeleteMessage` | Channel of message | `ManageMessages` | Or the author |
 | `PinMessage` | Channel of message | `PinMessages` | |
 | `CreateChannel` | Parent category or server | `ManageChannels` | |
-| `SetOverwrite` | Channel | `ManageRoles` | H4, H6 |
+| `SetOverwrite`, `DeleteOverwrite` | Channel | `ManageRoles` | H4, H6, H7 |
 | `CreateRole`, `UpdateRole` | Server | `ManageRoles` | H2, H4 |
-| `AssignRole` | Server | `ManageRoles` | H3 |
+| `DeleteRole`, `ReorderRoles` | Server | `ManageRoles` | H2, H8 |
+| `AssignRole` | Server | `ManageRoles` | H3, H4 |
+| `RevokeRole` | Server | `ManageRoles` | H3 |
 | `KickMember` | Server | `KickMembers` | H5 |
 | `BanMember` | Server | `BanMembers` | H5 |
 | `ServerMute` | Target's voice channel | `MuteMembers` | H5 |
 | `MoveMember` | Source and destination channel | `MoveMembers` in source, `Connect` in destination | H5 |
 | `UpdateServerSettings` | Server | `ManageServer` | |
 | `FetchAuditLog` | Server | `ViewAuditLog` | |
-| `TransferOwnership` | Server | Owner only | |
 
 ### 7.3 Visibility
 
@@ -304,16 +402,35 @@ new snapshot.
 
 | State | Set with | Effect |
 |---|---|---|
-| Timeout until T | `TimeoutMembers` | Section 4: read-only everywhere. Ends automatically |
+| Timeout until T | `TimeoutMembers` | Section 4: read-only everywhere while the current time is before T. Ends automatically at T |
+| New-member restriction | Automatic, from the server's new-member setting | Section 4: the "restricted until verified" bits are removed while the member is new |
 | Server-muted | `MuteMembers` | Voice not forwarded, in every channel, until cleared |
 | Server-deafened | `DeafenMembers` | Receives no audio |
 | Temporary speak grant | `MuteMembers` in a moderated channel | Lets a member who raised a hand speak until they leave the channel |
 | Ban | `BanMembers` | Identity and/or address range; optional expiry; see [04](04-connection-security.md) §6.3 |
 
+Timeout, new-member restriction and the temporary speak grant are inputs of
+resolution (section 4). Server mute and server deafen are not: `effective()`
+returns the same set for a muted member, and the world applies the two flags
+on top of it when it computes the routing snapshot.
+
+The owner and administrators are not affected by a timeout or by the
+new-member restriction: resolution returns all permissions for them before
+the implied restrictions are applied. A member who outranks an administrator
+can still time them out (H5), but the timeout has no effect while they hold
+`Administrator`. The owner cannot be timed out at all (H1).
+
 A **moderated channel** is an ordinary voice channel where `@everyone` is
 denied `Speak` and a speaker role is allowed it. `RequestToSpeak` plus the
 temporary grant give it the "hand raise" flow without a separate channel
 type. This also covers TeamSpeak's talk-power use case.
+
+The temporary speak grant is not an overwrite. In the channel it was given
+for, it counts as one more role-level allow of `Speak`. It therefore lifts a
+denial on `@everyone` or on a role, but a member overwrite that denies
+`Speak` still wins, and so do a timeout, the new-member restriction and a
+missing `ViewChannel` or `Connect`. It grants nothing in any other channel,
+and the server clears it when the member leaves the channel.
 
 Every action in this section and every structural change writes an audit-log
 entry: actor, action, target, before and after values, optional reason.
@@ -322,14 +439,28 @@ entry: actor, action, target, before and after values, optional reason.
 
 | Role | Position | Permissions |
 |---|---|---|
-| `@everyone` | 0 | `ViewChannel`, `CreateInvite`, `ChangeNickname`, `SendMessages`, `ReadMessageHistory`, `AttachFiles`, `EmbedLinks`, `AddReactions`, `Connect`, `Speak`, `UseVoiceActivity`, `StreamScreen`, `StreamCamera`, `UseAuxAudio`, `RequestToSpeak` |
+| `@everyone` | 0 | `ViewChannel`, `CreateJoinCodes`, `ChangeNickname`, `SendMessages`, `ReadMessageHistory`, `AttachFiles`, `EmbedLinks`, `AddReactions`, `Connect`, `Speak`, `UseVoiceActivity`, `StreamScreen`, `StreamCamera`, `UseAuxAudio`, `RequestToSpeak` |
 | Moderator | 1 | Adds `KickMembers`, `TimeoutMembers`, `ManageNicknames`, `ManageMessages`, `PinMessages`, `MuteMembers`, `DeafenMembers`, `MoveMembers`, `DisconnectMembers`, `ViewAuditLog`, `ApproveMembers` |
 | Admin | 2 | `Administrator` |
 
+A role's mask holds only what the role adds: every member also has
+`@everyone`, so Moderator does not repeat its bits. `@everyone` carries the
+default limits of section 6; Moderator and Admin set no limit.
+
+The new-member setting (section 4) starts as follows:
+
+| Setting | Default |
+|---|---|
+| "Restricted until verified" bits | `Speak`, `SendMessages`, `StreamScreen`, `StreamCamera`, `UseAuxAudio`. Without `SendMessages` a member also loses `AttachFiles` and `EmbedLinks` (section 4) |
+| New-member period | 0: nobody is restricted by age |
+| Role required | No |
+
 The first-run wizard offers two presets on top of this: **Friends** (open
-defaults as above) and **Community** (invite-only join policy, new members
-restricted for ten minutes, `MentionEveryone` and `CreateInvite` removed from
-`@everyone`).
+defaults as above) and **Community** (join-code join policy, a new-member
+period of ten minutes, `CreateJoinCodes` removed from `@everyone`).
+`MentionEveryone` is not granted to `@everyone` in either preset. Neither
+preset requires a role, so in Community a member is restricted for the ten
+minutes after joining and no longer.
 
 ## 10. What clients see
 
@@ -407,17 +538,21 @@ review the result before opening the server.
 | Timeout | — | Timeout |
 | Stage channel, request to speak | Talk power, talk request | Moderated channel, `RequestToSpeak` |
 | Nitro stream quality | Numeric permissions such as maximum bitrate | Role limits |
-| Invite with role (via onboarding) | Privilege key | Invite that grants roles |
+| Invite with role (via onboarding) | Privilege key | Join code that grants roles |
 | — | Identity security level | Identity level |
 
 ## 14. Testing
 
-| Kind | What it proves |
-|---|---|
-| Golden vectors (JSON, shared with any future non-Rust client) | The algorithm in section 4 on hand-written cases, including every implied restriction |
-| Property tests | Owner and administrator always resolve to all; a member overwrite always overrides role overwrites; adding a role never removes a server-wide bit |
-| Model-based test of H4 | For random sequences of permitted operations by a non-administrator, the actor's effective permissions never gain a bit |
-| Hierarchy tests | No request succeeds against a target at or above the actor's top position |
-| Authorization matrix | Generated from `requirement()`: every request type is refused without its permission |
-| Visibility test | A bot without `ViewChannel` records every frame it receives; none mentions the hidden channel |
-| Revocation tests | Section 7.5, end to end, including that forwarded audio stops within one snapshot update |
+| Kind | What it proves | Lives in |
+|---|---|---|
+| Pinned catalogue | Every bit value, name, group and scope of section 3 and the default masks of section 9, as integers | `parties-perm` |
+| Golden vectors (JSON, shared with any future non-Rust client) | The algorithm in section 4 on hand-written cases, including every implied restriction, the time boundaries and the temporary speak grant | `parties-perm` |
+| Property tests | Owner and administrator always resolve to all; a member overwrite always overrides role overwrites; adding a role never removes a server-wide bit; the result is closed under the implied restrictions; resolution agrees with a second implementation written from section 4 | `parties-perm` |
+| Model-based test of H4 | For random sequences of permitted operations by a non-administrator, the actor's server-wide effective permissions and limits never gain; nobody gains what the actor does not hold; an overwrite edit gives the actor nothing in that channel; rank is untouched (the three statements after the table in section 5). The generator is checked to produce permitted and refused operations of every kind | `parties-perm` |
+| Hierarchy tests | No request succeeds against a target at or above the actor's top position, administrators included; every refusal names its rule | `parties-perm` |
+| Authorization matrix | Generated from `requirement()`: every request type is refused without its permission | `parties-server`, which owns `requirement()` |
+| Visibility test | A bot without `ViewChannel` records every frame it receives; none mentions the hidden channel | `parties-testkit`, against an in-process server |
+| Revocation tests | Section 7.5, end to end, including that forwarded audio stops within one snapshot update | `parties-testkit`, against an in-process server |
+
+`parties-perm` holds the tests that need neither request types nor a running
+server. The last three need one or the other and belong to the crates named.

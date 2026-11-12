@@ -23,9 +23,9 @@ Each feature gets a tier:
 |---|---|---|---|---|---|
 | Roles with hierarchy and per-channel overrides | Yes | Yes (server and channel groups) | Four fixed roles | Launch | [05](05-permissions-and-roles.md) |
 | Categories / channel tree | Categories | Nested channels | Flat lists | Launch | One level of categories; deeper nesting is Later |
-| Invites (expiry, use limit) | Yes | Privilege keys, temporary passwords | No | Launch | Invite links also carry the server key, which fixes first-contact trust |
-| Invites that grant roles | Via onboarding | Privilege keys | No | Launch | Cheap once invites exist |
-| Join policy: open, password, invite-only, approval | Screening, verification levels | Passwords, security level | Password only | Launch | [04](04-connection-security.md) §5.3 |
+| Join codes: single-use codes that admit a new identity | Invites | Privilege keys, temporary passwords | No | Launch | A join link also carries the server key, which fixes first-contact trust. [13](13-profiles-access-and-hardware-keys.md) §5 |
+| Join codes that grant roles | Via onboarding | Privilege keys | No | Launch | Cheap once join codes exist |
+| Join policy: open, password, join code, approval | Screening, verification levels | Passwords, security level | Password only | Launch | [04](04-connection-security.md) §5.3 |
 | First-run wizard and server templates | Templates | — | No | Launch (wizard), Later (templates) | |
 | Temporary channels, "join to create" | Via bots | Yes | No | Soon | Popular TeamSpeak habit; small feature |
 | Channel passwords | No | Yes | No | No | Private channels through overwrites cover it |
@@ -87,7 +87,7 @@ Each feature gets a tier:
 | Text chat inside voice channels | Yes | Channel chat | Separate text channels | Launch | A voice channel is also a text channel |
 | Slow mode | Yes | Anti-flood | No | Launch | Also an abuse control |
 | Link previews | Yes | — | No | Soon | Privacy and SSRF trade-off, section 9 |
-| Direct messages between members of a server | Global DMs | Private messages | No | Soon | Within one server; global DMs are Later |
+| Direct messages between members of a server | Global DMs | Private messages | No | Later | Left out of the first version (D-30). Within one server; global DMs are further out still |
 | Custom emoji | Yes | Icons | No | Soon | |
 | Threads | Yes | — | No | Later | |
 | Polls, stickers, voice messages, forum channels | Yes | — | No | Later | |
@@ -113,10 +113,12 @@ Each feature gets a tier:
 | No account, key-based identity | No | Yes | Yes | Launch | Core of the product; keep |
 | Recovery phrase, import and export | — | Identity export | Yes | Launch | Versioned derivation |
 | Secure key storage | — | — | Plaintext | Launch | OS keystore |
-| Avatar, nickname per server, status | Yes | Avatar, nickname, away | Display name | Launch | |
-| Presence (online, idle, in voice) | Yes | Yes | In voice only | Launch | |
+| Avatar, nickname per server, status | Yes | Avatar, nickname, away | Display name | Launch | Pictures synchronised by hash, rename yourself in place: [13](13-profiles-access-and-hardware-keys.md) §3–4 |
+| Presence (online, idle, in voice) and a full member list | Yes | Yes | In voice only | Launch | [13](13-profiles-access-and-hardware-keys.md) §2. Three states set by hand; status text, "Invisible" and automatic idle are left out (D-30) |
 | Several devices at once | Yes | One per identity per server | New login replaces old | Soon | Session model supports it from 2.0 |
 | Device keys with revocation | — | — | No | Soon | Wire field reserved |
+| Sign in with a hardware security key | Yes (as a second factor) | — | No | Launch, optional | [13](13-profiles-access-and-hardware-keys.md) §6 |
+| Identity key kept in a passkey | Yes (passkey login to an account) | — | No | Launch, optional | Decided (D-28); depends on the Phase 0 PRF spike. [13](13-profiles-access-and-hardware-keys.md) §7 |
 | Friends, activity status | Yes | Contacts | No | Later / No | Activity tracking is not planned |
 
 ## 8. Platforms, administration, integrations
@@ -147,7 +149,7 @@ it contradicts "no accounts, no tracking".
 |---|---|---|
 | Mobile push | Apple and Google only accept pushes from the app's publisher | A relay run by the project. Servers send it a wake-up for a device token; the payload has no content, the app fetches from its server after waking. Operators can turn it off |
 | Server directory | Somebody has to host the list | Opt-in listing, entries signed by the server key, no user data |
-| Invite landing page | A `parties://` link is useless to someone without the app | A static redirect page that offers the download and then opens the link; the server key stays in the fragment and never reaches the web server |
+| Join-link landing page | A `parties://` link is useless to someone without the app | A static redirect page that offers the download and then opens the link; the server key stays in the fragment and never reaches the web server |
 | Link previews | Fetching from the client reveals the reader's address; fetching from the server is a request-forgery risk | Off by default. When on, the server fetches through a hardened fetcher that refuses private address ranges and limits size and time |
 | Update feed | Central by nature | Signed metadata, see [11](11-quality-and-release.md) |
 
@@ -172,7 +174,7 @@ incumbents, and the rewrite should protect them:
 ## 11. Recommended launch scope, in one list
 
 1. Roles, overwrites, categories, management UI, audit log.
-2. Invites with pinned server keys; join policies; bans, timeouts, identity
+2. Join codes and links with pinned server keys; join policies; bans, timeouts, identity
    level.
 3. All connection-security work in [04](04-connection-security.md), signed
    updates, an honest privacy statement.

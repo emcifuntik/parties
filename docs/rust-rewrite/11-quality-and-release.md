@@ -46,8 +46,9 @@ Miri or a sanitizer in CI.
 - Forbidden in `parties-proto`, `parties-perm`, `parties-identity`,
   `parties-transport`, `parties-media`, `parties-store`, `parties-core` and
   `parties-server`.
-- Allowed in `parties-audio`, `parties-video` and the platform shells, only
-  to call operating-system or vendor interfaces.
+- Allowed in `parties-audio`, `parties-video`, `parties-encdec`, the two
+  codec wrappers and the platform shells, only to call operating-system or
+  vendor interfaces.
 - Each `unsafe` block has a comment stating why it is sound. Each module that
   contains one exposes a safe interface and has a test that exercises it
   under a sanitizer where the platform allows.
@@ -127,13 +128,26 @@ write a small updater around the signed manifest.
   are size-capped.
 - The privacy statement lists exactly what a report contains.
 
-## 9. Performance tracking
+## 9. Performance, memory and leak gates
 
-| What | How |
-|---|---|
-| Hot paths: audio fan-out, permission resolution, parsers, routing snapshot rebuild | Benchmarks with thresholds, run nightly |
-| Voice and video under impairment | Acceptance scenarios record latency, freeze count and recovery time; a regression beyond a set margin fails the nightly run |
-| Client budgets in [08](08-client-design.md) section 9 | Measured on reference machines before each release |
+Decision D-21 makes these release criteria. The rules they check are in
+[02](02-target-architecture.md) section 10 and the budgets in
+[08](08-client-design.md) section 9.
+
+| Gate | How it is checked | Runs |
+|---|---|---|
+| No allocation per frame | Audio and video hot paths run in tests under an allocator that fails on allocation after warm-up | Every change |
+| Copy counts | Each media path has a debug counter of payload copies; tests assert the numbers in the copies table | Every change |
+| No leaks on the client | Soak scenario: connect, join, talk, share, watch, stop, leave, disconnect, 500 times. Process memory, GPU memory and OS handle counts end within a small margin of where they started | Nightly |
+| No leaks on the server | The same loop driven by bots, plus join and leave floods | Nightly |
+| No leaks in the wrappers | `parties-amf` and `parties-nvcodec` create and destroy sessions in a loop on GPU runners; the SDKs' own object counters and GPU memory return to baseline | Nightly, on hardware runners |
+| Memory ceilings | The budgets in [08](08-client-design.md) section 9, measured on reference machines | Before each release, and nightly on the build machine |
+| Cache budgets | Avatars, images, glyphs and history never exceed their configured limits under a synthetic load | Every change |
+| Hot-path speed | Benchmarks with thresholds for audio fan-out, permission resolution, parsers and routing snapshot rebuild | Nightly |
+| Latency and recovery | The impairment scenarios record latency, freeze count and recovery time; a regression beyond a set margin fails | Nightly |
+
+Unsafe code in the wrappers and platform crates additionally runs under
+address and leak sanitizers where the platform has them.
 
 ## 10. Documentation shipped with a release
 

@@ -33,9 +33,10 @@ client, federation between servers. The design keeps the door open for each
 4. **Pure logic is separated from I/O.** Jitter buffers, congestion logic,
    permission checks and parsers are plain functions over plain data, so they
    can be unit-tested, property-tested and fuzzed without devices or sockets.
-5. **`unsafe` is confined.** Protocol, permission, identity, server and client
-   core crates forbid `unsafe`. Only the platform crates (audio, video, OS
-   shells) may use it, behind safe APIs with written invariants.
+5. **`unsafe` is confined.** Protocol, permission, identity, server, client
+   core and UI crates forbid `unsafe`. Only the platform crates (audio,
+   video, the codec wrappers, OS shells) may use it, behind safe APIs with
+   written invariants.
 6. **The UI is a thin layer.** Everything the UI shows comes from the client
    core's state; everything the user does is a command to the core. The core
    runs headless, which is how bots and tests drive it.
@@ -56,7 +57,10 @@ crates/
   parties-transport/       QUIC endpoint setup, typed streams, framing, datagram policy
   parties-media/           jitter buffer, reorder, send controller, backlog gates, playout
   parties-audio/           devices, DSP chain, Opus, mixer
-  parties-video/           capture, encoders, decoders, GPU frame types
+  parties-amf/             Rust wrapper for AMD AMF (bindings + safe API)
+  parties-nvcodec/         Rust wrapper for NVIDIA NVENC and NVDEC (bindings + safe API)
+  parties-encdec/          port of encdec: codec traits, backend selection, rate control
+  parties-video/           capture, GPU frame types, send and receive pipelines
   parties-store/           client database and OS keystore
   parties-core/            client engine: sessions, state store, commands
   parties-ui/              views and view models
@@ -80,10 +84,12 @@ xtask/                     packaging, signing, iOS archive, schema checks
 | `parties-transport` | quinn, rustls, `parties-proto` | Forbidden | The only crate that names the QUIC library |
 | `parties-media` | `parties-proto` | Forbidden | Ports of `common/src/video_*`, `datagram_backlog.h`, mixer logic |
 | `parties-audio` | cpal, opus, DSP crates | Allowed | Real-time rules in section 6 |
-| `parties-video` | wgpu, windows, objc2-* | Allowed | Backends behind traits; see [08](08-client-design.md) |
+| `parties-amf`, `parties-nvcodec` | Vendor headers, loaded at run time | Allowed | Thin, complete, reusable outside Parties; each owns its handles through RAII types. Decision D-12 |
+| `parties-encdec` | the two wrappers, windows, objc2-*, software decoders | Allowed | Port of `encdec/`: same factory order, fallbacks and rate control |
+| `parties-video` | `parties-encdec`, wgpu, windows, objc2-* | Allowed | Capture and pipelines; see [08](08-client-design.md) |
 | `parties-store` | rusqlite, keyring | Forbidden | |
 | `parties-core` | all client crates except UI | Forbidden | Headless-capable |
-| `parties-ui` | `parties-core`, UI toolkit | Toolkit-dependent | See decision D-04 |
+| `parties-ui` | `parties-core`, lurq | Forbidden | Decision D-04 |
 | `parties-server` | transport, proto, perm, identity, media, rusqlite | Forbidden | |
 | `parties-testkit` | core, server, transport | Forbidden | |
 
@@ -139,9 +145,9 @@ policy (see [11](11-quality-and-release.md)).
 | Echo cancellation | speexdsp | WebRTC audio processing on desktop, VoiceProcessingIO on Apple | D-16 |
 | Screen capture | WGC / ScreenCaptureKit | `windows` crate / `objc2-screen-capture-kit` | |
 | Camera | Media Foundation | `windows` crate / `objc2-av-foundation` | |
-| Video encode/decode | NVENC, AMF, MFT, VideoToolbox, dav1d, libhevc, OpenH264 | MFT and VideoToolbox first; NVENC/NVDEC/AMF via bindings; `rav1d` or `dav1d` | D-12 allows a temporary bridge to the existing `encdec` library |
-| GPU and video display | DX12, Metal, custom converters | `wgpu` (DX12 and Metal backends) | Zero-copy import of decoder surfaces is a Phase 0 spike item |
-| UI | RmlUi (RML/RCSS) | Slint | D-04, gated by a spike |
+| Video encode/decode | The C++ `encdec` library: NVENC, NVDEC, AMF, MFT, VideoToolbox, dav1d, libhevc, OpenH264 | `parties-encdec` on top of two new wrappers, `parties-amf` and `parties-nvcodec`, plus MFT, VideoToolbox and a software AV1 decoder | D-12: a full port, no C++ bridge |
+| GPU and video display | DX12, Metal, custom converters | lurq's renderer (`wgpu`, or DX12 on Windows) showing textures the decoders produced | Needs texture import in lurq; see [08](08-client-design.md) section 6.1 |
+| UI | RmlUi (RML/RCSS) | lurq | D-04 |
 | Tray, menus, hotkeys | Win32, AppKit | `tray-icon`, `muda`, `global-hotkey`, plus a low-level key hook for push-to-talk | |
 | File dialogs | `GetOpenFileNameA` | `rfd` | Fixes the Apple attachment gap |
 | Secret storage | Plain SQLite | `keyring` (DPAPI / Keychain) | |
@@ -222,8 +228,7 @@ buffers on the audio path. Details: [08-client-design.md](08-client-design.md).
   [07-server-management.md](07-server-management.md)).
 - **Time:** monotonic clocks for all protocol logic; wall-clock time only for
   display and audit timestamps.
-- **Feature flags:** `legacy-encdec` (temporary C++ codec bridge), `tracy`,
-  `sentry`. No flag changes wire behaviour.
+- **Feature flags:** `tracy`, `sentry`. No flag changes wire behaviour.
 
 ## 8. Build targets
 
@@ -251,3 +256,50 @@ CallKit, push registration). See [08](08-client-design.md) section 7.
 
 Everything else, including all protocol, state, security and media-transport
 logic, is Rust.
+
+## 10. Performance rules
+
+Decision D-21 makes performance a requirement: zero-copy wherever possible,
+no leaks, minimal memory. These rules turn that into things a review or a
+test can check. The numbers are in [08](08-client-design.md) section 9 and
+the gates in [11](11-quality-and-release.md) section 9.
+
+### Copies
+
+| Path | Allowed copies of the payload |
+|---|---|
+| Captured frame to encoder | None. The capture texture, or a GPU-scaled version of it, is the encoder's input surface |
+| Encoder output to the network | One, into the buffer the QUIC stream takes ownership of |
+| Network to decoder | None beyond the receive buffer; the decoder reads the reassembled frame in place |
+| Decoder output to the screen | None. The decoder's GPU surface is sampled by the UI renderer; colour conversion happens in the shader |
+| Voice datagram through the server | None. One reference-counted buffer is shared by all recipients |
+| Video frame through the server | One receive buffer, shared by all viewers |
+| Audio capture to encoder, decoder to playback | Fixed-size ring buffers; no allocation per frame |
+
+A path that cannot meet its row documents why, next to the code, and has a
+counter that tests can assert on.
+
+### Memory
+
+1. **Every buffer has an owner and a bound.** Queues are bounded; pools are
+   sized at start; nothing grows with the length of a session.
+2. **Per-frame work does not allocate.** Audio and video hot paths take
+   buffers from pools. Tests run them under an allocator that fails the test
+   on an allocation.
+3. **Caches have budgets.** Avatars, images, glyphs and message history each
+   have a byte limit and an eviction rule, set from one place.
+4. **GPU memory is counted too.** Textures and encoder or decoder surfaces
+   are created through one allocator per device that reports its total.
+5. **Idle costs nothing.** A hidden window does not render; a muted
+   microphone does not encode; an unwatched stream is not decoded.
+
+### Leaks
+
+1. **Ownership is in the type.** Every handle from an operating system or a
+   vendor SDK lives in a type that releases it on drop. No handle is passed
+   around as a raw pointer outside the wrapper crates.
+2. **Reference cycles are designed out.** Long-lived objects refer to each
+   other by id through the single-writer state, not by shared pointers.
+3. **Soak tests measure it.** Connect, join, talk, share, stop, leave and
+   disconnect in a loop; process memory, GPU memory and handle counts must
+   return to their starting values.

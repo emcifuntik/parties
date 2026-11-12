@@ -70,6 +70,7 @@ hotkeys, power management, file dialogs, deep links, clipboard.
 | Data | Storage |
 |---|---|
 | Identity keys and recovery entropy | OS keystore only |
+| Identity key kept in a passkey | The passkey provider holds the secret; the client stores the passkey's id and the expected fingerprint in the database, and, after the first unlock on the device, the derived entropy in the OS keystore ([13](13-profiles-access-and-hardware-keys.md) section 7) |
 | Servers: name, address, pinned server key, order | Client database |
 | Preferences, per-user volumes and local mutes, window state, drafts | Client database |
 
@@ -155,7 +156,16 @@ codec every current participant can decode in hardware, falls back to H.264,
 and may switch at a keyframe when the room changes. That removes the need for
 a software H.265 decoder.
 
-### 5.4 Backends and the bridge
+### 5.4 The codec library: a Rust port of `encdec`
+
+Decision D-12: no C++ bridge. The vendor SDKs get Rust wrappers, and `encdec`
+is ported on top of them.
+
+| Crate | Content |
+|---|---|
+| `parties-nvcodec` | Bindings generated from the NVIDIA Video Codec SDK headers (`nvEncodeAPI.h`, `nvcuvid.h`, `cuviddec.h`, the CUDA driver subset); run-time loading of the NVIDIA libraries; safe types for encoder sessions, registered input resources, bitstream locks, the decoder and its parser, and CUDA context guards |
+| `parties-amf` | Bindings for AMF core and the encoder and decoder components; run-time loading of the AMF runtime; safe types for the factory, contexts (DX11 and DX12), components, surfaces, buffers and property access, with AMF's reference counting mapped to `Clone` and `Drop` |
+| `parties-encdec` | The port of `encdec/`: the encoder and decoder traits below, backend selection and fallback order (`factory.cpp`), rate control (`rate_control.h`), the decoder state machines (`amf_decode_state.h`, `nvdec_sequence_policy.h`, `nvdec_surface_wait.h`), Media Foundation and VideoToolbox backends, and software AV1 decoding |
 
 ```rust
 pub trait VideoEncoder: Send {
@@ -167,61 +177,99 @@ pub trait VideoDecoder: Send {
 }
 ```
 
-The vendor backends (NVENC, NVDEC, AMF) are the most delicate code in the
-project: device-loss handling, CUDA–D3D12 interop, sequence-change policies.
-Decision D-12 allows the existing `encdec` library to be linked behind these
-traits under the `legacy-encdec` feature so video reaches parity early. Each
-backend is then replaced by a Rust one, and the feature is deleted before the
-C++ tree is. Media Foundation and VideoToolbox backends are written in Rust
-from the start.
+Rules for the two wrappers:
 
-Importing decoder output into `wgpu` without a copy (D3D textures on
-Windows, IOSurface-backed pixel buffers on Apple) is the main technical
-unknown of the client and is a Phase 0 spike item.
+1. **Usable without Parties.** No Parties types in their interfaces; they are
+   complete enough to publish separately.
+2. **Every SDK object is owned by a type** that releases it on drop. No raw
+   handle crosses the crate boundary. Thread-safety markers follow what the
+   SDK documents, nothing more.
+3. **Errors are values.** SDK status codes become typed errors; a device loss
+   is an error the pipeline handles, never a panic.
+4. **Surfaces are shared, not copied.** NVENC takes D3D textures as
+   registered input; NVDEC output is mapped into a D3D12 texture as it is
+   today; AMF takes and returns DX11 or DX12 surfaces. The wrappers expose
+   those paths first and a system-memory path only as a fallback.
+
+The ported tests come along: the decoder state machines and sequence policy
+as plain unit tests, and the hardware suites (`nvdec_d3d12_interop_test`,
+`amf_decoder_hardware_test`, `dx12_video_converter_test`) on machines with
+the matching GPUs.
+
+The wrappers do not depend on anything else in the workspace, so they start
+in Phase 0 and run in parallel with the server and voice work; the video
+phase needs them finished. Showing decoder output in the UI without a copy
+is the other half of the same problem and is covered in section 6.1.
 
 ## 6. User interface
 
-### 6.1 Toolkit
+### 6.1 Toolkit: lurq
 
-Decision D-04. Candidates were compared on what this application needs:
+Decision D-04. The UI is built with
+[lurq](https://github.com/ivanzaida/lurq) (0.58 when this was written, 0.60
+when the first window was built on it), a
+Rust toolkit with typed component builders, retained state and reactive
+signals.
 
-| Criterion | Slint | egui | Web view (Tauri) | Native per platform | Keep RmlUi over FFI |
-|---|---|---|---|---|---|
-| UI code in Rust | Yes, plus `.slint` markup | Yes | No (TypeScript) | No (Swift, C#) | No (C++) |
-| Windows, macOS, iOS | Yes; iOS through winit and the Skia renderer | Yes; mobile text input is rough | Yes | Yes | Yes, exists |
-| GPU video tiles | Imports `wgpu` textures; the API is marked unstable | Native `wgpu` textures | Hard: compositing or in-browser decode | Easy | Exists |
-| Markup with live preview | Yes | No | Yes | Per platform | Exists |
-| Rich chat text, selection | Markdown text exists; selectable read-only text unconfirmed | Good | Excellent | Excellent | Custom code today |
-| Accessibility | To confirm per platform | AccessKit on desktop | Good | Best | None |
-| Licence | GPLv3, royalty-free or commercial; fit with an MIT app to confirm | MIT / Apache | MIT / Apache | — | MIT |
-| Main risk | iOS maturity, unstable `wgpu` API | Mobile polish, styling effort | Video path; not a Rust UI | Three UIs | Not a rewrite |
+What it provides, according to its guide:
 
-**Recommendation: Slint, confirmed by a time-boxed spike.** It is the only
-candidate that is Rust-first, has declarative markup with live preview (the
-replacement for the RML/RCSS workflow and much of the designer tool), targets
-all three platforms, and can share a `wgpu` device for video. egui is the
-fallback because its `wgpu` path carries the least risk. If neither passes,
-the contingency is to keep the RmlUi shell temporarily on top of the Rust
-core through a C interface, which protects the schedule at the cost of
-delaying a pure-Rust client.
+| Need | lurq |
+|---|---|
+| Rendering | A `wgpu` renderer and a DX12 renderer on Windows; one renderer state per window |
+| State binding | Signals, stores, memos and effects; view models map onto them directly |
+| Windows | Several windows per app; frameless windows with custom chrome, drag and resize zones; close interception; native menu bar on macOS |
+| Long lists | `VirtualizedList` with keyed rows and height estimates |
+| Chat text | Selectable `Text` and `Markdown` with selection across elements; text inputs with clipboard and IME composition |
+| App plumbing | Router, forms, modals, internationalisation, persistent storage, async queries |
+| Theme | Palette, typography, radius, spacing and shadow roles, each extensible with application-defined entries |
+| Tooling | Headless tests, GPU screenshots, a DevTools window, frame profiling, and an MCP server through which an agent can inspect and drive the running app |
 
-Spike pass criteria:
+What its guide does not document and Parties needs. These are work items,
+most of them in lurq itself:
 
-1. 1080p60 hardware-decoded video in a tile, zero-copy, on DX12 and Metal,
-   sharing one device with the UI.
+| Gap | Why it matters | Work |
+|---|---|---|
+| Showing a GPU texture the app already owns | The documented video path (`StreamingImage`) uploads an RGBA buffer on every change: a conversion, a copy and an upload per frame, against the rules in [02](02-target-architecture.md) section 10 | An image source backed by an external texture (D3D12 resource, Metal texture) in both renderers, sampling NV12 directly so colour conversion happens in the shader |
+| One GPU device for UI and video | A decoder's texture can only be sampled without a copy on the device that owns it | Let the application supply the device and queue, or hand out the renderer's |
+| iOS | Only desktop shells are documented; nothing on touch, safe areas or the software keyboard | lurq allows custom shells that drive the tree themselves: a UIKit and Metal shell with touch input, safe-area insets and keyboard handling |
+| Accessibility | A public product needs screen-reader support; lurq has a semantic tree (used by its MCP server) but no platform accessibility | Map that tree to UI Automation on Windows and to the Apple accessibility interfaces |
+| Tray icon, global hotkeys, native menus on Windows | Not part of the toolkit | Stay in the platform shell |
+| Backdrop blur behind a translucent element | The Glass design blurs what is behind every panel and menu. lurq 0.60 has no backdrop filter (blur exists only in shadows and inside a `Canvas`). Over the smooth window backdrop the result is the same; where glass floats over content (a menu over the voice block, a panel over video) the content shows through sharp | An upstream feature (the renderer already has offscreen opacity layers), or more opaque fills wherever glass sits over content |
+| Gradient borders | Panels have a border that fades from top to bottom; `Border` takes one colour | Composed today from two clipped rings and two lines (six nodes per panel). An upstream gradient border would remove them |
+| Windows 11 snap layouts on the maximise button | The flyout needs non-client hit testing, which lurq does not do; the window buttons are ordinary elements | Upstream, or in the Windows shell |
+| Draw-call batching | The chat window takes 251 to 301 draw calls, about one per quad, icon and picture | Upstream. Not urgent: frame work is 1.5 ms on average |
+
+The last four rows come from building the chat window of the Glass design in
+`crates/parties-ui` on lurq 0.60 (2026-11-12). The same exercise confirmed
+what works: a frameless window with our own title bar (maximise, restore,
+minimise, close and double-click were driven on a real window; dragging and
+edge resizing were not, they need a physical pointer), radial and linear
+gradients, shadows, rounded clips, selectable text, headless tests with real
+pointer input, and no frames at all while nothing changes. Measured on that
+window at 2160 × 1350: 1.5 ms of work per frame on average, 4.1 ms at worst,
+about 129 MB of working set. Smaller defects found on the way (a scale
+override that is stored and never read, a popup that grows to the window
+height around a percentage-height child, popup anchors that must be
+focusable) are worked around in the crate and should be reported upstream.
+
+Until texture import exists, video can run through `StreamingImage` for
+development only; it is not a shipping path.
+
+Readiness checklist, to pass before the video phase ends:
+
+1. 1080p60 hardware-decoded video in a tile with no copy between decoder and
+   screen, on DX12 and on Metal, on a device shared with the UI.
 2. A chat list of 10,000 messages: virtualised, smooth, with Markdown, emoji,
-   and text selection and copy.
-3. iOS: text input with an input method, keyboard avoidance, safe areas, the
-   back gesture, and a build that passes App Store validation.
+   selection and copy.
+3. The room view at the performance and memory budgets in section 9.
 4. A second window (pop-out stream) and popovers on desktop.
-5. A screen reader can read the channel list and operate the main controls on
-   Windows and macOS.
-6. The room view rebuilt from the current design tokens and type scale.
-7. Written confirmation that the licence fits a publicly distributed
-   MIT-licensed application.
+5. iOS: the custom shell with touch, text input, keyboard avoidance and safe
+   areas, passing App Store validation.
+6. A screen reader can read the channel list and operate the main controls
+   on Windows and macOS.
 
-Because of principle 6 in [02](02-target-architecture.md), the toolkit choice
-affects `parties-ui` and the shells only.
+Because of principle 6 in [02](02-target-architecture.md), the toolkit is
+visible only to `parties-ui` and the shells.
 
 ### 6.2 Structure
 
@@ -229,11 +277,11 @@ affects `parties-ui` and the shells only.
 |---|---|
 | `LobbyModel`, `ChatModel`, `ServerListModel`, … with `Prop<T>` | View models that map core state changes to toolkit models; no business logic |
 | `DocumentRouter` routes and settings sections | A navigation state machine in `parties-ui`, same routes plus server settings |
-| `theme.rcss` tokens | One token module: colours, spacing, radii |
-| `typography.rcss` semantic roles | One typography module with the same roles (`heading-page`, `heading`, `body`, `control`, `label`, `caption`, `micro`, `symbol`). Components may not set font properties directly; a check in `xtask` enforces it, as `ui_stylesheet_test` does today |
+| `theme.rcss` tokens | lurq's theme, extended with application-defined palette, radius, spacing and shadow entries, defined in one module |
+| `typography.rcss` semantic roles | lurq typography roles, with application-defined entries for the roles it lacks (`heading-page`, `micro`, `symbol`). Components may not set font properties directly; a check in `xtask` enforces it, as `ui_stylesheet_test` does today |
 | `desktop.rcss` / `mobile.rcss` | Two layout shells over shared components |
 | Custom elements: video frame, level meter, diagnostics graph, gradient circle, selectable text | Custom components; video and graphs render through `wgpu` |
-| Designer with fixtures and screenshots | Toolkit live preview, plus fixtures built from recorded core state, plus screenshot tests in CI |
+| Designer with fixtures and screenshots | Fixtures built from recorded core state, lurq's screenshot capture for regression images in CI, and its DevTools and MCP server for inspection |
 
 The typography contract in `AGENTS.md` (semantic roles, two font families,
 Inter as primary) carries over unchanged in intent; the file is updated at
@@ -246,13 +294,13 @@ cutover to name the new modules.
 - **Localisation:** all strings in resource files from day one (Fluent), even
   if English is the only language at launch.
 - **Onboarding:** identity creation that explains the recovery phrase, and
-  joining by invite link as the primary path.
+  joining with a join code or link as the primary path.
 
 ## 7. Platform shells
 
 | Concern | Windows | macOS | iOS |
 |---|---|---|---|
-| Host | Rust executable | Rust executable in an app bundle | Xcode project with a small Swift host linking the Rust static library |
+| Host | Rust executable on lurq's desktop shell | Rust executable in an app bundle, same shell | Xcode project with a small Swift host linking the Rust static library, on the custom lurq shell |
 | Tray / status item, menus | Yes | Yes | — |
 | Global hotkeys and push-to-talk | Low-level keyboard and mouse hook (needs key-up and bare keys) | Event tap; the client guides the user through the Input Monitoring permission | — |
 | Deep links (`parties://`) | Registry registration | Bundle URL scheme | URL scheme and universal links |
@@ -261,6 +309,7 @@ cutover to name the new modules.
 | Notifications | Toasts | User notifications | Local now; push after launch through a relay (see [09](09-feature-parity.md)) |
 | Updates | See [11](11-quality-and-release.md) | Sparkle or equivalent | App Store / TestFlight |
 | Secrets | DPAPI-backed credential | Keychain | Keychain |
+| Passkeys and hardware keys | System WebAuthn interface (`webauthn.dll`) | AuthenticationServices; the bundle is associated with the product's domain | AuthenticationServices; associated domain |
 
 ## 8. Closing the Apple gaps
 
@@ -275,6 +324,12 @@ cutover to name the new modules.
 | CallKit and notifications on iOS | Phase 6 |
 | Localisation | Infrastructure in Phase 2 |
 
+New in the redesigned client, specified in
+[13](13-profiles-access-and-hardware-keys.md): a member list that shows who
+is online and offline, profile pictures, renaming yourself in place, join
+codes, signing in with a hardware key, and keeping the identity key in a
+passkey.
+
 ## 9. Budgets
 
 | Metric | Target |
@@ -282,7 +337,10 @@ cutover to name the new modules.
 | Mouth-to-ear delay, good network | ≤ 150 ms |
 | Added video latency over capture + encode + network + decode | ≤ 1 frame in the UI path |
 | Idle CPU in a voice room, nobody talking | < 1% of one core on a current laptop |
-| Memory, voice only | < 150 MB |
+| Memory, voice only | No more than the C++ client on the same machine, and at most 100 MB |
+| Memory, watching one 1080p stream | At most 220 MB, plus at most 150 MB of GPU memory |
+| Growth over an eight-hour session | None beyond the cache budgets |
+| Allocations per audio or video frame in steady state | Zero |
 | Cold start to usable UI | < 1.5 s on desktop |
 
 These are targets to measure against the C++ client on the same hardware

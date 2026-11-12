@@ -118,8 +118,8 @@ the hash of that public key, shown to people as six words.
 
 How a pin is obtained, in order of preference:
 
-1. **From an invite link or QR code.** Links have the form
-   `parties://host:port/<invite>#k=<server key>`. The key travels in the
+1. **From a join link or QR code.** Links have the form
+   `parties://host:port/j/<join code>#k=<server key>`. The key travels in the
    fragment. This is the normal way to join and gives authenticated first
    contact.
 2. **From a previous connection** (the stored pin).
@@ -165,13 +165,16 @@ to **become a member**; after that the identity key is enough.
 |---|---|
 | Open | It connects |
 | Password | It presents a valid `password_proof` |
-| Invite only | It presents a valid invite code |
+| Join code | It presents a valid, unused join code |
 | Approval | A moderator approves the pending request |
 
 The password never crosses the wire. The proof is an HMAC over the exporter
 keyed by an Argon2id hash of the password, so an attacker in the middle of a
 first connection cannot relay it and can only attack it offline at Argon2id
 cost. The server stores the Argon2id output, not the password.
+
+Join codes are single-use by default and are specified in
+[13](13-profiles-access-and-hardware-keys.md) section 5.
 
 ### 5.4 Reserved extensions
 
@@ -180,6 +183,16 @@ cost. The server stores the Argon2id output, not the password.
   key. This lets the recovery phrase stay off the device and lets a lost
   device be revoked. Not implemented in 2.0; the field exists so it needs no
   protocol break.
+- **Hardware-backed keys.** A user may sign in with a key held on a YubiKey
+  instead of a software key, and an account may hold several keys. The
+  channel binding is the same. See
+  [13](13-profiles-access-and-hardware-keys.md) section 6.
+- **Passkey-held keys.** A user may keep the identity key in a passkey: the
+  key is derived from a secret the passkey releases after verifying the user.
+  The server sees an ordinary key, so nothing in this document changes for
+  it. It is a copy against losing the key, not a protection: whoever controls
+  the passkey provider's account can obtain the key. See
+  [13](13-profiles-access-and-hardware-keys.md) section 7.
 - **Per-server identities.** Deriving a separate key per server from the same
   phrase stops operators correlating users (F27). It is an opt-in for a later
   release because it also removes the ability to prove the same identity on
@@ -213,7 +226,7 @@ stops honest users. Four mechanisms give bans teeth; operators combine them:
 
 | Mechanism | Effect |
 |---|---|
-| Join policy other than open | A new identity needs an invite, the password or approval |
+| Join policy other than open | A new identity needs a join code, the password or approval |
 | Address bans and per-address registration limits | Limits how many new identities one address can enrol per day |
 | Identity level | A proof of work attached to the public key (leading zero bits of a hash over key and counter). The server sets a minimum. Computed once, reusable on every server, the same idea as TeamSpeak's security level |
 | New-member restrictions | Members younger than N minutes, or without a role, cannot speak, send or stream |
@@ -262,11 +275,12 @@ Named bounds for every buffer and queue are listed in
 | Secret | Where it lives in 2.0 |
 |---|---|
 | User identity key and recovery entropy | OS keystore: DPAPI-backed credential on Windows, Keychain on macOS and iOS. Never in the SQLite file. Viewing the recovery phrase asks for OS-level user presence where available |
+| User identity key kept in a passkey | In the passkey provider, and in the OS keystore of each device after its first unlock there, like a software key. The passkey is a copy against loss, not extra protection. See [13](13-profiles-access-and-hardware-keys.md) section 7.3 |
 | Server pins, preferences | Client database (not secret, integrity matters) |
 | Saved join passwords | Not stored; membership replaces them |
 | Server identity key, TLS key | Data directory, owner-only permissions, refused if group- or world-readable on Unix |
 | Join password | Argon2id hash in the server database |
-| Invite codes, ownership claim token | Stored hashed; shown once |
+| Join codes, ownership claim token | Stored hashed; shown once |
 
 Secret types are zeroed on drop and cannot be formatted for logs. Copying the
 recovery phrase marks the clipboard entry as sensitive where the OS supports
@@ -303,7 +317,7 @@ Details and tooling: [11-quality-and-release.md](11-quality-and-release.md).
 
 ## 12. Logging and privacy
 
-- Logs never contain keys, tokens, invite codes, message text or recovery
+- Logs never contain keys, tokens, join codes, message text or recovery
   phrases. Peer-supplied strings are escaped and truncated.
 - Crash reporting is opt-in on the client, scrubs known secret memory by
   keeping secrets in locked, non-dumped allocations where the OS allows, and
@@ -380,7 +394,7 @@ Known limits of the 1.5 fixes, left for the rewrite or a later patch:
 
 | Activity | When |
 |---|---|
-| Fuzz targets for every parser: control frames, media headers, query packets, invite links, stream prefixes | From Phase 0, run continuously |
+| Fuzz targets for every parser: control frames, media headers, query packets, join links, stream prefixes | From Phase 0, run continuously |
 | Authorization matrix test: every request type against a member without the permission, and against hidden channels | Phase 1 onward, generated from the requirement table |
 | Handshake tests: relay attempt, wrong exporter, wrong server key, replay, pin mismatch, rotation statement | Phase 1 |
 | Pre-authentication abuse tests with the test kit: connection floods, slow handshakes, oversize frames, stream floods | Phase 1 |

@@ -96,7 +96,7 @@ it, so nothing signed for one connection is valid on another.
 |---|---|---|
 | `Hello` | C → S | `protocol_minor`, `features[]`, client name, version, platform |
 | `HelloAck` | S → C | negotiated `protocol_minor`, `features[]`, `server_identity` (Ed25519 public key), `server_proof`, `join` (policy, password KDF parameters, minimum identity level), display name of the server unless hidden |
-| `Authenticate` | C → S | `user_key`, `signature`, `identity_chain[]` (reserved for device keys), `identity_level_counter`, one optional join credential (`invite_code` or `password_proof`), initial display name |
+| `Authenticate` | C → S | `user_key`, `signature`, `identity_chain[]` (reserved for device keys), `identity_level_counter`, one optional join credential (`join_code` or `password_proof`), initial display name |
 | `AuthResult` | S → C | `ok` with `user_id`, `session_id`; or a typed refusal: `BAD_SIGNATURE`, `JOIN_REQUIRED`, `PENDING_APPROVAL`, `BANNED` (with expiry), `SERVER_FULL`, `SESSION_LIMIT`, `IDENTITY_LEVEL_TOO_LOW`, `UNSUPPORTED_VERSION` |
 | `Ready` | S → C | Full state snapshot, see section 5.3 |
 
@@ -111,6 +111,10 @@ signature    = Sign(user_key,
 password_proof = HMAC-SHA256(K, "parties-join-pw-v2" || 0x00 || exporter)
         where K = Argon2id(password, salt, parameters from HelloAck)
 ```
+
+`Authenticate` also carries the hash of the user's profile picture, and the
+identity key may be a hardware-backed one with a different proof format;
+both are specified in [13](13-profiles-access-and-hardware-keys.md).
 
 There is no timestamp and no clock dependency. A connection gets at most three
 `Authenticate` attempts; a failed attempt counts against the source address
@@ -154,7 +158,7 @@ caused in a consistent order.
 
 | Identifier | Type | Notes |
 |---|---|---|
-| User, role, channel, message, invite, attachment, audit entry | `u64`, time-sortable (42-bit millisecond timestamp, 22-bit sequence) | Assigned by the server |
+| User, role, channel, message, join code, attachment, audit entry | `u64`, time-sortable (42-bit millisecond timestamp, 22-bit sequence) | Assigned by the server |
 | Session | `u64` | One per authenticated connection; a user may have several |
 | Track | `u32` | Assigned by the server per published media track; the only identifier on the media plane |
 
@@ -182,14 +186,14 @@ the name, members or activity of a channel it cannot view.
 
 | Area | Requests |
 |---|---|
-| Session | `UpdateProfile`, `SetPresence`, `LinkReport` |
+| Session | `UpdateProfile`, `SetPresence`, `LinkReport`, `ListKeys`, `LinkKey`, `UnlinkKey` |
 | Voice | `JoinVoice`, `LeaveVoice`, `SetVoiceState`, `PublishTrack`, `UpdateTrack`, `UnpublishTrack`, `Subscribe`, `Unsubscribe` |
 | Chat | `SendMessage`, `EditMessage`, `DeleteMessage`, `AddReaction`, `RemoveReaction`, `PinMessage`, `UnpinMessage`, `AckRead`, `Typing`, `BeginUpload` |
-| Bulk (own stream) | `FetchHistory`, `SearchMessages`, `FetchPins`, `ListMembers`, `ListBans`, `ListInvites`, `FetchAuditLog` |
+| Bulk (own stream) | `FetchHistory`, `SearchMessages`, `FetchPins`, `ListMembers`, `ListBans`, `ListJoinCodes`, `FetchAuditLog`, `FetchPicture` |
 | Moderation | `KickMember`, `BanMember`, `UnbanMember`, `TimeoutMember`, `SetNickname`, `ServerMute`, `ServerDeafen`, `MoveMember`, `DisconnectMember` |
 | Structure | `CreateChannel`, `UpdateChannel`, `DeleteChannel`, `ReorderChannels`, `SetOverwrite`, `DeleteOverwrite`, `SyncChannelPermissions` |
 | Roles | `CreateRole`, `UpdateRole`, `DeleteRole`, `ReorderRoles`, `AssignRole`, `RevokeRole` |
-| Server | `UpdateServerSettings`, `CreateInvite`, `RevokeInvite`, `ClaimOwnership`, `TransferOwnership`, `FetchServerStats`, `ListSessions` |
+| Server | `UpdateServerSettings`, `CreateJoinCode`, `RevokeJoinCode`, `ClaimOwnership`, `FetchServerStats`, `ListSessions` |
 
 Each request names the permission it needs and how the role hierarchy applies
 in one table in `parties-perm`; see [05](05-permissions-and-roles.md)
@@ -202,7 +206,7 @@ section 7.
 `MemberLeft`, `PresenceUpdated`, `VoiceStateUpdated`, `TrackPublished`,
 `TrackUpdated`, `TrackUnpublished`, `SubscriberChanged`, `MessageCreated`,
 `MessageUpdated`, `MessageDeleted`, `ReactionChanged`, `TypingStarted`,
-`PermissionsUpdated`, `InviteChanged`, `Removed` (kick or ban, sent just
+`PermissionsUpdated`, `JoinCodeChanged`, `Removed` (kick or ban, sent just
 before the server closes the connection).
 
 ## 6. Media plane

@@ -1,8 +1,8 @@
 # Parties in Rust — design documents
 
-> Status: first draft, 2026-11-10. Nothing here is implemented yet, and every
-> decision is a proposal until the project owner confirms it in
-> [12-decisions.md](12-decisions.md).
+> Status: first draft, 2026-11-10. Nothing here is implemented yet. Decisions
+> are proposals unless [12-decisions.md](12-decisions.md) marks them as
+> decided by the project owner.
 
 This folder plans the complete rewrite of the Parties server and client in
 Rust: what exists, what the target is, how the protocol and permission system
@@ -36,6 +36,7 @@ how to get from one to the other.
 | 10 | [Migration plan](10-migration-plan.md) | Phases, exit criteria, porting map, risks, cutover |
 | 11 | [Quality and release](11-quality-and-release.md) | Tests, supply chain, signing, updates |
 | 12 | [Decisions](12-decisions.md) | Decision log and the questions that need the owner's answer |
+| 13 | [Members, profiles, join codes, hardware keys, passkeys](13-profiles-access-and-hardware-keys.md) | Presence, profile pictures, renaming, join codes, YubiKey sign-in and keys kept in a passkey |
 
 Suggested order: 12 for the open questions, then 01, 02, 10 for the shape of
 the work, then the topic documents as needed.
@@ -47,11 +48,16 @@ the work, then the topic documents as needed.
 | Strategy | Build in parallel, freeze C++, cut over once; protocol 2.0 breaks compatibility with 1.4 |
 | Transport | `quinn` + `rustls`, confirmed by a spike that must pass the existing network-impairment tests |
 | Protocol | Typed streams, Protocol Buffers for control, fixed headers for media, authentication bound to the TLS session |
-| Trust | Server identity keys pinned through invite links; no silent trust on first use |
+| Trust | Server identity keys pinned through join links; no silent trust on first use |
 | Permissions | Discord's model plus numeric role limits; one authorization gate that every request must pass |
 | Management | Same connection, same permission gate; client UI and a CLI over the same requests |
-| Client | Headless core, thin UI; Slint proposed, confirmed by a spike, with a fallback |
-| Codecs | OS encoders and decoders in Rust first; the existing vendor codec library bridged temporarily |
+| Client | Headless core, thin UI built with lurq (decided); zero-copy video display, an iOS shell and accessibility are work items in lurq |
+| Codecs | Rust wrappers for AMF and NVIDIA's codec SDK, and a full port of `encdec` on top of them (decided); no C++ bridge |
+| Performance | A requirement (decided): zero-copy media paths, no leaks, memory ceilings, all checked in CI |
+| Access | Single-use join codes admit a new identity; the server remembers its fingerprint (decided) |
+| Profiles | Members shown online and offline, pictures synchronised by SHA-512, rename yourself in place (decided) |
+| Hardware keys | Optional sign-in with a YubiKey (decided); FIDO2 proposed as the mechanism |
+| Passkeys | The identity key can be kept in a passkey (decided); proposed mechanism: the key is derived from the passkey, so servers and the protocol do not change |
 | Launch scope | The list in [09](09-feature-parity.md) section 11 |
 
 ## Findings that should not wait for the rewrite

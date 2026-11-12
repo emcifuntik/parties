@@ -6,7 +6,7 @@
 
 The client is the admin console. Everything an operator needs after the
 server process is running — settings, channels, roles, members, moderation,
-invites, audit — is a request on the same authenticated connection every
+join codes, audit — is a request on the same authenticated connection every
 member uses, gated by the permissions in
 [05](05-permissions-and-roles.md). There is no separate admin port, admin
 password or web panel to secure.
@@ -34,15 +34,16 @@ sequenceDiagram
     C->>S: ClaimOwnership(token)
     S->>C: you are the owner
     Note over S: token destroyed, claim file removed
-    C->>Op: first-run wizard: name, preset, first invite
+    C->>Op: first-run wizard: name, preset, first join code
 ```
 
 | Situation | Path |
 |---|---|
 | Normal first run | Claim link from the console or the claim file |
-| Unattended deployment | `PARTIES_OWNER_KEY=<identity key>` pre-assigns the owner, as `root_fingerprints` does today |
+| Unattended deployment | `[owner] key` in `server.toml` (or `PARTIES_OWNER_KEY=<identity key>`) pre-assigns the owner, as `root_fingerprints` does today |
 | Owner lost their identity | `parties-server owner reset`, run locally against the data directory, issues a new claim link. It needs file access to the server, which is the correct bar |
-| Handing over | `TransferOwnership` from the current owner, confirmed by typing the server name |
+| Handing over | On the host only: set `[owner] key` in `server.toml` to the new owner's identity key and restart, or run `parties-server owner reset` for a new claim link. No request transfers ownership (D-27) |
+| Removing the server | On the host only: stop the process and delete the data directory. No request deletes a server (D-27) |
 
 The claim token is random, single-use, stored hashed, and expires if unused
 for 24 hours (a new one is printed on the next start).
@@ -57,13 +58,15 @@ for 24 hours (a new one is printed on the next start).
 | Roles | Create, rename, colour, reorder, permissions, limits, delete; assign and revoke | `ManageRoles`, hierarchy rules H2–H4 |
 | Members | List and search, view roles and join date, nickname, kick, ban, timeout, approve join requests | The matching moderation permission, rule H5 |
 | Voice moderation | Server mute and deafen, move, disconnect, grant speak in moderated channels | `MuteMembers`, `DeafenMembers`, `MoveMembers`, `DisconnectMembers` |
-| Invites | Create with expiry, use limit, target channel and roles granted; list; revoke | `CreateInvite`; `ManageInvites` for others' |
+| Join codes | Create (single use by default) with expiry, use limit and roles granted; list; revoke | `CreateJoinCodes`; `ManageJoinCodes` for others' |
 | Bans | List, add (identity, address range, expiry, reason), remove | `BanMembers` |
 | Content | Delete messages, pin, manage emoji and soundboard clips | `ManageMessages`, `PinMessages`, `ManageExpressions` |
 | Storage | Usage by channel and by member, file size limits, quotas, file and message retention | `ManageServer` |
 | Audit log | Browse and filter by actor, action, target, time | `ViewAuditLog` |
 | Statistics | Connections, voice rooms, bandwidth, per-session link quality | `ManageServer` |
-| Ownership | Transfer | Owner |
+
+Ownership and the existence of the server are not in this table: both are
+decided on the host (section 8), so the settings view has no "danger zone".
 
 ## 4. Client experience
 
@@ -73,11 +76,11 @@ are shown disabled with the reason.
 
 | Section | Notes |
 |---|---|
-| Overview | Includes the server's six-word identity for out-of-band verification, and its address as a copyable invite |
+| Overview | Includes the server's six-word identity for out-of-band verification, and its address as a copyable join link |
 | Roles | Ordered list with drag-to-reorder. The editor groups permissions as in [05](05-permissions-and-roles.md) section 3 with a one-line explanation each. Bits the actor does not hold are locked (rule H4). "View server as this role" previews the channel list and controls using `parties-perm` locally |
 | Members | Search, filter by role, bulk role assignment. A member's page shows roles, moderation state and recent audit entries about them |
 | Channels | Tree editor. The permission tab shows one row per role or member overwrite with three-state toggles (inherit, allow, deny) and a computed "effective for…" checker: pick a member, see the result and which rule decided it |
-| Invites | Table with creator, uses, expiry; creating one produces a link and a QR code |
+| Join codes | Table with label, creator, status and expiry; creating one shows the code once, with a link and a QR code |
 | Safety | Join policy, identity level, new-member restrictions, bans |
 | Storage and retention | Usage bars and the retention settings |
 | Audit log | Reverse-chronological, filterable |
@@ -131,7 +134,7 @@ partiesctl --server parties://host:7800#k=<key> --identity admin.key <command>
   channel list | create | update | delete
   role list | create | update | delete | assign | revoke
   member list | kick | ban | unban | timeout
-  invite create | list | revoke
+  joincode create | list | revoke
   audit tail [--follow]
   stats
 ```
@@ -153,15 +156,15 @@ partiesctl --server parties://host:7800#k=<key> --identity admin.key <command>
 | Data directory, TLS certificate files | They are host facts, not community settings |
 | Hard ceilings (`[ceilings]`) | They protect the host from its own administrators |
 | Restore from backup, owner reset, binary upgrade | They need the process stopped or file access |
+| Who the owner is, and removing the server | The server is self-hosted: whoever controls the host decides who owns it and whether it exists. A stolen owner session must not be able to take the server over or destroy it (D-27) |
 
 The client shows these values read-only in the statistics section so an
 administrator knows what the host is configured to do.
 
 ## 9. Safety rails
 
-- Destructive actions (delete channel with history, delete role in use, ban,
-  transfer ownership) need explicit confirmation; the irreversible ones need
-  the name typed.
+- Destructive actions (delete channel with history, delete role in use, ban)
+  need explicit confirmation; the irreversible ones need the name typed.
 - The server validates every setting against its ceiling and against the
   other settings. An invalid combination is refused with a message naming the
   field.
