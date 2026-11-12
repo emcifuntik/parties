@@ -298,6 +298,20 @@ struct DesignerApp::PartiesFixture {
 		}
 	}
 
+	// States the regression checks below do not know. They are rendered for
+	// reference screenshots only, with the model flags that
+	// client/src/ui_fixture.cpp sets for the same names.
+	static bool IsCaptureOnly(const std::string& scenario) {
+		static const char* const names[] = {
+			"onboarding-restore", "onboarding-key-import", "global-name",
+			"launcher-reconnecting", "login", "tofu", "update-available", "room-empty",
+			"create-channel", "rename-channel", "create-text-channel", "server-nickname",
+			"chat-draft", "chat-search", "chat-pinned"};
+		for (const char* name : names)
+			if (scenario == name) return true;
+		return false;
+	}
+
 	void Populate(const std::string& scenario) {
 		if (scenario == "context-user") {
 			context_window.user_mode = true;
@@ -333,8 +347,14 @@ struct DesignerApp::PartiesFixture {
 			return;
 		}
 
+		const bool capture_disconnected = scenario == "onboarding-restore" ||
+			scenario == "onboarding-key-import" || scenario == "global-name" ||
+			scenario == "launcher-reconnecting" || scenario == "login" || scenario == "tofu" ||
+			scenario == "update-available" || scenario == "server-nickname";
+		const bool capture_chat = scenario == "chat-draft" || scenario == "chat-search" ||
+			scenario == "chat-pinned";
 		lobby.is_connected = scenario != "launcher" && scenario != "party-modal" &&
-			scenario != "onboarding" && scenario != "recovery";
+			scenario != "onboarding" && scenario != "recovery" && !capture_disconnected;
 		lobby.server_name = "Night Shift";
 		lobby.server_initials = "NS";
 		lobby.username = "tuxick";
@@ -426,7 +446,7 @@ struct DesignerApp::PartiesFixture {
 		// Keep chat selected in the settings fixture to reproduce the historical
 		// overlap bug. The document router must still render settings exclusively.
 		chat.active_channel = (scenario == "chat" || scenario == "chat-segment-churn" ||
-			scenario == "settings") ? 1 : 0;
+			scenario == "settings" || capture_chat) ? 1 : 0;
 		chat.active_channel_name = "general";
 		chat.can_manage_channels = true;
 		if (scenario == "chat-segment-churn") {
@@ -450,7 +470,7 @@ struct DesignerApp::PartiesFixture {
 			scenario == "settings-account" || scenario == "settings-camera";
 		if (settings_scenario)
 			lobby.router.go(parties::client::DocumentRoute::Settings);
-		else if (scenario == "chat" || scenario == "chat-segment-churn")
+		else if (scenario == "chat" || scenario == "chat-segment-churn" || capture_chat)
 			lobby.router.go(parties::client::DocumentRoute::Chat);
 		if (scenario == "settings-screen-share")
 			lobby.router.select_settings(parties::client::SettingsSection::ScreenShare);
@@ -473,6 +493,50 @@ struct DesignerApp::PartiesFixture {
 		server_list.edit_host = "voice.example.com";
 		server_list.edit_port = "7800";
 		server_list.edit_nickname = "";
+
+		// Capture-only states (see IsCaptureOnly).
+		if (scenario == "onboarding-restore" || scenario == "onboarding-key-import") {
+			server_list.show_onboarding = true;
+			server_list.has_identity = false;
+		}
+		server_list.show_restore = scenario == "onboarding-restore";
+		server_list.show_key_import = scenario == "onboarding-key-import";
+		server_list.reconnecting = scenario == "launcher-reconnecting";
+		server_list.reconnect_status = "Reconnecting to Night Shift\xE2\x80\xA6";
+		server_list.show_login = scenario == "login";
+		server_list.login_status = "Secure connection ready";
+		server_list.login_show_username = scenario == "login";
+		server_list.login_username = "tuxick";
+		server_list.show_global_name_editor = scenario == "global-name";
+		server_list.global_name_input = "tuxick";
+		server_list.show_server_nickname_editor = scenario == "server-nickname";
+		server_list.server_nickname_server_id = 1;
+		server_list.server_nickname_server_name = "Night Shift";
+		server_list.server_nickname_input = "tuxick@night";
+		server_list.show_tofu_warning = scenario == "tofu";
+		server_list.tofu_fingerprint = "71:08:BB:6E:20:91:4F:3A";
+		lobby.update_available = scenario == "update-available";
+		lobby.update_version = "0.8.0";
+		if (scenario == "room-empty") lobby.current_channel = 0;
+		lobby.show_create_channel = scenario == "create-channel";
+		lobby.new_channel_name = "Strategy";
+		lobby.show_rename_channel = scenario == "rename-channel";
+		lobby.rename_channel_id = 1;
+		lobby.rename_channel_name = "General";
+		lobby.new_rename_channel_name = "General lounge";
+		chat.show_create_text_channel = scenario == "create-text-channel";
+		chat.new_text_channel_name = "release-notes";
+		chat.compose_text = scenario == "chat-draft" ? "Ready for tonight's party?" : "";
+		chat.show_search = scenario == "chat-search";
+		chat.search_query = "server";
+		chat.show_pinned = scenario == "chat-pinned";
+		if (scenario == "chat-search" || scenario == "chat-pinned") {
+			const auto& shown = chat.messages.silent();
+			if (shown.size() > 2) {
+				chat.search_results = Rml::Vector<parties::client::ChatMessage>{shown[2]};
+				chat.pinned_messages = Rml::Vector<parties::client::ChatMessage>{shown[2]};
+			}
+		}
 		if (scenario == "room") {
 			lobby.someone_sharing = true;
 			lobby.sharers = Rml::Vector<parties::client::ActiveSharer>{
@@ -585,7 +649,8 @@ struct DesignerApp::PartiesFixture {
 	}
 
 	bool Init(Rml::Context* context, const std::string& scenario) {
-		if (scenario != "launcher" && scenario != "party-modal" && scenario != "onboarding" &&
+		if (!IsCaptureOnly(scenario) &&
+			scenario != "launcher" && scenario != "party-modal" && scenario != "onboarding" &&
 			scenario != "recovery" && scenario != "room" && scenario != "settings" &&
 			scenario != "settings-select-open" && scenario != "settings-screen-share" &&
 			scenario != "settings-hotkeys" &&
@@ -826,6 +891,8 @@ struct DesignerApp::PartiesFixture {
 		int viewport_width) const {
 		if (!document)
 			return false;
+		if (IsCaptureOnly(scenario))
+			return true;   // reference screenshots only, no layout contract
 
 		if (scenario == "context-user" || scenario == "context-channel") {
 			Rml::Element* shell = document->GetElementById("context-window-shell");

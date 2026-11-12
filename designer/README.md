@@ -106,6 +106,26 @@ tools/capture-ui.ps1 -Profile iphone-17-pro `
   -OutputDirectory build/ui-screenshots-ios
 ```
 
+Capture every state as a design reference, as PNG, with:
+
+```powershell
+tools/capture-ui.ps1 -Reference -OutputDirectory build/ui-reference/desktop
+tools/capture-ui.ps1 -Reference -Profile iphone-17-pro `
+  -OutputDirectory build/ui-reference/ios
+```
+
+`-Reference` adds the fixtures the regression set leaves out (`room-camera`,
+`streams-camera`, `settings-camera`, `diagnostics`) and the secondary states
+(`onboarding-restore`, `onboarding-key-import`, `global-name`,
+`launcher-reconnecting`, `login`, `tofu`, `update-available`, `room-empty`,
+`create-channel`, `rename-channel`, `create-text-channel`, `server-nickname`,
+`chat-draft`, `chat-search`, `chat-pinned`). The designer renders the secondary
+states with the model flags that `client/src/ui_fixture.cpp` sets for the same
+names, but without a layout contract, so they are pictures only. On the iPhone profile, chat, streams and
+settings are native views and render as the room or as an empty frame. The set
+captured on 10 Nov 2026 is kept in `docs/design/current-app-2026-11/` and placed
+on the "Current app" board of `design.pen`.
+
 Use `--vars file.vars` for generic scalar/string-array documents. Parties
 screens should use named fixtures because their models contain nested structs.
 

@@ -3,7 +3,11 @@ param(
     [string]$OutputDirectory = "build/ui-screenshots",
     [string]$Size = "1440x900",
     [string]$Profile = "",
-    [int]$Frames = 240
+    [int]$Frames = 240,
+    # Also capture the secondary states that have no layout contract (dialogs,
+    # banners, onboarding steps) and save every picture as PNG. This is the
+    # full set a designer needs as a reference; it is not a regression run.
+    [switch]$Reference
 )
 
 $ErrorActionPreference = "Stop"
@@ -33,6 +37,15 @@ if ($Profile -eq "iphone-17-pro") {
         $_ -ne "share" -and $_ -ne "audio-share"
     }
 }
+if ($Reference) {
+    $lobbyScenarios = @($lobbyScenarios | Where-Object { $_ -ne "chat-segment-churn" }) + @(
+        "room-camera", "streams-camera", "settings-camera", "diagnostics",
+        "onboarding-restore", "onboarding-key-import", "global-name",
+        "launcher-reconnecting", "login", "tofu", "update-available", "room-empty",
+        "create-channel", "rename-channel", "create-text-channel", "server-nickname",
+        "chat-draft", "chat-search", "chat-pinned"
+    )
+}
 foreach ($scenario in $lobbyScenarios) {
     $screenshot = Join-Path $output "$scenario.bmp"
     $designerArgs = @($document, "--asset-dir", $assets, "--fixture", $scenario)
@@ -44,7 +57,12 @@ foreach ($scenario in $lobbyScenarios) {
     $designerArgs += @("--frames", "$Frames", "--screenshot", $screenshot)
     & $designer @designerArgs
     if ($LASTEXITCODE -ne 0) {
-        throw "Screenshot scenario failed: $scenario"
+        # A reference run wants the picture even when a layout check fails.
+        if ($Reference -and (Test-Path -LiteralPath $screenshot)) {
+            Write-Warning "Layout checks failed for $scenario; the screenshot was kept"
+        } else {
+            throw "Screenshot scenario failed: $scenario"
+        }
     }
 }
 
@@ -58,6 +76,16 @@ foreach ($scenario in $contextScenarios) {
         --size $scenario.Size --frames $Frames --screenshot $screenshot
     if ($LASTEXITCODE -ne 0) {
         throw "Screenshot scenario failed: $($scenario.Name)"
+    }
+}
+
+if ($Reference) {
+    Add-Type -AssemblyName System.Drawing
+    Get-ChildItem -LiteralPath $output -Filter *.bmp | ForEach-Object {
+        $png = [System.IO.Path]::ChangeExtension($_.FullName, ".png")
+        $image = [System.Drawing.Image]::FromFile($_.FullName)
+        try { $image.Save($png, [System.Drawing.Imaging.ImageFormat]::Png) } finally { $image.Dispose() }
+        Remove-Item -LiteralPath $_.FullName
     }
 }
 
