@@ -1,0 +1,73 @@
+name: Rust
+
+# The Cargo workspace of the rewrite (docs/rust-rewrite). It is separate from
+# the C++ CI so that a change on one side does not rebuild the other.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "rustfmt.toml"
+      - "crates/**"
+      - ".github/workflows/rust.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "rustfmt.toml"
+      - "crates/**"
+      - ".github/workflows/rust.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      # rust-toolchain.toml selects the toolchain and its components.
+      - run: rustup show
+      - run: cargo fmt --all --check
+
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            packages: --workspace
+          - os: macos-latest
+            packages: --workspace
+          # The client UI targets Windows, macOS and iOS; the server targets
+          # Windows and Linux. Linux therefore skips the UI crate.
+          - os: ubuntu-latest
+            packages: --workspace --exclude parties-ui
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - run: rustup show
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ matrix.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: rust-${{ matrix.os }}-
+      - name: Clippy
+        run: cargo clippy ${{ matrix.packages }} --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test ${{ matrix.packages }} --locked

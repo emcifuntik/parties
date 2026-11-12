@@ -1,0 +1,464 @@
+{
+  "format": 1,
+  "about": [
+    "Golden vectors for permission resolution in Parties 2.0 (docs/rust-rewrite/05-permissions-and-roles.md, section 4).",
+    "Every case was worked out by hand from the document. An implementation in any language must reproduce 'expect'.",
+    "A permission list holds names from permission_bits.json; '#N' stands for bit N and is used for reserved bits.",
+    "'expect' is the effective permission set: a list, or the string 'ALL' for every bit from 0 to 62.",
+    "Times are milliseconds. A member is timed out while now < timeout_until.",
+    "A member is restricted by new_members while now - joined_at < period_ms (a join time in the future counts as age 0),",
+    "or, when require_role is true, while the member has no role besides the 'everyone' role.",
+    "member.roles lists role ids; the 'everyone' role is implied. channel null means server-wide.",
+    "Optional fields and their defaults: member.joined_at 0, member.timeout_until null, member.speak_grant null,",
+    "channel null, overwrite.allow [], overwrite.deny []. An overwrite targets either 'role' or 'member'."
+  ],
+  "servers": {
+    "plain": {
+      "owner_id": 1,
+      "everyone": {
+        "id": 10,
+        "permissions": ["ViewChannel", "ChangeNickname", "SendMessages", "ReadMessageHistory", "AttachFiles", "EmbedLinks", "AddReactions", "Connect", "Speak", "UseVoiceActivity"]
+      },
+      "roles": [
+        { "id": 20, "position": 1, "permissions": ["StreamScreen", "StreamCamera", "MentionEveryone"] },
+        { "id": 30, "position": 2, "permissions": [] },
+        { "id": 40, "position": 3, "permissions": ["KickMembers", "ManageMessages", "MuteMembers", "ManageRoles"] },
+        { "id": 50, "position": 4, "permissions": ["Administrator"] },
+        { "id": 60, "position": 5, "permissions": ["#46"] }
+      ],
+      "new_members": { "period_ms": 0, "require_role": false, "restricted": [] }
+    },
+    "community": {
+      "owner_id": 1,
+      "everyone": {
+        "id": 10,
+        "permissions": ["ViewChannel", "ChangeNickname", "SendMessages", "ReadMessageHistory", "AttachFiles", "EmbedLinks", "AddReactions", "Connect", "Speak", "UseVoiceActivity"]
+      },
+      "roles": [
+        { "id": 20, "position": 1, "permissions": ["StreamScreen", "StreamCamera", "MentionEveryone"] },
+        { "id": 50, "position": 4, "permissions": ["Administrator"] }
+      ],
+      "new_members": { "period_ms": 600000, "require_role": false, "restricted": ["Speak", "SendMessages", "StreamScreen"] }
+    },
+    "gated": {
+      "owner_id": 1,
+      "everyone": {
+        "id": 10,
+        "permissions": ["ViewChannel", "ChangeNickname", "SendMessages", "ReadMessageHistory", "AttachFiles", "EmbedLinks", "AddReactions", "Connect", "Speak", "UseVoiceActivity"]
+      },
+      "roles": [
+        { "id": 30, "position": 2, "permissions": [] }
+      ],
+      "new_members": { "period_ms": 0, "require_role": true, "restricted": ["Speak", "SendMessages", "Connect"] }
+    },
+    "lockdown": {
+      "owner_id": 1,
+      "everyone": {
+        "id": 10,
+        "permissions": ["ViewChannel", "ChangeNickname", "SendMessages", "ReadMessageHistory", "AttachFiles", "EmbedLinks", "AddReactions", "Connect", "Speak", "UseVoiceActivity"]
+      },
+      "roles": [],
+      "new_members": { "period_ms": 600000, "require_role": false, "restricted": ["ViewChannel"] }
+    }
+  },
+  "cases": [
+    {
+      "name": "owner resolves to all, server-wide",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 1, "roles": [] },
+      "expect": "ALL"
+    },
+    {
+      "name": "owner resolves to all in a channel that denies everything",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 1, "roles": [] },
+      "channel": { "id": 100, "overwrites": [
+        { "role": 10, "deny": ["ViewChannel", "SendMessages", "Connect"] },
+        { "member": 1, "deny": ["ViewChannel", "ManageRoles"] }
+      ] },
+      "expect": "ALL"
+    },
+    {
+      "name": "owner resolves to all even with a timeout on record",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 1, "roles": [], "timeout_until": 2000000 },
+      "expect": "ALL"
+    },
+    {
+      "name": "member with only the everyone role, server-wide",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [] },
+      "expect": ["ViewChannel", "ChangeNickname", "SendMessages", "ReadMessageHistory", "AttachFiles", "EmbedLinks", "AddReactions", "Connect", "Speak", "UseVoiceActivity"]
+    },
+    {
+      "name": "a role adds to the everyone role",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [20] },
+      "expect": ["ViewChannel", "ChangeNickname", "SendMessages", "ReadMessageHistory", "AttachFiles", "EmbedLinks", "AddReactions", "Connect", "Speak", "UseVoiceActivity", "StreamScreen", "StreamCamera", "MentionEveryone"]
+    },
+    {
+      "name": "several roles unite",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [20, 40] },
+      "expect": ["ViewChannel", "ChangeNickname", "SendMessages", "ReadMessageHistory", "AttachFiles", "EmbedLinks", "AddReactions", "Connect", "Speak", "UseVoiceActivity", "StreamScreen", "StreamCamera", "MentionEveryone", "KickMembers", "ManageMessages", "MuteMembers", "ManageRoles"]
+    },
+    {
+      "name": "administrator resolves to all",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [50] },
+      "expect": "ALL"
+    },
+    {
+      "name": "administrator ignores channel overwrites",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [50] },
+      "channel": { "id": 100, "overwrites": [
+        { "role": 10, "deny": ["ViewChannel"] },
+        { "role": 50, "deny": ["Connect"] },
+        { "member": 2, "deny": ["ViewChannel", "SendMessages"] }
+      ] },
+      "expect": "ALL"
+    },
+    {
+      "name": "administrator ignores a timeout",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [50], "timeout_until": 2000000 },
+      "expect": "ALL"
+    },
+    {
+      "name": "the everyone overwrite denies",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [] },
+      "channel": { "id": 100, "overwrites": [
+        { "role": 10, "deny": ["SendMessages", "Speak"] }
+      ] },
+      "expect": ["ViewChannel", "ChangeNickname", "ReadMessageHistory", "AddReactions", "Connect", "UseVoiceActivity"]
+    },
+    {
+      "name": "the everyone overwrite allows",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [] },
+      "channel": { "id": 100, "overwrites": [
+        { "role": 10, "allow": ["StreamScreen", "PinMessages"] }
+      ] },
+      "expect": ["ViewChannel", "ChangeNickname", "SendMessages", "ReadMessageHistory", "AttachFiles", "EmbedLinks", "AddReactions", "Connect", "Speak", "UseVoiceActivity", "StreamScreen", "PinMessages"]
+    },
+    {
+      "name": "a role overwrite allow beats the everyone overwrite deny",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [20] },
+      "channel": { "id": 100, "overwrites": [
+        { "role": 10, "deny": ["Speak"] },
+        { "role": 20, "allow": ["Speak"] }
+      ] },
+      "expect": ["ViewChannel", "ChangeNickname", "SendMessages", "ReadMessageHistory", "AttachFiles", "EmbedLinks", "AddReactions", "Connect", "Speak", "UseVoiceActivity", "StreamScreen", "StreamCamera", "MentionEveryone"]
+    },
+    {
+      "name": "a role overwrite deny beats the everyone overwrite allow",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [30] },
+      "channel": { "id": 100, "overwrites": [
+        { "role": 10, "allow": ["PinMessages"] },
+        { "role": 30, "deny": ["PinMessages", "Speak"] }
+      ] },
+      "expect": ["ViewChannel", "ChangeNickname", "SendMessages", "ReadMessageHistory", "AttachFiles", "EmbedLinks", "AddReactions", "Connect", "UseVoiceActivity"]
+    },
+    {
+      "name": "among role overwrites allow wins over deny",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [20, 30] },
+      "channel": { "id": 100, "overwrites": [
+        { "role": 30, "deny": ["Speak", "SendMessages"] },
+        { "role": 20, "allow": ["Speak"] }
+      ] },
+      "expect": ["ViewChannel", "ChangeNickname", "ReadMessageHistory", "AddReactions", "Connect", "Speak", "UseVoiceActivity", "StreamScreen", "StreamCamera"]
+    },
+    {
+      "name": "an overwrite for a role the member does not have is ignored",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [20] },
+      "channel": { "id": 100, "overwrites": [
+        { "role": 30, "deny": ["ViewChannel", "Speak"] },
+        { "role": 40, "allow": ["ManageChannels"] }
+      ] },
+      "expect": ["ViewChannel", "ChangeNickname", "SendMessages", "ReadMessageHistory", "AttachFiles", "EmbedLinks", "AddReactions", "Connect", "Speak", "UseVoiceActivity", "StreamScreen", "StreamCamera", "MentionEveryone"]
+    },
+    {
+      "name": "the member overwrite deny beats a role overwrite allow",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [20] },
+      "channel": { "id": 100, "overwrites": [
+        { "role": 20, "allow": ["PrioritySpeaker"] },
+        { "member": 2, "deny": ["PrioritySpeaker", "StreamScreen"] }
+      ] },
+      "expect": ["ViewChannel", "ChangeNickname", "SendMessages", "ReadMessageHistory", "AttachFiles", "EmbedLinks", "AddReactions", "Connect", "Speak", "UseVoiceActivity", "StreamCamera", "MentionEveryone"]
+    },
+    {
+      "name": "the member overwrite allow beats role and everyone denies",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [30] },
+      "channel": { "id": 100, "overwrites": [
+        { "role": 10, "deny": ["Speak"] },
+        { "role": 30, "deny": ["Speak", "SendMessages"] },
+        { "member": 2, "allow": ["Speak", "SendMessages"] }
+      ] },
+      "expect": ["ViewChannel", "ChangeNickname", "SendMessages", "ReadMessageHistory", "AttachFiles", "EmbedLinks", "AddReactions", "Connect", "Speak", "UseVoiceActivity"]
+    },
+    {
+      "name": "an overwrite for another member is ignored",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [] },
+      "channel": { "id": 100, "overwrites": [
+        { "member": 3, "allow": ["ManageChannels"], "deny": ["ViewChannel"] }
+      ] },
+      "expect": ["ViewChannel", "ChangeNickname", "SendMessages", "ReadMessageHistory", "AttachFiles", "EmbedLinks", "AddReactions", "Connect", "Speak", "UseVoiceActivity"]
+    },
+    {
+      "name": "overwrites cannot grant a server-scope bit",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [] },
+      "channel": { "id": 100, "overwrites": [
+        { "role": 10, "allow": ["KickMembers", "ManageServer"] },
+        { "member": 2, "allow": ["BanMembers", "Administrator"] }
+      ] },
+      "expect": ["ViewChannel", "ChangeNickname", "SendMessages", "ReadMessageHistory", "AttachFiles", "EmbedLinks", "AddReactions", "Connect", "Speak", "UseVoiceActivity"]
+    },
+    {
+      "name": "overwrites cannot remove a server-scope bit",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [40] },
+      "channel": { "id": 100, "overwrites": [
+        { "role": 10, "deny": ["ChangeNickname"] },
+        { "role": 40, "deny": ["KickMembers"] },
+        { "member": 2, "deny": ["KickMembers", "ChangeNickname"] }
+      ] },
+      "expect": ["ViewChannel", "ChangeNickname", "SendMessages", "ReadMessageHistory", "AttachFiles", "EmbedLinks", "AddReactions", "Connect", "Speak", "UseVoiceActivity", "KickMembers", "ManageMessages", "MuteMembers", "ManageRoles"]
+    },
+    {
+      "name": "implied: no ViewChannel in the channel leaves no permission at all",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [40] },
+      "channel": { "id": 100, "overwrites": [
+        { "role": 10, "deny": ["ViewChannel"] }
+      ] },
+      "expect": []
+    },
+    {
+      "name": "ViewChannel denied to everyone and allowed to a role",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [40] },
+      "channel": { "id": 100, "overwrites": [
+        { "role": 10, "deny": ["ViewChannel"] },
+        { "role": 40, "allow": ["ViewChannel"] }
+      ] },
+      "expect": ["ViewChannel", "ChangeNickname", "SendMessages", "ReadMessageHistory", "AttachFiles", "EmbedLinks", "AddReactions", "Connect", "Speak", "UseVoiceActivity", "KickMembers", "ManageMessages", "MuteMembers", "ManageRoles"]
+    },
+    {
+      "name": "implied: no Connect removes every voice and video permission",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [20, 40] },
+      "channel": { "id": 100, "overwrites": [
+        { "role": 10, "deny": ["Connect"] }
+      ] },
+      "expect": ["ViewChannel", "ChangeNickname", "SendMessages", "ReadMessageHistory", "AttachFiles", "EmbedLinks", "AddReactions", "MentionEveryone", "KickMembers", "ManageMessages", "ManageRoles"]
+    },
+    {
+      "name": "implied: no SendMessages removes AttachFiles, EmbedLinks and MentionEveryone only",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [20, 40] },
+      "channel": { "id": 100, "overwrites": [
+        { "member": 2, "deny": ["SendMessages"] }
+      ] },
+      "expect": ["ViewChannel", "ChangeNickname", "ReadMessageHistory", "AddReactions", "Connect", "Speak", "UseVoiceActivity", "StreamScreen", "StreamCamera", "KickMembers", "ManageMessages", "MuteMembers", "ManageRoles"]
+    },
+    {
+      "name": "implied: a timed-out member keeps only ViewChannel and ReadMessageHistory, server-wide",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [40], "timeout_until": 2000000 },
+      "expect": ["ViewChannel", "ReadMessageHistory"]
+    },
+    {
+      "name": "a timed-out member in a channel that allows more",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [40], "timeout_until": 2000000 },
+      "channel": { "id": 100, "overwrites": [
+        { "role": 40, "allow": ["ManageChannels"] },
+        { "member": 2, "allow": ["PinMessages"] }
+      ] },
+      "expect": ["ViewChannel", "ReadMessageHistory"]
+    },
+    {
+      "name": "a timed-out member in a channel without ReadMessageHistory",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [40], "timeout_until": 2000000 },
+      "channel": { "id": 100, "overwrites": [
+        { "role": 10, "deny": ["ReadMessageHistory"] }
+      ] },
+      "expect": ["ViewChannel"]
+    },
+    {
+      "name": "a timed-out member in a hidden channel",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [40], "timeout_until": 2000000 },
+      "channel": { "id": 100, "overwrites": [
+        { "role": 10, "deny": ["ViewChannel"] }
+      ] },
+      "expect": []
+    },
+    {
+      "name": "a timeout has ended at its end instant",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [40], "timeout_until": 1000000 },
+      "expect": ["ViewChannel", "ChangeNickname", "SendMessages", "ReadMessageHistory", "AttachFiles", "EmbedLinks", "AddReactions", "Connect", "Speak", "UseVoiceActivity", "KickMembers", "ManageMessages", "MuteMembers", "ManageRoles"]
+    },
+    {
+      "name": "a timeout still holds one millisecond before its end",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [40], "timeout_until": 1000001 },
+      "expect": ["ViewChannel", "ReadMessageHistory"]
+    },
+    {
+      "name": "implied: a new member loses the restricted bits and what depends on them",
+      "server": "community", "now": 1000000,
+      "member": { "user_id": 2, "roles": [20], "joined_at": 900000 },
+      "expect": ["ViewChannel", "ChangeNickname", "ReadMessageHistory", "AddReactions", "Connect", "UseVoiceActivity", "StreamCamera"]
+    },
+    {
+      "name": "the new-member period is over at exactly its length",
+      "server": "community", "now": 1000000,
+      "member": { "user_id": 2, "roles": [20], "joined_at": 400000 },
+      "expect": ["ViewChannel", "ChangeNickname", "SendMessages", "ReadMessageHistory", "AttachFiles", "EmbedLinks", "AddReactions", "Connect", "Speak", "UseVoiceActivity", "StreamScreen", "StreamCamera", "MentionEveryone"]
+    },
+    {
+      "name": "the new-member period still holds one millisecond before its end",
+      "server": "community", "now": 1000000,
+      "member": { "user_id": 2, "roles": [20], "joined_at": 400001 },
+      "expect": ["ViewChannel", "ChangeNickname", "ReadMessageHistory", "AddReactions", "Connect", "UseVoiceActivity", "StreamCamera"]
+    },
+    {
+      "name": "a join time in the future counts as a new member",
+      "server": "community", "now": 1000000,
+      "member": { "user_id": 2, "roles": [20], "joined_at": 1500000 },
+      "expect": ["ViewChannel", "ChangeNickname", "ReadMessageHistory", "AddReactions", "Connect", "UseVoiceActivity", "StreamCamera"]
+    },
+    {
+      "name": "an administrator is not restricted as a new member",
+      "server": "community", "now": 1000000,
+      "member": { "user_id": 2, "roles": [50], "joined_at": 999999 },
+      "expect": "ALL"
+    },
+    {
+      "name": "a new member in a channel: overwrites first, restriction last",
+      "server": "community", "now": 1000000,
+      "member": { "user_id": 2, "roles": [20], "joined_at": 900000 },
+      "channel": { "id": 100, "overwrites": [
+        { "role": 20, "allow": ["PrioritySpeaker"] },
+        { "member": 2, "allow": ["Speak"] }
+      ] },
+      "expect": ["ViewChannel", "ChangeNickname", "ReadMessageHistory", "AddReactions", "Connect", "UseVoiceActivity", "StreamCamera", "PrioritySpeaker"]
+    },
+    {
+      "name": "a member without a role is restricted when a role is required",
+      "server": "gated", "now": 1000000,
+      "member": { "user_id": 2, "roles": [] },
+      "expect": ["ViewChannel", "ChangeNickname", "ReadMessageHistory", "AddReactions"]
+    },
+    {
+      "name": "listing the everyone role does not count as having a role",
+      "server": "gated", "now": 1000000,
+      "member": { "user_id": 2, "roles": [10] },
+      "expect": ["ViewChannel", "ChangeNickname", "ReadMessageHistory", "AddReactions"]
+    },
+    {
+      "name": "a member with a role is not restricted when a role is required",
+      "server": "gated", "now": 1000000,
+      "member": { "user_id": 2, "roles": [30] },
+      "expect": ["ViewChannel", "ChangeNickname", "SendMessages", "ReadMessageHistory", "AttachFiles", "EmbedLinks", "AddReactions", "Connect", "Speak", "UseVoiceActivity"]
+    },
+    {
+      "name": "a restriction that removes ViewChannel hides every channel",
+      "server": "lockdown", "now": 1000000,
+      "member": { "user_id": 2, "roles": [], "joined_at": 900000 },
+      "channel": { "id": 100, "overwrites": [] },
+      "expect": []
+    },
+    {
+      "name": "a restriction that removes ViewChannel, server-wide: the other bits stay",
+      "server": "lockdown", "now": 1000000,
+      "member": { "user_id": 2, "roles": [], "joined_at": 900000 },
+      "expect": ["ChangeNickname", "SendMessages", "ReadMessageHistory", "AttachFiles", "EmbedLinks", "AddReactions", "Connect", "Speak", "UseVoiceActivity"]
+    },
+    {
+      "name": "a temporary speak grant in a moderated channel",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [], "speak_grant": 100 },
+      "channel": { "id": 100, "overwrites": [
+        { "role": 10, "deny": ["Speak"] }
+      ] },
+      "expect": ["ViewChannel", "ChangeNickname", "SendMessages", "ReadMessageHistory", "AttachFiles", "EmbedLinks", "AddReactions", "Connect", "Speak", "UseVoiceActivity"]
+    },
+    {
+      "name": "a speak grant for another channel does nothing",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [], "speak_grant": 200 },
+      "channel": { "id": 100, "overwrites": [
+        { "role": 10, "deny": ["Speak"] }
+      ] },
+      "expect": ["ViewChannel", "ChangeNickname", "SendMessages", "ReadMessageHistory", "AttachFiles", "EmbedLinks", "AddReactions", "Connect", "UseVoiceActivity"]
+    },
+    {
+      "name": "a member overwrite that denies Speak beats the speak grant",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [], "speak_grant": 100 },
+      "channel": { "id": 100, "overwrites": [
+        { "role": 10, "deny": ["Speak"] },
+        { "member": 2, "deny": ["Speak"] }
+      ] },
+      "expect": ["ViewChannel", "ChangeNickname", "SendMessages", "ReadMessageHistory", "AttachFiles", "EmbedLinks", "AddReactions", "Connect", "UseVoiceActivity"]
+    },
+    {
+      "name": "a speak grant does not help without Connect",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [], "speak_grant": 100 },
+      "channel": { "id": 100, "overwrites": [
+        { "role": 10, "deny": ["Speak", "Connect"] }
+      ] },
+      "expect": ["ViewChannel", "ChangeNickname", "SendMessages", "ReadMessageHistory", "AttachFiles", "EmbedLinks", "AddReactions"]
+    },
+    {
+      "name": "a speak grant does not lift a timeout",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [], "timeout_until": 2000000, "speak_grant": 100 },
+      "channel": { "id": 100, "overwrites": [
+        { "role": 10, "deny": ["Speak"] }
+      ] },
+      "expect": ["ViewChannel", "ReadMessageHistory"]
+    },
+    {
+      "name": "a reserved bit is granted by a role",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [60] },
+      "expect": ["ViewChannel", "ChangeNickname", "SendMessages", "ReadMessageHistory", "AttachFiles", "EmbedLinks", "AddReactions", "Connect", "Speak", "UseVoiceActivity", "#46"]
+    },
+    {
+      "name": "a reserved bit follows overwrites like a channel-scope bit",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [60] },
+      "channel": { "id": 100, "overwrites": [
+        { "role": 10, "allow": ["#47"] },
+        { "member": 2, "deny": ["#46"] }
+      ] },
+      "expect": ["ViewChannel", "ChangeNickname", "SendMessages", "ReadMessageHistory", "AttachFiles", "EmbedLinks", "AddReactions", "Connect", "Speak", "UseVoiceActivity", "#47"]
+    },
+    {
+      "name": "listing the everyone role among the member's roles does not lift its overwrite to the role level",
+      "server": "plain", "now": 1000000,
+      "member": { "user_id": 2, "roles": [10, 30] },
+      "channel": { "id": 100, "overwrites": [
+        { "role": 10, "allow": ["PinMessages"] },
+        { "role": 30, "deny": ["PinMessages"] }
+      ] },
+      "expect": ["ViewChannel", "ChangeNickname", "SendMessages", "ReadMessageHistory", "AttachFiles", "EmbedLinks", "AddReactions", "Connect", "Speak", "UseVoiceActivity"]
+    }
+  ]
+}

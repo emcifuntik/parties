@@ -1,0 +1,5 @@
+# Pinned on purpose: toolchain updates are deliberate changes
+# (docs/rust-rewrite/11-quality-and-release.md).
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]

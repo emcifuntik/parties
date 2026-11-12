@@ -1,0 +1,21 @@
+[package]
+name = "parties-perm"
+description = "Permission bits, resolution, hierarchy rules and role limits of Parties 2.0. Pure functions, no I/O."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# No runtime dependencies on purpose: the crate is `no_std` and pure.
+# `parties-proto` will be added here once it exists (see `src/ids.rs`).
+[dependencies]
+
+[dev-dependencies]
+# Property tests and the model-based test of rule H4.
+proptest = { version = "1", default-features = false, features = ["std"] }
+# Reads the golden vectors in `tests/vectors/`.
+serde_json = "1"

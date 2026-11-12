@@ -1,0 +1,31 @@
+[package]
+name = "parties-ui"
+description = "Views and view models of the Parties client, built with lurq."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["window"]
+# The window shell: winit event loop and the wgpu renderer. Without it the
+# crate only builds element trees, which is all the headless tests need.
+window = ["lurq/winit", "lurq/wgpu"]
+
+[dependencies]
+lurq = { version = "0.60", features = ["svg", "image"] }
+# Phosphor icons as SVG source strings (MIT). Only the icons named in
+# `components/icon.rs` end up in the binary.
+phosphor-svgs = "0.5"
+
+[dev-dependencies]
+# The example saves frames (`--capture`) and prints frame timings (`--profile`).
+lurq = { version = "0.60", features = ["screenshot", "perf_profile"] }
+
+[[example]]
+name = "glass_shell"
+required-features = ["window"]

@@ -1,0 +1,29 @@
+# Cargo workspace of the Rust rewrite (Parties 2.0).
+#
+# It lives next to the CMake tree until cutover: see
+# docs/rust-rewrite/02-target-architecture.md section 3 and decision D-13 in
+# docs/rust-rewrite/12-decisions.md.
+
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97"
+license = "MIT"
+publish = false
+
+# Crates opt in with `[lints] workspace = true`. The platform crates that are
+# allowed to use `unsafe` (audio, video, codec wrappers, OS shells) declare
+# their own lint table instead.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
