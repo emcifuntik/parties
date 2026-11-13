@@ -7,6 +7,10 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# vendor/ may hold a local clone of a dependency that is a workspace of its
+# own (lurq, through a [patch] in .cargo/config.toml); it must not be taken
+# for a member of this one.
+exclude = ["vendor"]
 
 [workspace.package]
 version = "0.0.0"

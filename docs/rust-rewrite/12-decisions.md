@@ -49,9 +49,12 @@ native menus on Windows stay outside the toolkit.
 **First evidence (2026-11-12):** the chat window of the Glass design was built
 on lurq 0.60 in `crates/parties-ui`. It matches the design picture closely
 (panel edges on the same pixels, sampled colours within 2/255), costs 1.5 ms
-of work per frame and draws nothing while idle. One thing the design needs is
-missing: backdrop blur. Gradient borders and Windows snap layouts are also
-missing; details in [08](08-client-design.md) section 6.1. The owner asked
+of work per frame and draws nothing while idle. Backdrop blur, the one thing
+the design needed and 0.60 lacked, was added to lurq's master the same day
+and released in 0.61.0 on 2026-11-13, which the window builds against (from
+crates.io, with no local patch). Gradient borders
+and Windows snap layouts are still missing; details in
+[08](08-client-design.md) section 6.1. The owner asked
 how lurq compares with GPUI; the comparison was described but not run.
 
 ### D-05 — Async runtime

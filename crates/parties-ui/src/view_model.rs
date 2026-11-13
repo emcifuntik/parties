@@ -26,6 +26,7 @@ pub type CommandHandler = Arc<dyn Fn(&ShellModel, Command) + Send + Sync>;
 
 struct Signals {
     light: Signal<LightId>,
+    backdrop_blur: Signal<bool>,
     switcher: Signal<Switcher>,
     party: Signal<PartyHeader>,
     voice_rooms: Signal<Vec<VoiceRoom>>,
@@ -96,6 +97,7 @@ impl ShellModel {
     pub fn with_handler(state: ShellState, handler: CommandHandler) -> Self {
         let signals = Signals {
             light: Signal::new(state.light),
+            backdrop_blur: Signal::new(state.backdrop_blur),
             switcher: Signal::new(state.switcher),
             party: Signal::new(state.party),
             voice_rooms: Signal::new(state.voice_rooms),
@@ -136,6 +138,7 @@ impl ShellModel {
         let signals = &self.inner.signals;
         ShellState {
             light: signals.light.get_untracked(),
+            backdrop_blur: signals.backdrop_blur.get_untracked(),
             switcher: signals.switcher.get_untracked(),
             party: signals.party.get_untracked(),
             voice_rooms: signals.voice_rooms.get_untracked(),
@@ -161,6 +164,7 @@ impl ShellModel {
     pub fn apply(&self, state: ShellState) {
         let signals = &self.inner.signals;
         set_if_changed(&signals.light, state.light);
+        set_if_changed(&signals.backdrop_blur, state.backdrop_blur);
         set_if_changed(&signals.switcher, state.switcher);
         set_if_changed(&signals.party, state.party);
         set_if_changed(&signals.voice_rooms, state.voice_rooms);
@@ -190,6 +194,10 @@ impl ShellModel {
 
     pub fn light(&self) -> LightId {
         self.inner.signals.light.get()
+    }
+
+    pub fn backdrop_blur(&self) -> bool {
+        self.inner.signals.backdrop_blur.get()
     }
 
     pub fn switcher(&self) -> Switcher {

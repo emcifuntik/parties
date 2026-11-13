@@ -17,14 +17,17 @@ default = ["window"]
 window = ["lurq/winit", "lurq/wgpu"]
 
 [dependencies]
-lurq = { version = "0.60", features = ["svg", "image"] }
+# 0.61 is the first release with `backdrop_blur`, which the glass of the
+# menus uses.
+lurq = { version = "0.61", features = ["svg", "image"] }
 # Phosphor icons as SVG source strings (MIT). Only the icons named in
 # `components/icon.rs` end up in the binary.
 phosphor-svgs = "0.5"
 
 [dev-dependencies]
-# The example saves frames (`--capture`) and prints frame timings (`--profile`).
-lurq = { version = "0.60", features = ["screenshot", "perf_profile"] }
+# The example saves frames (`--capture`), prints frame timings (`--profile`)
+# and can draw with lurq's own Direct3D 12 renderer (`--renderer dx12`).
+lurq = { version = "0.61", features = ["screenshot", "perf_profile", "dx12"] }
 
 [[example]]
 name = "glass_shell"

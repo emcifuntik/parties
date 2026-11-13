@@ -23,6 +23,26 @@ pub const RADIUS_CHIP: f32 = 8.0;
 /// Corner radius of a floating menu.
 pub const RADIUS_MENU: f32 = 16.0;
 
+/// Backdrop blur of a glass panel and of a floating menu.
+///
+/// The design's `background_blur` radius is passed to lurq's `backdrop_blur`
+/// as it stands: lurq takes a design tool's blur radius unchanged (the
+/// Gaussian's deviation is half of it).
+pub const BLUR_GLASS: f32 = 32.0;
+/// Backdrop blur of the switcher, the one chip that sits on the backdrop.
+pub const BLUR_CHIP: f32 = 24.0;
+/// Whether the surfaces that rest directly on the window backdrop (the three
+/// panels and the switcher) blur it, as the design draws them.
+///
+/// Off: behind them is only the smooth backdrop, where the blur changes no
+/// pixel of a panel by more than 3/255 (and the lower edge of the switcher by
+/// up to 11/255, where the panels under it bleed into its blur), yet a frame
+/// that changes something costs a fifth more with it (measured on this window
+/// with lurq 0.61: 1.4 to 1.7 ms of work, 0.19 to 0.23 ms of GPU time).
+/// Surfaces that float over content, the menus, always blur. Turn this on if
+/// something sharp ever moves behind a panel.
+pub const BLUR_ON_BACKDROP: bool = false;
+
 /// A flat surface: fill, 1 px inside border, corner radius.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Surface {
@@ -69,9 +89,7 @@ pub struct Glass {
     pub border_bottom: Color,
     pub radius: f32,
     pub shadow: Shadow,
-    /// The backdrop blur radius the design asks for. lurq 0.60 has no backdrop
-    /// filter, so nothing reads this yet; it is kept so the surface is
-    /// complete when the toolkit can paint it.
+    /// Radius of the blur of what is behind the surface; 0 is no blur.
     pub backdrop_blur: f32,
 }
 
@@ -84,9 +102,36 @@ impl Glass {
             border_bottom: rgba(border.1),
             radius,
             shadow,
-            backdrop_blur: 32.0,
+            backdrop_blur: BLUR_GLASS,
         }
     }
+
+    /// This surface without its blur.
+    const fn unblurred(mut self) -> Self {
+        self.backdrop_blur = 0.0;
+        self
+    }
+
+    /// This surface as one that rests directly on the window backdrop: it
+    /// blurs only if [`BLUR_ON_BACKDROP`] says so.
+    const fn resting_on_backdrop(self) -> Self {
+        if BLUR_ON_BACKDROP {
+            self
+        } else {
+            self.unblurred()
+        }
+    }
+
+    /// This surface with nothing showing through it.
+    fn opaque(mut self) -> Self {
+        self.fill_top = opaque(self.fill_top);
+        self.fill_bottom = opaque(self.fill_bottom);
+        self
+    }
+}
+
+fn opaque(color: Color) -> Color {
+    Color::new(color.r(), color.g(), color.b(), 255)
 }
 
 /// One radial wash of the backdrop, in fractions of the window: an ellipse of
@@ -169,6 +214,8 @@ pub struct Tokens {
     pub field: Surface,
     pub composer: Surface,
     pub switcher: Surface,
+    /// Radius of the blur of what is behind the switcher; 0 is no blur.
+    pub switcher_blur: f32,
     pub pill_active: Surface,
     pub tile_party: Surface,
     pub tile: Surface,
@@ -252,27 +299,24 @@ impl Tokens {
             divider: rgba(0xFFFF_FF24),
             scrollbar_thumb: rgba(0xFFFF_FF29),
 
-            panel,
+            panel: panel.resting_on_backdrop(),
             panel_reading: Glass::new(
                 0x0B0E_13D9,
                 (0xFFFF_FF0F, 0xFFFF_FF05),
                 (0xFFFF_FF2B, 0xFFFF_FF0F),
                 RADIUS_PANEL,
                 panel_shadow,
-            ),
-            // The design fills menus at 90% and 95% and blurs what is behind
-            // them. lurq has no backdrop blur yet, so a translucent menu lets
-            // the text under it show through sharp. Until blur exists the
-            // menus are opaque; restore 0x1217_1FE6 and 0x1217_1FF2 then.
+            )
+            .resting_on_backdrop(),
             menu: Glass::new(
-                0x1217_1FFF,
+                0x1217_1FE6,
                 (0xFFFF_FF12, 0xFFFF_FF08),
                 (0xFFFF_FF2B, 0xFFFF_FF0F),
                 RADIUS_MENU,
                 panel_shadow,
             ),
             menu_stream: Glass::new(
-                0x1217_1FFF,
+                0x1217_1FF2,
                 (0xFFFF_FF14, 0xFFFF_FF08),
                 (0xFFFF_FF3D, 0xFFFF_FF14),
                 RADIUS_BLOCK,
@@ -296,6 +340,7 @@ impl Tokens {
             field: Surface::new(0xFFFF_FF0F, 0xFFFF_FF1A, RADIUS_CONTROL),
             composer: Surface::new(0xFFFF_FF0F, 0xFFFF_FF24, RADIUS_CONTROL),
             switcher: Surface::new(0xFFFF_FF0F, 0xFFFF_FF1A, RADIUS_CONTROL),
+            switcher_blur: if BLUR_ON_BACKDROP { BLUR_CHIP } else { 0.0 },
             pill_active: Surface::tinted(accent, 0x26, 0x66, RADIUS_CHIP),
             tile_party: Surface::tinted(accent, 0x26, 0x4D, RADIUS_CONTROL),
             tile: Surface::new(0xFFFF_FF14, CLEAR, RADIUS_CHIP),
@@ -314,6 +359,19 @@ impl Tokens {
             monogram_bottom: rgba(0xFFFF_FF14),
             monogram_border: rgba(0xFFFF_FF29),
         }
+    }
+
+    /// These tokens for a window that does not blur what is behind its
+    /// glass. The panels stay translucent over the backdrop. The floating
+    /// menus become opaque: unblurred, the text under a translucent menu
+    /// would show through it sharp.
+    pub fn without_backdrop_blur(mut self) -> Self {
+        self.panel = self.panel.unblurred();
+        self.panel_reading = self.panel_reading.unblurred();
+        self.menu = self.menu.unblurred().opaque();
+        self.menu_stream = self.menu_stream.unblurred().opaque();
+        self.switcher_blur = 0.0;
+        self
     }
 }
 
@@ -340,5 +398,51 @@ mod tests {
         assert_eq!(night.text, ember.text);
         assert_eq!(night.panel.fill_top, ember.panel.fill_top);
         assert_eq!(night.control_danger, ember.control_danger);
+    }
+
+    #[test]
+    fn glass_blurs_its_backdrop_as_the_design_does() {
+        let tokens = Tokens::for_light(LightId::Night);
+        // Floating surfaces always blur what is under them.
+        for glass in [tokens.menu, tokens.menu_stream] {
+            assert_eq!(glass.backdrop_blur, 32.0);
+        }
+        // Surfaces resting on the backdrop follow the one switch.
+        let (resting, switcher) = if BLUR_ON_BACKDROP {
+            (32.0, 24.0)
+        } else {
+            (0.0, 0.0)
+        };
+        for glass in [tokens.panel, tokens.panel_reading] {
+            assert_eq!(glass.backdrop_blur, resting);
+        }
+        assert_eq!(tokens.switcher_blur, switcher);
+        // The menus are translucent: 7% white over #12171F at 90% and 8%
+        // white over it at 95%, at the top edge.
+        assert_eq!(tokens.menu.fill_top.a(), 232);
+        assert_eq!(tokens.menu_stream.fill_top.a(), 243);
+    }
+
+    #[test]
+    fn without_blur_the_menus_are_opaque_and_the_panels_are_unchanged() {
+        let blurred = Tokens::for_light(LightId::Night);
+        let plain = blurred.without_backdrop_blur();
+        for glass in [
+            plain.panel,
+            plain.panel_reading,
+            plain.menu,
+            plain.menu_stream,
+        ] {
+            assert_eq!(glass.backdrop_blur, 0.0);
+        }
+        assert_eq!(plain.switcher_blur, 0.0);
+        for menu in [plain.menu, plain.menu_stream] {
+            assert_eq!((menu.fill_top.a(), menu.fill_bottom.a()), (255, 255));
+        }
+        assert_eq!(plain.panel.fill_top, blurred.panel.fill_top);
+        assert_eq!(
+            plain.panel_reading.fill_bottom,
+            blurred.panel_reading.fill_bottom
+        );
     }
 }

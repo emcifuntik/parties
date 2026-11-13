@@ -107,6 +107,7 @@ pub fn glass_shell(pictures: &Pictures) -> ShellState {
 
     ShellState {
         light: LightId::Night,
+        backdrop_blur: true,
         switcher: Switcher {
             view: View::Party(NIGHT_SHIFT),
             parties: vec![

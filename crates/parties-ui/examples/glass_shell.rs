@@ -11,12 +11,21 @@
 //! - `--menu stream|presence`: start with that menu open above the voice block.
 //! - `--light <name>`: Night, Ember, Smoke, Ocean, Dusk, Rose, Honey or Moss.
 //! - `--profile`: print the timings of every presented frame, and a summary
-//!   at exit. An idle window prints nothing: it does not redraw.
+//!   at exit (with the GPU time of the frames, where the renderer measures
+//!   it). An idle window prints nothing: it does not redraw.
 //! - `--size <width>x<height>`: the window's size in logical pixels
 //!   (1440x900 when omitted).
 //! - `--seconds <n>`: close the window after `n` seconds.
 //! - `--exercise`: send a command every 250 ms (mute, channel, light), to
 //!   measure frames that change something.
+//! - `--sweep`: move the pointer in a loop over the message list, the
+//!   members, the channels and a menu that is open, to measure frames that
+//!   hover changes ask for. The loop polls while it runs, so use it to
+//!   measure frames, not idleness.
+//! - `--no-blur`: draw the glass without its backdrop blur (the menus are
+//!   then opaque), to measure what the blur costs.
+//! - `--renderer wgpu|dx12`: wgpu, which the application uses and is the
+//!   default, or lurq's own Direct3D 12 renderer (Windows only).
 //!
 //! The capture is in physical pixels: on a display scaled to 150% the
 //! 1440 x 900 window gives a 2160 x 1350 picture. To capture at 100% on such
@@ -31,8 +40,10 @@ use std::{
 
 use lurq::{
     app::{
+        Tree,
         component::Component,
         ctx::{Ctx, Interval, Timeout},
+        profiler::{RecordingOptions, SampleData},
         winit_shell::WinitWindow,
     },
     node::Element,
@@ -53,6 +64,11 @@ const CAPTURE_SETTLE: Duration = Duration::from_millis(400);
 const CAPTURE_POLL: Duration = Duration::from_millis(100);
 /// How often `--exercise` sends a command.
 const EXERCISE_EVERY: Duration = Duration::from_millis(250);
+/// How fast `--sweep` moves the pointer, in logical pixels a second: a quick
+/// flick, which crosses a list row in about one frame.
+const SWEEP_SPEED: f32 = 2400.0;
+/// How often `--sweep` reports a pointer position, as a 250 Hz mouse does.
+const SWEEP_EVERY: Duration = Duration::from_millis(4);
 
 #[derive(Clone, PartialEq)]
 struct HarnessProps {
@@ -161,6 +177,135 @@ impl Component for Harness {
     }
 }
 
+/// One straight run of the pointer, in logical pixels, named by the part of
+/// the window it crosses.
+struct Run {
+    over: &'static str,
+    from: (f32, f32),
+    to: (f32, f32),
+}
+
+impl Run {
+    fn length(&self) -> f32 {
+        (self.to.0 - self.from.0).hypot(self.to.1 - self.from.1)
+    }
+}
+
+/// The pointer's loop of `--sweep`: where it is at any moment after the
+/// window opened.
+struct Sweep {
+    started: Instant,
+    last_move: Option<Instant>,
+    /// The part of the window the pointer was last over, to name each once.
+    over: Option<&'static str>,
+}
+
+impl Sweep {
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+            last_move: None,
+            over: None,
+        }
+    }
+
+    /// The loop as it lies in the window now. `None` until the window is
+    /// laid out.
+    fn runs(tree: &mut Tree) -> Option<Vec<Run>> {
+        let mut bounds = |id: &str| tree.get_element_by_id_mut(id)?.bounds();
+        let messages = bounds("messages")?;
+        let members = bounds("members-panel");
+        let left = bounds("left-panel")?;
+        let (top, bottom) = (messages.y + 8.0, messages.y + messages.height - 8.0);
+        // Down the pictures, up the attachments (through the file card's
+        // download button, 384 px in), down the right edge.
+        let columns = [
+            (60.0, top, bottom),
+            (384.0, bottom, top),
+            (messages.width - 60.0, top, bottom),
+        ];
+        let mut runs: Vec<Run> = columns
+            .into_iter()
+            .map(|(column, from, to)| Run {
+                over: "the message list",
+                from: (messages.x + column, from),
+                to: (messages.x + column, to),
+            })
+            .collect();
+        // Down the middle of each side panel: every row, and a menu that is
+        // open above the voice block.
+        for (over, panel) in [("the members", members), ("the channels", Some(left))] {
+            let Some(panel) = panel else { continue };
+            let x = panel.x + panel.width / 2.0;
+            runs.push(Run {
+                over,
+                from: (x, panel.y + 8.0),
+                to: (x, panel.y + panel.height - 8.0),
+            });
+        }
+        Some(runs)
+    }
+
+    /// Moves the pointer to where the loop is now.
+    fn tick(&mut self, tree: &mut Tree) {
+        let now = Instant::now();
+        if self
+            .last_move
+            .is_some_and(|last| now.duration_since(last) < SWEEP_EVERY)
+        {
+            return;
+        }
+        let Some(runs) = Self::runs(tree) else { return };
+        self.last_move = Some(now);
+        // The pointer jumps from the end of a run to the start of the next.
+        let total: f32 = runs.iter().map(Run::length).sum();
+        if total <= 0.0 {
+            return;
+        }
+        let mut along = (self.started.elapsed().as_secs_f32() * SWEEP_SPEED) % total;
+        for run in runs {
+            let length = run.length();
+            if along > length {
+                along -= length;
+                continue;
+            }
+            if self.over != Some(run.over) {
+                self.over = Some(run.over);
+                println!(
+                    "sweep at {:>7.1} ms: the pointer is over {}",
+                    millis(self.started.elapsed()),
+                    run.over
+                );
+            }
+            let t = if length > 0.0 { along / length } else { 0.0 };
+            // The tree takes the pointer in physical pixels, as the window
+            // system gives it.
+            let scale = tree.scale_factor();
+            tree.mouse_move(
+                (run.from.0 + (run.to.0 - run.from.0) * t) * scale,
+                (run.from.1 + (run.to.1 - run.from.1) * t) * scale,
+            );
+            return;
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Renderer {
+    Wgpu,
+    Dx12,
+}
+
+/// Makes `tree` draw with lurq's own Direct3D 12 renderer.
+#[cfg(windows)]
+fn use_dx12(tree: &mut Tree) {
+    tree.set_render_engine_factory(|| Box::new(lurq::app::dx12_render::Dx12RenderEngine::new()));
+}
+
+/// Only Windows has that renderer; `parse_options` refuses it elsewhere.
+#[cfg(not(windows))]
+fn use_dx12(_tree: &mut Tree) {}
+
 struct Options {
     capture: Option<PathBuf>,
     menu: Option<VoiceBlockMenu>,
@@ -168,6 +313,9 @@ struct Options {
     profile: bool,
     close_after: Option<Duration>,
     exercise: bool,
+    sweep: bool,
+    backdrop_blur: bool,
+    renderer: Renderer,
     size: Option<(u32, u32)>,
 }
 
@@ -175,7 +323,7 @@ fn usage(problem: &str) -> ! {
     eprintln!("{problem}");
     eprintln!(
         "usage: glass_shell [--capture <path>] [--menu stream|presence] [--light <name>] [--profile] [--seconds \
-         <n>] [--exercise] [--size <width>x<height>]"
+         <n>] [--exercise] [--sweep] [--no-blur] [--renderer wgpu|dx12] [--size <width>x<height>]"
     );
     std::process::exit(2);
 }
@@ -188,6 +336,9 @@ fn parse_options() -> Options {
         profile: false,
         close_after: None,
         exercise: false,
+        sweep: false,
+        backdrop_blur: true,
+        renderer: Renderer::Wgpu,
         size: None,
     };
     let mut args = std::env::args().skip(1);
@@ -218,6 +369,16 @@ fn parse_options() -> Options {
                 options.close_after = Some(Duration::from_secs(seconds));
             }
             "--exercise" => options.exercise = true,
+            "--sweep" => options.sweep = true,
+            "--no-blur" => options.backdrop_blur = false,
+            "--renderer" => {
+                options.renderer = match value("--renderer").as_str() {
+                    "wgpu" => Renderer::Wgpu,
+                    "dx12" if cfg!(windows) => Renderer::Dx12,
+                    "dx12" => usage("the dx12 renderer is for Windows only"),
+                    other => usage(&format!("unknown renderer {other}: use wgpu or dx12")),
+                };
+            }
             "--size" => {
                 let size = value("--size");
                 options.size = size
@@ -241,15 +402,28 @@ struct FrameStats {
     frames: u32,
     /// The first frame, which creates the GPU device and compiles shaders.
     first_work: Duration,
-    /// Work of the frames after the first.
-    work: Duration,
-    worst_work: Duration,
+    /// Work of each frame after the first.
+    work: Vec<Duration>,
     wait: Duration,
     draw_calls: usize,
 }
 
 fn millis(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1000.0
+}
+
+/// Mean, median and worst of `times`, in milliseconds; zeros when empty.
+fn spread(times: &mut [Duration]) -> (f64, f64, f64) {
+    times.sort_unstable();
+    let (Some(median), Some(worst)) = (times.get(times.len() / 2), times.last()) else {
+        return (0.0, 0.0, 0.0);
+    };
+    let total: Duration = times.iter().sum();
+    (
+        millis(total) / times.len() as f64,
+        millis(*median),
+        millis(*worst),
+    )
 }
 
 fn main() {
@@ -261,6 +435,7 @@ fn main() {
     let mut state = fixtures::glass_shell(&Pictures::from_dir(images));
     state.light = options.light;
     state.open_menu = options.menu;
+    state.backdrop_blur = options.backdrop_blur;
     let model = ShellModel::new(state);
 
     if let Some(path) = &options.capture {
@@ -270,6 +445,18 @@ fn main() {
 
     let mut app = window::app();
     let mut tree = window::tree();
+    if options.renderer == Renderer::Dx12 {
+        use_dx12(&mut tree);
+    }
+    // A recording of lurq's profiler has the GPU time of the frames, which
+    // arrives a frame or more after each of them.
+    let recording = options.profile.then(|| {
+        let profiling = tree.profiling_handle();
+        let session = profiling
+            .start_recording(RecordingOptions::default())
+            .map(|started| started.id);
+        (profiling, session)
+    });
     tree.mount_root::<Harness>(
         &mut app,
         HarnessProps {
@@ -285,8 +472,13 @@ fn main() {
         shell = shell.with_size(width, height);
     }
     let mut shell = shell
-        // A capture run should not take the keyboard from whoever is working.
-        .with_start_without_focus(options.capture.is_some());
+        // A run that ends by itself should not take the keyboard from whoever
+        // is working.
+        .with_start_without_focus(options.capture.is_some() || options.close_after.is_some());
+    if options.sweep {
+        let mut sweep = Sweep::new();
+        shell = shell.on_tick(move |tree, _since_last| sweep.tick(tree));
+    }
 
     let stats = Arc::new(Mutex::new(FrameStats::default()));
     if options.profile {
@@ -321,8 +513,7 @@ fn main() {
             if stats.frames == 0 {
                 stats.first_work = work;
             } else {
-                stats.work += work;
-                stats.worst_work = stats.worst_work.max(work);
+                stats.work.push(work);
             }
             stats.frames += 1;
             stats.wait += wait;
@@ -333,18 +524,52 @@ fn main() {
     shell.run();
 
     if options.profile {
-        let stats = stats
+        let mut stats = stats
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let later = f64::from(stats.frames.saturating_sub(1).max(1));
+        let (mean, median, worst) = spread(&mut stats.work);
         println!(
-            "{} frames. First frame: {:.1} ms of work. After it: mean {:.2} ms, worst {:.2} ms of work per frame; mean wait for the display {:.1} ms; at most {} draw calls.",
+            "{} frames. First frame: {:.1} ms of work. After it: mean {mean:.2} ms, median {median:.2} ms, worst {worst:.2} ms of work per frame; mean wait for the display {:.1} ms; at most {} draw calls.",
             stats.frames,
             millis(stats.first_work),
-            millis(stats.work) / later,
-            millis(stats.worst_work),
             millis(stats.wait) / f64::from(stats.frames.max(1)),
             stats.draw_calls,
         );
+    }
+
+    if let Some((profiling, session)) = recording {
+        match session.and_then(|id| profiling.end(id)) {
+            Ok(report) => {
+                // The first frame is left out here too.
+                let mut gpu: Vec<Duration> = report
+                    .samples
+                    .iter()
+                    .filter_map(|sample| match &sample.data {
+                        SampleData::Pass(pass) if pass.rendered => Some(pass.gpu),
+                        _ => None,
+                    })
+                    .skip(1)
+                    .flatten()
+                    .map(|timing| timing.total())
+                    .collect();
+                let availability = report.build.gpu_timestamps;
+                if gpu.is_empty() {
+                    println!(
+                        "GPU time: not measured ({}).",
+                        availability
+                            .reason
+                            .unwrap_or("no frame's result arrived before the window closed")
+                    );
+                } else {
+                    let frames = gpu.len();
+                    let (mean, median, worst) = spread(&mut gpu);
+                    println!(
+                        "GPU time of {frames} frames after the first ({}): mean {mean:.2} ms, median {median:.2} ms, worst {worst:.2} ms.",
+                        availability.adapter_backend.unwrap_or("unknown backend"),
+                    );
+                }
+            }
+            Err(error) => println!("GPU time: the profiler gave no report ({error})."),
+        }
     }
 }

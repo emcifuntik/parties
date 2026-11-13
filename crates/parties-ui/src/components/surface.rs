@@ -1,14 +1,13 @@
 //! Surfaces: the glass panel and the flat surfaces drawn inside it.
 //!
-//! lurq paints one background, one solid border and box shadows per element.
-//! The design's glass needs three things lurq 0.60 does not have as such:
+//! lurq paints one background, one solid border and box shadows per element,
+//! and blurs what is behind an element. The design's glass needs two things
+//! lurq does not have as such:
 //!
 //! - a fill under a sheen gradient: flattened into one gradient by the theme
 //!   ([`Glass::fill_top`](crate::theme::Glass) and `fill_bottom`);
 //! - a border that fades from top to bottom: composed here from two clipped
-//!   rings and two gradient lines ([`glass_border`]);
-//! - a blur of what is behind the panel: not available, so the panel is only
-//!   translucent.
+//!   rings and two gradient lines ([`glass_border`]).
 
 use lurq::{
     components::{Column, Rect, Row, Stack},
@@ -40,12 +39,14 @@ fn vertical(top: Color, bottom: Color) -> Gradient {
     Gradient::linear(180.0, [top, bottom])
 }
 
-/// A glass surface around `content`. The caller sizes the returned stack;
-/// `content` should fill it.
+/// A glass surface around `content`: what is behind it shows through its
+/// fill, blurred. The caller sizes the returned stack; `content` should fill
+/// it.
 pub(crate) fn glass(glass: &Glass, content: impl Into<Element>) -> Stack {
     let shadow = glass.shadow;
     Stack::new()
         .rounded(glass.radius)
+        .backdrop_blur(glass.backdrop_blur)
         .background_gradient(vertical(glass.fill_top, glass.fill_bottom))
         .box_shadow(BoxShadow::new(
             0.0,

@@ -49,6 +49,9 @@ id_type!(
 #[derive(Clone, Debug, PartialEq)]
 pub struct ShellState {
     pub light: LightId,
+    /// Whether glass blurs what is behind it. Without the blur the panels
+    /// are only translucent and the floating menus are opaque.
+    pub backdrop_blur: bool,
     pub switcher: Switcher,
     pub party: PartyHeader,
     pub voice_rooms: Vec<VoiceRoom>,

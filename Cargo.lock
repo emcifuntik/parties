@@ -1072,10 +1072,11 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
 name = "lurq"
-version = "0.60.0"
+version = "0.61.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d8dbd4f6d528c30c1cff9ce130dd7af71cd68c5c383394f03b1ab78a2b6b9c2"
+checksum = "984a277f09bb03876bdd0205aa03b7cd7591fc648244e97e6a9f611eba6a6c77"
 dependencies = [
+ "block2 0.6.2",
  "bytemuck",
  "core-foundation-sys 0.8.7",
  "core-video-sys",
@@ -1091,9 +1092,11 @@ dependencies = [
  "paste",
  "pollster",
  "raw-window-handle",
+ "skrifa 0.44.0",
  "swash",
  "tiny-skia",
  "tracing",
+ "unicode-script",
  "unicode-segmentation",
  "usvg",
  "wgpu",

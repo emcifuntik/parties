@@ -207,7 +207,7 @@ is the other half of the same problem and is covered in section 6.1.
 
 Decision D-04. The UI is built with
 [lurq](https://github.com/ivanzaida/lurq) (0.58 when this was written, 0.60
-when the first window was built on it), a
+when the first window was built on it, 0.61 since 2026-11-13), a
 Rust toolkit with typed component builders, retained state and reactive
 signals.
 
@@ -234,10 +234,32 @@ most of them in lurq itself:
 | iOS | Only desktop shells are documented; nothing on touch, safe areas or the software keyboard | lurq allows custom shells that drive the tree themselves: a UIKit and Metal shell with touch input, safe-area insets and keyboard handling |
 | Accessibility | A public product needs screen-reader support; lurq has a semantic tree (used by its MCP server) but no platform accessibility | Map that tree to UI Automation on Windows and to the Apple accessibility interfaces |
 | Tray icon, global hotkeys, native menus on Windows | Not part of the toolkit | Stay in the platform shell |
-| Backdrop blur behind a translucent element | The Glass design blurs what is behind every panel and menu. lurq 0.60 has no backdrop filter (blur exists only in shadows and inside a `Canvas`). Over the smooth window backdrop the result is the same; where glass floats over content (a menu over the voice block, a panel over video) the content shows through sharp | An upstream feature (the renderer already has offscreen opacity layers), or more opaque fills wherever glass sits over content |
+| Backdrop blur behind a translucent element | The Glass design blurs what is behind every panel and menu. lurq 0.60 had no backdrop filter; 0.61 has `.backdrop_blur(radius)` on both renderers | In use since 0.61. Checked against a CPU Gaussian: at most 2/255 off, rounded corners and window edges included. When lurq first had it, blurring every glass of this window cost +0.4 ms of work per frame and about twice the GPU time, on every frame. Since [pull request 113](https://github.com/ivanzaida/lurq/pull/113) (in 0.61) a blur is kept while what is behind its glass stays the same; blurring every glass now costs +0.3 ms of work on a frame that changes something (1.4 to 1.7 ms) and a fifth more GPU time (0.19 to 0.23 ms). `parties-ui` still blurs only what floats over content (the menus): panels rest on the smooth backdrop, where the blur changes no pixel by more than 3/255 (the lower edge of the switcher by up to 11/255, the bleeding described below). The blur of an open menu costs 0.05 ms of work on a frame that changes something and nothing measurable on a frame that only moves a hover highlight |
 | Gradient borders | Panels have a border that fades from top to bottom; `Border` takes one colour | Composed today from two clipped rings and two lines (six nodes per panel). An upstream gradient border would remove them |
 | Windows 11 snap layouts on the maximise button | The flyout needs non-client hit testing, which lurq does not do; the window buttons are ordinary elements | Upstream, or in the Windows shell |
-| Draw-call batching | The chat window takes 251 to 301 draw calls, about one per quad, icon and picture | Upstream. Not urgent: frame work is 1.5 ms on average |
+| Draw-call batching | The chat window takes 251 to 301 draw calls, about one per quad, icon and picture | Texts that follow one another now share a draw (see "Text rendering" below): 316 to 280 on this window. The rest are quads, icons and pictures that sit between the texts; batching those is the next step, upstream |
+
+`parties-ui` builds against lurq 0.61 from crates.io. Moving to it from the
+clone of lurq's master that the first window was developed on needed no
+change in the crate, and the captures of the window stayed the same within
+1/255 on both renderers. To work on lurq itself, put a clone under `vendor/`
+and select it with a `[patch.crates-io]` in an untracked
+`.cargo/config.toml`; `Cargo.lock` changes while that is active, and that
+change must not be committed.
+
+Three more things about lurq showed up while measuring the blur. One is
+fixed: a frame was requested whenever the hovered element changed, even when
+nothing had a hover style, so moving the pointer over the message list redrew
+at the display rate. Since
+[pull request 114](https://github.com/ivanzaida/lurq/pull/114) (in 0.61) a
+hover that shows nothing asks for no frame. With the pointer flicked across
+this window in a loop for ten seconds, the window draws 241 frames in place
+of 897, and 19 in place of 429 while the pointer is over the message list
+(median of three runs each, the two builds run in turn). The frames that are
+left belong to rows and buttons that do have a hover style. Two are open: the
+renderer picks the default GPU adapter and offers no choice; and a backdrop
+blur samples up to 1.5 radii outside its box, so bright content next to a
+glass bleeds into its edge.
 
 The last four rows come from building the chat window of the Glass design in
 `crates/parties-ui` on lurq 0.60 (2026-11-12). The same exercise confirmed
@@ -247,10 +269,53 @@ edge resizing were not, they need a physical pointer), radial and linear
 gradients, shadows, rounded clips, selectable text, headless tests with real
 pointer input, and no frames at all while nothing changes. Measured on that
 window at 2160 × 1350: 1.5 ms of work per frame on average, 4.1 ms at worst,
-about 129 MB of working set. Smaller defects found on the way (a scale
+about 129 MB of working set. On 0.61 a frame that changes something takes
+1.4 ms of work (1.49 to 1.41 ms against the clone it replaced), in 264 draw
+calls, or 280 with a menu open; the working set is 125 MB. Smaller defects
+found on the way (a scale
 override that is stored and never read, a popup that grows to the window
 height around a percentage-height child, popup anchors that must be
 focusable) are worked around in the crate and should be reported upstream.
+
+#### Text rendering
+
+Text is most of what the client draws, so lurq's text path was benchmarked on
+a chat screen (206 texts, about 5,700 glyphs, both renderers) and optimised
+upstream ([pull request 108](https://github.com/ivanzaida/lurq/pull/108),
+part of lurq 0.61.0). CPU time of one pass, median of nine runs on a
+Ryzen 9 7950X:
+
+| Scenario | Before | After |
+|---|---|---|
+| Resize the width, every frame | 1.67 ms | 0.49 ms |
+| Switch to a channel not seen yet | 3.44 ms | 2.05 ms |
+| Second frame of a new window | 2.93 ms | 1.60 ms |
+| First frame at a new scale factor | 4.67 ms | 1.71 ms |
+| Scroll through 10,000 messages (99th percentile) | 3.41 ms | 1.60 ms |
+| Idle frame, hover, typing | 0.20 to 0.24 ms | 0.16 to 0.19 ms |
+| First frame, fonts prepared with the new `App::warm_text_styles` | 19.7 ms | 2.5 ms |
+
+Draw calls for that screen fell from 210 to 9, and every capture stayed
+pixel-identical on both renderers. What it costs: the text caches hold about
+twice the memory (1.8 to 3.2 MB for a settled screen). What it did not change
+much is this client's own window, where text was already a small part of a
+frame: 1.06 to 1.00 ms. The full tables are in lurq's
+`docs/src/content/docs/text-chat-optimization.md`.
+
+That work left one regression in 0.61.0: texts over 384 bytes of one length
+that differ only between the three samples their hash reads (rows of a log,
+two versions of a document) take the cache entry from one another and are
+laid out again on every frame. What is drawn is right; a frame with eight
+such paragraphs costs 134 µs in place of 19 µs. The fix is
+[pull request 121](https://github.com/ivanzaida/lurq/pull/121), not merged
+as of 2026-11-13.
+
+The largest costs left, in order: the first use of a font face that was not
+prepared (4 to 11 ms on that frame, inside cosmic-text's font matching, so the
+client calls `warm_text_styles` for its faces at start-up); about 0.1 ms per
+frame of copying each text into the draw list (a public type owns a `String`);
+shaping of newly visible text on the UI thread; and the native DX12 renderer
+uploading the whole glyph atlas on every change.
 
 Until texture import exists, video can run through `StreamingImage` for
 development only; it is not a shipping path.

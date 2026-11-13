@@ -104,6 +104,7 @@ fn switcher_bar(tokens: &Tokens, model: &ShellModel, switcher: &Switcher) -> Row
             .align_items(Alignment::Center),
         tokens.switcher
     )
+    .backdrop_blur(tokens.switcher_blur)
     .child(
         view_item(tokens, Icon::Home, "Home", switcher.view == View::Home)
             .id("switch-home")

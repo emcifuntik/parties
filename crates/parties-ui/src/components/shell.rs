@@ -44,6 +44,11 @@ impl Component for Shell {
         // The one place the light becomes colours: every component below
         // reads these tokens from the context.
         let tokens = Tokens::for_light(model.light());
+        let tokens = if model.backdrop_blur() {
+            tokens
+        } else {
+            tokens.without_backdrop_blur()
+        };
         ctx.provide_if_changed(tokens);
 
         let window = ctx.window();
