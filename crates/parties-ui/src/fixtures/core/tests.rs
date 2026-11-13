@@ -161,3 +161,107 @@ fn light_and_view_follow_commands() {
     core.handle(&mut state, Command::ShowView(View::Home));
     assert_eq!(state.switcher.view, View::Home);
 }
+
+#[test]
+fn retrying_only_changes_a_party_that_is_offline() {
+    use crate::{
+        fixtures::{NIGHT_SHIFT, PARTY_OLD_GUILD},
+        model::PartyLink,
+    };
+
+    let (mut core, mut state) = fixture();
+    let link = |state: &ShellState, id| {
+        state
+            .home
+            .parties
+            .iter()
+            .find(|card| card.id == id)
+            .expect("the fixture has the party")
+            .link
+            .clone()
+    };
+    let connected = link(&state, NIGHT_SHIFT);
+
+    core.handle(&mut state, Command::RetryParty(PARTY_OLD_GUILD));
+    assert_eq!(
+        link(&state, PARTY_OLD_GUILD),
+        PartyLink::Reconnecting { attempt: 1 }
+    );
+
+    core.handle(&mut state, Command::RetryParty(NIGHT_SHIFT));
+    assert_eq!(link(&state, NIGHT_SHIFT), connected);
+}
+
+#[test]
+fn the_home_commands_without_a_flow_leave_the_rest_alone() {
+    let (mut core, mut state) = fixture();
+    state.home.join_code = "K7QMD-4XR2P".to_owned();
+    let before = state.clone();
+
+    core.handle(&mut state, Command::AddPartyByAddress);
+    core.handle(&mut state, Command::CopyFingerprint);
+    assert_eq!(state, before);
+
+    core.handle(&mut state, Command::JoinWithCode);
+    assert_eq!(state.home.join_code, "");
+    state.home.join_code.clone_from(&before.home.join_code);
+    assert_eq!(state, before, "only the field changed");
+}
+
+#[test]
+fn the_voice_settings_follow_their_commands() {
+    use crate::model::{InputMode, SettingsPage};
+
+    let (mut core, mut state) = fixture();
+    let before = state.voice.clone();
+
+    core.handle(&mut state, Command::SetInputMode(InputMode::PushToTalk));
+    core.handle(&mut state, Command::SetNoiseSuppression(false));
+    core.handle(&mut state, Command::SetEchoCancellation(false));
+    core.handle(&mut state, Command::SetAutomaticGain(true));
+    assert_eq!(state.voice.input_mode, InputMode::PushToTalk);
+    assert!(!state.voice.noise_suppression);
+    assert!(!state.voice.echo_cancellation);
+    assert!(state.voice.automatic_gain);
+
+    // A test of a device changes no setting.
+    let changed = state.voice.clone();
+    core.handle(&mut state, Command::TestMicrophone);
+    core.handle(&mut state, Command::TestOutput);
+    assert_eq!(state.voice, changed);
+    assert_eq!(state.voice.sensitivity_db, before.sensitivity_db);
+
+    core.handle(&mut state, Command::ShowSettingsPage(SettingsPage::Keys));
+    assert_eq!(state.settings_page, SettingsPage::Keys);
+    core.handle(&mut state, Command::SetBackdropBlur(false));
+    assert!(!state.backdrop_blur);
+}
+
+#[test]
+fn the_app_settings_follow_their_commands() {
+    use crate::model::{AppSwitch, UpdateChannel};
+
+    let (mut core, mut state) = fixture();
+    assert!(state.app.is_on(AppSwitch::CloseToTray));
+    assert!(!state.app.is_on(AppSwitch::StartMinimised));
+
+    core.handle(
+        &mut state,
+        Command::SetAppSwitch(AppSwitch::CloseToTray, false),
+    );
+    core.handle(
+        &mut state,
+        Command::SetAppSwitch(AppSwitch::StartMinimised, true),
+    );
+    assert!(!state.app.is_on(AppSwitch::CloseToTray));
+    assert!(state.app.is_on(AppSwitch::StartMinimised));
+
+    core.handle(&mut state, Command::SetUpdateChannel(UpdateChannel::Beta));
+    assert_eq!(state.app.update_channel, UpdateChannel::Beta);
+
+    // What opens outside the window changes nothing in it.
+    let before = state.clone();
+    core.handle(&mut state, Command::ShowWhatsNew);
+    core.handle(&mut state, Command::OpenLogsFolder);
+    assert_eq!(state, before);
+}

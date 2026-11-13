@@ -12,16 +12,20 @@ use std::path::{Path, PathBuf};
 pub use self::core::FixtureCore;
 use crate::{
     model::{
-        Attachment, Avatar, ChannelId, Chat, ChatItem, Member, MemberGroup, MemberList, Message,
-        MessageId, PartyHeader, PartyIcon, PartyId, PartyTab, Picture, Presence, Reaction,
-        ReactionKind, ReplyReference, RoomActivity, RoomId, RoomMember, RoomRef, SelfState,
-        ShellState, Streams, Switcher, SystemLine, SystemPart, TextChannel, UserId, View,
-        VoiceRoom,
+        AppSettings, AppSwitch, Attachment, Avatar, ChannelId, Chat, ChatItem, CodecChoice, Home,
+        HotkeyAction, Hotkeys, IdentityCard, InputMode, KeyEntry, KeyKind, KeyStorage, Keys,
+        Member, MemberGroup, MemberList, Message, MessageId, PartyCard, PartyHeader, PartyIcon,
+        PartyId, PartyLink, PartyName, PartyTab, Picture, Presence, Profile, Reaction,
+        ReactionKind, ReplyReference, RoomActivity, RoomId, RoomMember, RoomPreview, RoomRef,
+        SelfState, SettingsPage, ShellState, Streams, Switcher, SystemLine, SystemPart,
+        TextChannel, UpdateChannel, UpdateNotice, UserId, VideoSettings, View, VoiceRoom,
+        VoiceSettings,
     },
     theme::LightId,
 };
 
 pub const NIGHT_SHIFT: PartyId = PartyId(1);
+pub const PARTY_OLD_GUILD: PartyId = PartyId(3);
 pub const CHANNEL_GENERAL: ChannelId = ChannelId(1);
 pub const CHANNEL_CLIPS: ChannelId = ChannelId(2);
 pub const CHANNEL_OFF_TOPIC: ChannelId = ChannelId(3);
@@ -113,10 +117,164 @@ pub fn glass_shell(pictures: &Pictures) -> ShellState {
             parties: vec![
                 party_tab(NIGHT_SHIFT, "Night Shift", PartyIcon::Moon, true),
                 party_tab(PartyId(2), "Cinema Sunday", PartyIcon::Film, true),
-                party_tab(PartyId(3), "Old Guild", PartyIcon::Shield, false),
+                party_tab(PARTY_OLD_GUILD, "Old Guild", PartyIcon::Shield, false),
                 party_tab(PartyId(4), "Basement LAN", PartyIcon::Server, true),
             ],
             connected: Some(NIGHT_SHIFT),
+        },
+        update: None,
+        home: Home {
+            parties: vec![
+                PartyCard {
+                    id: NIGHT_SHIFT,
+                    name: "Night Shift".to_owned(),
+                    icon: PartyIcon::Moon,
+                    address: "night.example.org:7800".to_owned(),
+                    locked: true,
+                    link: PartyLink::Connected {
+                        online: 12,
+                        capacity: 64,
+                        latency_ms: 24,
+                    },
+                    rooms: vec![
+                        RoomPreview {
+                            name: "General".to_owned(),
+                            avatars: vec![
+                                tuxick.clone(),
+                                ice_troll.clone(),
+                                ivan.clone(),
+                                sara.clone(),
+                            ],
+                            people: 5,
+                        },
+                        RoomPreview {
+                            name: "Late night".to_owned(),
+                            avatars: vec![maya.clone(), liam.clone()],
+                            people: 2,
+                        },
+                    ],
+                },
+                party_card(
+                    PartyId(2),
+                    "Cinema Sunday",
+                    PartyIcon::Film,
+                    "cinema.example.org:7800",
+                    PartyLink::Reachable {
+                        online: 7,
+                        capacity: 32,
+                        latency_ms: 41,
+                    },
+                ),
+                party_card(
+                    PARTY_OLD_GUILD,
+                    "Old Guild",
+                    PartyIcon::Shield,
+                    "guild.example.org:7800",
+                    PartyLink::Offline {
+                        last_seen: "3 days ago".to_owned(),
+                    },
+                ),
+                party_card(
+                    PartyId(4),
+                    "Basement LAN",
+                    PartyIcon::Server,
+                    "10.0.0.12:7800",
+                    PartyLink::Reconnecting { attempt: 3 },
+                ),
+            ],
+            identity: IdentityCard {
+                fingerprint: "5E:7A:91:C2:4D:3F:08:B1".to_owned(),
+                key: KeyStorage::HardwareKey,
+            },
+            join_code: String::new(),
+        },
+        settings_page: SettingsPage::default(),
+        profile: Profile {
+            picture: tuxick
+                .picture
+                .is_some()
+                .then(|| "256 \u{d7} 256, JPEG, 41 KB".to_owned()),
+            display_name: "tuxick".to_owned(),
+            party_names: vec![
+                PartyName {
+                    party: NIGHT_SHIFT,
+                    party_name: "Night Shift".to_owned(),
+                    icon: PartyIcon::Moon,
+                    connected: true,
+                    nickname: Some("tuxick@night".to_owned()),
+                },
+                PartyName {
+                    party: PartyId(2),
+                    party_name: "Cinema Sunday".to_owned(),
+                    icon: PartyIcon::Film,
+                    connected: false,
+                    nickname: None,
+                },
+            ],
+        },
+        keys: Keys {
+            keys: vec![
+                KeyEntry {
+                    id: 1,
+                    kind: KeyKind::Passkey,
+                    name: "Passkey \u{b7} Windows Hello".to_owned(),
+                    detail: "Added 11 Nov 2026 \u{b7} last used today".to_owned(),
+                },
+                KeyEntry {
+                    id: 2,
+                    kind: KeyKind::Passkey,
+                    name: "Passkey \u{b7} iCloud Keychain".to_owned(),
+                    detail: "Added 11 Nov 2026 on iPhone 17 Pro \u{b7} linked to 3 of 4 parties"
+                        .to_owned(),
+                },
+                KeyEntry {
+                    id: 3,
+                    kind: KeyKind::HardwareKey,
+                    name: "YubiKey 5C NFC".to_owned(),
+                    detail: "Added 2 Nov 2026 \u{b7} last used yesterday".to_owned(),
+                },
+            ],
+            always_ask_hardware_key: false,
+        },
+        voice: VoiceSettings {
+            input_device: "Microphone (fifine SC3)".to_owned(),
+            output_device: "Speakers (fifine SC3)".to_owned(),
+            input_mode: InputMode::VoiceActivity,
+            input_level: 0.6,
+            sensitivity_db: -36,
+            noise_suppression: true,
+            echo_cancellation: true,
+            automatic_gain: false,
+            output_volume: 80,
+        },
+        video: VideoSettings {
+            camera: "Logitech C920 HD Pro".to_owned(),
+            camera_resolution: "1280 \u{d7} 720 (720p)".to_owned(),
+            camera_frame_rate: "30 fps".to_owned(),
+            camera_preview: false,
+            codec: CodecChoice::Automatic,
+            encoder: "NVIDIA NVENC, hardware".to_owned(),
+            share_resolution: "Same as source (2560 \u{d7} 1440)".to_owned(),
+            share_frame_rate: "60 fps".to_owned(),
+            share_bitrate_mbps: 8,
+            share_audio: true,
+        },
+        hotkeys: glass_hotkeys(),
+        app: AppSettings {
+            switches: vec![
+                AppSwitch::NotifyMentions,
+                AppSwitch::NotifyRoomJoins,
+                AppSwitch::InstallUpdates,
+                AppSwitch::StartWithSystem,
+                AppSwitch::CloseToTray,
+            ],
+            notification_sound: "Soft chime".to_owned(),
+            update_channel: UpdateChannel::Stable,
+            version: "0.8.0".to_owned(),
+            update_state: "up to date".to_owned(),
+            last_checked: "today at 14:02".to_owned(),
+            language: "English".to_owned(),
+            build: "Parties 0.8.0 \u{b7} protocol 2.0".to_owned(),
         },
         party: PartyHeader {
             name: "Night Shift".to_owned(),
@@ -228,6 +386,55 @@ pub fn glass_shell(pictures: &Pictures) -> ShellState {
             streams: Streams::default(),
         },
         open_menu: None,
+    }
+}
+
+/// The Home view of the Glass design: the same state on the Home view, with
+/// an update waiting in the title bar.
+pub fn glass_home(pictures: &Pictures) -> ShellState {
+    let mut state = glass_shell(pictures);
+    state.switcher.view = View::Home;
+    state.update = Some(UpdateNotice {
+        version: "0.8.0".to_owned(),
+    });
+    state
+}
+
+/// The shortcuts as the Hotkeys frame draws them: the defaults, with the
+/// mute shortcut taken by another application and a capture running for the
+/// camera.
+fn glass_hotkeys() -> Hotkeys {
+    let mut hotkeys = Hotkeys::defaults();
+    for shortcut in &mut hotkeys.shortcuts {
+        shortcut.conflict = shortcut.action == HotkeyAction::ToggleMute;
+    }
+    hotkeys.capturing = Some(HotkeyAction::ToggleCamera);
+    hotkeys
+}
+
+/// Settings of the Glass design, open on `page`.
+pub fn glass_settings(pictures: &Pictures, page: SettingsPage) -> ShellState {
+    let mut state = glass_shell(pictures);
+    state.switcher.view = View::Settings;
+    state.settings_page = page;
+    state
+}
+
+fn party_card(
+    id: PartyId,
+    name: &str,
+    icon: PartyIcon,
+    address: &str,
+    link: PartyLink,
+) -> PartyCard {
+    PartyCard {
+        id,
+        name: name.to_owned(),
+        icon,
+        address: address.to_owned(),
+        locked: false,
+        link,
+        rooms: Vec::new(),
     }
 }
 

@@ -14,8 +14,9 @@ use crate::{
     commands::Command,
     fixtures::FixtureCore,
     model::{
-        ChannelId, Chat, MemberList, PartyHeader, SelfState, ShellState, Switcher, TextChannel,
-        VoiceBlockMenu, VoiceRoom,
+        AppSettings, ChannelId, Chat, Home, Hotkeys, IdentityCard, Keys, MemberList, PartyCard,
+        PartyHeader, Profile, SelfState, SettingsPage, ShellState, Switcher, TextChannel,
+        UpdateNotice, VideoSettings, VoiceBlockMenu, VoiceRoom, VoiceSettings,
     },
     theme::LightId,
 };
@@ -28,6 +29,25 @@ struct Signals {
     light: Signal<LightId>,
     backdrop_blur: Signal<bool>,
     switcher: Signal<Switcher>,
+    update: Signal<Option<UpdateNotice>>,
+    home_parties: Signal<Vec<PartyCard>>,
+    identity: Signal<IdentityCard>,
+    join_code: Signal<String>,
+    settings_page: Signal<SettingsPage>,
+    /// The voice settings; its two slider values are stale here, the sliders
+    /// own them (`sensitivity`, `output_volume`).
+    voice: Signal<VoiceSettings>,
+    sensitivity: Signal<i32>,
+    output_volume: Signal<i32>,
+    /// The video settings; the bitrate is stale here, its slider owns it.
+    video: Signal<VideoSettings>,
+    share_bitrate: Signal<i32>,
+    /// The profile; its display name is stale here, the text input owns it.
+    profile: Signal<Profile>,
+    display_name: Signal<String>,
+    keys: Signal<Keys>,
+    hotkeys: Signal<Hotkeys>,
+    app: Signal<AppSettings>,
     party: Signal<PartyHeader>,
     voice_rooms: Signal<Vec<VoiceRoom>>,
     text_channels: Signal<Vec<TextChannel>>,
@@ -99,6 +119,21 @@ impl ShellModel {
             light: Signal::new(state.light),
             backdrop_blur: Signal::new(state.backdrop_blur),
             switcher: Signal::new(state.switcher),
+            update: Signal::new(state.update),
+            home_parties: Signal::new(state.home.parties),
+            identity: Signal::new(state.home.identity),
+            join_code: Signal::new(state.home.join_code),
+            settings_page: Signal::new(state.settings_page),
+            sensitivity: Signal::new(state.voice.sensitivity_db),
+            output_volume: Signal::new(state.voice.output_volume),
+            voice: Signal::new(state.voice),
+            share_bitrate: Signal::new(state.video.share_bitrate_mbps),
+            video: Signal::new(state.video),
+            display_name: Signal::new(state.profile.display_name.clone()),
+            profile: Signal::new(state.profile),
+            keys: Signal::new(state.keys),
+            hotkeys: Signal::new(state.hotkeys),
+            app: Signal::new(state.app),
             party: Signal::new(state.party),
             voice_rooms: Signal::new(state.voice_rooms),
             text_channels: Signal::new(state.text_channels),
@@ -140,6 +175,29 @@ impl ShellModel {
             light: signals.light.get_untracked(),
             backdrop_blur: signals.backdrop_blur.get_untracked(),
             switcher: signals.switcher.get_untracked(),
+            update: signals.update.get_untracked(),
+            home: Home {
+                parties: signals.home_parties.get_untracked(),
+                identity: signals.identity.get_untracked(),
+                join_code: signals.join_code.get_untracked(),
+            },
+            settings_page: signals.settings_page.get_untracked(),
+            voice: VoiceSettings {
+                sensitivity_db: signals.sensitivity.get_untracked(),
+                output_volume: signals.output_volume.get_untracked(),
+                ..signals.voice.get_untracked()
+            },
+            video: VideoSettings {
+                share_bitrate_mbps: signals.share_bitrate.get_untracked(),
+                ..signals.video.get_untracked()
+            },
+            profile: Profile {
+                display_name: signals.display_name.get_untracked(),
+                ..signals.profile.get_untracked()
+            },
+            keys: signals.keys.get_untracked(),
+            hotkeys: signals.hotkeys.get_untracked(),
+            app: signals.app.get_untracked(),
             party: signals.party.get_untracked(),
             voice_rooms: signals.voice_rooms.get_untracked(),
             text_channels: signals.text_channels.get_untracked(),
@@ -166,6 +224,21 @@ impl ShellModel {
         set_if_changed(&signals.light, state.light);
         set_if_changed(&signals.backdrop_blur, state.backdrop_blur);
         set_if_changed(&signals.switcher, state.switcher);
+        set_if_changed(&signals.update, state.update);
+        set_if_changed(&signals.home_parties, state.home.parties);
+        set_if_changed(&signals.identity, state.home.identity);
+        set_if_changed(&signals.join_code, state.home.join_code);
+        set_if_changed(&signals.settings_page, state.settings_page);
+        set_if_changed(&signals.sensitivity, state.voice.sensitivity_db);
+        set_if_changed(&signals.output_volume, state.voice.output_volume);
+        set_if_changed(&signals.voice, state.voice);
+        set_if_changed(&signals.share_bitrate, state.video.share_bitrate_mbps);
+        set_if_changed(&signals.video, state.video);
+        set_if_changed(&signals.display_name, state.profile.display_name.clone());
+        set_if_changed(&signals.profile, state.profile);
+        set_if_changed(&signals.keys, state.keys);
+        set_if_changed(&signals.hotkeys, state.hotkeys);
+        set_if_changed(&signals.app, state.app);
         set_if_changed(&signals.party, state.party);
         set_if_changed(&signals.voice_rooms, state.voice_rooms);
         set_if_changed(&signals.text_channels, state.text_channels);
@@ -202,6 +275,35 @@ impl ShellModel {
 
     pub fn switcher(&self) -> Switcher {
         self.inner.signals.switcher.get()
+    }
+
+    /// The downloaded update the title bar offers, if any.
+    pub fn update(&self) -> Option<UpdateNotice> {
+        self.inner.signals.update.get()
+    }
+
+    /// The rows of "Your parties" on Home.
+    pub fn home_parties(&self) -> Vec<PartyCard> {
+        self.inner.signals.home_parties.get()
+    }
+
+    pub fn identity(&self) -> IdentityCard {
+        self.inner.signals.identity.get()
+    }
+
+    /// The page Settings is on.
+    pub fn settings_page(&self) -> SettingsPage {
+        self.inner.signals.settings_page.get()
+    }
+
+    /// The voice settings, with the values the sliders hold right now.
+    pub fn voice(&self) -> VoiceSettings {
+        let signals = &self.inner.signals;
+        VoiceSettings {
+            sensitivity_db: signals.sensitivity.get(),
+            output_volume: signals.output_volume.get(),
+            ..signals.voice.get()
+        }
     }
 
     pub fn party(&self) -> PartyHeader {
@@ -256,6 +358,64 @@ impl ShellModel {
     /// The composer's text. The text input edits it in place.
     pub fn draft_signal(&self) -> Signal<String> {
         self.inner.signals.draft.clone()
+    }
+
+    /// The input sensitivity in dB. The slider edits it in place.
+    pub fn sensitivity_signal(&self) -> Signal<i32> {
+        self.inner.signals.sensitivity.clone()
+    }
+
+    /// The output volume in percent. The slider edits it in place.
+    pub fn output_volume_signal(&self) -> Signal<i32> {
+        self.inner.signals.output_volume.clone()
+    }
+
+    /// The video settings, with the bitrate its slider holds right now.
+    pub fn video(&self) -> VideoSettings {
+        let signals = &self.inner.signals;
+        VideoSettings {
+            share_bitrate_mbps: signals.share_bitrate.get(),
+            ..signals.video.get()
+        }
+    }
+
+    /// The bitrate of a screen share in Mbps. The slider edits it in place.
+    pub fn share_bitrate_signal(&self) -> Signal<i32> {
+        self.inner.signals.share_bitrate.clone()
+    }
+
+    /// The profile, with the display name its field holds right now.
+    pub fn profile(&self) -> Profile {
+        let signals = &self.inner.signals;
+        Profile {
+            display_name: signals.display_name.get(),
+            ..signals.profile.get()
+        }
+    }
+
+    /// The display name field. The text input edits it in place.
+    pub fn display_name_signal(&self) -> Signal<String> {
+        self.inner.signals.display_name.clone()
+    }
+
+    /// What the Keys page shows.
+    pub fn keys(&self) -> Keys {
+        self.inner.signals.keys.get()
+    }
+
+    /// What the Hotkeys page shows.
+    pub fn hotkeys(&self) -> Hotkeys {
+        self.inner.signals.hotkeys.get()
+    }
+
+    /// What the App and notifications page shows.
+    pub fn app(&self) -> AppSettings {
+        self.inner.signals.app.get()
+    }
+
+    /// The join code on Home. The text input edits it in place.
+    pub fn join_code_signal(&self) -> Signal<String> {
+        self.inner.signals.join_code.clone()
     }
 
     /// The member search text. The text input edits it in place.

@@ -41,7 +41,9 @@ fn vertical(top: Color, bottom: Color) -> Gradient {
 
 /// A glass surface around `content`: what is behind it shows through its
 /// fill, blurred. The caller sizes the returned stack; `content` should fill
-/// it.
+/// it. The stack needs a height of its own (given, flexed or stretched): its
+/// border is an overlay as tall as the stack, and lurq cannot size an overlay
+/// to a parent that takes its height from its content.
 pub(crate) fn glass(glass: &Glass, content: impl Into<Element>) -> Stack {
     let shadow = glass.shadow;
     Stack::new()

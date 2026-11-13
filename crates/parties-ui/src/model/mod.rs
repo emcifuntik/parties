@@ -4,15 +4,26 @@
 //! values; until it exists, [`crate::fixtures`] does. The views read them
 //! through [`crate::view_model::ShellModel`].
 
+mod account;
 mod chat;
+mod home;
+mod hotkeys;
 mod picture;
+mod settings;
 
 pub use self::{
+    account::{KeyEntry, KeyKind, Keys, PartyName, Profile},
     chat::{
         Attachment, Chat, ChatItem, Message, Reaction, ReactionKind, ReplyReference, SystemLine,
         SystemPart,
     },
+    home::{Home, IdentityCard, KeyStorage, PartyCard, PartyLink, RoomPreview, UpdateNotice},
+    hotkeys::{HotkeyAction, Hotkeys, Shortcut},
     picture::{Avatar, Picture},
+    settings::{
+        AppSettings, AppSwitch, CodecChoice, InputMode, SettingsGroup, SettingsPage, UpdateChannel,
+        VideoSettings, VoiceSettings,
+    },
 };
 use crate::theme::LightId;
 
@@ -53,6 +64,24 @@ pub struct ShellState {
     /// are only translucent and the floating menus are opaque.
     pub backdrop_blur: bool,
     pub switcher: Switcher,
+    /// A downloaded update, shown as a chip in the title bar.
+    pub update: Option<UpdateNotice>,
+    /// The Home view.
+    pub home: Home,
+    /// The page Settings is on.
+    pub settings_page: SettingsPage,
+    /// What the Profile page edits.
+    pub profile: Profile,
+    /// What the Keys page edits.
+    pub keys: Keys,
+    /// What the Voice and audio page edits.
+    pub voice: VoiceSettings,
+    /// What the Video and sharing page edits.
+    pub video: VideoSettings,
+    /// What the Hotkeys page edits.
+    pub hotkeys: Hotkeys,
+    /// What the App and notifications page edits.
+    pub app: AppSettings,
     pub party: PartyHeader,
     pub voice_rooms: Vec<VoiceRoom>,
     pub text_channels: Vec<TextChannel>,

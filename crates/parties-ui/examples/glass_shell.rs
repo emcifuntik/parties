@@ -8,6 +8,12 @@
 //! Options:
 //!
 //! - `--capture <path>`: save the composed window to a PNG and exit.
+//! - `--view home|settings|party`: the view the window starts on (the party
+//!   when omitted). Home starts with an update waiting in the title bar, as
+//!   the design draws it.
+//! - `--page <name>`: the page Settings is on: profile, keys,
+//!   voice-and-audio, video-and-sharing, hotkeys, app-and-notifications or
+//!   appearance. It implies `--view settings`.
 //! - `--menu stream|presence`: start with that menu open above the voice block.
 //! - `--light <name>`: Night, Ember, Smoke, Ocean, Dusk, Rose, Honey or Moss.
 //! - `--profile`: print the timings of every presented frame, and a summary
@@ -51,7 +57,7 @@ use lurq::{
 use parties_ui::{
     Command, Shell, ShellModel,
     fixtures::{self, CHANNEL_CLIPS, CHANNEL_GENERAL, Pictures},
-    model::VoiceBlockMenu,
+    model::{SettingsPage, VoiceBlockMenu},
     theme::LightId,
     window,
 };
@@ -306,8 +312,18 @@ fn use_dx12(tree: &mut Tree) {
 #[cfg(not(windows))]
 fn use_dx12(_tree: &mut Tree) {}
 
+/// The view `--view` names.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StartView {
+    Home,
+    Settings,
+    Party,
+}
+
 struct Options {
     capture: Option<PathBuf>,
+    view: StartView,
+    page: SettingsPage,
     menu: Option<VoiceBlockMenu>,
     light: LightId,
     profile: bool,
@@ -322,8 +338,9 @@ struct Options {
 fn usage(problem: &str) -> ! {
     eprintln!("{problem}");
     eprintln!(
-        "usage: glass_shell [--capture <path>] [--menu stream|presence] [--light <name>] [--profile] [--seconds \
-         <n>] [--exercise] [--sweep] [--no-blur] [--renderer wgpu|dx12] [--size <width>x<height>]"
+        "usage: glass_shell [--capture <path>] [--view home|settings|party] [--page <settings page>] [--menu \
+         stream|presence] [--light <name>] [--profile] [--seconds <n>] [--exercise] [--sweep] [--no-blur] \
+         [--renderer wgpu|dx12] [--size <width>x<height>]"
     );
     std::process::exit(2);
 }
@@ -331,6 +348,8 @@ fn usage(problem: &str) -> ! {
 fn parse_options() -> Options {
     let mut options = Options {
         capture: None,
+        view: StartView::Party,
+        page: SettingsPage::default(),
         menu: None,
         light: LightId::Night,
         profile: false,
@@ -349,6 +368,24 @@ fn parse_options() -> Options {
         };
         match arg.as_str() {
             "--capture" => options.capture = Some(PathBuf::from(value("--capture"))),
+            "--view" => {
+                options.view = match value("--view").as_str() {
+                    "home" => StartView::Home,
+                    "settings" => StartView::Settings,
+                    "party" => StartView::Party,
+                    other => usage(&format!(
+                        "unknown view {other}: use home, settings or party"
+                    )),
+                };
+            }
+            "--page" => {
+                let name = value("--page");
+                options.page = SettingsPage::ALL
+                    .into_iter()
+                    .find(|page| page.slug() == name)
+                    .unwrap_or_else(|| usage(&format!("unknown settings page {name}")));
+                options.view = StartView::Settings;
+            }
             "--menu" => {
                 options.menu = Some(match value("--menu").as_str() {
                     "stream" => VoiceBlockMenu::Stream,
@@ -432,7 +469,12 @@ fn main() {
     // The design's pictures are files Pencil generated into the repository's
     // `images/` folder. Without them the fixture falls back to monograms.
     let images = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../images");
-    let mut state = fixtures::glass_shell(&Pictures::from_dir(images));
+    let pictures = Pictures::from_dir(images);
+    let mut state = match options.view {
+        StartView::Home => fixtures::glass_home(&pictures),
+        StartView::Settings => fixtures::glass_settings(&pictures, options.page),
+        StartView::Party => fixtures::glass_shell(&pictures),
+    };
     state.light = options.light;
     state.open_menu = options.menu;
     state.backdrop_blur = options.backdrop_blur;

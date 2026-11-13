@@ -1,5 +1,6 @@
 //! The root of the main window: backdrop, custom window chrome, and the
-//! three glass panels.
+//! view the switcher is on (Home, Settings, or a party with its three glass
+//! panels).
 
 use lurq::{
     app::{component::Component, ctx::Ctx},
@@ -13,12 +14,15 @@ use lurq::{
 use super::{
     channel_list::ChannelList,
     chat_panel::ChatPanel,
+    home::Home,
     member_list::MemberList,
+    settings::Settings,
     surface::{FILL, glass},
     title_bar::TitleBar,
     voice_block::VoiceBlock,
 };
 use crate::{
+    model::View,
     theme::{
         Tokens,
         metrics::{PANEL_GAP, PANEL_PADDING, RESIZE_ZONE, SIDE_PANEL_WIDTH, TITLE_BAR_HEIGHT},
@@ -58,42 +62,11 @@ impl Component for Shell {
             window.logical_height(),
         );
 
-        let left = glass(
-            &tokens.panel,
-            Column::new()
-                .width(FILL)
-                .height(FILL)
-                .padding(PANEL_PADDING)
-                .spacing(PANEL_PADDING)
-                .child(ctx.mount::<ChannelList>(model.clone()))
-                .child(ctx.mount::<VoiceBlock>(model.clone())),
-        )
-        .id("left-panel")
-        .width(SIDE_PANEL_WIDTH)
-        .height(FILL);
-
-        let chat = glass(&tokens.panel_reading, ctx.mount::<ChatPanel>(model.clone()))
-            .id("chat-panel")
-            .flex(1.0)
-            .height(FILL);
-
-        let mut body = Row::new()
-            .width(FILL)
-            .height(FILL)
-            .padding_left(PANEL_GAP)
-            .padding_right(PANEL_GAP)
-            .padding_bottom(PANEL_GAP)
-            .spacing(PANEL_GAP)
-            .child(left)
-            .child(chat);
-        if model.members_panel_open() {
-            body = body.child(
-                glass(&tokens.panel, ctx.mount::<MemberList>(model.clone()))
-                    .id("members-panel")
-                    .width(SIDE_PANEL_WIDTH)
-                    .height(FILL),
-            );
-        }
+        let body: Element = match model.switcher().view {
+            View::Home => ctx.mount::<Home>(model.clone()),
+            View::Settings => ctx.mount::<Settings>(model.clone()),
+            View::Party(_) => party_view(ctx, &tokens, &model).into(),
+        };
 
         // lurq's chrome supplies the drag region, the double-click to
         // maximise and the resize zones. Its own frame is made transparent
@@ -122,6 +95,47 @@ impl Component for Shell {
 
         backdrop.child(chrome)
     }
+}
+
+/// A party: the channels and the voice block, the chat, and the members.
+fn party_view(ctx: &mut Ctx, tokens: &Tokens, model: &ShellModel) -> Row {
+    let left = glass(
+        &tokens.panel,
+        Column::new()
+            .width(FILL)
+            .height(FILL)
+            .padding(PANEL_PADDING)
+            .spacing(PANEL_PADDING)
+            .child(ctx.mount::<ChannelList>(model.clone()))
+            .child(ctx.mount::<VoiceBlock>(model.clone())),
+    )
+    .id("left-panel")
+    .width(SIDE_PANEL_WIDTH)
+    .height(FILL);
+
+    let chat = glass(&tokens.panel_reading, ctx.mount::<ChatPanel>(model.clone()))
+        .id("chat-panel")
+        .flex(1.0)
+        .height(FILL);
+
+    let mut body = Row::new()
+        .width(FILL)
+        .height(FILL)
+        .padding_left(PANEL_GAP)
+        .padding_right(PANEL_GAP)
+        .padding_bottom(PANEL_GAP)
+        .spacing(PANEL_GAP)
+        .child(left)
+        .child(chat);
+    if model.members_panel_open() {
+        body = body.child(
+            glass(&tokens.panel, ctx.mount::<MemberList>(model.clone()))
+                .id("members-panel")
+                .width(SIDE_PANEL_WIDTH)
+                .height(FILL),
+        );
+    }
+    body
 }
 
 /// The window backdrop: the base colour and the two radial washes.

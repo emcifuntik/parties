@@ -1,7 +1,12 @@
 //! The views of the main window, split the way the design is split.
 //!
-//! - [`shell`]: the root; backdrop, window chrome and the three panels.
-//! - [`title_bar`]: brand, switcher, window buttons.
+//! - [`shell`]: the root; backdrop, window chrome and the view in it.
+//! - [`title_bar`]: brand, switcher, update notice, window buttons.
+//! - [`home`]: the Home view; the user's parties, identity, "Add a party".
+//! - [`settings`]: the Settings view; its navigation, the Appearance page
+//!   and what its pages are built from. The other pages: [`settings_account`]
+//!   (Profile and Keys), [`settings_voice`], [`settings_video`],
+//!   [`settings_hotkeys`], [`settings_app`].
 //! - [`channel_list`]: party header, voice rooms, text channels.
 //! - [`voice_block`] and [`voice_menus`]: the profile and voice block with
 //!   its Stream and presence menus.
@@ -18,9 +23,16 @@ pub mod avatar;
 pub mod channel_list;
 pub mod chat_panel;
 pub mod composer;
+pub mod home;
 pub mod icon;
 pub mod member_list;
 pub mod message_list;
+pub mod settings;
+pub mod settings_account;
+pub mod settings_app;
+pub mod settings_hotkeys;
+pub mod settings_video;
+pub mod settings_voice;
 pub mod shell;
 pub mod surface;
 pub mod title_bar;

@@ -275,7 +275,22 @@ calls, or 280 with a menu open; the working set is 125 MB. Smaller defects
 found on the way (a scale
 override that is stored and never read, a popup that grows to the window
 height around a percentage-height child, popup anchors that must be
-focusable) are worked around in the crate and should be reported upstream.
+focusable, and a child that cannot fill a parent whose height comes from its
+content, so a glass card, whose border is an overlay, computes its own
+height) are worked around in the crate and should be reported upstream.
+
+Built on the same shell since (2026-11-13), from the Glass frames and still
+on fixture data: the Home view (the user's parties with their state, the
+identity card, "Add a party", the update notice in the title bar) and
+Settings with its navigation and its seven pages (Profile, Keys, Voice and
+audio, Video and sharing, Hotkeys, App and notifications, Appearance). The switcher in the title bar moves
+between Home, Settings and the party. lurq's own slider and text input serve
+as they are; the switch, the level meter and the radio cards are composed
+from rows and rectangles. Not built yet: the lists behind the device, format,
+sound and language fields, reading the keys of a new shortcut (the page shows
+the capture; the keys come from the core), and every flow a button starts:
+join with a code, add by address, change the picture, rename in a party, add
+a passkey or a hardware key, show the recovery phrase.
 
 #### Text rendering
 

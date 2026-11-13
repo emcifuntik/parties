@@ -128,6 +128,15 @@ impl Glass {
         self.fill_bottom = opaque(self.fill_bottom);
         self
     }
+
+    /// This surface as a solid one of the colour it has over black: what a
+    /// panel looks like where the backdrop behind it is darkest.
+    fn solid(mut self) -> Self {
+        let black = rgba(0x0000_00FF);
+        self.fill_top = over(self.fill_top, black);
+        self.fill_bottom = over(self.fill_bottom, black);
+        self
+    }
 }
 
 fn opaque(color: Color) -> Color {
@@ -225,6 +234,19 @@ pub struct Tokens {
     pub card: Surface,
     pub image_border: Color,
     pub send: Surface,
+    /// A sunken area inside a card: the camera preview.
+    pub well: Surface,
+    /// A switch that is off: its track and its knob. On, the track is the
+    /// accent and the knob is `on_accent`.
+    pub switch_track: Color,
+    pub switch_knob: Color,
+    /// A level meter: a bar that is not reached, a bar under the level the
+    /// voice is sent from, and a bar above it.
+    pub meter_off: Color,
+    pub meter_below: Color,
+    pub meter_above: Color,
+    /// The thumb of a slider. Its track is `switch_track`, its fill the accent.
+    pub slider_thumb: Color,
 
     // Monogram avatars (a member without a picture).
     pub monogram_top: Color,
@@ -354,6 +376,13 @@ impl Tokens {
                 border: accent.opaque(),
                 radius: RADIUS_CHIP,
             },
+            well: Surface::new(0x0000_0059, 0xFFFF_FF1A, RADIUS_BLOCK),
+            switch_track: rgba(0xFFFF_FF29),
+            switch_knob: rgba(0xE6E6_E9FF),
+            meter_off: rgba(0xFFFF_FF1A),
+            meter_below: accent.alpha(0x73),
+            meter_above: accent.opaque(),
+            slider_thumb: rgba(0xF4F4_F6FF),
 
             monogram_top: rgba(0xFFFF_FF33),
             monogram_bottom: rgba(0xFFFF_FF14),
@@ -361,13 +390,13 @@ impl Tokens {
         }
     }
 
-    /// These tokens for a window that does not blur what is behind its
-    /// glass. The panels stay translucent over the backdrop. The floating
-    /// menus become opaque: unblurred, the text under a translucent menu
-    /// would show through it sharp.
+    /// These tokens for a window with solid panels ("Reduce transparency"):
+    /// nothing is blurred and nothing shows through a panel or a menu. A
+    /// panel keeps the colour its fill has over black, so the light of the
+    /// backdrop stays between the panels and not under them.
     pub fn without_backdrop_blur(mut self) -> Self {
-        self.panel = self.panel.unblurred();
-        self.panel_reading = self.panel_reading.unblurred();
+        self.panel = self.panel.unblurred().solid();
+        self.panel_reading = self.panel_reading.unblurred().solid();
         self.menu = self.menu.unblurred().opaque();
         self.menu_stream = self.menu_stream.unblurred().opaque();
         self.switcher_blur = 0.0;
@@ -424,7 +453,7 @@ mod tests {
     }
 
     #[test]
-    fn without_blur_the_menus_are_opaque_and_the_panels_are_unchanged() {
+    fn without_blur_the_panels_and_the_menus_are_solid() {
         let blurred = Tokens::for_light(LightId::Night);
         let plain = blurred.without_backdrop_blur();
         for glass in [
@@ -436,13 +465,18 @@ mod tests {
             assert_eq!(glass.backdrop_blur, 0.0);
         }
         assert_eq!(plain.switcher_blur, 0.0);
-        for menu in [plain.menu, plain.menu_stream] {
-            assert_eq!((menu.fill_top.a(), menu.fill_bottom.a()), (255, 255));
+        for glass in [
+            plain.panel,
+            plain.panel_reading,
+            plain.menu,
+            plain.menu_stream,
+        ] {
+            assert_eq!((glass.fill_top.a(), glass.fill_bottom.a()), (255, 255));
         }
-        assert_eq!(plain.panel.fill_top, blurred.panel.fill_top);
-        assert_eq!(
-            plain.panel_reading.fill_bottom,
-            blurred.panel_reading.fill_bottom
-        );
+        // A solid panel is the translucent one over black: darker, and the
+        // same hue.
+        let (was, is) = (blurred.panel.fill_top, plain.panel.fill_top);
+        assert!(is.r() < was.r() && is.g() < was.g() && is.b() < was.b());
+        assert_eq!(is, over(was, rgba(0x0000_00FF)));
     }
 }

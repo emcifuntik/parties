@@ -34,6 +34,10 @@ const FALLBACK_MONO: &str = "monospace";
 /// A semantic text role. The names follow the type scale of `design.pen`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TextRole {
+    /// The title of a view that has no panel around it: "Your parties".
+    Display,
+    /// The title of a settings page.
+    HeadingLarge,
     /// The title of the page in view: the channel name in the chat header.
     HeadingPage,
     /// The brand name in the title bar.
@@ -42,6 +46,8 @@ pub enum TextRole {
     HeadingSmall,
     /// The name of the party at the top of the left panel.
     Title,
+    /// The line under a display title.
+    Lead,
     /// Running message text and the composer draft.
     Body,
     /// The author of a message.
@@ -64,6 +70,8 @@ pub enum TextRole {
     MicroStrong,
     /// Codes and technical read-outs.
     Code,
+    /// A code that is the content of its line: a fingerprint, a join code.
+    CodeBody,
 }
 
 #[derive(Clone, Copy)]
@@ -102,11 +110,14 @@ const fn spec(
 }
 
 impl TextRole {
-    pub const ALL: [TextRole; 15] = [
+    pub const ALL: [TextRole; 19] = [
+        TextRole::Display,
+        TextRole::HeadingLarge,
         TextRole::HeadingPage,
         TextRole::Heading,
         TextRole::HeadingSmall,
         TextRole::Title,
+        TextRole::Lead,
         TextRole::Body,
         TextRole::BodyStrong,
         TextRole::Label,
@@ -118,6 +129,7 @@ impl TextRole {
         TextRole::Micro,
         TextRole::MicroStrong,
         TextRole::Code,
+        TextRole::CodeBody,
     ];
 
     /// The type scale. Where the design sets no line height it gets the
@@ -127,10 +139,13 @@ impl TextRole {
     #[rustfmt::skip]
     const fn spec(self) -> RoleSpec {
         match self {
+            Self::Display       => spec("ui-display",        Family::Title, 30.0, 700, 36.0, 0.0),
+            Self::HeadingLarge  => spec("ui-heading-large",  Family::Title, 24.0, 600, 30.0, 0.0),
             Self::HeadingPage   => spec("ui-heading-page",   Family::Title, 17.0, 600, 20.0, 0.0),
             Self::Heading       => spec("ui-heading",        Family::Title, 15.0, 700, 18.0, 0.0),
             Self::HeadingSmall  => spec("ui-heading-small",  Family::Title, 14.0, 600, 17.0, 0.0),
             Self::Title         => spec("ui-title",          Family::Text,  15.0, 600, 20.0, 0.0),
+            Self::Lead          => spec("ui-lead",           Family::Text,  15.0, 400, 20.0, 0.0),
             Self::Body          => spec("ui-body",           Family::Text,  14.0, 400, 20.0, 0.0),
             Self::BodyStrong    => spec("ui-body-strong",    Family::Text,  14.0, 600, 18.0, 0.0),
             Self::Label         => spec("ui-label",          Family::Text,  13.0, 500, 17.0, 0.1),
@@ -142,6 +157,7 @@ impl TextRole {
             Self::Micro         => spec("ui-micro",          Family::Text,  11.0, 400, 14.0, 0.2),
             Self::MicroStrong   => spec("ui-micro-strong",   Family::Text,  11.0, 600, 14.0, 0.2),
             Self::Code          => spec("ui-code",           Family::Code,  12.0, 400, 16.0, 0.0),
+            Self::CodeBody      => spec("ui-code-body",      Family::Code,  13.0, 400, 17.0, 0.0),
         }
     }
 

@@ -15,6 +15,10 @@ use crate::{
 
 /// Diameter of the presence dot, ring included.
 const DOT: f32 = 13.0;
+/// The same on a large picture (the identity card on Home).
+const DOT_LARGE: f32 = 16.0;
+/// From this size on a picture is large.
+const LARGE: f32 = 48.0;
 /// Width of the ring around the dot and of the speaking ring.
 const RING: f32 = 2.0;
 /// Opacity of the picture of someone who is offline.
@@ -77,12 +81,18 @@ fn monogram_role(size: f32) -> TextRole {
 }
 
 /// The side, in pixels, a picture is decoded at for an avatar drawn `size`
-/// logical pixels wide. Two sizes serve every avatar of the shell: each is at
-/// least twice the drawn size, so it stays sharp up to a 200% display, and a
-/// picture is decoded at most twice however many places show it (the sources
-/// can be megapixel files).
+/// logical pixels wide. Three sizes serve every avatar of the shell: each is
+/// at least twice the drawn size, so it stays sharp up to a 200% display, and
+/// a picture is decoded at most three times however many places show it (the
+/// sources can be megapixel files).
 fn decode_size(size: f32) -> u32 {
-    if size <= 24.0 { 48 } else { 72 }
+    if size <= 24.0 {
+        48
+    } else if size < LARGE {
+        72
+    } else {
+        128
+    }
 }
 
 pub(crate) fn avatar(tokens: &Tokens, avatar: &Avatar, look: AvatarLook) -> Stack {
@@ -140,16 +150,19 @@ pub(crate) fn avatar(tokens: &Tokens, avatar: &Avatar, look: AvatarLook) -> Stac
         .and_then(|presence| presence_color(tokens, presence))
     {
         // The design puts the 13 px dot 22 px into a 34 px picture and 17 px
-        // into a 28 px one: it hangs over the edge by one or two pixels.
-        let offset = if size >= 32.0 {
-            size - 12.0
+        // into a 28 px one: it hangs over the edge by one or two pixels. On a
+        // large picture the dot is 16 px and ends on the picture's corner.
+        let (dot, offset) = if size >= LARGE {
+            (DOT_LARGE, size - DOT_LARGE)
+        } else if size >= 32.0 {
+            (DOT, size - 12.0)
         } else {
-            size - 11.0
+            (DOT, size - 11.0)
         };
         stack = stack.child(
-            Rect::new(DOT, DOT)
-                .absolute(offset, offset, DOT, DOT)
-                .rounded(DOT / 2.0)
+            Rect::new(dot, dot)
+                .absolute(offset, offset, dot, dot)
+                .rounded(dot / 2.0)
                 .background(color)
                 .border_inside(RING, tokens.presence_ring)
                 .pointer_events_none(),

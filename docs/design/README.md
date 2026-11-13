@@ -13,10 +13,22 @@ This folder holds pictures that go with it.
 `implementation-2026-11/` is different from the folders above: it holds
 captures of the real window, built with lurq in `crates/parties-ui` from
 fixture data (the chat window, the same with the presence menu and with the
-Stream menu open, the Ember light, and the window at 1020 × 640). Compare
-`glass_shell.png` there with `glass-2026-11/chat-night.png`. Refresh them with
+Stream menu open, the Ember light, the window at 1020 × 640, Home, and the
+seven pages of Settings).
+Compare `glass_shell.png` there with `glass-2026-11/chat-night.png`,
+`glass_shell_home.png` with `home-night.png`, and the settings pictures with
+`settings-voice-night.png`, `settings-appearance.png` and the
+`pages/settings-*.png` frames of the same names. Refresh them with
 `cargo run -p parties-ui --example glass_shell -- --capture <file>` (options
-`--menu stream|presence`, `--light <name>`, `--size WxH`).
+`--view home|settings|party`, `--page <settings page>`,
+`--menu stream|presence`, `--light <name>`, `--size WxH`). The window takes
+the pointer like any other: keep it away while a capture runs, or a row under
+it is drawn hovered.
+
+Where the built window departs from the frames on purpose: a settings card is
+as tall as its content (the frames stretch "Input", "Updates" and
+"Diagnostics" past it), so the card under "Input" sits higher; and the fonts
+are the system's until the three typefaces are bundled.
 
 The pictures inside `design.pen` (avatars, party covers, attachments) are files
 in the repository's `images/` folder, where Pencil writes what it generates.

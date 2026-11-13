@@ -1,5 +1,5 @@
-//! The title bar: brand, switcher (Home, Settings, the parties, "+") and
-//! the window buttons. It sits inside lurq's window chrome, which makes the
+//! The title bar: brand, switcher (Home, Settings, the parties, "+"), the
+//! notice of a downloaded update and the window buttons. It sits inside lurq's window chrome, which makes the
 //! bar a drag region; every control here swallows its press so it does not
 //! start a drag.
 
@@ -18,7 +18,7 @@ use super::{
 };
 use crate::{
     commands::Command,
-    model::{PartyIcon, PartyTab, Switcher, View},
+    model::{PartyIcon, PartyTab, Switcher, UpdateNotice, View},
     theme::{TextRole, Tokens, metrics::TITLE_BAR_HEIGHT, tokens::RADIUS_CHIP, typography::text},
     view_model::ShellModel,
 };
@@ -43,7 +43,7 @@ impl Component for TitleBar {
         let switcher = model.switcher();
         let window = ctx.window();
 
-        Row::new()
+        let mut bar = Row::new()
             .id("title-bar")
             .width(FILL)
             .height(TITLE_BAR_HEIGHT)
@@ -57,9 +57,51 @@ impl Component for TitleBar {
                     .child(brand(&tokens, &model))
                     .child(switcher_bar(&tokens, &model, &switcher)),
             )
-            .child(Spacer::new().flex(1.0))
-            .child(window_buttons(&tokens, &window))
+            .child(Spacer::new().flex(1.0));
+        if let Some(update) = model.update() {
+            bar = bar
+                .child(update_chip(&tokens, &model, &update))
+                .child(Spacer::new().width(7.0));
+        }
+        bar.child(window_buttons(&tokens, &window))
     }
+}
+
+/// A downloaded update: what it is, and the button that restarts into it.
+fn update_chip(tokens: &Tokens, model: &ShellModel, update: &UpdateNotice) -> Row {
+    surfaced!(
+        Row::new()
+            .id("update-chip")
+            .height(36.0)
+            .padding_left(12.0)
+            .padding_right(4.0)
+            .spacing(10.0)
+            .align_items(Alignment::Center),
+        tokens.switcher
+    )
+    .child(icon(Icon::Update, 16.0, tokens.accent))
+    .child(text(
+        TextRole::Label,
+        tokens.text,
+        &format!("Update {} is ready", update.version),
+    ))
+    .child(
+        Row::new()
+            .id("update-restart")
+            .height(ITEM)
+            .padding_horizontal(10.0)
+            .align_items(Alignment::Center)
+            .rounded(RADIUS_CHIP)
+            .background(tokens.accent)
+            .cursor(CursorIcon::Pointer)
+            .on_mouse_down(swallow_press)
+            .on_click(model.command(Command::RestartToUpdate))
+            .child(text(
+                TextRole::CaptionStrong,
+                tokens.on_accent,
+                "Restart to update",
+            )),
+    )
 }
 
 fn brand(tokens: &Tokens, model: &ShellModel) -> Row {

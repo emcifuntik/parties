@@ -10,8 +10,8 @@ use super::other_chat;
 use crate::{
     commands::Command,
     model::{
-        ChannelId, Chat, ChatItem, Message, MessageId, Presence, RoomActivity, RoomId, RoomMember,
-        RoomRef, ShellState, Streams, VoiceBlockMenu,
+        Avatar, ChannelId, Chat, ChatItem, Hotkeys, Message, MessageId, PartyId, PartyLink,
+        Presence, RoomActivity, RoomId, RoomMember, RoomRef, ShellState, Streams, VoiceBlockMenu,
     },
 };
 
@@ -72,10 +72,56 @@ impl FixtureCore {
             // The picture crop flow is not built yet: the row only closes the menu.
             Command::ChangePicture => state.open_menu = None,
             Command::SetLight(light) => state.light = light,
+            Command::SetBackdropBlur(blur) => state.backdrop_blur = blur,
+            Command::ShowSettingsPage(page) => state.settings_page = page,
+            Command::RemovePicture => {
+                state.profile.picture = None;
+                set_own_avatar(state, Avatar::monogram(&state.me.name));
+            }
+            Command::CommitDisplayName => commit_display_name(state),
+            Command::RemoveKey(key) => {
+                state.keys.remove(key);
+            }
+            Command::SetAlwaysAskHardwareKey(on) => state.keys.always_ask_hardware_key = on,
+            // The flows these start (rename in a party, add a key, show the
+            // recovery phrase) are not built yet.
+            Command::EditPartyName(_)
+            | Command::AddPasskey
+            | Command::AddHardwareKey
+            | Command::ShowRecoveryPhrase => {}
+            Command::SetInputMode(mode) => state.voice.input_mode = mode,
+            Command::SetNoiseSuppression(on) => state.voice.noise_suppression = on,
+            Command::SetEchoCancellation(on) => state.voice.echo_cancellation = on,
+            Command::SetAutomaticGain(on) => state.voice.automatic_gain = on,
+            // There are no audio devices behind a fixture.
+            Command::TestMicrophone | Command::TestOutput => {}
+            Command::SetCameraPreview(on) => state.video.camera_preview = on,
+            Command::SetPreferredCodec(codec) => state.video.codec = codec,
+            Command::SetShareAudio(on) => state.video.share_audio = on,
+            Command::CaptureHotkey(action) => state.hotkeys.capturing = Some(action),
+            Command::CancelHotkeyCapture => state.hotkeys.capturing = None,
+            Command::SetHotkey(action, keys) => state.hotkeys.set(action, keys),
+            Command::ResetHotkeys => state.hotkeys = Hotkeys::defaults(),
+            Command::SetAppSwitch(switch, on) => state.app.set(switch, on),
+            Command::SetUpdateChannel(channel) => state.app.update_channel = channel,
+            // A fixture has no update server: looking only moves the time.
+            Command::CheckForUpdates => "just now".clone_into(&mut state.app.last_checked),
+            // Release notes and the log folder open outside the window.
+            Command::ShowWhatsNew | Command::OpenLogsFolder => {}
             Command::CycleLight => state.light = state.light.next(),
             Command::ToggleReaction { message, index } => toggle_reaction(state, message, index),
             Command::ToggleMembersPanel => state.members_panel_open = !state.members_panel_open,
             Command::SendDraft => self.send_draft(state),
+            Command::RetryParty(party) => retry_party(state, party),
+            // The join flow (verify the party key, then enter) is not built
+            // yet: the code is taken and the field is emptied.
+            Command::JoinWithCode => state.home.join_code.clear(),
+            // An update restarts the process, which a fixture cannot do; it
+            // takes the notice away as the restart would.
+            Command::RestartToUpdate => state.update = None,
+            // The "add by address" flow and the clipboard belong to the
+            // client core and its shell.
+            Command::AddPartyByAddress | Command::CopyFingerprint => {}
         }
     }
 
@@ -228,6 +274,76 @@ fn leave_room(state: &mut ShellState) {
         state.open_menu = None;
     }
     set_own_status(state);
+}
+
+/// Shows `avatar` wherever the user appears.
+fn set_own_avatar(state: &mut ShellState, avatar: Avatar) {
+    let user = state.me.user;
+    for member in state
+        .voice_rooms
+        .iter_mut()
+        .flat_map(|room| &mut room.members)
+    {
+        if member.user == user {
+            member.avatar = avatar.clone();
+        }
+    }
+    for member in state
+        .members
+        .groups
+        .iter_mut()
+        .flat_map(|group| &mut group.members)
+    {
+        if member.user == user {
+            member.avatar = avatar.clone();
+        }
+    }
+    state.me.avatar = avatar;
+}
+
+/// The display name field becomes the user's name everywhere. An empty
+/// field is not a name: it gets the current one back.
+fn commit_display_name(state: &mut ShellState) {
+    let name = state.profile.display_name.trim().to_owned();
+    if name.is_empty() {
+        state.profile.display_name.clone_from(&state.me.name);
+        return;
+    }
+    let user = state.me.user;
+    for member in state
+        .voice_rooms
+        .iter_mut()
+        .flat_map(|room| &mut room.members)
+    {
+        if member.user == user {
+            member.name.clone_from(&name);
+        }
+    }
+    for member in state
+        .members
+        .groups
+        .iter_mut()
+        .flat_map(|group| &mut group.members)
+    {
+        if member.user == user {
+            member.name.clone_from(&name);
+        }
+    }
+    state.profile.display_name.clone_from(&name);
+    state.me.name.clone_from(&name);
+    // Without a picture the name is what the avatar shows.
+    if state.me.avatar.picture.is_none() {
+        set_own_avatar(state, Avatar::monogram(&name));
+    }
+}
+
+/// An offline party is tried again: its row says so.
+fn retry_party(state: &mut ShellState, party: PartyId) {
+    if let Some(card) = state.home.parties.iter_mut().find(|card| card.id == party)
+        && matches!(card.link, PartyLink::Offline { .. })
+    {
+        card.link = PartyLink::Reconnecting { attempt: 1 };
+    }
 }
 
 fn toggle_reaction(state: &mut ShellState, message: MessageId, index: usize) {
