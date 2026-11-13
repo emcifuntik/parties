@@ -1,0 +1,375 @@
+// State types of Parties protocol 2.0: what the `Ready` snapshot and the
+// events are made of (docs/rust-rewrite/03-protocol-v2.md section 5.3).
+//
+// Conventions of the whole package:
+//
+// - Identifiers are `uint64` (time-sortable, section 5.2), track ids are
+//   `uint32`. 0 is never assigned and stands for "none".
+// - Instants are milliseconds since the Unix epoch in fields named `*_at_ms`
+//   or `*_until_ms`; 0 stands for "never" or "not set".
+// - Permission masks are `uint64` with the bit values of
+//   docs/rust-rewrite/05-permissions-and-roles.md section 3. Bit 63 is never
+//   set.
+// - New fields are always optional for the receiver; unknown fields are
+//   ignored. Field numbers are never reused.
+
+syntax = "proto3";
+
+package parties.v2;
+
+// ---------------------------------------------------------------------------
+// Shared value types
+// ---------------------------------------------------------------------------
+
+// The algorithm of an identity key
+// (docs/rust-rewrite/13-profiles-access-and-hardware-keys.md section 6.5).
+enum KeyAlgorithm {
+  KEY_ALGORITHM_UNSPECIFIED = 0;
+  // A software Ed25519 key. Also what a passkey-derived key looks like.
+  KEY_ALGORITHM_ED25519 = 1;
+  // A FIDO2 credential with an ECDSA P-256 key.
+  KEY_ALGORITHM_WEBAUTHN_ES256 = 2;
+  // A FIDO2 credential with an Ed25519 key.
+  KEY_ALGORITHM_WEBAUTHN_ED25519 = 3;
+}
+
+// An identity key: the algorithm and the public key in that algorithm's
+// encoding. The encodings and what is signed belong to `parties-identity`.
+message IdentityKey {
+  KeyAlgorithm algorithm = 1;
+  bytes public_key = 2;
+}
+
+// What a WebAuthn key sends next to its signature.
+message WebAuthnAssertion {
+  bytes authenticator_data = 1;
+  bytes client_data_json = 2;
+}
+
+// The key derivation function of a join password.
+enum KdfAlgorithm {
+  KDF_ALGORITHM_UNSPECIFIED = 0;
+  KDF_ALGORITHM_ARGON2ID = 1;
+}
+
+// Parameters of the join-password key derivation (section 4.2).
+message PasswordKdf {
+  KdfAlgorithm algorithm = 1;
+  bytes salt = 2;
+  // Memory cost in KiB.
+  uint32 memory_kib = 3;
+  // Time cost: number of passes.
+  uint32 iterations = 4;
+  // Degree of parallelism.
+  uint32 parallelism = 5;
+}
+
+// How a new identity becomes a member
+// (docs/rust-rewrite/04-connection-security.md section 5.3).
+enum JoinPolicy {
+  JOIN_POLICY_UNSPECIFIED = 0;
+  // Anyone who connects.
+  JOIN_POLICY_OPEN = 1;
+  // Whoever proves knowledge of the join password.
+  JOIN_POLICY_PASSWORD = 2;
+  // Whoever presents a valid, unused join code.
+  JOIN_POLICY_JOIN_CODE = 3;
+  // Whoever a moderator approves.
+  JOIN_POLICY_APPROVAL = 4;
+}
+
+// The presence of a member
+// (docs/rust-rewrite/13-profiles-access-and-hardware-keys.md section 2).
+enum Presence {
+  PRESENCE_UNSPECIFIED = 0;
+  // No session. Set by the server.
+  PRESENCE_OFFLINE = 1;
+  // At least one session is connected.
+  PRESENCE_ONLINE = 2;
+  // Connected; the user set themselves away.
+  PRESENCE_IDLE = 3;
+  // Connected; the user asked for no notifications.
+  PRESENCE_DO_NOT_DISTURB = 4;
+}
+
+// A video codec. The numbers are the `codec` byte of the video frame header
+// (section 6.3).
+enum VideoCodec {
+  VIDEO_CODEC_UNSPECIFIED = 0;
+  VIDEO_CODEC_AV1 = 1;
+  VIDEO_CODEC_H265 = 2;
+  VIDEO_CODEC_H264 = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Server settings
+// ---------------------------------------------------------------------------
+
+// What the connectionless server query reveals (section 8).
+enum QueryVisibility {
+  QUERY_VISIBILITY_UNSPECIFIED = 0;
+  // The query is not answered.
+  QUERY_VISIBILITY_OFF = 1;
+  // Name and protocol versions.
+  QUERY_VISIBILITY_BASIC = 2;
+  // Adds the user count, the capacity and "requires a join credential".
+  QUERY_VISIBILITY_FULL = 3;
+}
+
+// The restrictions on members who are not yet trusted
+// (docs/rust-rewrite/05-permissions-and-roles.md section 4, row 2).
+message NewMemberPolicy {
+  // A member who joined less than this long ago is restricted. 0 turns the
+  // age rule off.
+  uint64 period_ms = 1;
+  // A member with no role besides `@everyone` is restricted, whatever their
+  // age.
+  bool require_role = 2;
+  // The permission bits a restricted member loses.
+  uint64 restricted = 3;
+}
+
+// Caps on the numeric role limits, server-wide or of one channel
+// (docs/rust-rewrite/05-permissions-and-roles.md section 6). A limit that is
+// not set is not capped.
+message LimitCaps {
+  // kbit/s.
+  optional uint32 max_video_bitrate = 1;
+  // Pixels.
+  optional uint32 max_video_height = 2;
+  // Frames per second.
+  optional uint32 max_video_fps = 3;
+  // kbit/s.
+  optional uint32 max_aux_audio_bitrate = 4;
+  // MiB.
+  optional uint32 max_upload_size = 5;
+  // MiB.
+  optional uint32 daily_upload_quota = 6;
+  // Count.
+  optional uint32 max_published_video_tracks = 7;
+}
+
+// The runtime settings of the server
+// (docs/rust-rewrite/06-server-design.md section 8). Every member receives
+// them; `UpdateServerSettings` changes them. The settings of chat, files and
+// retention are added with those areas, from field 32 on.
+message ServerSettings {
+  // Incremented by every change. An update names the revision it was based
+  // on (docs/rust-rewrite/07-server-management.md section 5).
+  uint64 revision = 1;
+  string name = 2;
+  string description = 3;
+  // The channel a new member lands in; 0 for none.
+  uint64 default_channel_id = 4;
+  // The voice channel idle participants are moved to; 0 for none.
+  uint64 afk_channel_id = 5;
+  // Idle time after which a participant is moved to the AFK channel.
+  uint32 afk_timeout_seconds = 6;
+  JoinPolicy join_policy = 7;
+  // Whether a join password is set. The password and its verifier are never
+  // sent to members.
+  bool join_password_set = 8;
+  // The identity level a new identity needs
+  // (docs/rust-rewrite/04-connection-security.md section 6.3).
+  uint32 min_identity_level = 9;
+  NewMemberPolicy new_members = 10;
+  // How many members the server admits; 0 for no limit.
+  uint32 max_members = 11;
+  // How many sessions may be connected at once; 0 for the host's ceiling.
+  uint32 max_sessions = 12;
+  // How many sessions one member may have at once; 0 for no limit.
+  uint32 max_sessions_per_member = 13;
+  QueryVisibility query_visibility = 14;
+  // The server-wide caps on role limits.
+  LimitCaps limit_caps = 15;
+  // How many speakers are forwarded at once in a large voice channel; 0 for
+  // no limit.
+  uint32 speaker_limit = 16;
+  // Whether members may have profile pictures.
+  bool pictures_enabled = 17;
+  // Whether "last seen" is shown for offline members.
+  bool show_last_seen = 18;
+  // The longest lifetime a join code may be given.
+  uint32 max_join_code_lifetime_seconds = 19;
+  // How many unused join codes one member may hold; 0 for no limit.
+  uint32 max_unused_join_codes_per_member = 20;
+}
+
+// ---------------------------------------------------------------------------
+// Roles and channels
+// ---------------------------------------------------------------------------
+
+// The numeric limits of a role, or the limits that apply to a member
+// (docs/rust-rewrite/05-permissions-and-roles.md section 6). A role that
+// does not set a limit holds 0 for it.
+message RoleLimits {
+  // kbit/s.
+  uint32 max_video_bitrate = 1;
+  // Pixels.
+  uint32 max_video_height = 2;
+  // Frames per second.
+  uint32 max_video_fps = 3;
+  // kbit/s.
+  uint32 max_aux_audio_bitrate = 4;
+  // MiB.
+  uint32 max_upload_size = 5;
+  // MiB.
+  uint32 daily_upload_quota = 6;
+  // Count.
+  uint32 max_published_video_tracks = 7;
+}
+
+// A role (docs/rust-rewrite/05-permissions-and-roles.md section 2). All
+// roles are sent to every member, in full.
+message Role {
+  uint64 id = 1;
+  // Incremented by every change to the role.
+  uint64 revision = 2;
+  string name = 3;
+  // 0xRRGGBB; 0 for no colour.
+  uint32 color = 4;
+  // Unique among the roles of a server; higher is more senior. `@everyone`
+  // has position 0.
+  uint32 position = 5;
+  // The permissions the role grants server-wide.
+  uint64 permissions = 6;
+  RoleLimits limits = 7;
+  // Members with this role are listed separately in the member list.
+  bool hoisted = 8;
+  // The role can be mentioned by anyone.
+  bool mentionable = 9;
+  // Members holding the role must sign in with a hardware key
+  // (docs/rust-rewrite/13-profiles-access-and-hardware-keys.md section 6.5).
+  bool requires_hardware_key = 10;
+}
+
+// A channel overwrite: for one target, the bits it allows and the bits it
+// denies in that channel. The two masks never overlap.
+message Overwrite {
+  // Who the overwrite applies to.
+  oneof target {
+    // Every member with this role; `@everyone` is a valid target.
+    uint64 role_id = 1;
+    // One member.
+    uint64 user_id = 2;
+  }
+  uint64 allow = 3;
+  uint64 deny = 4;
+}
+
+// The kind of a channel.
+enum ChannelKind {
+  CHANNEL_KIND_UNSPECIFIED = 0;
+  // Groups channels and carries overwrites they can be synced with.
+  CHANNEL_KIND_CATEGORY = 1;
+  CHANNEL_KIND_VOICE = 2;
+  CHANNEL_KIND_TEXT = 3;
+}
+
+// A channel or a category. A member only ever receives the channels they
+// may view.
+message Channel {
+  uint64 id = 1;
+  // Incremented by every change to the channel, its overwrites included.
+  uint64 revision = 2;
+  ChannelKind kind = 3;
+  // The category the channel is in; 0 at the top level.
+  uint64 parent_id = 4;
+  // The place among the channels with the same parent, lowest first.
+  uint32 position = 5;
+  string name = 6;
+  string topic = 7;
+  // The channel's own overwrites, in any order.
+  repeated Overwrite overwrites = 8;
+  // Voice: how many members may be in the channel; 0 for no limit.
+  uint32 user_limit = 9;
+  // The channel's own caps on role limits, for example a bitrate.
+  LimitCaps limit_caps = 10;
+  // Text: the least time between two messages of one member; 0 for off.
+  uint32 slow_mode_seconds = 11;
+}
+
+// The effective permissions of the receiving member in one channel.
+message ChannelPermissions {
+  uint64 channel_id = 1;
+  uint64 permissions = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Members, voice and tracks
+// ---------------------------------------------------------------------------
+
+// A member of the server
+// (docs/rust-rewrite/13-profiles-access-and-hardware-keys.md section 2).
+message Member {
+  uint64 user_id = 1;
+  // The default display name.
+  string display_name = 2;
+  // The name on this server; empty when the member set none.
+  string nickname = 3;
+  // The roles the member has. `@everyone` is implied and not listed.
+  repeated uint64 role_ids = 4;
+  // SHA-512 of the profile picture; empty for no picture.
+  bytes picture_sha512 = 5;
+  Presence presence = 6;
+  uint64 joined_at_ms = 7;
+  // The member is timed out until this instant; 0 when not.
+  uint64 timeout_until_ms = 8;
+  // The member's voice is not forwarded, in any channel.
+  bool server_muted = 9;
+  // The member receives no audio.
+  bool server_deafened = 10;
+  // When the member was last connected; 0 while online or when the server
+  // does not show it.
+  uint64 last_seen_at_ms = 11;
+}
+
+// The voice state of one session. A session that is in no voice channel has
+// no voice state; an event with `channel_id` 0 says it left.
+message VoiceState {
+  uint64 session_id = 1;
+  uint64 user_id = 2;
+  // The voice channel the session is in.
+  uint64 channel_id = 3;
+  bool self_muted = 4;
+  bool self_deafened = 5;
+  // The member holds a temporary speak grant in this channel
+  // (docs/rust-rewrite/05-permissions-and-roles.md section 8).
+  bool speak_granted = 6;
+  // The video codecs this participant can decode (section 6.3).
+  repeated VideoCodec decode_codecs = 7;
+}
+
+// What a track carries (section 5.2).
+enum TrackKind {
+  TRACK_KIND_UNSPECIFIED = 0;
+  // A member's microphone.
+  TRACK_KIND_VOICE = 1;
+  // Auxiliary audio: soundboard, music, application audio.
+  TRACK_KIND_AUX_AUDIO = 2;
+  // A screen or window share.
+  TRACK_KIND_SCREEN = 3;
+  // The audio of a screen share.
+  TRACK_KIND_SCREEN_AUDIO = 4;
+  // A camera.
+  TRACK_KIND_CAMERA = 5;
+}
+
+// One published media source. Its id is the only identifier on the media
+// plane.
+message Track {
+  uint32 id = 1;
+  TrackKind kind = 2;
+  // The session that publishes the track.
+  uint64 session_id = 3;
+  uint64 user_id = 4;
+  // The voice channel the track is published in.
+  uint64 channel_id = 5;
+  // Screen audio: the screen track it belongs to. Otherwise 0.
+  uint32 linked_track_id = 6;
+  // Video tracks: the codec the publisher encodes with.
+  VideoCodec codec = 7;
+  // Video tracks: the encoded size in pixels.
+  uint32 width = 8;
+  uint32 height = 9;
+}

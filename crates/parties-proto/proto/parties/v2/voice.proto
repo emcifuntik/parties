@@ -1,0 +1,114 @@
+// Area "Voice": voice channels, tracks and subscriptions
+// (docs/rust-rewrite/03-protocol-v2.md sections 5.4, 5.5 and 6).
+
+syntax = "proto3";
+
+package parties.v2;
+
+import "parties/v2/state.proto";
+
+// ---------------------------------------------------------------------------
+// Requests
+// ---------------------------------------------------------------------------
+
+// Joins a voice channel. A session that is in another voice channel leaves
+// it first.
+message JoinVoice {
+  uint64 channel_id = 1;
+  // The video codecs this participant can decode (section 6.3).
+  repeated VideoCodec decode_codecs = 2;
+  // The voice state the session starts with.
+  bool self_muted = 3;
+  bool self_deafened = 4;
+}
+
+// Leaves the voice channel. The session's tracks and subscriptions end.
+message LeaveVoice {}
+
+// Changes the session's own voice state. A field that is not set stays as
+// it is.
+message SetVoiceState {
+  optional bool self_muted = 1;
+  optional bool self_deafened = 2;
+}
+
+// Publishes a track in the session's voice channel. Every kind is published
+// this way, the microphone included.
+message PublishTrack {
+  TrackKind kind = 1;
+  // Screen audio: the screen track it belongs to.
+  uint32 linked_track_id = 2;
+  // Video tracks: the codec and the encoded size. All 0 when the encoder
+  // does not exist yet; `UpdateTrack` follows.
+  VideoCodec codec = 3;
+  uint32 width = 4;
+  uint32 height = 5;
+}
+
+// Result of `PublishTrack`.
+message PublishTrackResult {
+  // The published track, with the id the server assigned.
+  Track track = 1;
+}
+
+// Replaces the video description of a track the session publishes: the
+// encoder settled on a codec or a size, or switched at a keyframe.
+message UpdateTrack {
+  uint32 track_id = 1;
+  VideoCodec codec = 2;
+  uint32 width = 3;
+  uint32 height = 4;
+}
+
+// Ends a track the session publishes.
+message UnpublishTrack {
+  uint32 track_id = 1;
+}
+
+// Asks for the frames of a video track, and for the audio of the screen
+// audio track linked to it. Voice and auxiliary audio need no subscription.
+message Subscribe {
+  uint32 track_id = 1;
+}
+
+// Ends a subscription.
+message Unsubscribe {
+  uint32 track_id = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
+
+// A session joined, moved, left or changed its voice state. `channel_id` 0
+// says the session is in no voice channel the receiver may view.
+message VoiceStateUpdated {
+  VoiceState state = 1;
+}
+
+// A track was published.
+message TrackPublished {
+  Track track = 1;
+}
+
+// The description of a track changed.
+message TrackUpdated {
+  Track track = 1;
+}
+
+// A track ended: its publisher unpublished it, left the channel or lost the
+// permission to publish it.
+message TrackUnpublished {
+  uint32 track_id = 1;
+}
+
+// Someone subscribed to or unsubscribed from a track. Sent to the session
+// that publishes the track.
+message SubscriberChanged {
+  uint32 track_id = 1;
+  // The subscriber.
+  uint64 user_id = 2;
+  uint64 session_id = 3;
+  // True after a subscribe, false after an unsubscribe.
+  bool subscribed = 4;
+}

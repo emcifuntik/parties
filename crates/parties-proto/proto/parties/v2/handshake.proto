@@ -1,0 +1,194 @@
+// The handshake on the control stream
+// (docs/rust-rewrite/03-protocol-v2.md section 4).
+//
+// Until authentication has succeeded, every frame the client sends on the
+// control stream is a `ClientHandshake`, and every frame the server sends up
+// to and including the last `Ready` is a `ServerHandshake`. After that the
+// stream carries `ClientFrame` and `ServerFrame` (envelope.proto).
+//
+// This file names the fields. What the signatures and proofs cover, the TLS
+// exporter and the encodings of keys are defined by `parties-identity`.
+
+syntax = "proto3";
+
+package parties.v2;
+
+import "parties/v2/state.proto";
+
+// One frame from the client during the handshake.
+message ClientHandshake {
+  oneof kind {
+    Hello hello = 1;
+    Authenticate authenticate = 2;
+  }
+}
+
+// One frame from the server during the handshake.
+message ServerHandshake {
+  oneof kind {
+    HelloAck hello_ack = 1;
+    AuthResult auth_result = 2;
+    Ready ready = 3;
+  }
+}
+
+// The first frame on the control stream.
+message Hello {
+  // The highest protocol minor version the client speaks.
+  uint32 protocol_minor = 1;
+  // The optional features the client supports (section 11).
+  repeated string features = 2;
+  // Name, version and platform of the client software. For logs and the
+  // statistics page only; never trusted.
+  string client_name = 3;
+  string client_version = 4;
+  string platform = 5;
+}
+
+// The server's answer to `Hello`.
+message HelloAck {
+  // The negotiated minor version: the lower of the two.
+  uint32 protocol_minor = 1;
+  // The negotiated features: those both sides support.
+  repeated string features = 2;
+  // The server's identity key: an Ed25519 public key.
+  bytes server_identity = 3;
+  // The server's proof of possession of that key, bound to this TLS session.
+  bytes server_proof = 4;
+  JoinRequirements join = 5;
+  // The display name of the server; empty when it is hidden.
+  string server_name = 6;
+}
+
+// What a new identity needs in order to become a member.
+message JoinRequirements {
+  JoinPolicy policy = 1;
+  // Set when the policy is the password: how to derive the key of
+  // `password_proof`.
+  PasswordKdf password_kdf = 2;
+  // The identity level a new identity needs
+  // (docs/rust-rewrite/04-connection-security.md section 6.3).
+  uint32 min_identity_level = 3;
+}
+
+// The login. A connection gets at most three attempts.
+message Authenticate {
+  // The identity key the user signs in with.
+  IdentityKey user_key = 1;
+  // The signature over the login transcript, bound to this TLS session.
+  bytes signature = 2;
+  // WebAuthn keys only: what the security key returned with the signature.
+  WebAuthnAssertion webauthn = 3;
+  // Reserved for device keys: certificates that link `user_key` to the root
+  // identity (docs/rust-rewrite/04-connection-security.md section 5.4).
+  // Empty in 2.0.
+  repeated bytes identity_chain = 4;
+  // The counter of the identity level's proof of work.
+  uint64 identity_level_counter = 5;
+  // At most one join credential. A member needs none.
+  oneof join_credential {
+    // The ten characters of a join code, without the separator.
+    string join_code = 6;
+    // The proof of knowledge of the join password.
+    bytes password_proof = 7;
+  }
+  // The display name of a new member, or a new default display name.
+  string display_name = 8;
+  // SHA-512 of the user's profile picture; empty for no picture
+  // (docs/rust-rewrite/13-profiles-access-and-hardware-keys.md section 3.2).
+  bytes picture_sha512 = 9;
+}
+
+// The server's answer to `Authenticate`, or its refusal of a `Hello`.
+message AuthResult {
+  oneof outcome {
+    AuthOk ok = 1;
+    AuthRefusal refusal = 2;
+  }
+}
+
+// The login was accepted. `Ready` follows.
+message AuthOk {
+  uint64 user_id = 1;
+  // Identifies this connection among the user's sessions.
+  uint64 session_id = 2;
+  // The server does not hold the picture with the hash the client sent and
+  // asks for its bytes.
+  bool picture_wanted = 3;
+}
+
+// Why a login was refused.
+enum AuthRefusalReason {
+  AUTH_REFUSAL_REASON_UNSPECIFIED = 0;
+  // The signature, the proof or the key does not verify.
+  AUTH_REFUSAL_REASON_BAD_SIGNATURE = 1;
+  // The identity is not a member, and the join credential is missing or
+  // wrong. The client may try again with one.
+  AUTH_REFUSAL_REASON_JOIN_REQUIRED = 2;
+  // The request to join waits for a moderator.
+  AUTH_REFUSAL_REASON_PENDING_APPROVAL = 3;
+  // The identity or its address is banned.
+  AUTH_REFUSAL_REASON_BANNED = 4;
+  // The server has no free session.
+  AUTH_REFUSAL_REASON_SERVER_FULL = 5;
+  // The member has too many sessions.
+  AUTH_REFUSAL_REASON_SESSION_LIMIT = 6;
+  // The identity level is below the server's minimum.
+  AUTH_REFUSAL_REASON_IDENTITY_LEVEL_TOO_LOW = 7;
+  // The server does not speak a minor version this client supports.
+  AUTH_REFUSAL_REASON_UNSUPPORTED_VERSION = 8;
+}
+
+// The login was refused.
+message AuthRefusal {
+  AuthRefusalReason reason = 1;
+  // Banned: when the ban ends; 0 when it does not.
+  uint64 ban_expires_at_ms = 2;
+}
+
+// The state snapshot (section 5.3). It ends the handshake.
+//
+// A snapshot that does not fit one control frame is sent as several `Ready`
+// frames in a row, at most 16. Every frame but the last has `more` set. The
+// receiver appends the repeated fields in the order received; every other
+// field is sent in one frame only. All repeated fields of one snapshot
+// together hold at most 16,384 entries.
+message Ready {
+  // Another `Ready` frame follows.
+  bool more = 1;
+  // The server's event sequence number the snapshot is current as of. The
+  // events sent after `Ready` have greater numbers.
+  uint64 seq = 2;
+  ServerSettings settings = 3;
+  // The owner of the server.
+  uint64 owner_id = 4;
+  // The built-in role every member has.
+  uint64 everyone_role_id = 5;
+  // The receiving member's own record.
+  Member me = 6;
+  // All roles.
+  repeated Role roles = 7;
+  // The channels the member may view, with their overwrites.
+  repeated Channel channels = 8;
+  // The member's effective permissions server-wide, computed by the server
+  // (docs/rust-rewrite/05-permissions-and-roles.md section 10).
+  uint64 server_permissions = 9;
+  // The member's effective permissions in every channel sent.
+  repeated ChannelPermissions channel_permissions = 10;
+  // The limits applied to the member server-wide: the member's own, bounded
+  // by the server-wide caps. A channel's caps come on top.
+  RoleLimits limits = 11;
+  // The voice states of the channels the member may view.
+  repeated VoiceState voice_states = 12;
+  // The tracks published in the channels the member may view.
+  repeated Track tracks = 13;
+  // The member directory. Up to 1,000 members: all of them. Above that:
+  // the members who are online, and `members_partial` is set
+  // (docs/rust-rewrite/13-profiles-access-and-hardware-keys.md section 2).
+  repeated Member members = 14;
+  // `members` holds the online members only; the rest is paged on demand.
+  bool members_partial = 15;
+  // How many members the server has.
+  uint32 member_count = 16;
+  // 17 is kept for the unread markers of the chat area.
+}

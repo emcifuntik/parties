@@ -1,0 +1,255 @@
+{
+  "about": "Signed and hashed statements of parties-identity, computed by generate.py with hashlib and OpenSSL, independently of the Rust code. Binary values are hex; '||' is concatenation. 'handshake' (document 03 section 4): server_proof = Ed25519(server key, 'parties-server-proof-v2' || 00 || exporter); signature = Ed25519(user key, 'parties-auth-v2' || 00 || exporter || server_identity || user_key). 'password': key = Argon2id v1.3 (password UTF-8, salt, memory, passes, lanes, 32 bytes); proof = HMAC-SHA256(key, 'parties-join-pw-v2' || 00 || exporter). 'rotation': signature = Ed25519(old key, 'parties-server-rotation-v1' || 00 || old_key || new_key); statement = old_key || new_key || signature. 'key_link': message = 'parties-link-key-v1' || 00 || exporter || server_identity || account_key || new_key; proof = Ed25519(new key, message); approval = Ed25519(account key, message). 'level': digest = SHA-256('parties-identity-level-v1' || 00 || public_key || counter as 8 bytes little-endian); level = leading zero bits. 'level_search': the smallest counter from 0 that reaches the target.",
+  "handshake": {
+    "exporter": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+    "server_seed": "1111111111111111111111111111111111111111111111111111111111111111",
+    "server_identity": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+    "user_seed": "2222222222222222222222222222222222222222222222222222222222222222",
+    "user_key": "a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+    "server_proof_message": "706172746965732d7365727665722d70726f6f662d763200a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+    "server_proof": "b53a5d021c2b059731b078d4983b543eb5af798aa65ecf062aa4304702f8c0aeffbc9b2b00c91f7b57b8ca9b09fdf8bd737a79f3effb748e68f6dd5bc0b6d40f",
+    "user_auth_message": "706172746965732d617574682d763200a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfd04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+    "signature": "736762303c3ae8dd0f5b1d306aa85f7d6c2a2d8892a50905608b8fbe009d30ad59e7228ad8d00694cc2cb0d562ea17c1aa58cda0a8cb7043f7a27d787726880a"
+  },
+  "password": [
+    {
+      "password": "correct horse battery staple",
+      "salt": "000102030405060708090a0b0c0d0e0f",
+      "memory_kib": 19456,
+      "iterations": 2,
+      "parallelism": 1,
+      "key": "818259b6310026a8e0dbac5d2e6927abcfdb07b32258fac4f61b18b80f929085",
+      "exporter": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+      "proof": "d3fb557d93674655e89dfb17f17257113c8d9b58b2905a806b54ef6f414ddef7"
+    },
+    {
+      "password": "",
+      "salt": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "memory_kib": 19456,
+      "iterations": 2,
+      "parallelism": 1,
+      "key": "6e37942a775f008daa5dcb14816440f668d0aab7d695690ee880dd24e372e953",
+      "exporter": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+      "proof": "5a85f3778dfd7aa457249fa3ab6b5dbf80e751296500ea6f8756b164eb79d68b"
+    },
+    {
+      "password": "p\u00e4ssw\u00f6rd \u2603",
+      "salt": "101112131415161718191a1b1c1d1e1f",
+      "memory_kib": 32768,
+      "iterations": 3,
+      "parallelism": 4,
+      "key": "3832db6e3b1df3e184e0fe606b8d89f04d33924ac3e6afff5b3128f04cfda737",
+      "exporter": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+      "proof": "47334b5eb940663ee7ddcd111b5db2936f7cc7a7df47e0000824c1e55615c6d1"
+    }
+  ],
+  "rotation": {
+    "old_seed": "1111111111111111111111111111111111111111111111111111111111111111",
+    "old_key": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+    "new_key": "17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce",
+    "message": "706172746965732d7365727665722d726f746174696f6e2d763100d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c977873717cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce",
+    "signature": "15e3b91b01a16575e1db1c6da196612fb9d8d7aa5e5b20933b21ce52150a24823d7edd356b95225d818d4016cb1141a4fe4c85f9e4337f373be702123e2a6706",
+    "statement": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c977873717cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce15e3b91b01a16575e1db1c6da196612fb9d8d7aa5e5b20933b21ce52150a24823d7edd356b95225d818d4016cb1141a4fe4c85f9e4337f373be702123e2a6706"
+  },
+  "key_link": {
+    "exporter": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+    "server_identity": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+    "account_seed": "2222222222222222222222222222222222222222222222222222222222222222",
+    "account_key": "a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+    "new_seed": "3333333333333333333333333333333333333333333333333333333333333333",
+    "new_key": "17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce",
+    "message": "706172746965732d6c696e6b2d6b65792d763100a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfd04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f017cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce",
+    "proof": "0d8d3739432d7b6aca4895a3b3702d6a182d1b890c52240bb43ba203400bba6111163e94f7e321ff225bb0388fa5094ebc6b6f847c88cda4e1467c38baf4970a",
+    "approval": "b33e3a871b9d8492257520612618622e5236c9dc5089d8af74169ef41817ebb2456fa2ab29810ff1ee476b48cee2b7ba13964611d8b99218e34a7f5bfe1c870d"
+  },
+  "level": [
+    {
+      "public_key": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+      "counter": 0,
+      "digest": "c3f2081970365371d18ab2561e1cd53de0026aa611a362d00e7bf83d6652435f",
+      "level": 0
+    },
+    {
+      "public_key": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+      "counter": 1,
+      "digest": "fa8ef1331de7a04326447160fc6cac85117d213951edd85f30866a000af95839",
+      "level": 0
+    },
+    {
+      "public_key": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+      "counter": 2,
+      "digest": "0537803a82f5158b246bff15052ba9985168b82515e0afbdbcb5f754087d1d9d",
+      "level": 5
+    },
+    {
+      "public_key": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+      "counter": 255,
+      "digest": "6912d9b9376cea1a0922babd048fedee826114f4ce39ef8080b97df0c6d624fa",
+      "level": 1
+    },
+    {
+      "public_key": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+      "counter": 256,
+      "digest": "01823859464d644bb1af2570e9203c772ced31a1377199d24fe67c6be88d290c",
+      "level": 7
+    },
+    {
+      "public_key": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+      "counter": 4294967296,
+      "digest": "91964cb3dd8730c19c6044abd75291cd510d5a5fbd71c102b93b80af45892a12",
+      "level": 0
+    },
+    {
+      "public_key": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+      "counter": 18446744073709551615,
+      "digest": "890fd1710786bbae6639a952f57f1c87831de40d23fa2593a4fa0042d2ec2890",
+      "level": 0
+    },
+    {
+      "public_key": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+      "counter": 0,
+      "digest": "70321babb5cd49c64c74eebb2c2d180863e6fe3b78f509cdfaa1dba9ae6192a1",
+      "level": 1
+    },
+    {
+      "public_key": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+      "counter": 1,
+      "digest": "41d489331aecf0a379a57a5c3493f91b5fc8c1a20d94f62dc7af6c5fb84b5288",
+      "level": 1
+    },
+    {
+      "public_key": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+      "counter": 2,
+      "digest": "1fb22faf0bdee0cd6beca6b158b0a54cce8ebeed0ff7cd79d33ed25c73f3ae7a",
+      "level": 3
+    },
+    {
+      "public_key": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+      "counter": 255,
+      "digest": "afa831eb01e4a5ff8af45bf7acac6961cd8681913f94a0c0174c0c65063d9a86",
+      "level": 0
+    },
+    {
+      "public_key": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+      "counter": 256,
+      "digest": "af266a825bbdb31331ac6b5d7df6fc745f7d7b3ae316d4bf2a31121dc58b4b95",
+      "level": 0
+    },
+    {
+      "public_key": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+      "counter": 4294967296,
+      "digest": "48b65e5f0352c269a6870807815b7611d0e38e48e71c46d05d167ea01c299998",
+      "level": 1
+    },
+    {
+      "public_key": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+      "counter": 18446744073709551615,
+      "digest": "595873b255ae77d2cb1966a2d50dd3e39c910b65c3604fcd12429f3439f92140",
+      "level": 1
+    },
+    {
+      "public_key": "a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+      "counter": 0,
+      "digest": "5b0320d212dbf6a5a4c61706c0ecfa0e969e8a264330cccef3817dc414b8d34a",
+      "level": 1
+    },
+    {
+      "public_key": "a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+      "counter": 1,
+      "digest": "fdabab4cb476d21d08d3d4b57e9666c455f3baeb65e9254481393990cc4bcabf",
+      "level": 0
+    },
+    {
+      "public_key": "a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+      "counter": 2,
+      "digest": "11145661ae396ad0f98dd093041b65258b32f82c5c63c24706df222f0a35fe63",
+      "level": 3
+    },
+    {
+      "public_key": "a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+      "counter": 255,
+      "digest": "ff4c45e348735043404196917f9870558f2dad8986618b252da486c68f152530",
+      "level": 0
+    },
+    {
+      "public_key": "a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+      "counter": 256,
+      "digest": "62d8b8dea8475468d229a59d10d2b7d5744b7e9eb043daf3cb9e9c2e3f19a3c9",
+      "level": 1
+    },
+    {
+      "public_key": "a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+      "counter": 4294967296,
+      "digest": "3097a4f49ffd800f1bf1b2a3020045a6b45db90186f3f2b66f1e0ebe6802944b",
+      "level": 2
+    },
+    {
+      "public_key": "a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+      "counter": 18446744073709551615,
+      "digest": "f9c86d11999cfc18c9417e40bd4c9d097a33ab709d0ca270e89d5e1e26eb2fd2",
+      "level": 0
+    }
+  ],
+  "level_search": [
+    {
+      "public_key": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+      "target": 1,
+      "first_counter": 2,
+      "level": 5
+    },
+    {
+      "public_key": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+      "target": 4,
+      "first_counter": 2,
+      "level": 5
+    },
+    {
+      "public_key": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+      "target": 8,
+      "first_counter": 93,
+      "level": 12
+    },
+    {
+      "public_key": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+      "target": 12,
+      "first_counter": 93,
+      "level": 12
+    },
+    {
+      "public_key": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+      "target": 16,
+      "first_counter": 21482,
+      "level": 17
+    },
+    {
+      "public_key": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+      "target": 1,
+      "first_counter": 0,
+      "level": 1
+    },
+    {
+      "public_key": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+      "target": 4,
+      "first_counter": 3,
+      "level": 4
+    },
+    {
+      "public_key": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+      "target": 8,
+      "first_counter": 548,
+      "level": 9
+    },
+    {
+      "public_key": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+      "target": 12,
+      "first_counter": 1157,
+      "level": 12
+    },
+    {
+      "public_key": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+      "target": 16,
+      "first_counter": 36551,
+      "level": 17
+    }
+  ]
+}

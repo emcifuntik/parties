@@ -1,8 +1,14 @@
 # Parties in Rust — design documents
 
-> Status: first draft, 2026-11-10. Nothing here is implemented yet. Decisions
-> are proposals unless [12-decisions.md](12-decisions.md) marks them as
-> decided by the project owner.
+> Status: first draft, 2026-11-10. Decisions are proposals unless
+> [12-decisions.md](12-decisions.md) marks them as decided by the project
+> owner. Implementation started on 2026-11-12; as of 2026-11-13 the Cargo
+> workspace holds four crates of Phase 0 and of the first window:
+> `parties-perm` (the permission engine), `parties-identity` (keys, recovery
+> phrases, handshake proofs, server trust), `parties-proto` (the first wire
+> schema, framing, media headers, limits) and `parties-ui` (the Glass window
+> on fixture data: a party, Home and Settings). Nothing connects to anything
+> yet: there is no transport, no server and no client core.
 
 This folder plans the complete rewrite of the Parties server and client in
 Rust: what exists, what the target is, how the protocol and permission system

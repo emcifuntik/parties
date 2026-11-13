@@ -78,9 +78,9 @@ xtask/                     packaging, signing, iOS archive, schema checks
 
 | Crate | Depends on | `unsafe` | Notes |
 |---|---|---|---|
-| `parties-proto` | prost, bytes | Forbidden | Generated control messages, hand-written media headers, all constants. No I/O |
+| `parties-proto` | prost, bytes, thiserror | Forbidden | Generated control messages, hand-written media headers, all constants. No I/O |
 | `parties-perm` | `parties-proto` | Forbidden | Pure functions; property-tested. See [05](05-permissions-and-roles.md) |
-| `parties-identity` | ed25519-dalek, sha2, hkdf, zeroize | Forbidden | Secrets are `Zeroize` types that do not implement `Debug` |
+| `parties-identity` | ed25519-dalek, sha2, hkdf, hmac, pbkdf2, argon2, zeroize | Forbidden | Secrets are `Zeroize` types that do not implement `Debug`. Holds the handshake labels and proofs; depends on no workspace crate |
 | `parties-transport` | quinn, rustls, `parties-proto` | Forbidden | The only crate that names the QUIC library |
 | `parties-media` | `parties-proto` | Forbidden | Ports of `common/src/video_*`, `datagram_backlog.h`, mixer logic |
 | `parties-audio` | cpal, opus, DSP crates | Allowed | Real-time rules in section 6 |

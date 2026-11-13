@@ -1,0 +1,89 @@
+// Area "Roles": roles and who has them
+// (docs/rust-rewrite/03-protocol-v2.md sections 5.4 and 5.5,
+// docs/rust-rewrite/05-permissions-and-roles.md sections 5 and 6).
+
+syntax = "proto3";
+
+package parties.v2;
+
+import "parties/v2/state.proto";
+
+// ---------------------------------------------------------------------------
+// Requests
+// ---------------------------------------------------------------------------
+
+// Creates a role. The server places it directly above `@everyone`;
+// `ReorderRoles` moves it.
+message CreateRole {
+  string name = 1;
+  uint32 color = 2;
+  uint64 permissions = 3;
+  RoleLimits limits = 4;
+  bool hoisted = 5;
+  bool mentionable = 6;
+  bool requires_hardware_key = 7;
+}
+
+// Changes a role. A field that is not set stays as it is. With the status
+// CONFLICT the response carries the current role.
+message UpdateRole {
+  uint64 role_id = 1;
+  uint64 base_revision = 2;
+  optional string name = 3;
+  optional uint32 color = 4;
+  // The whole new mask. Bits the actor does not hold must stay as they are
+  // (rule H4).
+  optional uint64 permissions = 5;
+  // Replaces all of the role's limits.
+  RoleLimits limits = 6;
+  optional bool hoisted = 7;
+  optional bool mentionable = 8;
+  optional bool requires_hardware_key = 9;
+}
+
+// Deletes a role. `@everyone` cannot be deleted.
+message DeleteRole {
+  uint64 role_id = 1;
+}
+
+// Reorders the roles, in one step.
+message ReorderRoles {
+  // Every role except `@everyone`, lowest position first.
+  repeated uint64 role_ids = 1;
+}
+
+// Gives a role to a member.
+message AssignRole {
+  uint64 user_id = 1;
+  uint64 role_id = 2;
+}
+
+// Takes a role away from a member.
+message RevokeRole {
+  uint64 user_id = 1;
+  uint64 role_id = 2;
+}
+
+// Result of `CreateRole` and `UpdateRole`: the role as it is now.
+message RoleResult {
+  Role role = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
+
+// A role was created.
+message RoleCreated {
+  Role role = 1;
+}
+
+// One or more roles changed in one step. A reorder changes several.
+message RoleUpdated {
+  repeated Role roles = 1;
+}
+
+// A role was deleted. Members who had it no longer do.
+message RoleDeleted {
+  uint64 role_id = 1;
+}

@@ -1,0 +1,216 @@
+// The envelope of the control stream after the handshake
+// (docs/rust-rewrite/03-protocol-v2.md section 5.1).
+//
+// Field numbers in the three `oneof`s are assigned by area, so that an area
+// added later breaks nothing:
+//
+//   1 to 15      the envelope itself
+//   16 to 31     Session and the member directory
+//   32 to 63     Voice
+//   64 to 95     Chat (later)
+//   96 to 127    Moderation (later)
+//   128 to 159   Structure
+//   160 to 191   Roles
+//   192 to 223   Server
+//   224 to 255   Bulk (later)
+//
+// A typed result in `Response` has the number of its request in
+// `ClientFrame`. Bulk requests travel on streams of their own (section 7);
+// their range is kept free so that they can use this envelope there.
+
+syntax = "proto3";
+
+package parties.v2;
+
+import "parties/v2/roles.proto";
+import "parties/v2/server.proto";
+import "parties/v2/session.proto";
+import "parties/v2/structure.proto";
+import "parties/v2/voice.proto";
+
+// One request from the client.
+message ClientFrame {
+  // Chosen by the client, unique among its requests in flight.
+  uint32 request_id = 1;
+  // Administrative requests: free text for the audit log
+  // (docs/rust-rewrite/07-server-management.md section 5). Ignored by the
+  // other requests.
+  string reason = 2;
+
+  oneof body {
+    // Session, 16 to 31.
+    UpdateProfile update_profile = 16;
+    SetPresence set_presence = 17;
+    LinkReport link_report = 18;
+    ListKeys list_keys = 19;
+    LinkKey link_key = 20;
+    UnlinkKey unlink_key = 21;
+
+    // Voice, 32 to 63.
+    JoinVoice join_voice = 32;
+    LeaveVoice leave_voice = 33;
+    SetVoiceState set_voice_state = 34;
+    PublishTrack publish_track = 35;
+    UpdateTrack update_track = 36;
+    UnpublishTrack unpublish_track = 37;
+    Subscribe subscribe = 38;
+    Unsubscribe unsubscribe = 39;
+
+    // Structure, 128 to 159.
+    CreateChannel create_channel = 128;
+    UpdateChannel update_channel = 129;
+    DeleteChannel delete_channel = 130;
+    ReorderChannels reorder_channels = 131;
+    SetOverwrite set_overwrite = 132;
+    DeleteOverwrite delete_overwrite = 133;
+    SyncChannelPermissions sync_channel_permissions = 134;
+
+    // Roles, 160 to 191.
+    CreateRole create_role = 160;
+    UpdateRole update_role = 161;
+    DeleteRole delete_role = 162;
+    ReorderRoles reorder_roles = 163;
+    AssignRole assign_role = 164;
+    RevokeRole revoke_role = 165;
+
+    // Server, 192 to 223.
+    UpdateServerSettings update_server_settings = 192;
+    CreateJoinCode create_join_code = 193;
+    RevokeJoinCode revoke_join_code = 194;
+  }
+}
+
+// One frame from the server: the response to a request, or an event.
+message ServerFrame {
+  oneof kind {
+    Response response = 1;
+    Event event = 2;
+  }
+}
+
+// The outcome of a request.
+enum StatusCode {
+  // The request was carried out. A response without a status means this.
+  STATUS_CODE_OK = 0;
+  // A permission is missing, or a hierarchy rule refused.
+  STATUS_CODE_PERMISSION_DENIED = 1;
+  // The target does not exist, or the member may not see it.
+  STATUS_CODE_NOT_FOUND = 2;
+  // The request is over the budget of its rate class.
+  STATUS_CODE_RATE_LIMITED = 3;
+  // The request is malformed or a value failed validation.
+  STATUS_CODE_INVALID = 4;
+  // The object changed since the revision the request was based on, or the
+  // request contradicts the current state.
+  STATUS_CODE_CONFLICT = 5;
+  // A role limit, a quota or a capacity would be exceeded.
+  STATUS_CODE_LIMIT_EXCEEDED = 6;
+  // The request needs a state the session is not in, for example a voice
+  // channel.
+  STATUS_CODE_FAILED_PRECONDITION = 7;
+  // The server does not know this request.
+  STATUS_CODE_UNSUPPORTED = 8;
+  // The server failed. Nothing was changed.
+  STATUS_CODE_INTERNAL = 9;
+}
+
+// The hierarchy rule that refused a request
+// (docs/rust-rewrite/05-permissions-and-roles.md section 5). The numbers
+// are the rule numbers; H9 never refuses.
+enum HierarchyRule {
+  HIERARCHY_RULE_UNSPECIFIED = 0;
+  HIERARCHY_RULE_H1 = 1;
+  HIERARCHY_RULE_H2 = 2;
+  HIERARCHY_RULE_H3 = 3;
+  HIERARCHY_RULE_H4 = 4;
+  HIERARCHY_RULE_H5 = 5;
+  HIERARCHY_RULE_H6 = 6;
+  HIERARCHY_RULE_H7 = 7;
+  HIERARCHY_RULE_H8 = 8;
+  HIERARCHY_RULE_H10 = 10;
+}
+
+// How a request ended.
+message Status {
+  StatusCode code = 1;
+  // For logs and developers, not for parsing.
+  string message = 2;
+  // Rate limited: when to try again.
+  uint32 retry_after_ms = 3;
+  // Permission denied: the permission bits the member lacks.
+  uint64 missing_permissions = 4;
+  // Permission denied: the hierarchy rule that refused, if one did.
+  HierarchyRule rule = 5;
+}
+
+// The response to one request. Every request gets exactly one.
+message Response {
+  // The `request_id` of the request.
+  uint32 request_id = 1;
+  // Not set means OK.
+  Status status = 2;
+
+  // The typed result, for the requests that have one.
+  oneof payload {
+    // Session.
+    UpdateProfileResult update_profile = 16;
+    LinkReportResult link_report = 18;
+    ListKeysResult list_keys = 19;
+
+    // Voice.
+    PublishTrackResult publish_track = 35;
+
+    // Structure.
+    ChannelResult create_channel = 128;
+    ChannelResult update_channel = 129;
+    ChannelResult set_overwrite = 132;
+    ChannelResult delete_overwrite = 133;
+    ChannelResult sync_channel_permissions = 134;
+
+    // Roles.
+    RoleResult create_role = 160;
+    RoleResult update_role = 161;
+
+    // Server.
+    UpdateServerSettingsResult update_server_settings = 192;
+    CreateJoinCodeResult create_join_code = 193;
+  }
+}
+
+// A change of state, sent to every session that may see it.
+message Event {
+  // The server's event sequence number (section 5.3). On a connection it
+  // only ever increases, and it starts above `Ready.seq`. It has gaps: a
+  // session receives only the events it may see.
+  uint64 seq = 1;
+
+  oneof body {
+    // Session and the member directory, 16 to 31.
+    MemberJoined member_joined = 16;
+    MemberUpdated member_updated = 17;
+    MemberLeft member_left = 18;
+    PresenceUpdated presence_updated = 19;
+    PermissionsUpdated permissions_updated = 20;
+
+    // Voice, 32 to 63.
+    VoiceStateUpdated voice_state_updated = 32;
+    TrackPublished track_published = 33;
+    TrackUpdated track_updated = 34;
+    TrackUnpublished track_unpublished = 35;
+    SubscriberChanged subscriber_changed = 36;
+
+    // Structure, 128 to 159.
+    ChannelCreated channel_created = 128;
+    ChannelUpdated channel_updated = 129;
+    ChannelDeleted channel_deleted = 130;
+
+    // Roles, 160 to 191.
+    RoleCreated role_created = 160;
+    RoleUpdated role_updated = 161;
+    RoleDeleted role_deleted = 162;
+
+    // Server, 192 to 223.
+    ServerUpdated server_updated = 192;
+    JoinCodeChanged join_code_changed = 193;
+  }
+}

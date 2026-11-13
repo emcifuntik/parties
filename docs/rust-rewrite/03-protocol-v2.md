@@ -1,7 +1,11 @@
 # 03 — Parties protocol 2.0
 
 > Status: Draft — 2026-11-10. This is the design; the normative schema is the
-> `.proto` files and constants in `parties-proto`, written in Phase 0.
+> `.proto` files and constants in `parties-proto`, written in Phase 0. The
+> first schema (2026-11-13) covers the handshake, the envelope, the state
+> snapshot, the media plane and the areas Session, Voice, Structure and Roles,
+> plus server settings and join codes; Chat, Bulk, Moderation and file
+> transfer follow.
 
 Protocol 2.0 is a clean break from 1.4. It keeps what works (one QUIC
 connection, voice in datagrams, one unidirectional stream per video frame,
@@ -32,6 +36,7 @@ never depends on it.
 | Control: requests, responses, events | One bidirectional stream, type `0x00` | Client, first stream | Highest |
 | Bulk requests: history, search, member pages, audit log | One bidirectional stream per request, type `0x01` | Client | Normal |
 | File upload / download | One bidirectional stream per transfer, types `0x02` / `0x03` | Client | Lowest |
+| Profile picture upload ([13](13-profiles-access-and-hardware-keys.md) section 3) | One bidirectional stream per upload, type `0x04` | Client | Lowest |
 | Video frames | One unidirectional stream per frame, type `0x10` | Publisher to server, server to viewer | Below control; keyframes above delta frames |
 | Audio, keyframe requests | Datagrams | Both | Sent ahead of stream data, bounded queue |
 
@@ -43,6 +48,8 @@ streams are opened.
 ## 3. Framing and encoding
 
 - Control and bulk streams carry frames of `[length varint][protobuf message]`.
+  The length, and every frame limit in section 9, counts the bytes of the
+  message only.
 - Control messages are Protocol Buffers (proto3, generated with `prost`).
   Unknown fields are ignored; new fields are always optional.
 - Media headers are fixed binary layouts, little-endian, except identifiers
@@ -100,6 +107,14 @@ it, so nothing signed for one connection is valid on another.
 | `AuthResult` | S → C | `ok` with `user_id`, `session_id`; or a typed refusal: `BAD_SIGNATURE`, `JOIN_REQUIRED`, `PENDING_APPROVAL`, `BANNED` (with expiry), `SERVER_FULL`, `SESSION_LIMIT`, `IDENTITY_LEVEL_TOO_LOW`, `UNSUPPORTED_VERSION` |
 | `Ready` | S → C | Full state snapshot, see section 5.3 |
 
+On the wire a handshake message travels in a wrapper, one per frame: every
+frame from the client until authentication has succeeded is a
+`ClientHandshake` (`Hello` or `Authenticate`), and every frame from the server
+up to the last `Ready` is a `ServerHandshake` (`HelloAck`, `AuthResult` or
+`Ready`). The envelope of section 5.1 starts after that. A server that cannot
+serve the client's version answers `Hello` with the `AuthResult` refusal
+directly.
+
 ```
 server_proof = Sign(server_identity_key,
                     "parties-server-proof-v2" || 0x00 || exporter)
@@ -111,6 +126,12 @@ signature    = Sign(user_key,
 password_proof = HMAC-SHA256(K, "parties-join-pw-v2" || 0x00 || exporter)
         where K = Argon2id(password, salt, parameters from HelloAck)
 ```
+
+`server_identity` and `user_key` are the 32-byte public keys, the labels are
+ASCII without a terminator, and `K` is 32 bytes. The exporter label, the
+domain labels and these formulas are implemented once, in `parties-identity`
+(not in `parties-proto`), together with the bounds on the Argon2id parameters
+([04](04-connection-security.md) section 5.3).
 
 `Authenticate` also carries the hash of the user's profile picture, and the
 identity key may be a hardware-backed one with a different proof format;
@@ -132,6 +153,7 @@ trip on reconnect and loses nothing, because the binding is the exporter.
 ```protobuf
 message ClientFrame {
   uint32 request_id = 1;      // chosen by the client, unique among in-flight requests
+  string reason = 2;          // administrative requests: text for the audit log
   oneof body { /* one field per request type */ }
 }
 
@@ -147,12 +169,19 @@ message Status {
   string message = 2;         // for logs and developers, not for parsing
   uint32 retry_after_ms = 3;
   uint64 missing_permissions = 4;
+  Rule   rule = 5;            // the hierarchy rule (H1 to H10) that refused, if one did
 }
 ```
 
 Every request gets exactly one response. Responses and events share the
 control stream, so a client sees the response to a request and the events it
 caused in a consistent order.
+
+Field numbers in the three `oneof`s (requests, results, events) are assigned
+in one range per area of section 5.4: Session 16–31, Voice 32–63, Chat 64–95,
+Moderation 96–127, Structure 128–159, Roles 160–191, Server 192–223, Bulk
+224–255. A typed result has the number of its request. An area added later
+therefore breaks nothing.
 
 ### 5.2 Identifiers
 
@@ -162,20 +191,35 @@ caused in a consistent order.
 | Session | `u64` | One per authenticated connection; a user may have several |
 | Track | `u32` | Assigned by the server per published media track; the only identifier on the media plane |
 
+The timestamp of a time-sortable identifier counts milliseconds from
+2026-01-01T00:00:00Z. An identifier therefore stays below 2^63 until 2095 and
+fits the signed 64-bit integer SQLite stores. 0 is never assigned; in a
+message it means "none".
+
 A **track** is one published media source: a user's voice, auxiliary audio, a
 screen share, its audio, or a camera. Tracks replace the 1.4 convention of
-packing the source into the top bits of a user id.
+packing the source into the top bits of a user id. Every track is published
+with `PublishTrack`, the microphone included.
 
 ### 5.3 State synchronisation
 
 `Ready` carries everything the client needs to render: server settings, the
 member's own record, all roles, the channels the member may view with their
 permission overwrites, the member's effective permissions per channel, voice
-states, active tracks, online members, unread markers and the member's
-effective limits. Large servers page the member list on demand.
+states, active tracks, the member directory, unread markers and the member's
+effective limits. Up to 1,000 members the directory is complete; larger
+servers send the online members and page the rest on demand
+([13](13-profiles-access-and-hardware-keys.md) section 2).
+
+A snapshot that does not fit one control frame is sent as several `Ready`
+frames in a row, at most 16; every frame but the last has `more` set. The
+client appends the repeated fields in the order received; every other field
+is sent in one frame only.
 
 After `Ready`, the server sends events with a strictly increasing `seq`. The
-client applies them in order. Protocol 2.0 always sends a full snapshot on
+client applies them in order. `seq` is the server's own event counter:
+`Ready` names the value the snapshot is current as of, and a session sees
+gaps where it may not see an event. Protocol 2.0 always sends a full snapshot on
 connect; resuming from a sequence number is reserved for a later minor
 version.
 
@@ -222,7 +266,7 @@ before the server closes the connection).
 | Type | Name | Body after `track_id` |
 |---|---|---|
 | `0x01` | Audio | `seq u16`, `timestamp u32` (48 kHz samples), `flags u8`, `level u8`, Opus payload (at most 1000 bytes) |
-| `0x02` | Keyframe request | `reason u8` |
+| `0x02` | Keyframe request | `reason u8`: 0 unspecified, 1 loss, 2 new viewer, 3 backlog recovery |
 | `0x03`–`0x0F` | Reserved | Feedback and receiver reports |
 
 Audio flags: bit 0 end of talkspurt, bit 1 payload is end-to-end encrypted
@@ -235,7 +279,9 @@ belongs to the sending session and that the sender may speak, then forwards
 **the same bytes** to every recipient. It never rewrites a media packet, so
 one buffer is shared by all recipients.
 
-Unknown datagram types are ignored.
+`type` is one byte. Unknown datagram types are ignored. A keyframe request
+with an unknown `reason` is still a request, and bytes after the `reason` are
+ignored, so that a later minor version can append to it.
 
 ### 6.2 Audio rules
 
@@ -353,7 +399,9 @@ party cannot spoof lobby information for a known server.
 
 | Limit | Value |
 |---|---|
-| Control frame | 4 KiB before authentication, 64 KiB after |
+| Control frame | 4 KiB before authentication, 64 KiB after, in both directions |
+| Bulk frame | 64 KiB |
+| State snapshot | 16 `Ready` frames, and 16,384 entries in their repeated fields together |
 | Time to authenticate | 10 s |
 | Streams before authentication | 1 bidirectional, 0 unidirectional |
 | Streams after authentication | 16 bidirectional (1 control, 4 bulk, 4 file, spare), 64 unidirectional |
@@ -363,7 +411,7 @@ party cannot spoof lobby information for a known server.
 | Audio payload | 1000 bytes |
 | Chat message | 4000 characters by default (server setting) |
 | Display name | 1–32 characters after normalisation |
-| Outbox per connection | Bounded; overflow closes with `SLOW_CONSUMER` |
+| Outbox per connection | 2 MiB of control frames, twice the largest snapshot; overflow closes with `SLOW_CONSUMER` |
 
 ### Rate classes
 
@@ -399,11 +447,30 @@ abuse closes the connection.
 The auto-reconnect policy from 1.x keys off these codes instead of matching
 error strings.
 
+### Stream reset codes
+
+A stream is reset, or its sender asked to stop, with one of these codes. The
+connection stays open. They share the number space of the close codes and
+start at `0x100`, so a code means the same wherever it appears.
+
+| Code | Meaning |
+|---|---|
+| `0x100` | `CANCELLED`: the stream is no longer needed (a bulk request abandoned, a transfer cancelled) |
+| `0x101` | `UNKNOWN_STREAM_TYPE`: the receiver does not know the type the stream starts with |
+| `0x102` | `NOT_ALLOWED`: the session may not open this stream now (not authenticated, not the publisher of the track, no permission) |
+| `0x103` | `TOO_LARGE`: the stream is longer than its limit |
+| `0x104` | `LIMIT_EXCEEDED`: too many streams of this type are open, or the session's buffered video is over its cap |
+| `0x105` | `MALFORMED`: the header of the stream does not decode |
+| `0x106` | `FRAME_DROPPED`: the sender dropped a queued video frame that is no longer useful |
+
 ## 11. Evolution rules
 
 - The ALPN token changes only for incompatible changes.
 - `protocol_minor` and the `features` list gate additive behaviour. A peer
-  never sends a message the other side did not advertise support for.
+  never sends a message the other side did not advertise support for. The
+  negotiated minor version is the lower of the two. A feature is named by a
+  string of at most 32 lower-case ASCII letters, digits and hyphens, and a
+  list holds at most 64 names; 2.0 defines no feature.
 - Protobuf field numbers are never reused; removed fields are reserved. CI
   runs a breaking-change check on the schema.
 - Reserved bytes and flag bits in media headers are sent as zero and ignored

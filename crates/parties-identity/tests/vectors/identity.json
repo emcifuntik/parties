@@ -1,0 +1,222 @@
+{
+  "about": "Keys, fingerprints and key derivations of parties-identity, computed by generate.py with hashlib and OpenSSL, independently of the Rust code. Binary values are hex. 'keys': Ed25519 seed to public key, its text form (unpadded base64url), its fingerprint (colon-separated SHA-256, as the C++ public_key_fingerprint) and the six words of a server identity (first 66 bits of the fingerprint as BIP-39 words). 'v1': the C++ derive_keypair, seed = SHA-256(phrase bytes exactly as given). 'v2': BIP-39 phrase of the entropy, bip39_seed = PBKDF2-HMAC-SHA512(phrase, 'mnemonic', 2048, 64), seed = HKDF-SHA256(no salt, bip39_seed, 'parties/phrase/identity/v2', 32). 'passkey': entropy = HKDF-SHA256(no salt, prf_output, 'parties/passkey/identity/v1', 16), then as v2.",
+  "keys": [
+    {
+      "seed": "0707070707070707070707070707070707070707070707070707070707070707",
+      "public_key": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+      "public_key_text": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
+      "fingerprint": "fe:81:2c:12:f3:ab:4c:e6:ac:5d:b6:9a:c3:52:f9:06:cb:1b:11:ef:43:fb:33:e2:52:ef:7f:f5:52:26:38:89",
+      "six_words": "write annual again trap regular infant"
+    },
+    {
+      "seed": "0000000000000000000000000000000000000000000000000000000000000000",
+      "public_key": "3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29",
+      "public_key_text": "O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik",
+      "fingerprint": "13:9e:39:40:e6:4b:54:91:72:20:88:d9:a0:d7:41:62:8f:c8:26:e0:94:75:d3:41:a7:80:ac:de:3c:4b:80:70",
+      "six_words": "bean vault expand smart relief emerge"
+    },
+    {
+      "seed": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "public_key": "76a1592044a6e4f511265bca73a604d90b0529d1df602be30a19a9257660d1f5",
+      "public_key_text": "dqFZIESm5PURJlvKc6YE2QsFKdHfYCvjChmpJXZg0fU",
+      "fingerprint": "af:82:29:58:f2:d7:5a:fb:91:f8:a8:f4:da:25:32:30:d6:3b:eb:f8:c3:ce:8f:a9:a2:e2:75:c2:cd:35:45:6e",
+      "six_words": "question bacon file toss interest lava"
+    },
+    {
+      "seed": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+      "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "public_key_text": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+      "fingerprint": "21:fe:31:df:a1:54:a2:61:62:6b:f8:54:04:6f:d2:27:1b:7b:ed:4b:6a:be:45:aa:58:87:7e:f4:7f:97:21:b9",
+      "six_words": "capable various jewel dress enforce cost"
+    },
+    {
+      "seed": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "public_key": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+      "public_key_text": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",
+      "fingerprint": "56:47:5a:a7:54:63:47:4c:02:85:df:5d:bf:2b:ca:b7:3d:a6:51:35:88:39:e9:b7:74:81:b2:ea:b1:07:70:8c",
+      "six_words": "film depart prefer potato crucial plastic"
+    }
+  ],
+  "v1": [
+    {
+      "name": "integration test client A",
+      "phrase": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+      "seed": "c557eec878dfd852ba3f88087c4f350f09c55537ab5e549c3cd14320ec3cef38",
+      "public_key": "93a5f261984931e0df5c7434b16d468efb1953098d3cad4fa1506b9e052e7fc7",
+      "fingerprint": "6f:d1:45:bc:c8:f8:07:1a:72:39:61:9b:6a:1a:68:cb:8c:8b:2d:ea:2b:48:85:fb:c8:dd:c7:ff:f1:63:f2:c9"
+    },
+    {
+      "name": "integration test client B",
+      "phrase": "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong",
+      "seed": "3c0949435a7e4277fac2fbe27975cdd9f5b5abf94d282112eaf4cebbb8560984",
+      "public_key": "63f4a4b1157837943e897b63bc8f8d5182f015d9f85c9dbc8d4959bf84e84469",
+      "fingerprint": "b4:50:d7:0f:1c:7a:8b:24:1d:92:d1:4d:86:ee:86:31:0e:eb:24:38:50:12:91:78:fc:81:fc:2a:db:f7:2f:39"
+    },
+    {
+      "name": "integration test client C",
+      "phrase": "letter advice cage absurd amount doctor acoustic avoid letter advice cage above",
+      "seed": "3a64bcd9cea43c0aba67ba0bf2ddff8137a492bccbc672107fcbf7381086f698",
+      "public_key": "fceb249bc084fa3ed6fa068d66115acf5a0a1eb6da6440374799cde713bedba2",
+      "fingerprint": "cf:d8:93:b0:71:ac:0a:2d:63:df:e0:1b:9a:ef:3f:aa:c6:b3:bf:9a:92:61:6d:8f:b2:49:df:f7:a5:47:2a:6f"
+    },
+    {
+      "name": "no valid BIP-39 checksum",
+      "phrase": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon",
+      "seed": "2e62ad983d635d0b1727e265ecd060b43818edaef8fdd7bc5caaa7cfaacd400b",
+      "public_key": "dcc424e6b8d67917c7ee3067e96abab4c1454bc5d0d86d6cb3b0bfad111cc848",
+      "fingerprint": "01:e2:78:69:fd:35:46:4d:9e:9d:6d:c0:53:6a:0d:3e:c9:3d:d4:4c:a3:cb:0e:86:b9:56:53:d3:da:13:ba:a3"
+    },
+    {
+      "name": "mixed words",
+      "phrase": "ozone drill grab fiber curtain grace pudding thank cruise elder eight zoo",
+      "seed": "5f560ef37bb8b352936f738540179e416097924e8e4001aec2f96aeefbabf51c",
+      "public_key": "c47261cb80b0912f5f4104e7ebd8ea108ee14f3d0036a995edbdecc54d647eda",
+      "fingerprint": "74:bf:f3:d6:7a:7c:13:85:c0:05:30:43:3f:d0:7f:1c:a3:6c:0d:25:e1:6d:6c:66:3a:f1:4c:14:35:30:9e:7b"
+    },
+    {
+      "name": "trailing space",
+      "phrase": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about ",
+      "seed": "72a7d75b8cff427e57500e11bd3e4ae48e2c56eaf9a32a201bb8d46002e16fae",
+      "public_key": "6f1c30646fe4be41d0b2fbe24709403c1b65999eb83338e97f8cdc14d04fda6c",
+      "fingerprint": "8f:33:ba:02:83:e8:bc:4f:87:e4:24:c7:d2:af:29:23:6b:3b:5c:5f:c9:fe:a2:29:67:8a:7b:2f:36:dd:6b:20"
+    },
+    {
+      "name": "leading space",
+      "phrase": " abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+      "seed": "863ef32da47822bdd50f48f340d713a471a6467cff84e8b2f71db136e8d92af1",
+      "public_key": "974263c53cb49a81713790c9086f3a8f89ddf0590c7a2b4b734c40a21a71bc2f",
+      "fingerprint": "93:16:cd:f2:a3:13:fc:9d:48:61:88:fc:c5:5a:54:e8:3d:bd:ae:40:90:b8:c1:f3:6c:36:9b:a8:de:14:19:e6"
+    },
+    {
+      "name": "two spaces after the first word",
+      "phrase": "abandon  abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+      "seed": "b625528ad316f66a93873e3033c84f13d56c2840657bb51d930028d852042358",
+      "public_key": "19f75bd1bac3054cdd7b123b0aaf886178ffb33605d61f2f66b10655d3ed9d80",
+      "fingerprint": "f8:0d:de:7f:fa:d2:d1:e6:20:c6:55:41:bf:bf:7b:51:ba:89:1c:a4:3e:ea:e5:5f:3e:f1:81:9a:0a:6c:90:e6"
+    },
+    {
+      "name": "tab after the first word",
+      "phrase": "abandon\tabandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+      "seed": "15740cc67aad5a9f03edcd531d11a042793f629957773b8fdb3c34a8652936e6",
+      "public_key": "5bd813f0ca5d36b06fdf08577ae5e378f321ea56fee7497c4a45567a71d89d69",
+      "fingerprint": "b0:1d:e3:d9:4a:e9:21:73:1b:ef:a8:af:cf:17:88:05:97:18:f0:29:2a:aa:80:4d:dc:b7:4d:08:e0:a2:b8:fe"
+    },
+    {
+      "name": "trailing line feed",
+      "phrase": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about\n",
+      "seed": "98f38c1ffefdca4891e5ccdc5ed44af57fb23f9dbb7b41ed6385d891943f00d9",
+      "public_key": "f7b1e63fdda51423286b58134e6e88aa7e63939c4bda02090f6695f3e9179084",
+      "fingerprint": "af:74:5e:e0:60:98:f9:54:4d:93:a4:01:6f:cc:f5:95:52:ee:5e:35:0f:b1:17:90:16:4b:7f:2c:8f:a3:73:b7"
+    },
+    {
+      "name": "trailing carriage return and line feed",
+      "phrase": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about\r\n",
+      "seed": "ffe76196ef817ca34237aef219614848260857c1c8c7d86c86938f9d7b283884",
+      "public_key": "7439d26348e1704c47e99e63bf9b5183ef52f5f3bd984df04d4a3fd523310cd2",
+      "fingerprint": "5d:49:72:7f:20:cd:83:9d:d7:68:02:cb:f9:df:1b:47:61:ba:e2:c2:21:14:31:87:03:46:a3:38:16:05:28:0b"
+    },
+    {
+      "name": "vertical tab and form feed",
+      "phrase": "abandon\u000babandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about\f",
+      "seed": "4b5950ed85cb34a4c2fe49d2b2a45e66462870c1a09b4d59662cd102f2d4c354",
+      "public_key": "82a7c4688ab9da8a805db5a425079a05e553bac5953687eb708b675d2bb6ca1e",
+      "fingerprint": "2f:a4:95:56:ea:af:55:cd:58:60:ae:0c:37:56:bd:71:fc:67:13:ee:f0:af:52:ba:66:0e:f3:73:ff:e1:8a:3a"
+    }
+  ],
+  "v2": [
+    {
+      "entropy": "00000000000000000000000000000000",
+      "phrase": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+      "bip39_seed": "5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4",
+      "seed": "f25ddf969b71e40384855ab7fb008a4de3a3764457277bb937b795f145290386",
+      "public_key": "7172dc11f0589fb3027dd1182b0208bea95fe88761d5c06826f91bd7146947e5",
+      "fingerprint": "0e:bd:5a:62:b7:4f:70:bb:ab:ea:85:2f:c7:77:e9:dc:4c:63:62:19:ee:9c:87:c0:e6:4d:49:70:63:b0:df:6f"
+    },
+    {
+      "entropy": "7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f",
+      "phrase": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+      "bip39_seed": "878386efb78845b3355bd15ea4d39ef97d179cb712b77d5c12b6be415fffeffe5f377ba02bf3f8544ab800b955e51fbff09828f682052a20faa6addbbddfb096",
+      "seed": "79349336e515ea402f5bef10641933a95f866e8e53fac1c8ff8d9752d671020d",
+      "public_key": "59ff00222240735e8fceafaf809828f1f93a4a2a41b8950ce9877d16dc7ca753",
+      "fingerprint": "1d:0b:46:28:fb:32:26:8e:de:45:12:46:f6:74:43:30:78:a1:4d:09:84:bb:d9:f2:9e:eb:87:5c:4b:45:df:c6"
+    },
+    {
+      "entropy": "80808080808080808080808080808080",
+      "phrase": "letter advice cage absurd amount doctor acoustic avoid letter advice cage above",
+      "bip39_seed": "77d6be9708c8218738934f84bbbb78a2e048ca007746cb764f0673e4b1812d176bbb173e1a291f31cf633f1d0bad7d3cf071c30e98cd0688b5bcce65ecaceb36",
+      "seed": "ac333ae95823167ee657b085e9fa6f9a292ba9858aa09018053f9095d75da5b2",
+      "public_key": "5325a3cc5c3465d19df56bc2b7af79346dfb4a7fadf98fb4bf5ce2c3e365e168",
+      "fingerprint": "47:94:7c:6b:5f:90:54:8b:22:92:d0:05:87:c0:56:9a:55:4e:06:17:05:98:21:90:32:e5:ae:93:46:74:9a:47"
+    },
+    {
+      "entropy": "ffffffffffffffffffffffffffffffff",
+      "phrase": "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong",
+      "bip39_seed": "b6a6d8921942dd9806607ebc2750416b289adea669198769f2e15ed926c3aa92bf88ece232317b4ea463e84b0fcd3b53577812ee449ccc448eb45e6f544e25b6",
+      "seed": "19daf651ab12c1eb067d76e13801008bb02e4f1609e5aac35a784d9d22a87b66",
+      "public_key": "2b7f31769e471374342b76d33a8334d3d18ec373a7e9bf4c398dce7612df7ce7",
+      "fingerprint": "2e:f6:b6:c4:17:df:cc:6e:87:f1:f1:d1:ed:f9:8f:cd:3b:c3:2b:fe:70:dc:c7:6e:a4:e9:93:0e:f0:fb:1d:f8"
+    },
+    {
+      "entropy": "9e885d952ad362caeb4efe34a8e91bd2",
+      "phrase": "ozone drill grab fiber curtain grace pudding thank cruise elder eight picnic",
+      "bip39_seed": "e2f88a043776c828063d4c3c97173944d32cf847a925b6e40b0b8bd0b4bead3ba734bdda5250d4698b310a71c9934e1a48e562315ce22bf85f89459df0e73a6c",
+      "seed": "32c362ed41f5ec022c5f16dc5871a3c4e0e27106455a56f28d53d35f3bc572d3",
+      "public_key": "741cfca34fa912f5c72e0c65586f8b3d22889edf35210c38e4131f76b35aaea3",
+      "fingerprint": "e6:19:ed:06:38:56:e1:2f:2e:58:90:8c:5d:6a:37:5d:2c:93:89:62:7c:33:74:5d:0c:5a:36:35:ee:5e:0d:2d"
+    },
+    {
+      "entropy": "000102030405060708090a0b0c0d0e0f",
+      "phrase": "abandon amount liar amount expire adjust cage candy arch gather drum buyer",
+      "bip39_seed": "3779b041fab425e9c0fd55846b2a03e9a388fb12784067bd8ebdb464c2574a05bcc7a8eb54d7b2a2c8420ff60f630722ea5132d28605dbc996c8ca7d7a8311c0",
+      "seed": "92885d6a92da81c905af6a4de54fedf24aa53c46b87c40e1171b176cfaac2314",
+      "public_key": "508270c390302ef0867650f1bdc73051944b5118aaa6e0d4137aa7894b50b32c",
+      "fingerprint": "f5:1e:6c:de:44:3e:25:d5:de:29:e9:49:12:05:c7:c2:8c:69:19:d4:8f:de:43:c5:47:a8:f7:2c:9d:43:40:81"
+    },
+    {
+      "entropy": "0000000000000000000000000000000000000000000000000000000000000000",
+      "phrase": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art",
+      "bip39_seed": "408b285c123836004f4b8842c89324c1f01382450c0d439af345ba7fc49acf705489c6fc77dbd4e3dc1dd8cc6bc9f043db8ada1e243c4a0eafb290d399480840",
+      "seed": "dc9db85d1c85b3e7d0ce21c25d6633011c12eac3c3f367049dfe59303c5e3aa9",
+      "public_key": "213390981ccac99fef31c50b38b0c30d1d4b13e83000b5b66744c8541aa5af9e",
+      "fingerprint": "f3:33:bf:7c:8f:9a:00:95:a1:9c:5d:53:c0:82:f1:1e:3d:eb:36:14:a7:5f:ab:cc:d6:d4:b3:bc:08:44:ce:a4"
+    },
+    {
+      "entropy": "f585c11aec520db57dd353c69554b21a89b20fb0650966fa0a9d6f74fd989d8f",
+      "phrase": "void come effort suffer camp survey warrior heavy shoot primary clutch crush open amazing screen patrol group space point ten exist slush involve unfold",
+      "bip39_seed": "b873212f885ccffbf4692afcb84bc2e55886de2dfa07d90f5c3c239abc31c0a6ce047e30fd8bf6a281e71389aa82d73df74c7bbfb3b06b4639a5cee775cccd3c",
+      "seed": "0b9a7f1f8561e05c7e73e375ef983fb599b73bc6efb068f012d36fada629416c",
+      "public_key": "5849d25e9d6c5cadcb15643490e9cf0415c8dc7df1677acbe5402d0f0ab74852",
+      "fingerprint": "e7:bd:cb:b1:f6:5c:91:08:ef:3c:b4:97:4b:70:82:9b:63:04:f3:ed:9f:91:47:1f:33:30:9e:83:7b:d8:99:6f"
+    }
+  ],
+  "passkey": [
+    {
+      "prf_output": "0000000000000000000000000000000000000000000000000000000000000000",
+      "entropy": "478ae4e60d1860369a05d72803f9afde",
+      "phrase": "elegant fire define boss maid brave gym road chimney cabin hip royal",
+      "public_key": "c19aa66b23b09f7ca77b5c1c3437178b8b80d355b8ccfdf4f6e0be676d509302",
+      "fingerprint": "a2:a4:99:dc:4f:96:38:7b:9a:7a:d0:cf:14:92:3c:4d:70:a8:2c:67:e2:cb:28:db:2b:1c:a8:15:58:ef:2c:61"
+    },
+    {
+      "prf_output": "4242424242424242424242424242424242424242424242424242424242424242",
+      "entropy": "acccbeff24f94b56868d4fa8fcbbc1a5",
+      "phrase": "proud grass save enemy net prize boss prepare pottery total vacant energy",
+      "public_key": "8c0741f3083fe1131ed130d326a98f41ac25a8339a3ec29511d0a84488240a01",
+      "fingerprint": "7e:61:4b:45:12:15:e2:85:73:a0:a2:30:87:4c:b7:33:69:90:5b:ca:e6:21:b0:1b:e9:e2:83:f0:4b:02:53:f9"
+    },
+    {
+      "prf_output": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "entropy": "4a1f26927f4bcfc90bd3b992062aa420",
+      "phrase": "energy weird pig write rude tonight consider jaguar must course poverty donkey",
+      "public_key": "6f9ce4fb69554b319504b87dbfca9fef166aa978de5e8dd9d68c45bd5dd3550e",
+      "fingerprint": "fe:d0:a0:a6:98:36:35:37:26:ca:2a:78:ca:fc:ce:3b:f8:8c:0a:15:36:ea:4f:b5:b2:91:a0:07:14:9d:03:2c"
+    },
+    {
+      "prf_output": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "entropy": "d023d4f4ef24f14f990f18d425f61a44",
+      "phrase": "south burger diamond tattoo excuse pond goddess toast stage cook make mean",
+      "public_key": "7292447aaccb41d82259c1c3081188a61d85405b02fd054cdf58e6c9fe805883",
+      "fingerprint": "af:72:bb:0d:f2:46:70:0d:a4:3c:43:2b:18:28:de:a6:e2:29:40:7a:08:a3:e5:56:80:85:7f:91:ba:d5:0e:62"
+    }
+  ]
+}

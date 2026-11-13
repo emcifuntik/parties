@@ -1,0 +1,33 @@
+[package]
+name = "parties-proto"
+description = "Wire schema of Parties protocol 2.0: generated control messages, hand-written framing and media headers, limits and codes. No I/O."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# No build script and no other workspace crate on purpose: building this
+# crate needs only the three crates below, on every host and for every
+# target. The schema compiler is a dev-dependency (see `tests/schema.rs`).
+[dependencies]
+# Buffers of the frame codec and of the media headers; `Bytes` fields of the
+# generated messages.
+bytes = { version = "1", default-features = false, features = ["std"] }
+# Runtime of the generated messages (`Message`, the derive macros).
+prost = { version = "0.14", default-features = false, features = ["derive", "std"] }
+# Typed errors (docs/rust-rewrite/02-target-architecture.md section 7).
+thiserror = { version = "2", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+# Property tests: decoders never panic, encode-then-decode is the identity.
+proptest = { version = "1", default-features = false, features = ["std"] }
+# `tests/schema.rs` compiles `proto/` with a compiler written in Rust (no
+# `protoc` binary), regenerates `src/generated/` and checks the schema
+# against `schema/parties.v2.snapshot`.
+protox = { version = "0.10", default-features = false }
+prost-build = { version = "0.14", default-features = false, features = ["format"] }
+prost-types = { version = "0.14", default-features = false, features = ["std"] }

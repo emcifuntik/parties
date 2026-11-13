@@ -258,6 +258,9 @@ time).
 | Q11 | Should a hardware key replace the software key, or be required in addition to it? | D-26; decides the recovery story |
 | Q12 | Passkeys: is deriving the key from the passkey acceptable (the key is in the client's memory while unlocked), or must every sign-in be signed inside the passkey, with a system prompt per connection? | Answered 2026-11-11: deriving the key is acceptable (D-28) |
 | Q13 | Passkeys: unlock once per device (the key is then also kept in the OS keystore) or at every start of the client? | Answered 2026-11-11: once per device. The passkey is there so the key is not lost, not for security (D-28) |
+| Q14 | Join password: is it acceptable that what the server stores is enough to join (the stored Argon2id output makes valid proofs), or should the server store only something it can verify with? | Found while writing `parties-identity` (2026-11-13). As specified in [03](03-protocol-v2.md) section 4.2, a stolen server database lets the thief join without cracking the password. Deriving a signing key from the Argon2id output and storing only its public half closes that, at the price of a different proof formula |
+| Q15 | Are six words (66 bits) enough for a person to confirm a server that has no pin yet, or should the client show more? | Found the same day. The words are the only check on a first contact without a join link ([04](04-connection-security.md) section 4); 66 bits is out of reach for most attackers and not for all |
+| Q16 | Linking a second key to an account: is the proposed proof acceptable? | [13](13-profiles-access-and-hardware-keys.md) section 6.4 now gives its bytes, marked proposed; the documents had none |
 
 ## 3. How to change a decision
 

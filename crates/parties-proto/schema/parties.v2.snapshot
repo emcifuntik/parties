@@ -1,0 +1,652 @@
+# The wire schema of package parties.v2: every message, field, enum and value.
+# tests/schema.rs compares the .proto files with this list and fails when
+# something listed here was removed, renumbered, renamed or retyped.
+# Do not edit. Regenerate:
+#   PARTIES_PROTO_BLESS=1 cargo test -p parties-proto --test schema
+
+enum parties.v2.AuthRefusalReason
+  0 AUTH_REFUSAL_REASON_UNSPECIFIED
+  1 AUTH_REFUSAL_REASON_BAD_SIGNATURE
+  2 AUTH_REFUSAL_REASON_JOIN_REQUIRED
+  3 AUTH_REFUSAL_REASON_PENDING_APPROVAL
+  4 AUTH_REFUSAL_REASON_BANNED
+  5 AUTH_REFUSAL_REASON_SERVER_FULL
+  6 AUTH_REFUSAL_REASON_SESSION_LIMIT
+  7 AUTH_REFUSAL_REASON_IDENTITY_LEVEL_TOO_LOW
+  8 AUTH_REFUSAL_REASON_UNSUPPORTED_VERSION
+
+enum parties.v2.ChannelKind
+  0 CHANNEL_KIND_UNSPECIFIED
+  1 CHANNEL_KIND_CATEGORY
+  2 CHANNEL_KIND_VOICE
+  3 CHANNEL_KIND_TEXT
+
+enum parties.v2.HierarchyRule
+  0 HIERARCHY_RULE_UNSPECIFIED
+  1 HIERARCHY_RULE_H1
+  2 HIERARCHY_RULE_H2
+  3 HIERARCHY_RULE_H3
+  4 HIERARCHY_RULE_H4
+  5 HIERARCHY_RULE_H5
+  6 HIERARCHY_RULE_H6
+  7 HIERARCHY_RULE_H7
+  8 HIERARCHY_RULE_H8
+  10 HIERARCHY_RULE_H10
+
+enum parties.v2.JoinCodeState
+  0 JOIN_CODE_STATE_UNSPECIFIED
+  1 JOIN_CODE_STATE_ACTIVE
+  2 JOIN_CODE_STATE_SPENT
+  3 JOIN_CODE_STATE_EXPIRED
+  4 JOIN_CODE_STATE_REVOKED
+
+enum parties.v2.JoinPolicy
+  0 JOIN_POLICY_UNSPECIFIED
+  1 JOIN_POLICY_OPEN
+  2 JOIN_POLICY_PASSWORD
+  3 JOIN_POLICY_JOIN_CODE
+  4 JOIN_POLICY_APPROVAL
+
+enum parties.v2.KdfAlgorithm
+  0 KDF_ALGORITHM_UNSPECIFIED
+  1 KDF_ALGORITHM_ARGON2ID
+
+enum parties.v2.KeyAlgorithm
+  0 KEY_ALGORITHM_UNSPECIFIED
+  1 KEY_ALGORITHM_ED25519
+  2 KEY_ALGORITHM_WEBAUTHN_ES256
+  3 KEY_ALGORITHM_WEBAUTHN_ED25519
+
+enum parties.v2.Presence
+  0 PRESENCE_UNSPECIFIED
+  1 PRESENCE_OFFLINE
+  2 PRESENCE_ONLINE
+  3 PRESENCE_IDLE
+  4 PRESENCE_DO_NOT_DISTURB
+
+enum parties.v2.QueryVisibility
+  0 QUERY_VISIBILITY_UNSPECIFIED
+  1 QUERY_VISIBILITY_OFF
+  2 QUERY_VISIBILITY_BASIC
+  3 QUERY_VISIBILITY_FULL
+
+enum parties.v2.StatusCode
+  0 STATUS_CODE_OK
+  1 STATUS_CODE_PERMISSION_DENIED
+  2 STATUS_CODE_NOT_FOUND
+  3 STATUS_CODE_RATE_LIMITED
+  4 STATUS_CODE_INVALID
+  5 STATUS_CODE_CONFLICT
+  6 STATUS_CODE_LIMIT_EXCEEDED
+  7 STATUS_CODE_FAILED_PRECONDITION
+  8 STATUS_CODE_UNSUPPORTED
+  9 STATUS_CODE_INTERNAL
+
+enum parties.v2.TrackKind
+  0 TRACK_KIND_UNSPECIFIED
+  1 TRACK_KIND_VOICE
+  2 TRACK_KIND_AUX_AUDIO
+  3 TRACK_KIND_SCREEN
+  4 TRACK_KIND_SCREEN_AUDIO
+  5 TRACK_KIND_CAMERA
+
+enum parties.v2.VideoCodec
+  0 VIDEO_CODEC_UNSPECIFIED
+  1 VIDEO_CODEC_AV1
+  2 VIDEO_CODEC_H265
+  3 VIDEO_CODEC_H264
+
+message parties.v2.AccountKey
+  1 key: message parties.v2.IdentityKey
+  2 label: string
+  3 added_at_ms: uint64
+  4 last_used_at_ms: uint64
+  5 current: bool
+
+message parties.v2.AssignRole
+  1 user_id: uint64
+  2 role_id: uint64
+
+message parties.v2.AuthOk
+  1 user_id: uint64
+  2 session_id: uint64
+  3 picture_wanted: bool
+
+message parties.v2.AuthRefusal
+  1 reason: enum parties.v2.AuthRefusalReason
+  2 ban_expires_at_ms: uint64
+
+message parties.v2.AuthResult
+  1 ok: message parties.v2.AuthOk (oneof outcome)
+  2 refusal: message parties.v2.AuthRefusal (oneof outcome)
+
+message parties.v2.Authenticate
+  1 user_key: message parties.v2.IdentityKey
+  2 signature: bytes
+  3 webauthn: message parties.v2.WebAuthnAssertion
+  4 identity_chain: repeated bytes
+  5 identity_level_counter: uint64
+  6 join_code: string (oneof join_credential)
+  7 password_proof: bytes (oneof join_credential)
+  8 display_name: string
+  9 picture_sha512: bytes
+
+message parties.v2.Channel
+  1 id: uint64
+  2 revision: uint64
+  3 kind: enum parties.v2.ChannelKind
+  4 parent_id: uint64
+  5 position: uint32
+  6 name: string
+  7 topic: string
+  8 overwrites: repeated message parties.v2.Overwrite
+  9 user_limit: uint32
+  10 limit_caps: message parties.v2.LimitCaps
+  11 slow_mode_seconds: uint32
+
+message parties.v2.ChannelCreated
+  1 channel: message parties.v2.Channel
+
+message parties.v2.ChannelDeleted
+  1 channel_id: uint64
+
+message parties.v2.ChannelPermissions
+  1 channel_id: uint64
+  2 permissions: uint64
+
+message parties.v2.ChannelResult
+  1 channel: message parties.v2.Channel
+
+message parties.v2.ChannelUpdated
+  1 channels: repeated message parties.v2.Channel
+
+message parties.v2.ClientFrame
+  1 request_id: uint32
+  2 reason: string
+  16 update_profile: message parties.v2.UpdateProfile (oneof body)
+  17 set_presence: message parties.v2.SetPresence (oneof body)
+  18 link_report: message parties.v2.LinkReport (oneof body)
+  19 list_keys: message parties.v2.ListKeys (oneof body)
+  20 link_key: message parties.v2.LinkKey (oneof body)
+  21 unlink_key: message parties.v2.UnlinkKey (oneof body)
+  32 join_voice: message parties.v2.JoinVoice (oneof body)
+  33 leave_voice: message parties.v2.LeaveVoice (oneof body)
+  34 set_voice_state: message parties.v2.SetVoiceState (oneof body)
+  35 publish_track: message parties.v2.PublishTrack (oneof body)
+  36 update_track: message parties.v2.UpdateTrack (oneof body)
+  37 unpublish_track: message parties.v2.UnpublishTrack (oneof body)
+  38 subscribe: message parties.v2.Subscribe (oneof body)
+  39 unsubscribe: message parties.v2.Unsubscribe (oneof body)
+  128 create_channel: message parties.v2.CreateChannel (oneof body)
+  129 update_channel: message parties.v2.UpdateChannel (oneof body)
+  130 delete_channel: message parties.v2.DeleteChannel (oneof body)
+  131 reorder_channels: message parties.v2.ReorderChannels (oneof body)
+  132 set_overwrite: message parties.v2.SetOverwrite (oneof body)
+  133 delete_overwrite: message parties.v2.DeleteOverwrite (oneof body)
+  134 sync_channel_permissions: message parties.v2.SyncChannelPermissions (oneof body)
+  160 create_role: message parties.v2.CreateRole (oneof body)
+  161 update_role: message parties.v2.UpdateRole (oneof body)
+  162 delete_role: message parties.v2.DeleteRole (oneof body)
+  163 reorder_roles: message parties.v2.ReorderRoles (oneof body)
+  164 assign_role: message parties.v2.AssignRole (oneof body)
+  165 revoke_role: message parties.v2.RevokeRole (oneof body)
+  192 update_server_settings: message parties.v2.UpdateServerSettings (oneof body)
+  193 create_join_code: message parties.v2.CreateJoinCode (oneof body)
+  194 revoke_join_code: message parties.v2.RevokeJoinCode (oneof body)
+
+message parties.v2.ClientHandshake
+  1 hello: message parties.v2.Hello (oneof kind)
+  2 authenticate: message parties.v2.Authenticate (oneof kind)
+
+message parties.v2.CreateChannel
+  1 kind: enum parties.v2.ChannelKind
+  2 parent_id: uint64
+  3 name: string
+  4 topic: string
+  5 user_limit: uint32
+  6 limit_caps: message parties.v2.LimitCaps
+  7 slow_mode_seconds: uint32
+
+message parties.v2.CreateJoinCode
+  1 label: string
+  2 max_uses: uint32
+  3 lifetime_seconds: uint32
+  4 role_ids: repeated uint64
+
+message parties.v2.CreateJoinCodeResult
+  1 join_code: message parties.v2.JoinCode
+  2 code: string
+
+message parties.v2.CreateRole
+  1 name: string
+  2 color: uint32
+  3 permissions: uint64
+  4 limits: message parties.v2.RoleLimits
+  5 hoisted: bool
+  6 mentionable: bool
+  7 requires_hardware_key: bool
+
+message parties.v2.DeleteChannel
+  1 channel_id: uint64
+
+message parties.v2.DeleteOverwrite
+  1 channel_id: uint64
+  2 base_revision: uint64
+  3 role_id: uint64 (oneof target)
+  4 user_id: uint64 (oneof target)
+
+message parties.v2.DeleteRole
+  1 role_id: uint64
+
+message parties.v2.Event
+  1 seq: uint64
+  16 member_joined: message parties.v2.MemberJoined (oneof body)
+  17 member_updated: message parties.v2.MemberUpdated (oneof body)
+  18 member_left: message parties.v2.MemberLeft (oneof body)
+  19 presence_updated: message parties.v2.PresenceUpdated (oneof body)
+  20 permissions_updated: message parties.v2.PermissionsUpdated (oneof body)
+  32 voice_state_updated: message parties.v2.VoiceStateUpdated (oneof body)
+  33 track_published: message parties.v2.TrackPublished (oneof body)
+  34 track_updated: message parties.v2.TrackUpdated (oneof body)
+  35 track_unpublished: message parties.v2.TrackUnpublished (oneof body)
+  36 subscriber_changed: message parties.v2.SubscriberChanged (oneof body)
+  128 channel_created: message parties.v2.ChannelCreated (oneof body)
+  129 channel_updated: message parties.v2.ChannelUpdated (oneof body)
+  130 channel_deleted: message parties.v2.ChannelDeleted (oneof body)
+  160 role_created: message parties.v2.RoleCreated (oneof body)
+  161 role_updated: message parties.v2.RoleUpdated (oneof body)
+  162 role_deleted: message parties.v2.RoleDeleted (oneof body)
+  192 server_updated: message parties.v2.ServerUpdated (oneof body)
+  193 join_code_changed: message parties.v2.JoinCodeChanged (oneof body)
+
+message parties.v2.Hello
+  1 protocol_minor: uint32
+  2 features: repeated string
+  3 client_name: string
+  4 client_version: string
+  5 platform: string
+
+message parties.v2.HelloAck
+  1 protocol_minor: uint32
+  2 features: repeated string
+  3 server_identity: bytes
+  4 server_proof: bytes
+  5 join: message parties.v2.JoinRequirements
+  6 server_name: string
+
+message parties.v2.IdentityKey
+  1 algorithm: enum parties.v2.KeyAlgorithm
+  2 public_key: bytes
+
+message parties.v2.JoinCode
+  1 id: uint64
+  2 label: string
+  3 creator_id: uint64
+  4 max_uses: uint32
+  5 uses: uint32
+  6 expires_at_ms: uint64
+  7 role_ids: repeated uint64
+  8 state: enum parties.v2.JoinCodeState
+  9 redeemed_by: repeated uint64
+
+message parties.v2.JoinCodeChanged
+  1 join_code: message parties.v2.JoinCode
+
+message parties.v2.JoinPassword
+  1 kdf: message parties.v2.PasswordKdf
+  2 key: bytes
+
+message parties.v2.JoinRequirements
+  1 policy: enum parties.v2.JoinPolicy
+  2 password_kdf: message parties.v2.PasswordKdf
+  3 min_identity_level: uint32
+
+message parties.v2.JoinVoice
+  1 channel_id: uint64
+  2 decode_codecs: repeated enum parties.v2.VideoCodec
+  3 self_muted: bool
+  4 self_deafened: bool
+
+message parties.v2.LeaveVoice
+
+message parties.v2.LimitCaps
+  1 max_video_bitrate: optional uint32
+  2 max_video_height: optional uint32
+  3 max_video_fps: optional uint32
+  4 max_aux_audio_bitrate: optional uint32
+  5 max_upload_size: optional uint32
+  6 daily_upload_quota: optional uint32
+  7 max_published_video_tracks: optional uint32
+
+message parties.v2.LinkKey
+  1 key: message parties.v2.IdentityKey
+  2 proof: bytes
+  3 webauthn: message parties.v2.WebAuthnAssertion
+  4 label: string
+
+message parties.v2.LinkReport
+
+message parties.v2.LinkReportResult
+  1 srtt_us: uint32
+  2 loss_permille: uint32
+  3 video_outstanding_bytes: uint64
+  4 video_threshold_bytes: uint64
+  5 video_frames_dropped: uint64
+  6 video_streams_reset: uint64
+
+message parties.v2.ListKeys
+
+message parties.v2.ListKeysResult
+  1 keys: repeated message parties.v2.AccountKey
+
+message parties.v2.Member
+  1 user_id: uint64
+  2 display_name: string
+  3 nickname: string
+  4 role_ids: repeated uint64
+  5 picture_sha512: bytes
+  6 presence: enum parties.v2.Presence
+  7 joined_at_ms: uint64
+  8 timeout_until_ms: uint64
+  9 server_muted: bool
+  10 server_deafened: bool
+  11 last_seen_at_ms: uint64
+
+message parties.v2.MemberJoined
+  1 member: message parties.v2.Member
+
+message parties.v2.MemberLeft
+  1 user_id: uint64
+
+message parties.v2.MemberUpdated
+  1 member: message parties.v2.Member
+
+message parties.v2.NewMemberPolicy
+  1 period_ms: uint64
+  2 require_role: bool
+  3 restricted: uint64
+
+message parties.v2.Overwrite
+  1 role_id: uint64 (oneof target)
+  2 user_id: uint64 (oneof target)
+  3 allow: uint64
+  4 deny: uint64
+
+message parties.v2.PasswordKdf
+  1 algorithm: enum parties.v2.KdfAlgorithm
+  2 salt: bytes
+  3 memory_kib: uint32
+  4 iterations: uint32
+  5 parallelism: uint32
+
+message parties.v2.PermissionsUpdated
+  1 server_permissions: uint64
+  2 channel_permissions: repeated message parties.v2.ChannelPermissions
+  3 limits: message parties.v2.RoleLimits
+
+message parties.v2.PresenceUpdated
+  1 user_id: uint64
+  2 presence: enum parties.v2.Presence
+  3 last_seen_at_ms: uint64
+
+message parties.v2.PublishTrack
+  1 kind: enum parties.v2.TrackKind
+  2 linked_track_id: uint32
+  3 codec: enum parties.v2.VideoCodec
+  4 width: uint32
+  5 height: uint32
+
+message parties.v2.PublishTrackResult
+  1 track: message parties.v2.Track
+
+message parties.v2.Ready
+  1 more: bool
+  2 seq: uint64
+  3 settings: message parties.v2.ServerSettings
+  4 owner_id: uint64
+  5 everyone_role_id: uint64
+  6 me: message parties.v2.Member
+  7 roles: repeated message parties.v2.Role
+  8 channels: repeated message parties.v2.Channel
+  9 server_permissions: uint64
+  10 channel_permissions: repeated message parties.v2.ChannelPermissions
+  11 limits: message parties.v2.RoleLimits
+  12 voice_states: repeated message parties.v2.VoiceState
+  13 tracks: repeated message parties.v2.Track
+  14 members: repeated message parties.v2.Member
+  15 members_partial: bool
+  16 member_count: uint32
+
+message parties.v2.ReorderChannels
+  1 parent_id: uint64
+  2 channel_ids: repeated uint64
+
+message parties.v2.ReorderRoles
+  1 role_ids: repeated uint64
+
+message parties.v2.Response
+  1 request_id: uint32
+  2 status: message parties.v2.Status
+  16 update_profile: message parties.v2.UpdateProfileResult (oneof payload)
+  18 link_report: message parties.v2.LinkReportResult (oneof payload)
+  19 list_keys: message parties.v2.ListKeysResult (oneof payload)
+  35 publish_track: message parties.v2.PublishTrackResult (oneof payload)
+  128 create_channel: message parties.v2.ChannelResult (oneof payload)
+  129 update_channel: message parties.v2.ChannelResult (oneof payload)
+  132 set_overwrite: message parties.v2.ChannelResult (oneof payload)
+  133 delete_overwrite: message parties.v2.ChannelResult (oneof payload)
+  134 sync_channel_permissions: message parties.v2.ChannelResult (oneof payload)
+  160 create_role: message parties.v2.RoleResult (oneof payload)
+  161 update_role: message parties.v2.RoleResult (oneof payload)
+  192 update_server_settings: message parties.v2.UpdateServerSettingsResult (oneof payload)
+  193 create_join_code: message parties.v2.CreateJoinCodeResult (oneof payload)
+
+message parties.v2.RevokeJoinCode
+  1 join_code_id: uint64
+
+message parties.v2.RevokeRole
+  1 user_id: uint64
+  2 role_id: uint64
+
+message parties.v2.Role
+  1 id: uint64
+  2 revision: uint64
+  3 name: string
+  4 color: uint32
+  5 position: uint32
+  6 permissions: uint64
+  7 limits: message parties.v2.RoleLimits
+  8 hoisted: bool
+  9 mentionable: bool
+  10 requires_hardware_key: bool
+
+message parties.v2.RoleCreated
+  1 role: message parties.v2.Role
+
+message parties.v2.RoleDeleted
+  1 role_id: uint64
+
+message parties.v2.RoleLimits
+  1 max_video_bitrate: uint32
+  2 max_video_height: uint32
+  3 max_video_fps: uint32
+  4 max_aux_audio_bitrate: uint32
+  5 max_upload_size: uint32
+  6 daily_upload_quota: uint32
+  7 max_published_video_tracks: uint32
+
+message parties.v2.RoleResult
+  1 role: message parties.v2.Role
+
+message parties.v2.RoleUpdated
+  1 roles: repeated message parties.v2.Role
+
+message parties.v2.ServerFrame
+  1 response: message parties.v2.Response (oneof kind)
+  2 event: message parties.v2.Event (oneof kind)
+
+message parties.v2.ServerHandshake
+  1 hello_ack: message parties.v2.HelloAck (oneof kind)
+  2 auth_result: message parties.v2.AuthResult (oneof kind)
+  3 ready: message parties.v2.Ready (oneof kind)
+
+message parties.v2.ServerSettings
+  1 revision: uint64
+  2 name: string
+  3 description: string
+  4 default_channel_id: uint64
+  5 afk_channel_id: uint64
+  6 afk_timeout_seconds: uint32
+  7 join_policy: enum parties.v2.JoinPolicy
+  8 join_password_set: bool
+  9 min_identity_level: uint32
+  10 new_members: message parties.v2.NewMemberPolicy
+  11 max_members: uint32
+  12 max_sessions: uint32
+  13 max_sessions_per_member: uint32
+  14 query_visibility: enum parties.v2.QueryVisibility
+  15 limit_caps: message parties.v2.LimitCaps
+  16 speaker_limit: uint32
+  17 pictures_enabled: bool
+  18 show_last_seen: bool
+  19 max_join_code_lifetime_seconds: uint32
+  20 max_unused_join_codes_per_member: uint32
+
+message parties.v2.ServerUpdated
+  1 settings: message parties.v2.ServerSettings
+
+message parties.v2.SetOverwrite
+  1 channel_id: uint64
+  2 base_revision: uint64
+  3 overwrite: message parties.v2.Overwrite
+
+message parties.v2.SetPresence
+  1 presence: enum parties.v2.Presence
+
+message parties.v2.SetVoiceState
+  1 self_muted: optional bool
+  2 self_deafened: optional bool
+
+message parties.v2.Status
+  1 code: enum parties.v2.StatusCode
+  2 message: string
+  3 retry_after_ms: uint32
+  4 missing_permissions: uint64
+  5 rule: enum parties.v2.HierarchyRule
+
+message parties.v2.Subscribe
+  1 track_id: uint32
+
+message parties.v2.SubscriberChanged
+  1 track_id: uint32
+  2 user_id: uint64
+  3 session_id: uint64
+  4 subscribed: bool
+
+message parties.v2.SyncChannelPermissions
+  1 channel_id: uint64
+  2 base_revision: uint64
+
+message parties.v2.Track
+  1 id: uint32
+  2 kind: enum parties.v2.TrackKind
+  3 session_id: uint64
+  4 user_id: uint64
+  5 channel_id: uint64
+  6 linked_track_id: uint32
+  7 codec: enum parties.v2.VideoCodec
+  8 width: uint32
+  9 height: uint32
+
+message parties.v2.TrackPublished
+  1 track: message parties.v2.Track
+
+message parties.v2.TrackUnpublished
+  1 track_id: uint32
+
+message parties.v2.TrackUpdated
+  1 track: message parties.v2.Track
+
+message parties.v2.UnlinkKey
+  1 key: message parties.v2.IdentityKey
+
+message parties.v2.UnpublishTrack
+  1 track_id: uint32
+
+message parties.v2.Unsubscribe
+  1 track_id: uint32
+
+message parties.v2.UpdateChannel
+  1 channel_id: uint64
+  2 base_revision: uint64
+  3 name: optional string
+  4 topic: optional string
+  5 parent_id: optional uint64
+  6 user_limit: optional uint32
+  7 limit_caps: message parties.v2.LimitCaps
+  8 slow_mode_seconds: optional uint32
+
+message parties.v2.UpdateProfile
+  1 display_name: optional string
+  2 picture_sha512: optional bytes
+
+message parties.v2.UpdateProfileResult
+  1 picture_wanted: bool
+
+message parties.v2.UpdateRole
+  1 role_id: uint64
+  2 base_revision: uint64
+  3 name: optional string
+  4 color: optional uint32
+  5 permissions: optional uint64
+  6 limits: message parties.v2.RoleLimits
+  7 hoisted: optional bool
+  8 mentionable: optional bool
+  9 requires_hardware_key: optional bool
+
+message parties.v2.UpdateServerSettings
+  1 base_revision: uint64
+  2 name: optional string
+  3 description: optional string
+  4 default_channel_id: optional uint64
+  5 afk_channel_id: optional uint64
+  6 afk_timeout_seconds: optional uint32
+  7 join_policy: optional enum parties.v2.JoinPolicy
+  8 join_password: message parties.v2.JoinPassword
+  9 min_identity_level: optional uint32
+  10 new_members: message parties.v2.NewMemberPolicy
+  11 max_members: optional uint32
+  12 max_sessions: optional uint32
+  13 max_sessions_per_member: optional uint32
+  14 query_visibility: optional enum parties.v2.QueryVisibility
+  15 limit_caps: message parties.v2.LimitCaps
+  16 speaker_limit: optional uint32
+  17 pictures_enabled: optional bool
+  18 show_last_seen: optional bool
+  19 max_join_code_lifetime_seconds: optional uint32
+  20 max_unused_join_codes_per_member: optional uint32
+
+message parties.v2.UpdateServerSettingsResult
+  1 settings: message parties.v2.ServerSettings
+
+message parties.v2.UpdateTrack
+  1 track_id: uint32
+  2 codec: enum parties.v2.VideoCodec
+  3 width: uint32
+  4 height: uint32
+
+message parties.v2.VoiceState
+  1 session_id: uint64
+  2 user_id: uint64
+  3 channel_id: uint64
+  4 self_muted: bool
+  5 self_deafened: bool
+  6 speak_granted: bool
+  7 decode_codecs: repeated enum parties.v2.VideoCodec
+
+message parties.v2.VoiceStateUpdated
+  1 state: message parties.v2.VoiceState
+
+message parties.v2.WebAuthnAssertion
+  1 authenticator_data: bytes
+  2 client_data_json: bytes

@@ -1,0 +1,130 @@
+// Area "Server": the runtime settings and join codes
+// (docs/rust-rewrite/03-protocol-v2.md sections 5.4 and 5.5,
+// docs/rust-rewrite/13-profiles-access-and-hardware-keys.md section 5).
+// `ClaimOwnership`, `FetchServerStats` and `ListSessions` are added later.
+
+syntax = "proto3";
+
+package parties.v2;
+
+import "parties/v2/state.proto";
+
+// ---------------------------------------------------------------------------
+// Server settings
+// ---------------------------------------------------------------------------
+
+// A new join password, as the verifier the server stores. The password
+// itself never crosses the wire: the client derives the key and sends the
+// parameters it used.
+message JoinPassword {
+  PasswordKdf kdf = 1;
+  // The key derived from the password with `kdf`.
+  bytes key = 2;
+}
+
+// Changes the runtime settings. A field that is not set stays as it is. The
+// fields have the numbers of the same settings in `ServerSettings`.
+message UpdateServerSettings {
+  // The revision of the settings the change was based on. When they changed
+  // in between, the response has the status CONFLICT and carries the
+  // current settings.
+  uint64 base_revision = 1;
+  optional string name = 2;
+  optional string description = 3;
+  optional uint64 default_channel_id = 4;
+  optional uint64 afk_channel_id = 5;
+  optional uint32 afk_timeout_seconds = 6;
+  optional JoinPolicy join_policy = 7;
+  // Sets or replaces the join password.
+  JoinPassword join_password = 8;
+  optional uint32 min_identity_level = 9;
+  // Replaces the whole policy.
+  NewMemberPolicy new_members = 10;
+  optional uint32 max_members = 11;
+  optional uint32 max_sessions = 12;
+  optional uint32 max_sessions_per_member = 13;
+  optional QueryVisibility query_visibility = 14;
+  // Replaces all server-wide caps.
+  LimitCaps limit_caps = 15;
+  optional uint32 speaker_limit = 16;
+  optional bool pictures_enabled = 17;
+  optional bool show_last_seen = 18;
+  optional uint32 max_join_code_lifetime_seconds = 19;
+  optional uint32 max_unused_join_codes_per_member = 20;
+}
+
+// Result of `UpdateServerSettings`: the settings as they are now.
+message UpdateServerSettingsResult {
+  ServerSettings settings = 1;
+}
+
+// The runtime settings changed.
+message ServerUpdated {
+  ServerSettings settings = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Join codes
+// ---------------------------------------------------------------------------
+
+// Whether a join code can still be redeemed.
+enum JoinCodeState {
+  JOIN_CODE_STATE_UNSPECIFIED = 0;
+  // It can be redeemed.
+  JOIN_CODE_STATE_ACTIVE = 1;
+  // Every use is spent.
+  JOIN_CODE_STATE_SPENT = 2;
+  // It expired unused.
+  JOIN_CODE_STATE_EXPIRED = 3;
+  // Someone revoked it.
+  JOIN_CODE_STATE_REVOKED = 4;
+}
+
+// A join code as its creator and members with `ManageJoinCodes` see it. The
+// code itself is stored hashed and is not part of this record.
+message JoinCode {
+  // The id is time-sortable, so it also says when the code was created.
+  uint64 id = 1;
+  // Free text for the creator, for example who the code is for.
+  string label = 2;
+  uint64 creator_id = 3;
+  uint32 max_uses = 4;
+  uint32 uses = 5;
+  uint64 expires_at_ms = 6;
+  // The roles a member who redeems the code gets.
+  repeated uint64 role_ids = 7;
+  JoinCodeState state = 8;
+  // The members who redeemed the code.
+  repeated uint64 redeemed_by = 9;
+}
+
+// Creates a join code.
+message CreateJoinCode {
+  string label = 1;
+  // How often the code can be redeemed; 0 for once. More than once needs
+  // `ManageJoinCodes`.
+  uint32 max_uses = 2;
+  // How long the code is valid; 0 for the server's default of seven days.
+  uint32 lifetime_seconds = 3;
+  // The roles to grant, limited to roles the creator could assign.
+  repeated uint64 role_ids = 4;
+}
+
+// Result of `CreateJoinCode`.
+message CreateJoinCodeResult {
+  JoinCode join_code = 1;
+  // The ten characters of the code, without the separator. Shown once; the
+  // server keeps only a hash.
+  string code = 2;
+}
+
+// Revokes a join code that is still active.
+message RevokeJoinCode {
+  uint64 join_code_id = 1;
+}
+
+// A join code was created, redeemed, revoked or expired. Sent to its
+// creator and to members with `ManageJoinCodes`.
+message JoinCodeChanged {
+  JoinCode join_code = 1;
+}

@@ -173,7 +173,7 @@ sequenceDiagram
 
 | Property | Value |
 |---|---|
-| Form | Ten characters from an alphabet without look-alikes, shown as `XXXXX-XXXXX`; case-insensitive |
+| Form | Ten characters from an alphabet without look-alikes, shown as `XXXXX-XXXXX`; case-insensitive. The alphabet is Crockford's Base32, `0123456789ABCDEFGHJKMNPQRSTVWXYZ` (50 bits); when a code is read, `O` counts as `0` and `I` and `L` as `1` |
 | Uses | One by default. More than one needs `ManageJoinCodes` |
 | Expiry | Seven days by default; the server sets the maximum |
 | Grants | Optional roles, limited to roles the creator could assign anyway (rules H3 and H4 in [05](05-permissions-and-roles.md)) |
@@ -256,6 +256,12 @@ than one key.
 - `LinkKey` adds a key. It is sent while signed in with an existing key and
   carries a proof made with the new one. `UnlinkKey` removes one; the last
   key cannot be removed.
+- For Ed25519 keys the proof is (proposed)
+  `Sign(new_key, "parties-link-key-v1" || 0x00 || exporter || server_identity || account_key || new_key)`,
+  where `exporter` is the TLS exporter of the connection
+  ([03](03-protocol-v2.md) section 4.1) and `account_key` the key that
+  connection signed in with. The existing key may sign the same statement as
+  an approval that can be shown to others; the server does not need it.
 - Roles, bans and history belong to the account, not to a key.
 - There is no global account, so linking is per server. The client keeps the
   list of the user's keys and offers to link the missing ones when it
@@ -313,7 +319,7 @@ it has verified the user.
 |---|---|
 | Create | The client creates a discoverable passkey for the fixed relying-party id (the same id as for hardware keys, question Q9), with user verification required and the PRF extension requested. The user handle is random; the label is the display name |
 | Unlock | The client asks the passkey for an assertion with a fixed PRF input. The provider verifies the user and returns 32 bytes |
-| Derive | `HKDF-SHA-256(prf_output, info = "parties/passkey/identity/v1")`, truncated to the length of the recovery entropy. From there the identity key is derived exactly as it is from a recovery phrase (same versioned derivation) |
+| Derive | `HKDF-SHA-256(prf_output, info = "parties/passkey/identity/v1")` without a salt, truncated to the length of the recovery entropy (16 bytes, twelve words). From there the identity key is derived exactly as it is from a recovery phrase (same versioned derivation) |
 | Use | The resulting Ed25519 key signs `Authenticate` like any software key. The assertion is not sent anywhere and its signature is not used; only the PRF output is |
 
 What follows from that:

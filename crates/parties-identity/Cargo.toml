@@ -1,0 +1,53 @@
+[package]
+name = "parties-identity"
+description = "Cryptographic identity of Parties 2.0: keys, recovery phrases, handshake proofs, server trust, identity level. Pure functions, no I/O."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["os-rng"]
+# Conveniences that draw from the operating system's random-number generator:
+# `SigningKey::generate`, `Mnemonic::generate`, `JoinCode::generate`. Without
+# it the crate takes all entropy from its caller and makes no system call.
+os-rng = ["dep:getrandom"]
+
+# No workspace crate on purpose: `parties-proto` must not be needed to sign or
+# verify, and nothing here does I/O.
+[dependencies]
+# Ed25519 (BSD-3-Clause). `zeroize` wipes signing keys on drop; `fast` uses
+# the precomputed base-point tables.
+ed25519-dalek = { version = "3", default-features = false, features = ["fast", "zeroize"] }
+# SHA-256 for fingerprints, v1 derivation and the identity level; SHA-512
+# inside PBKDF2. `zeroize` wipes hash states, which hold phrase and key
+# material while a derivation runs.
+sha2 = { version = "0.11", default-features = false, features = ["zeroize"] }
+# HKDF-SHA256: recovery-phrase derivation v2 and the passkey derivation.
+hkdf = "0.13"
+# HMAC-SHA256: `password_proof`.
+hmac = "0.13"
+# PBKDF2-HMAC-SHA512: the BIP-39 seed.
+pbkdf2 = { version = "0.13", default-features = false, features = ["hmac"] }
+# Argon2id: the key behind `password_proof`.
+argon2 = { version = "0.6", default-features = false, features = ["alloc", "zeroize"] }
+# Secret types are wiped when dropped.
+zeroize = { version = "1.9", default-features = false, features = ["alloc"] }
+# Constant-time comparison of join codes.
+subtle = { version = "2.6", default-features = false }
+# The text form of public keys (unpadded base64url).
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+thiserror = { version = "2", default-features = false }
+getrandom = { version = "0.4", optional = true }
+
+[dev-dependencies]
+# Property tests: round trips and "one bit off never verifies".
+proptest = { version = "1", default-features = false, features = ["std"] }
+# Reads the golden vectors in `tests/vectors/`.
+serde_json = "1"
+# Names `ZeroizeOnDrop` in the test that secret types wipe themselves.
+zeroize = { version = "1.9", default-features = false }

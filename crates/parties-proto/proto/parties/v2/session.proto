@@ -1,0 +1,133 @@
+// Area "Session": the requests about the member's own profile, presence,
+// link and keys, and the events of the member directory
+// (docs/rust-rewrite/03-protocol-v2.md sections 5.4 and 5.5).
+
+syntax = "proto3";
+
+package parties.v2;
+
+import "parties/v2/state.proto";
+
+// ---------------------------------------------------------------------------
+// Requests
+// ---------------------------------------------------------------------------
+
+// Changes the member's own default display name or profile picture. A field
+// that is not set stays as it is.
+message UpdateProfile {
+  optional string display_name = 1;
+  // SHA-512 of the new picture; empty removes the picture.
+  optional bytes picture_sha512 = 2;
+}
+
+// Result of `UpdateProfile`.
+message UpdateProfileResult {
+  // The server does not hold the picture with the new hash and asks for its
+  // bytes.
+  bool picture_wanted = 1;
+}
+
+// Sets the presence the member shows: online, idle or do not disturb.
+// Offline is set by the server only.
+message SetPresence {
+  Presence presence = 1;
+}
+
+// Asks for the server's view of its connection to this client, for the
+// diagnostics overlay.
+message LinkReport {}
+
+// Result of `LinkReport`.
+message LinkReportResult {
+  // The smoothed round-trip time the server measures, in microseconds.
+  uint32 srtt_us = 1;
+  // Packet loss from server to client over the last second, in 1/1000.
+  uint32 loss_permille = 2;
+  // Video bytes queued or in flight to this client.
+  uint64 video_outstanding_bytes = 3;
+  // The backlog budget those bytes are compared with.
+  uint64 video_threshold_bytes = 4;
+  // Frames the backlog gate dropped for this client, since it connected.
+  uint64 video_frames_dropped = 5;
+  // Queued frame streams reset for this client, since it connected.
+  uint64 video_streams_reset = 6;
+}
+
+// Lists the keys of the member's account
+// (docs/rust-rewrite/13-profiles-access-and-hardware-keys.md section 6.4).
+message ListKeys {}
+
+// One key of an account.
+message AccountKey {
+  IdentityKey key = 1;
+  // Free text chosen by the user, for example "spare YubiKey".
+  string label = 2;
+  uint64 added_at_ms = 3;
+  // When the key last signed in; 0 for never.
+  uint64 last_used_at_ms = 4;
+  // This session signed in with this key.
+  bool current = 5;
+}
+
+// Result of `ListKeys`.
+message ListKeysResult {
+  repeated AccountKey keys = 1;
+}
+
+// Adds a key to the member's account. Sent while signed in with an existing
+// key.
+message LinkKey {
+  IdentityKey key = 1;
+  // The proof made with the new key, bound to this TLS session.
+  bytes proof = 2;
+  // WebAuthn keys only: what the security key returned with the proof.
+  WebAuthnAssertion webauthn = 3;
+  string label = 4;
+}
+
+// Removes a key from the member's account. The last key cannot be removed.
+message UnlinkKey {
+  IdentityKey key = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
+
+// A new member joined the server.
+message MemberJoined {
+  Member member = 1;
+}
+
+// A member's record changed: name, nickname, roles, picture or moderation
+// state. Carries the whole record.
+message MemberUpdated {
+  Member member = 1;
+}
+
+// A member left the server or was removed from it.
+message MemberLeft {
+  uint64 user_id = 1;
+}
+
+// A member's presence changed.
+message PresenceUpdated {
+  uint64 user_id = 1;
+  Presence presence = 2;
+  // Offline: when the member was last connected; 0 when the server does not
+  // show it.
+  uint64 last_seen_at_ms = 3;
+}
+
+// The receiving member's effective permissions or limits changed. The
+// server computes them
+// (docs/rust-rewrite/05-permissions-and-roles.md section 10).
+message PermissionsUpdated {
+  // The effective permissions server-wide, as they are now.
+  uint64 server_permissions = 1;
+  // The channels whose effective permissions changed. A channel that is not
+  // listed keeps its value.
+  repeated ChannelPermissions channel_permissions = 2;
+  // The limits applied server-wide, as they are now.
+  RoleLimits limits = 3;
+}

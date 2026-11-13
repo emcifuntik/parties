@@ -109,7 +109,9 @@ account is trusted. The server's host is trusted by its operator.
 
 Each server has a long-term **identity key** (Ed25519), created on first
 start and stored with owner-only file permissions. The server's identity is
-the hash of that public key, shown to people as six words.
+the hash of that public key, shown to people as six words: the first 66 bits
+of `SHA-256(public key)`, 11 bits per word, as words of the BIP-39 English
+list. The words are for people to compare; a pin is always the whole key.
 
 | Mode | TLS certificate | How the client decides to trust |
 |---|---|---|
@@ -120,8 +122,10 @@ How a pin is obtained, in order of preference:
 
 1. **From a join link or QR code.** Links have the form
    `parties://host:port/j/<join code>#k=<server key>`. The key travels in the
-   fragment. This is the normal way to join and gives authenticated first
-   contact.
+   fragment, written as unpadded base64url (43 characters). The port is
+   always present; a link without `/j/<join code>` only names and pins a
+   server. This is the normal way to join and gives authenticated first
+   contact. The exact grammar is the `join` module of `parties-identity`.
 2. **From a previous connection** (the stored pin).
 3. **Confirmed by the user.** When neither exists, the client finishes the
    handshake, sends nothing, and shows the server's six words with the choice
@@ -131,6 +135,15 @@ A pinned server that presents a different key is a hard failure. The connect
 path offers no "accept anyway" button. Re-pinning is a deliberate action in
 the server's entry in the client, or happens automatically when the server
 presents a valid **rotation statement**: the new key signed by the old key.
+
+```
+rotation = Sign(old_key, "parties-server-rotation-v1" || 0x00 || old_key || new_key)
+```
+
+A server that changed its key more than once presents all its statements (at
+most 32), and the client follows them from its pin (at most 16 in a row). A
+statement is as trustworthy as the old key: it serves a planned change and is
+no help once the old key has been stolen.
 
 Pins are stored per server record, keyed by the identity key, not by host
 name; a server that moves to a new address keeps its identity.
@@ -156,6 +169,13 @@ The client records which version an identity uses. Import tries both and
 shows the resulting fingerprints when it cannot tell. New phrases are always
 generated, never chosen by the user.
 
+The parameters of v2: twelve words (128 bits of entropy) of the English
+list; PBKDF2 with the salt `mnemonic` (no BIP-39 passphrase), 2048 rounds and
+a 64-byte output; HKDF without a salt, with the label
+`parties/phrase/identity/v2` and a 32-byte output. v1 hashes the phrase bytes
+exactly as they were typed, so import also offers the text with its original
+white space when that differs from the words joined by single spaces.
+
 ### 5.3 Join credentials
 
 A password is no longer needed on every connection. It is one of several ways
@@ -172,6 +192,16 @@ The password never crosses the wire. The proof is an HMAC over the exporter
 keyed by an Argon2id hash of the password, so an attacker in the middle of a
 first connection cannot relay it and can only attack it offline at Argon2id
 cost. The server stores the Argon2id output, not the password.
+
+The stored value is itself enough to make proofs for that server. Storing it
+protects the password, which people reuse elsewhere; the server's database
+still has to be kept secret.
+
+The Argon2id output is 32 bytes (version 1.3). Client and server refuse
+parameters outside 19 MiB to 256 MiB of memory, 2 to 16 passes, 1 to 16 lanes
+and a salt of 16 to 64 bytes: the floor keeps a man in the middle from asking
+for a proof that is cheap to attack, the ceiling keeps a hostile server from
+exhausting the client.
 
 Join codes are single-use by default and are specified in
 [13](13-profiles-access-and-hardware-keys.md) section 5.
@@ -230,6 +260,10 @@ stops honest users. Four mechanisms give bans teeth; operators combine them:
 | Address bans and per-address registration limits | Limits how many new identities one address can enrol per day |
 | Identity level | A proof of work attached to the public key (leading zero bits of a hash over key and counter). The server sets a minimum. Computed once, reusable on every server, the same idea as TeamSpeak's security level |
 | New-member restrictions | Members younger than N minutes, or without a role, cannot speak, send or stream |
+
+The identity level of a key and a counter is the number of leading zero bits
+of `SHA-256("parties-identity-level-v1" || 0x00 || public key || counter)`,
+with the counter as an unsigned 64-bit number in little-endian byte order.
 
 ## 7. Authorization and input validation
 
